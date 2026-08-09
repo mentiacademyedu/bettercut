@@ -12,20 +12,52 @@ That directory is gitignored; `.cargo/config.toml` points the build at it.
 ## Pinned build
 
 ```text
-Version:   n8.1.2-34-g9b6c8969e0-20260808
-Source:    BtbN/FFmpeg-Builds, release tag `latest`
-Asset:     ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
-SHA-256:   96326847B2CDCE6A97C2703B1F487C3A5ED5E56C9D19180A080276B095BE95D3
+Version:   n8.1.2-34-g9b6c8969e0-20260809
+Source:    BtbN/FFmpeg-Builds, release tag `autobuild-2026-08-09-13-03`
+Asset:     ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip
+SHA-256:   2936E5449886641B4279CA3FC554B678C8E9A2D20DD0C0A34FE7208B254A0905
 Licence:   LGPL v3 (--enable-version3, GPL components disabled)
 Linking:   shared (--enable-shared --disable-static)
-Binding:   rsmpeg 0.18 / rusty_ffmpeg 0.17, prebuilt bindings (no libclang needed)
+Binding:   rusty_ffmpeg 0.17, prebuilt binding (no libclang needed) — ADR 002
+ABI:       avcodec-62 · avformat-62 · avutil-60 · swscale-9 · swresample-6
 ```
 
-> **Note.** The upstream `latest` tag is a rolling release, so the asset behind
-> that URL changes over time. The SHA-256 above is what this project was built
-> and tested against. If `fetch-ffmpeg.ps1` reports a hash mismatch, that is the
-> upstream build having moved — verify the new build still satisfies the licence
-> checklist below before updating the hash here.
+> **Why a dated tag and not `latest`.** This was originally pinned against the
+> rolling `latest` tag, and the hash went stale within a day — upstream rebuilds
+> nightly and replaces the asset in place, so every fresh clone failed the
+> integrity check with a bare exception, which reads as "the script is broken".
+> `autobuild-*` tags are immutable, so this hash stays correct until someone
+> changes it deliberately.
+>
+> A mismatch now means a corrupted or intercepted download, not a moved
+> upstream. Retry before doing anything else, and **never** edit the hash to make
+> the check pass — it is the only thing standing between the build and an FFmpeg
+> carrying GPL or non-free components.
+
+**Licence checklist re-run on 2026-08-09** against this build's configure line.
+The relevant flags, verified from `ffmpeg -version` output rather than from the
+asset's name:
+
+```text
+--enable-version3        LGPL v3
+--disable-libx264        no GPL H.264 encoder
+--disable-libx265        no GPL H.265 encoder
+--disable-libfdk-aac     no non-free AAC encoder
+--enable-shared          dynamic linking, so the LGPL relink right is preserved
+(no --enable-gpl, no --enable-nonfree)
+```
+
+## Upgrading
+
+1. Pick a newer `autobuild-*` tag from BtbN/FFmpeg-Builds and its
+   `*-win64-lgpl-shared-*.zip` asset.
+2. Download it and run `ffmpeg -version`; check the configure line against the
+   checklist above.
+3. Update `$Version`, `$Tag`, `$Asset` and `$Sha256` in `fetch-ffmpeg.ps1`
+   together, and the block above.
+4. If the ABI numbers change, update `docs/doctor.ps1`, which probes for
+   `avcodec-62.dll`.
+5. Re-run `cargo test --workspace`.
 
 ---
 

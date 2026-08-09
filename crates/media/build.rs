@@ -22,12 +22,37 @@ fn main() {
     };
     let source = PathBuf::from(source);
     if !source.is_dir() {
-        println!(
-            "cargo:warning=FFmpeg bin directory not found: {}",
+        // Fail here rather than warn.
+        //
+        // Warning and continuing produced the single worst first-run experience
+        // this project has: the build carried on for another minute and then
+        // died with `could not find native static library avcodec`, which names
+        // neither FFmpeg nor the missing step, while the useful warning had
+        // already scrolled off the screen. Nothing can link without the SDK, so
+        // there is no build worth continuing.
+        // ASCII only: this is printed by a Windows console that may still be on
+        // a legacy code page, where box-drawing characters come out as noise.
+        panic!(
+            "\n\n\
+             =============================================================\n\
+             FFmpeg SDK not found.\n\
+             \n\
+             Expected it at:\n\
+               {}\n\
+             \n\
+             It is about 250 MB and is deliberately not committed, so a\n\
+             fresh clone has to fetch it once. From the repository root:\n\
+             \n\
+               setup.cmd\n\
+             \n\
+             or directly:\n\
+             \n\
+               powershell -ExecutionPolicy Bypass -File docs\\fetch-ffmpeg.ps1\n\
+             \n\
+             Run `setup.cmd check` to test every prerequisite at once.\n\
+             =============================================================\n",
             source.display()
         );
-        println!("cargo:warning=Run docs/fetch-ffmpeg.ps1 to install it.");
-        return;
     }
 
     let Some(target_dir) = target_dir() else {

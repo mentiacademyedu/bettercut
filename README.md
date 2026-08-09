@@ -92,8 +92,9 @@ There is **no prebuilt binary**: nothing is published to Releases, so
 `target/release/` does not exist until you build it yourself.
 
 ```powershell
-# 1. One-time: vendor the pinned FFmpeg SDK. This is NOT in the repository.
-powershell -ExecutionPolicy Bypass -File docs\fetch-ffmpeg.ps1
+# 1. One-time setup: fetches the pinned FFmpeg SDK (~250 MB, not in the repo)
+#    and then checks every build prerequisite.
+.\setup.cmd
 
 # 2. Build and run.
 cargo run -p bettercut-desktop              # debug, empty project
@@ -102,24 +103,23 @@ cargo run -p bettercut-desktop -- x.vproj   # open a project file
 cargo build --release -p bettercut-desktop  # -> target\release\bettercut.exe
 ```
 
-**Skipping step 1 is the most common failure**, and its error names FFmpeg only
-in passing:
+In PowerShell the leading `.\` is required — PowerShell does not run programs
+from the current directory without it, and bare `setup.cmd` fails with *"is not
+recognized"*. `.\setup.cmd check` re-runs the checks without downloading.
+
+**Skipping step 1 is the most common failure.** The build now stops early and
+says so; before that it ran on for a minute and died with an error naming
+FFmpeg only in passing:
 
 ```text
 error: could not find native static library `avcodec`, perhaps an -L flag is missing?
 error: could not compile `rusty_ffmpeg` (lib) due to 1 previous error
 ```
 
-If anything goes wrong, run the preflight check — it reports every prerequisite
-and names the one that is missing:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File docs\doctor.ps1
-```
-
-Both scripts run under **Windows PowerShell 5.1**, the version that ships with
-Windows. `pwsh` (PowerShell 7) works too but is a separate install, so it is not
-assumed.
+If anything goes wrong, `.\setup.cmd check` reports every prerequisite and names
+the one that is missing. Everything runs under **Windows PowerShell 5.1**, the
+version that ships with Windows — `pwsh` (PowerShell 7) is a separate install
+and is not assumed.
 
 Checks:
 

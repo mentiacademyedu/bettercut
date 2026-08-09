@@ -100,7 +100,9 @@ if ($problems.Count -eq 0) {
     Write-Host "Problems found, in the order worth fixing:"
     $i = 1
     foreach ($p in ($problems | Select-Object -Unique)) {
-        Write-Host "  $i. $p"
+        # ${i} braces are required: PowerShell parses "$i." as the start of a
+        # property access and swallows the number, which printed a blank bullet.
+        Write-Host "  ${i}. $p"
         $i++
     }
 }
