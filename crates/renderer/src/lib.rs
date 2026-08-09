@@ -22,10 +22,12 @@ pub mod composite {
 pub mod compositor;
 pub mod config;
 pub mod error;
+pub mod gpu;
 
 pub use compositor::{Compositor, Layer};
 pub use config::{MediaSourceMode, PreviewQuality, QualityTier, RenderConfig, RenderTarget};
 pub use error::RenderError;
+pub use gpu::{GpuDescription, GpuKind};
 
 /// The wgpu this crate was built against.
 ///

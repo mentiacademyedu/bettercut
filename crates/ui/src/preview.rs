@@ -12,7 +12,7 @@ use bettercut_audio::PlaybackClock;
 use bettercut_editor_core::Editor;
 use bettercut_editor_core::foundation::TimelineTime;
 use bettercut_playback::{PlaybackEngine, SyncDecision, plan_frame};
-use bettercut_renderer::{Compositor, Layer, PreviewQuality, RenderConfig};
+use bettercut_renderer::{Compositor, GpuDescription, Layer, PreviewQuality, RenderConfig};
 use eframe::egui_wgpu::RenderState;
 
 /// Everything needed to show moving pictures.
@@ -26,6 +26,10 @@ pub struct Preview {
     sink: Option<bettercut_audio::AudioSink>,
 
     quality: PreviewQuality,
+
+    /// The adapter wgpu chose (§49). Kept so the System panel and any bug
+    /// report can name it — performance claims are meaningless without it.
+    gpu: GpuDescription,
 
     /// Last position actually composited, so a still frame is not re-rendered
     /// sixty times a second while paused (§81's idle target).
@@ -64,6 +68,21 @@ impl Preview {
             bettercut_renderer::wgpu::FilterMode::Linear,
         );
 
+        let gpu = GpuDescription::describe(&render_state.adapter);
+        tracing::info!(
+            gpu = %gpu.name,
+            kind = gpu.kind.label(),
+            backend = %gpu.backend,
+            driver = %gpu.driver,
+            surface = ?render_state.target_format,
+            "graphics adapter selected"
+        );
+        if gpu.kind.is_software() {
+            // §50: keep running, but say why it will be slow rather than
+            // letting the user conclude the editor is simply bad.
+            tracing::warn!("no hardware GPU found; rendering in software");
+        }
+
         let (clock, sink) = PlaybackClock::open();
         tracing::info!(audio = %clock.describe(), "playback ready");
 
@@ -75,6 +94,7 @@ impl Preview {
             clock,
             sink,
             quality: PreviewQuality::default(),
+            gpu,
             last_rendered: None,
             consecutive_drops: 0,
             consecutive_on_time: 0,
@@ -282,6 +302,11 @@ impl Preview {
     pub fn set_proxy_source(&mut self, source: bettercut_playback::ProxySource) {
         self.engine.set_proxy_source(Some(source));
         self.last_rendered = None;
+    }
+
+    /// The adapter wgpu is rendering with.
+    pub fn gpu(&self) -> &GpuDescription {
+        &self.gpu
     }
 
     /// A proxy finished encoding: reopen this asset so preview picks it up.

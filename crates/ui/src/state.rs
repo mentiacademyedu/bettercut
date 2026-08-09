@@ -124,6 +124,11 @@ pub struct UiState {
     /// is chosen would act on whatever happens to be under the cursor then.
     pub context: Option<ContextTarget>,
 
+    /// The graphics adapter in use (§49), set once at startup.
+    ///
+    /// `None` when wgpu failed entirely and there is no preview (§50).
+    pub gpu: Option<bettercut_renderer::GpuDescription>,
+
     /// Proxies being generated: how many, and how far along (§42).
     ///
     /// Mirrored here rather than reached for through the `ProxyManager`,
@@ -146,6 +151,7 @@ impl Default for UiState {
             pending_recovery: None,
             needs_repaint: true,
             context: None,
+            gpu: None,
             proxy_progress: None,
         }
     }

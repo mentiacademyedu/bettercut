@@ -46,6 +46,56 @@ Partial approximation is possible for CPU and I/O — 4-core affinity, media on 
 SATA SSD, a capped frame cache — and is worth doing to catch gross regressions.
 It is not a substitute, and results from it are labelled "dev machine".
 
+## The integrated-GPU machine
+
+```text
+Intel Core i7 (13th gen) · integrated graphics · 16 GB · Windows
+```
+
+**The first machine with integrated graphics**, and therefore the first that
+exercises the half of the risk the dev machine cannot reach at all. Everything
+graphical this project has ever measured came from a discrete RTX 4060.
+
+What it **does** validate:
+
+* wgpu initialises and picks a sane adapter and backend on Intel graphics.
+* §21's compositing path — including the sRGB view distinction, which is a
+  driver-visible detail and was wrong until recently.
+* egui text rendering and panel layout at this display's real scaling (ADR 005
+  accepted these on the dev machine only).
+* §50's behaviour if wgpu fails: the editor must start anyway and say why.
+
+What it **does not** validate:
+
+* **Anything CPU-bound.** A 13th-gen i7 has roughly three times the reference
+  machine's multi-core throughput. Proxy generation, journal replay and
+  timeline operations will all look far better than they will on the target.
+* **Memory pressure.** 16 GB against §81's budget on an 8 GB machine.
+* **Storage.** Almost certainly NVMe, not the target's SATA SSD.
+
+One trap worth knowing before reading any result from it: `HardwareProfile` is
+**CPU-only**, so this machine reports enough cores to land in `Quality` mode —
+720p proxies, the largest cache, least throttling — while the reference machine
+lands in `Performance`. Left alone it therefore exercises *different defaults*
+than the target does. To test the target's configuration, set **Inspector →
+Proxies → Quality** to *Smoothest* by hand.
+
+That CPU-only profile is deliberate rather than an oversight: proxy resolution,
+job counts and FFmpeg thread caps are all decisions about CPU work, and §16/§17
+handle the GPU adaptively at run time — preview starts at quarter resolution and
+climbs only if frames arrive on time. If this machine shows the preview stuck at
+a low tier, that is the adaptive system working, and the number worth reporting.
+
+### What to capture
+
+1. `RUST_LOG=info cargo run -p bettercut-desktop` — the first few lines record
+   the detected profile and the chosen adapter, backend and driver.
+2. The **Inspector → System** section, which shows the same thing on screen:
+   processors, mode, job and thread caps, cache size, GPU name, kind, backend
+   and driver.
+3. Whether import, playback, scrubbing and proxy generation complete at all —
+   correctness before speed. Timings from here are indicative, not §81 results.
+
 ---
 
 ## What the target already changes in the code
@@ -63,7 +113,10 @@ Naming the machine is not paperwork; several defaults derive from it directly.
 
 `HardwareProfile::detect()` reads the actual core count at startup and picks
 defaults from it, so running on a 4-core machine automatically behaves as this
-table describes without the user configuring anything (§44).
+table describes without the user configuring anything (§44). It does **not**
+read the GPU — see the note in the integrated-GPU section above for why, and for
+what that means when reading results from a machine with a fast CPU and slow
+graphics.
 
 ---
 

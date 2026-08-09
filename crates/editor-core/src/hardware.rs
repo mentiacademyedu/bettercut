@@ -18,25 +18,35 @@ pub struct HardwareProfile {
 }
 
 impl HardwareProfile {
+    /// Detect once per process and reuse the answer.
+    ///
+    /// The hardware does not change while the editor is running, and both
+    /// `new_project` and `from_project` ask for it — which logged the profile
+    /// twice at startup and made the log read as though something had been
+    /// re-detected. Memoizing also means callers can treat this as free.
     pub fn detect() -> Self {
-        let logical_processors = std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            // A machine that cannot report its own parallelism is assumed to be
-            // small. Guessing high here would oversubscribe it.
-            .unwrap_or(2);
+        static PROFILE: std::sync::OnceLock<HardwareProfile> = std::sync::OnceLock::new();
 
-        let profile = Self { logical_processors };
+        *PROFILE.get_or_init(|| {
+            let logical_processors = std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                // A machine that cannot report its own parallelism is assumed
+                // to be small. Guessing high here would oversubscribe it.
+                .unwrap_or(2);
 
-        tracing::info!(
-            logical = profile.logical_processors,
-            estimated_cores = profile.estimated_physical_cores(),
-            mode = ?profile.recommended_mode(),
-            heavy_jobs = profile.max_heavy_jobs(),
-            ffmpeg_threads = profile.ffmpeg_threads_per_job(),
-            "detected hardware profile"
-        );
+            let profile = Self { logical_processors };
 
-        profile
+            tracing::info!(
+                logical = profile.logical_processors,
+                estimated_cores = profile.estimated_physical_cores(),
+                mode = ?profile.recommended_mode(),
+                heavy_jobs = profile.max_heavy_jobs(),
+                ffmpeg_threads = profile.ffmpeg_threads_per_job(),
+                "detected hardware profile"
+            );
+
+            profile
+        })
     }
 
     /// Estimated *physical* cores.

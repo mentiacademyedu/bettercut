@@ -113,8 +113,9 @@ impl App {
                 },
             );
 
-        if preview.is_none() {
-            tracing::warn!("running without a preview renderer");
+        match preview.as_ref() {
+            Some(preview) => ui.gpu = Some(preview.gpu().clone()),
+            None => tracing::warn!("running without a preview renderer"),
         }
 
         // §39: look for work from a session that did not shut down cleanly.

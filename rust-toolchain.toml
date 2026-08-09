@@ -1,0 +1,9 @@
+# Pinned so a fresh clone builds without anyone having to read the README to
+# find the version. Edition 2024 needs 1.85+; `let`-chains in `if` conditions,
+# used throughout the UI crate, need 1.88+. 1.95 is what this was developed and
+# tested against.
+#
+# rustup installs this automatically on the first cargo command in the repo.
+[toolchain]
+channel = "1.95"
+components = ["rustfmt", "clippy"]

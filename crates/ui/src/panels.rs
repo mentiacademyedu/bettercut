@@ -326,6 +326,17 @@ pub fn inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.heading("Inspector");
     ui.add_space(4.0);
 
+    // Scrollable, because this panel grows: sequence, selection, every track,
+    // the proxy settings and the System diagnostics. Without it the lower
+    // sections are simply unreachable — and the shorter the window, the more is
+    // lost, which hits the §52.1 reference machine hardest (1080p at 125%
+    // scaling leaves ~864 usable pixels).
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| inspector_body(ui, editor, state));
+}
+
+fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let Some(sequence) = editor.active_sequence() else {
         ui.label("No sequence");
         return;
@@ -515,6 +526,31 @@ pub fn inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             "frame cache {} MB",
             hardware.frame_cache_bytes() / (1024 * 1024)
         ));
+
+        // §49/§50: which adapter wgpu picked. Every performance number this
+        // project has produced so far came from one discrete GPU, so a report
+        // from anywhere else is only meaningful if it names the hardware.
+        ui.separator();
+        match &state.gpu {
+            Some(gpu) => {
+                ui.monospace(format!("gpu        {}", gpu.name));
+                ui.monospace(format!("           {} · {}", gpu.kind.label(), gpu.backend));
+                ui.monospace(format!("driver     {}", gpu.driver));
+                if gpu.kind.is_software() {
+                    ui.label(
+                        egui::RichText::new(
+                            "No hardware GPU found — rendering in software, so \
+                             playback will be slow.",
+                        )
+                        .small()
+                        .color(theme::ERROR_TEXT),
+                    );
+                }
+            }
+            None => {
+                ui.monospace("gpu        unavailable");
+            }
+        }
     });
 }
 
