@@ -1,0 +1,23 @@
+[package]
+name = "bettercut-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-foundation.workspace = true
+cpal = "0.18"
+thiserror.workspace = true
+tracing.workspace = true
+
+# §20a.2 forbids allocating or locking in the audio callback, so the buffer
+# between the mixer and the device must be lock-free. A hand-written SPSC ring
+# buffer needs `unsafe` and is exactly the kind of code whose bugs show up as
+# rare, unreproducible audio glitches. This crate is small, single-purpose, and
+# well tested; the dependency is cheaper than the risk (§74).
+ringbuf = "0.5"
+
+[lints]
+workspace = true

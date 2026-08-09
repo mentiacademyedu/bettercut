@@ -1,0 +1,23 @@
+# FFmpeg location for `rusty_ffmpeg`'s build script (§88a).
+#
+# Paths are relative to this file, so a fresh clone builds after running
+# `docs/fetch-ffmpeg.ps1` with no machine-specific setup and no system install.
+#
+# `vendor/ffmpeg` is NOT committed. See docs/ffmpeg.md for the pinned version,
+# its SHA-256, and the exact configure flags it was built with.
+
+[env]
+FFMPEG_INCLUDE_DIR = { value = "vendor/ffmpeg/include", relative = true }
+# The import libraries (.lib), not the DLLs. Setting FFMPEG_DLL_PATH instead
+# makes the linker search bin/, where there are no .lib files to find.
+FFMPEG_LIBS_DIR = { value = "vendor/ffmpeg/lib", relative = true }
+# Runtime DLLs. `crates/media/build.rs` copies these next to the built binaries
+# so `cargo run` and `cargo test` work without touching PATH.
+BETTERCUT_FFMPEG_BIN = { value = "vendor/ffmpeg/bin", relative = true }
+
+# Skips bindgen, and therefore the LLVM/libclang build dependency entirely.
+#
+# Unlike vendor/ffmpeg, this file **is** committed — `fetch-ffmpeg.ps1` does not
+# produce it, and unsetting this variable makes `rusty_ffmpeg` run bindgen and
+# fail with "Unable to find libclang". See docs/adr/002-ffmpeg-backend.md.
+FFMPEG_BINDING_PATH = { value = "vendor/ffmpeg-binding.rs", relative = true }

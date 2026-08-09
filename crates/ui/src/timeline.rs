@@ -1,0 +1,895 @@
+//! The timeline canvas (§53).
+//!
+//! > **The timeline is a custom-drawn canvas, not a widget tree.**
+//!
+//! Everything below — ruler, lanes, clips, playhead, selection, drag previews —
+//! is drawn with one `Painter` inside one allocated rect. A project with 10,000
+//! clips creates zero extra widgets; it draws only the ~30 that intersect the
+//! viewport, found with `Track::clips_in_range` (§54's range query).
+//!
+//! Rules from §53 that are easy to break later:
+//!
+//! * **A timeline repaint must never trigger a decode.** Waveforms and
+//!   thumbnails read from cache only. Those caches do not exist yet, so nothing
+//!   here draws them — rather than drawing them the expensive way for now.
+//! * Pixel↔tick conversion is integer arithmetic (§74). `ticks_per_pixel` comes
+//!   from a fixed ladder, never from a float ratio.
+//!
+//! ## Drags commit once
+//!
+//! A drag updates a *preview* every frame and dispatches exactly one command on
+//! release. Dispatching per frame would put sixty entries on the undo stack for
+//! one gesture; §11's history is meant to hold user intentions, not mouse
+//! samples.
+
+use bettercut_editor_core::foundation::{ClipId, TimelineTime, TrackId};
+use bettercut_editor_core::project_format::Project;
+use bettercut_editor_core::timeline::{Sequence, TimelineRange, TrackKind, snap};
+use bettercut_editor_core::{Editor, TrimEdge};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+
+use crate::state::{ContextTarget, DragMode, DragState, UiState};
+use crate::theme;
+
+/// How close to a clip edge counts as grabbing the trim handle.
+const TRIM_HANDLE_PIXELS: f32 = 7.0;
+
+/// Maps timeline ticks to screen x, and back.
+#[derive(Clone, Copy)]
+struct Viewport {
+    /// Screen x of tick `scroll_ticks` — the left edge of the lane area.
+    origin_x: f32,
+    scroll_ticks: i64,
+    ticks_per_pixel: i64,
+}
+
+impl Viewport {
+    fn x_of(&self, t: TimelineTime) -> f32 {
+        self.origin_x + ((t.ticks() - self.scroll_ticks) / self.ticks_per_pixel) as f32
+    }
+
+    fn tick_of(&self, x: f32) -> TimelineTime {
+        let pixels = (x - self.origin_x) as i64;
+        TimelineTime::from_ticks(
+            self.scroll_ticks
+                .saturating_add(pixels.saturating_mul(self.ticks_per_pixel))
+                .max(0),
+        )
+    }
+
+    /// Like `tick_of`, but allows negative results so a drag can be clamped
+    /// deliberately rather than silently sticking at zero.
+    fn raw_tick_of(&self, x: f32) -> i64 {
+        let pixels = (x - self.origin_x) as i64;
+        self.scroll_ticks
+            .saturating_add(pixels.saturating_mul(self.ticks_per_pixel))
+    }
+
+    /// The time span currently on screen — the §53 viewport query bound.
+    fn visible_range(&self, width: f32) -> TimelineRange {
+        let start = TimelineTime::from_ticks(self.scroll_ticks);
+        let span = (width.max(1.0) as i64).saturating_mul(self.ticks_per_pixel);
+        let end =
+            TimelineTime::from_ticks(self.scroll_ticks.saturating_add(span).saturating_add(1));
+        TimelineRange { start, end }
+    }
+}
+
+/// Where a track was drawn this frame. Needed after the draw pass to resolve
+/// which track a pointer is over and where to paint a drag preview.
+#[derive(Clone, Copy)]
+struct LaneLayout {
+    track: TrackId,
+    kind: TrackKind,
+    rect: Rect,
+}
+
+/// A clip the pointer is currently over.
+#[derive(Clone, Copy)]
+struct ClipHit {
+    clip: ClipId,
+    track: TrackId,
+    rect: Rect,
+    range: TimelineRange,
+}
+
+/// Pointer state for this frame, plus what the draw pass hit-tested.
+struct Interaction {
+    pointer: Option<Pos2>,
+    clicked: bool,
+    additive: bool,
+    hit: Option<ClipHit>,
+}
+
+pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    let full = ui.available_rect_before_wrap();
+    let (rect, response) = ui.allocate_exact_size(full.size(), Sense::click_and_drag());
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0, theme::TIMELINE_BACKGROUND);
+
+    if editor.project().active().is_none() {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "No sequence",
+            FontId::proportional(14.0),
+            theme::DISABLED,
+        );
+        return;
+    }
+
+    let viewport = Viewport {
+        origin_x: rect.left() + theme::TRACK_HEADER_WIDTH,
+        scroll_ticks: state.scroll_ticks,
+        ticks_per_pixel: state.ticks_per_pixel(),
+    };
+    let lane_width = (rect.width() - theme::TRACK_HEADER_WIDTH).max(1.0);
+
+    handle_scroll_and_zoom(ui, &response, state);
+
+    let mut interaction = Interaction {
+        pointer: response
+            .interact_pointer_pos()
+            .or_else(|| ui.ctx().pointer_latest_pos()),
+        clicked: response.clicked(),
+        additive: ui.input(|i| i.modifiers.command),
+        hit: None,
+    };
+
+    // The draw pass borrows the project immutably.
+    let lanes = {
+        let project = editor.project();
+        let Some(sequence) = project.active() else {
+            return;
+        };
+        let playhead = editor.playhead();
+
+        draw_ruler(&painter, rect, viewport, state, lane_width);
+        let lanes = draw_lanes(
+            &painter,
+            rect,
+            viewport,
+            state,
+            project,
+            sequence,
+            lane_width,
+            &mut interaction,
+        );
+        draw_drag_preview(&painter, viewport, state, &lanes);
+        draw_playhead(&painter, rect, viewport, playhead);
+
+        if sequence.clip_count() == 0 {
+            painter.text(
+                Pos2::new(
+                    viewport.origin_x + lane_width / 2.0,
+                    rect.top() + theme::RULER_HEIGHT + 36.0,
+                ),
+                Align2::CENTER_CENTER,
+                "Import media, then press “Add to timeline” to place a clip here",
+                FontId::proportional(13.0),
+                theme::DISABLED,
+            );
+        }
+
+        lanes
+    };
+
+    // Now the project borrow is released and the editor can be mutated.
+    apply_interaction(
+        ui,
+        &response,
+        rect,
+        viewport,
+        &interaction,
+        &lanes,
+        editor,
+        state,
+    );
+
+    crate::context_menu::show(&response, editor, state);
+}
+
+fn handle_scroll_and_zoom(ui: &egui::Ui, response: &egui::Response, state: &mut UiState) {
+    if !response.hovered() {
+        return;
+    }
+    let (scroll, modifiers) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
+
+    // Ctrl/Cmd + wheel zooms; plain wheel pans. Both are what a user expects,
+    // and neither requires hunting for a modifier.
+    if modifiers.command && scroll.y != 0.0 {
+        if scroll.y > 0.0 {
+            state.zoom_in();
+        } else {
+            state.zoom_out();
+        }
+    } else if scroll.x != 0.0 || scroll.y != 0.0 {
+        let delta = if scroll.x != 0.0 { scroll.x } else { scroll.y };
+        state.scroll_by_pixels(-delta);
+    }
+}
+
+// ---- interaction ---------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn apply_interaction(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: Rect,
+    viewport: Viewport,
+    interaction: &Interaction,
+    lanes: &[LaneLayout],
+    editor: &mut Editor,
+    state: &mut UiState,
+) {
+    // Releasing ends any drag. A press that never moved is a click, so it
+    // falls through to the selection logic below rather than being swallowed.
+    if (response.drag_stopped() || ui.input(|i| i.pointer.primary_released()))
+        && let Some(drag) = state.drag.take()
+    {
+        state.needs_repaint = true;
+        if drag.moved {
+            commit_drag(drag, editor, state);
+            return;
+        }
+    }
+
+    let Some(pos) = interaction.pointer else {
+        return;
+    };
+
+    // Right-click: remember what is under the pointer before the menu opens.
+    if response.secondary_clicked() && rect.contains(pos) {
+        capture_context(pos, rect, viewport, interaction, lanes, state);
+        return;
+    }
+
+    // Capture the grab on *press*, while the pointer is still over the clip.
+    // Waiting for egui's `drag_started` loses the clip whenever the pointer
+    // travels far enough in one frame to leave it.
+    if state.drag.is_none()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && pos.x >= viewport.origin_x
+        && pos.y >= rect.top() + theme::RULER_HEIGHT
+        && let Some(hit) = interaction.hit
+    {
+        begin_drag(hit, pos, interaction.additive, viewport, state);
+        return;
+    }
+
+    if state.drag.is_some() && response.dragged() {
+        update_drag(ui, pos, viewport, lanes, editor, state);
+        return;
+    }
+
+    if pos.x < viewport.origin_x {
+        return; // track-header column
+    }
+
+    // `pos` may be `pointer_latest_pos`, which is the pointer anywhere in the
+    // window — including the preview and the toolbar, which sit *above* this
+    // widget. Testing only `pos.y < top + RULER_HEIGHT` was therefore true for
+    // the entire upper half of the app, and simply moving the mouse there
+    // scrubbed the playhead. Anything positional must first confirm the pointer
+    // is actually inside the timeline.
+    let in_ruler = rect.contains(pos) && pos.y < rect.top() + theme::RULER_HEIGHT;
+
+    // Dragging outside a clip scrubs; so does the ruler, but only while the
+    // button is held. Hovering the ruler must not move the playhead.
+    let holding = ui.input(|i| i.pointer.primary_down());
+    if response.dragged() || (in_ruler && holding) {
+        editor.set_playhead(viewport.tick_of(pos.x));
+        state.needs_repaint = true;
+        return;
+    }
+
+    if !interaction.clicked {
+        return;
+    }
+
+    match interaction.hit {
+        Some(hit) => {
+            if interaction.additive {
+                state.toggle_selection(hit.clip);
+            } else {
+                state.select_only(hit.clip);
+            }
+        }
+        None => {
+            // Clicking empty canvas deselects and moves the playhead there.
+            state.clear_selection();
+            editor.set_playhead(viewport.tick_of(pos.x));
+            state.needs_repaint = true;
+        }
+    }
+}
+
+/// Work out what a right-click landed on, and prepare the selection for it.
+///
+/// Right-clicking a clip that is not selected selects it, which is what every
+/// other editor does — otherwise "Delete" in the menu would silently act on
+/// some other clip the user had selected earlier. A clip already in a
+/// multi-selection leaves that selection alone, so "Delete" still means all of
+/// them.
+fn capture_context(
+    pos: Pos2,
+    rect: Rect,
+    viewport: Viewport,
+    interaction: &Interaction,
+    lanes: &[LaneLayout],
+    state: &mut UiState,
+) {
+    state.needs_repaint = true;
+
+    if let Some(hit) = interaction.hit {
+        if !state.selected_clips.contains(&hit.clip) {
+            state.select_only(hit.clip);
+        }
+        state.context = Some(ContextTarget::Clip {
+            clip: hit.clip,
+            track: hit.track,
+        });
+        return;
+    }
+
+    // The header column, if the click was left of the lanes and below the ruler.
+    if pos.x < viewport.origin_x
+        && pos.y >= rect.top() + theme::RULER_HEIGHT
+        && let Some(lane) = lanes
+            .iter()
+            .find(|l| pos.y >= l.rect.top() && pos.y <= l.rect.bottom())
+    {
+        state.selected_track = Some(lane.track);
+        state.context = Some(ContextTarget::TrackHeader { track: lane.track });
+        return;
+    }
+
+    state.context = Some(ContextTarget::Empty {
+        at: viewport.tick_of(pos.x.max(viewport.origin_x)),
+    });
+}
+
+fn begin_drag(hit: ClipHit, pos: Pos2, additive: bool, viewport: Viewport, state: &mut UiState) {
+    // Near an edge means trim; anywhere else means move. The handle is a fixed
+    // pixel width so it stays grabbable at every zoom level.
+    let mode = if pos.x - hit.rect.left() <= TRIM_HANDLE_PIXELS {
+        DragMode::TrimStart
+    } else if hit.rect.right() - pos.x <= TRIM_HANDLE_PIXELS {
+        DragMode::TrimEnd
+    } else {
+        DragMode::Move
+    };
+
+    state.drag = Some(DragState {
+        clip: hit.clip,
+        source_track: hit.track,
+        mode,
+        grab_offset: viewport.raw_tick_of(pos.x) - hit.range.start.ticks(),
+        original: hit.range,
+        preview: hit.range,
+        moved: false,
+        target_track: hit.track,
+        target_invalid: false,
+        snapped_to: None,
+    });
+
+    // Dragging an unselected clip selects it, so the inspector follows.
+    //
+    // Except when Ctrl is held: that press is the start of a Ctrl+click, and
+    // the release below toggles the clip. Selecting it here meant the toggle
+    // immediately removed it again — Ctrl+click could never add a second clip
+    // to the selection, it only ever cleared it.
+    if !additive && !state.selected_clips.contains(&hit.clip) {
+        state.select_only(hit.clip);
+    }
+    state.needs_repaint = true;
+}
+
+fn update_drag(
+    ui: &egui::Ui,
+    pos: Pos2,
+    viewport: Viewport,
+    lanes: &[LaneLayout],
+    editor: &Editor,
+    state: &mut UiState,
+) {
+    // Alt bypasses snapping for this drag — the standard way to place
+    // something deliberately between grid points.
+    let bypass_snap = ui.input(|i| i.modifiers.alt);
+    let tolerance = if state.snapping && !bypass_snap {
+        state.snap_tolerance()
+    } else {
+        TimelineTime::ZERO
+    };
+
+    let Some(sequence) = editor.project().active() else {
+        return;
+    };
+    let Some(drag) = state.drag.as_mut() else {
+        return;
+    };
+    drag.moved = true;
+
+    let targets = snap::collect_targets(sequence, editor.playhead(), &[drag.clip]);
+
+    match drag.mode {
+        DragMode::Move => {
+            let wanted =
+                TimelineTime::from_ticks((viewport.raw_tick_of(pos.x) - drag.grab_offset).max(0));
+            let duration = drag.original.duration();
+            let (start, hit) = snap::snap_move(wanted, duration, &targets, tolerance);
+
+            drag.preview = TimelineRange {
+                start,
+                end: start + duration,
+            };
+            drag.snapped_to = hit;
+
+            // Which lane is the pointer over?
+            if let Some(lane) = lanes
+                .iter()
+                .find(|l| pos.y >= l.rect.top() && pos.y <= l.rect.bottom())
+            {
+                drag.target_track = lane.track;
+                let source_kind = sequence.track_kind(drag.source_track);
+                drag.target_invalid = source_kind != Some(lane.kind);
+            }
+        }
+        DragMode::TrimStart => {
+            let wanted = TimelineTime::from_ticks(viewport.raw_tick_of(pos.x).max(0));
+            let (start, hit) = snap::snap(wanted, &targets, tolerance);
+            // Never let a trim invert the clip; leave at least one pixel.
+            let limit = drag.original.end - TimelineTime::from_ticks(viewport.ticks_per_pixel);
+            drag.preview = TimelineRange {
+                start: start.min(limit),
+                end: drag.original.end,
+            };
+            drag.snapped_to = hit;
+        }
+        DragMode::TrimEnd => {
+            let wanted = TimelineTime::from_ticks(viewport.raw_tick_of(pos.x).max(0));
+            let (end, hit) = snap::snap(wanted, &targets, tolerance);
+            let limit = drag.original.start + TimelineTime::from_ticks(viewport.ticks_per_pixel);
+            drag.preview = TimelineRange {
+                start: drag.original.start,
+                end: end.max(limit),
+            };
+            drag.snapped_to = hit;
+        }
+    }
+
+    state.needs_repaint = true;
+}
+
+/// Turn the finished drag into exactly one command (§11).
+fn commit_drag(drag: DragState, editor: &mut Editor, state: &mut UiState) {
+    // A drag that changed nothing must not create an undo entry.
+    if drag.preview == drag.original && drag.target_track == drag.source_track {
+        return;
+    }
+
+    let result = match drag.mode {
+        DragMode::Move => editor.move_clip(
+            drag.source_track,
+            drag.target_track,
+            drag.clip,
+            drag.preview.start,
+        ),
+        DragMode::TrimStart => editor.trim_clip(
+            drag.source_track,
+            drag.clip,
+            TrimEdge::Start,
+            drag.preview.start,
+        ),
+        DragMode::TrimEnd => editor.trim_clip(
+            drag.source_track,
+            drag.clip,
+            TrimEdge::End,
+            drag.preview.end,
+        ),
+    };
+
+    if let Err(err) = result {
+        // The clip stays where it was; say why rather than silently snapping
+        // back, which reads as the drag having been ignored.
+        state.error(err.to_string());
+    }
+}
+
+// ---- drawing -------------------------------------------------------------
+
+fn draw_ruler(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    state: &UiState,
+    lane_width: f32,
+) {
+    let ruler = Rect::from_min_size(rect.min, vec2(rect.width(), theme::RULER_HEIGHT));
+    painter.rect_filled(ruler, 0, theme::TRACK_HEADER);
+
+    // Pick the finest label interval that still leaves ~70 px between labels.
+    // Without this the ruler becomes an unreadable smear when zoomed out.
+    const CANDIDATES: [i64; 12] = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+    let px_per_second = state.pixels_per_second();
+    let step_seconds = CANDIDATES
+        .iter()
+        .copied()
+        .find(|&s| s as f32 * px_per_second >= 70.0)
+        .unwrap_or(3600);
+
+    let step_ticks = TimelineTime::from_seconds(step_seconds).ticks();
+    let span = (lane_width as i64).saturating_mul(viewport.ticks_per_pixel);
+    let last = viewport.scroll_ticks.saturating_add(span);
+    let mut ticks = (viewport.scroll_ticks / step_ticks) * step_ticks;
+
+    while ticks <= last {
+        let t = TimelineTime::from_ticks(ticks);
+        let x = viewport.x_of(t);
+        if x >= viewport.origin_x - 1.0 {
+            painter.line_segment(
+                [
+                    Pos2::new(x, ruler.bottom() - 6.0),
+                    Pos2::new(x, ruler.bottom()),
+                ],
+                Stroke::new(1.0, theme::RULER_TEXT),
+            );
+            painter.text(
+                Pos2::new(x + 4.0, ruler.top() + 4.0),
+                Align2::LEFT_TOP,
+                t.format_timecode(),
+                FontId::monospace(11.0),
+                theme::RULER_TEXT,
+            );
+            painter.line_segment(
+                [Pos2::new(x, ruler.bottom()), Pos2::new(x, rect.bottom())],
+                Stroke::new(1.0, theme::GRID_LINE),
+            );
+        }
+        match ticks.checked_add(step_ticks) {
+            Some(next) => ticks = next,
+            None => break,
+        }
+    }
+
+    // Zoom readout, so the scale is never a mystery.
+    painter.text(
+        Pos2::new(rect.left() + 8.0, ruler.center().y),
+        Align2::LEFT_CENTER,
+        format!("{px_per_second:.0} px/s"),
+        FontId::monospace(11.0),
+        theme::DISABLED,
+    );
+}
+
+#[allow(clippy::too_many_arguments)] // a canvas draw genuinely needs all of it
+fn draw_lanes(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    state: &UiState,
+    project: &Project,
+    sequence: &Sequence,
+    lane_width: f32,
+    interaction: &mut Interaction,
+) -> Vec<LaneLayout> {
+    let visible = viewport.visible_range(lane_width);
+    let mut lanes = Vec::with_capacity(sequence.track_count());
+    let mut y = rect.top() + theme::RULER_HEIGHT + theme::TRACK_GAP;
+
+    // Video tracks top-down in reverse index order: index 0 is the bottom
+    // compositing layer (§22), and editors conventionally show that layer
+    // nearest the audio tracks.
+    for (row, track) in sequence.video_tracks.iter().enumerate().rev() {
+        let lane = Rect::from_min_size(
+            Pos2::new(rect.left(), y),
+            vec2(rect.width(), theme::TRACK_HEIGHT),
+        );
+        draw_lane_background(painter, lane, viewport, row);
+        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+
+        for clip in track.clips_in_range(visible) {
+            let label = project
+                .media_asset(clip.media_id)
+                .map_or("(missing media)", |m| m.file_name.as_str());
+            draw_clip(
+                painter,
+                lane,
+                viewport,
+                ClipVisual {
+                    range: clip.timeline,
+                    label,
+                    selected: state.selected_clips.contains(&clip.id),
+                    track_enabled: track.enabled,
+                    dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
+                    body: theme::VIDEO_CLIP,
+                    top: theme::VIDEO_CLIP_TOP,
+                },
+                clip.id,
+                track.id,
+                interaction,
+            );
+        }
+
+        lanes.push(LaneLayout {
+            track: track.id,
+            kind: TrackKind::Video,
+            rect: lane,
+        });
+        y += theme::TRACK_HEIGHT + theme::TRACK_GAP;
+    }
+
+    for (row, track) in sequence.audio_tracks.iter().enumerate() {
+        let lane = Rect::from_min_size(
+            Pos2::new(rect.left(), y),
+            vec2(rect.width(), theme::TRACK_HEIGHT),
+        );
+        draw_lane_background(painter, lane, viewport, row + 1);
+        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+
+        for clip in track.clips_in_range(visible) {
+            let label = project
+                .media_asset(clip.media_id)
+                .map_or("(missing media)", |m| m.file_name.as_str());
+            draw_clip(
+                painter,
+                lane,
+                viewport,
+                ClipVisual {
+                    range: clip.timeline,
+                    label,
+                    selected: state.selected_clips.contains(&clip.id),
+                    track_enabled: track.enabled,
+                    dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
+                    body: theme::AUDIO_CLIP,
+                    top: theme::AUDIO_CLIP_TOP,
+                },
+                clip.id,
+                track.id,
+                interaction,
+            );
+        }
+
+        lanes.push(LaneLayout {
+            track: track.id,
+            kind: TrackKind::Audio,
+            rect: lane,
+        });
+        y += theme::TRACK_HEIGHT + theme::TRACK_GAP;
+    }
+
+    lanes
+}
+
+fn draw_lane_background(painter: &egui::Painter, lane: Rect, viewport: Viewport, row: usize) {
+    let lanes = Rect::from_min_max(
+        Pos2::new(viewport.origin_x, lane.top()),
+        Pos2::new(lane.right(), lane.bottom()),
+    );
+    painter.rect_filled(
+        lanes,
+        0,
+        if row.is_multiple_of(2) {
+            theme::TRACK_LANE
+        } else {
+            theme::TRACK_LANE_ALT
+        },
+    );
+}
+
+fn draw_track_header(painter: &egui::Painter, lane: Rect, name: &str, enabled: bool, locked: bool) {
+    let header = Rect::from_min_size(lane.min, vec2(theme::TRACK_HEADER_WIDTH, lane.height()));
+    painter.rect_filled(header, 0, theme::TRACK_HEADER);
+    painter.line_segment(
+        [header.right_top(), header.right_bottom()],
+        Stroke::new(1.0, theme::GRID_LINE),
+    );
+
+    painter.text(
+        Pos2::new(header.left() + 10.0, header.center().y - 7.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(13.0),
+        if enabled {
+            theme::CLIP_TEXT
+        } else {
+            theme::DISABLED
+        },
+    );
+
+    let mut badges: Vec<&str> = Vec::new();
+    if !enabled {
+        badges.push("hidden");
+    }
+    if locked {
+        badges.push("locked");
+    }
+    if !badges.is_empty() {
+        painter.text(
+            Pos2::new(header.left() + 10.0, header.center().y + 10.0),
+            Align2::LEFT_CENTER,
+            badges.join(" · "),
+            FontId::proportional(10.0),
+            theme::DISABLED,
+        );
+    }
+}
+
+struct ClipVisual<'a> {
+    range: TimelineRange,
+    label: &'a str,
+    selected: bool,
+    track_enabled: bool,
+    dragging: bool,
+    body: Color32,
+    top: Color32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_clip(
+    painter: &egui::Painter,
+    lane: Rect,
+    viewport: Viewport,
+    visual: ClipVisual<'_>,
+    id: ClipId,
+    track: TrackId,
+    interaction: &mut Interaction,
+) {
+    let x0 = viewport.x_of(visual.range.start).max(viewport.origin_x);
+    let x1 = viewport.x_of(visual.range.end).min(lane.right());
+    if x1 <= x0 {
+        return;
+    }
+
+    let clip_rect = Rect::from_min_max(
+        Pos2::new(x0, lane.top() + 3.0),
+        Pos2::new(x1, lane.bottom() - 3.0),
+    );
+
+    // Hit-test here, where the rect exists. Acted on after the draw pass
+    // releases its borrow of the project.
+    if let Some(pos) = interaction.pointer
+        && clip_rect.contains(pos)
+    {
+        interaction.hit = Some(ClipHit {
+            clip: id,
+            track,
+            rect: clip_rect,
+            range: visual.range,
+        });
+    }
+
+    let (body, top) = if visual.track_enabled {
+        (visual.body, visual.top)
+    } else {
+        (theme::DISABLED, theme::DISABLED)
+    };
+
+    // The clip being dragged is dimmed in place; the preview shows where it
+    // will land. Without the dimming there appear to be two copies of it.
+    let (body, top) = if visual.dragging {
+        (body.gamma_multiply(0.35), top.gamma_multiply(0.35))
+    } else {
+        (body, top)
+    };
+
+    painter.rect_filled(clip_rect, theme::CLIP_CORNER_RADIUS, body);
+
+    // A brighter cap along the top edge: at a glance it separates stacked clips
+    // far better than a border does.
+    let cap = Rect::from_min_max(
+        clip_rect.min,
+        Pos2::new(clip_rect.right(), clip_rect.top() + 4.0),
+    );
+    painter.rect_filled(cap, theme::CLIP_CORNER_RADIUS, top);
+
+    if visual.selected {
+        painter.rect_stroke(
+            clip_rect,
+            theme::CLIP_CORNER_RADIUS,
+            Stroke::new(2.0, theme::SELECTION),
+            StrokeKind::Inside,
+        );
+        draw_trim_handles(painter, clip_rect);
+    }
+
+    // Only label a clip wide enough to read it; below that the text is noise.
+    if clip_rect.width() > 46.0 {
+        let text_painter = painter.with_clip_rect(clip_rect.shrink(4.0));
+        text_painter.text(
+            Pos2::new(clip_rect.left() + 7.0, clip_rect.center().y + 2.0),
+            Align2::LEFT_CENTER,
+            visual.label,
+            FontId::proportional(12.0),
+            theme::CLIP_TEXT,
+        );
+    }
+}
+
+/// Grab bars on a selected clip's edges, so trimming is discoverable rather
+/// than something the user has to already know about.
+fn draw_trim_handles(painter: &egui::Painter, clip_rect: Rect) {
+    if clip_rect.width() < TRIM_HANDLE_PIXELS * 3.0 {
+        return;
+    }
+    for x in [clip_rect.left(), clip_rect.right() - TRIM_HANDLE_PIXELS] {
+        let handle = Rect::from_min_size(
+            Pos2::new(x, clip_rect.top()),
+            vec2(TRIM_HANDLE_PIXELS, clip_rect.height()),
+        );
+        painter.rect_filled(handle, theme::CLIP_CORNER_RADIUS, theme::SELECTION);
+    }
+}
+
+/// Ghost of the dragged clip at its would-be position, plus the snap guide.
+fn draw_drag_preview(
+    painter: &egui::Painter,
+    viewport: Viewport,
+    state: &UiState,
+    lanes: &[LaneLayout],
+) {
+    let Some(drag) = state.drag.as_ref() else {
+        return;
+    };
+    let Some(lane) = lanes.iter().find(|l| l.track == drag.target_track) else {
+        return;
+    };
+
+    let x0 = viewport.x_of(drag.preview.start);
+    let x1 = viewport.x_of(drag.preview.end);
+    let ghost = Rect::from_min_max(
+        Pos2::new(x0.max(viewport.origin_x), lane.rect.top() + 3.0),
+        Pos2::new(x1.min(lane.rect.right()), lane.rect.bottom() - 3.0),
+    );
+
+    if ghost.width() > 0.0 {
+        // Red when the drop would be refused — a video clip over an audio
+        // track. Better to show it before the release than to error after.
+        let tint = if drag.target_invalid {
+            theme::ERROR_TEXT
+        } else {
+            theme::SELECTION
+        };
+        painter.rect_filled(ghost, theme::CLIP_CORNER_RADIUS, tint.gamma_multiply(0.25));
+        painter.rect_stroke(
+            ghost,
+            theme::CLIP_CORNER_RADIUS,
+            Stroke::new(2.0, tint),
+            StrokeKind::Inside,
+        );
+    }
+
+    // A snap the user cannot see reads as the drag being buggy.
+    if let Some(target) = drag.snapped_to {
+        let x = viewport.x_of(target.time);
+        if x >= viewport.origin_x {
+            painter.line_segment(
+                [
+                    Pos2::new(x, lane.rect.top() - 40.0),
+                    Pos2::new(x, lane.rect.bottom() + 40.0),
+                ],
+                Stroke::new(1.0, theme::SELECTION),
+            );
+        }
+    }
+}
+
+fn draw_playhead(painter: &egui::Painter, rect: Rect, viewport: Viewport, playhead: TimelineTime) {
+    let x = viewport.x_of(playhead);
+    if x < viewport.origin_x || x > rect.right() {
+        return;
+    }
+
+    painter.line_segment(
+        [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+        Stroke::new(1.5, theme::PLAYHEAD),
+    );
+
+    // Grab handle at the top, so the playhead reads as draggable.
+    let handle = Rect::from_center_size(
+        Pos2::new(x, rect.top() + theme::RULER_HEIGHT / 2.0),
+        vec2(11.0, 11.0),
+    );
+    painter.rect_filled(handle, 2, theme::PLAYHEAD);
+}

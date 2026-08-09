@@ -1,0 +1,21 @@
+[package]
+name = "bettercut-cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-foundation.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Cache directories are named after a MediaId, so recovering the id from a
+# directory name means parsing a UUID.
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "bettercut-editor-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-foundation.workspace = true
+bettercut-timeline.workspace = true
+bettercut-media.workspace = true
+bettercut-project-format.workspace = true
+serde.workspace = true
+# The §38.2 journal stores one serialized command per line.
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "bettercut-playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-foundation.workspace = true
+bettercut-timeline.workspace = true
+bettercut-media.workspace = true
+bettercut-audio.workspace = true
+bettercut-project-format.workspace = true
+bettercut-jobs.workspace = true
+bettercut-cache.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

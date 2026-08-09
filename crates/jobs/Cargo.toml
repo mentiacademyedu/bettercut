@@ -1,0 +1,21 @@
+[package]
+name = "bettercut-jobs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing.workspace = true
+
+# §15.1 requires background workers to run below normal OS priority. That is one
+# `SetThreadPriority` call on Windows and one `nice` on Unix; pulling in a
+# platform crate for two functions is not worth it (§74), so the calls are
+# declared directly and the crate opts out of the workspace's `unsafe` ban.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

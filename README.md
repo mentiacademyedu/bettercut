@@ -102,6 +102,16 @@ cargo fmt --all
 The FFmpeg DLLs are copied next to the built binaries automatically, so nothing
 needs to be on `PATH`.
 
+The fetch script is the only setup step: it downloads the pinned LGPL build,
+checks its SHA-256, and refuses builds carrying `--enable-gpl`, `--enable-libx264`,
+`--enable-libx265`, or `--enable-nonfree` (§0.1). The SDK itself is not in the
+repository; `vendor/ffmpeg-binding.rs` is, deliberately — see [ADR 002](docs/adr/002-ffmpeg-backend.md).
+
+**Windows only for now.** The fetch script is PowerShell and pulls a win64
+build, and the committed binding was generated for that target. Nothing in the
+code is Windows-specific except `crates/jobs`' thread-priority call, which
+already has a Unix branch.
+
 ---
 
 ## Layout
@@ -122,7 +132,8 @@ crates/
   ui/                  egui panels and the timeline canvas (§53, §58)
 docs/adr/              architecture decisions
 spike/frame-transport/ Milestone 0 spike — throwaway, excluded from the workspace
-vendor/                pinned FFmpeg (gitignored; see docs/fetch-ffmpeg.ps1)
+vendor/ffmpeg/         pinned FFmpeg SDK (~250 MB, not committed — fetch it)
+vendor/ffmpeg-binding.rs   generated FFI, committed on purpose (see ADR 002)
 ```
 
 Dependencies point one way only (§86). The `timeline` crate does not know egui
@@ -176,5 +187,24 @@ count at startup and picks the §43 mode, the §15 job limit, the §15.1 FFmpeg
 thread cap, and the §18 cache size from it. See
 [docs/reference-machine.md](docs/reference-machine.md) for the full consequences
 and the benchmark runbook for when hardware turns up.
-#   b e t t e r c u t  
- 
+
+---
+
+## Licensing
+
+The project's own code is `MIT OR Apache-2.0` (declared in `Cargo.toml`). **The
+`LICENSE-MIT` and `LICENSE-APACHE` files are not in the repository yet** — the
+manifest currently promises terms the repo does not ship.
+
+FFmpeg is linked **dynamically** against an **LGPL** build, which is what keeps
+that obligation to "ship the DLLs and allow replacement" rather than requiring
+this project to be GPL. §74 forbids linking x264 or any GPL component, and
+`docs/fetch-ffmpeg.ps1` enforces it by refusing any build whose configure line
+contains `--enable-gpl`, `--enable-libx264`, `--enable-libx265`, or
+`--enable-nonfree`.
+
+**§0.1 is unresolved and blocks Milestone 6.** Choosing an H.264/H.265 *encoder*
+is a licensing decision, not a technical one, and the guide marks it as needing
+legal review before export is built. Codec **patent** licensing is a separate
+question from software licensing and is also open. Nothing in this repository
+should be read as legal advice or as a resolution of either.

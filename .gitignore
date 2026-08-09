@@ -1,0 +1,42 @@
+# Build output.
+/target
+# The Milestone 0 spike is outside the workspace, so it has its own target dir.
+/spike/*/target
+
+# The FFmpeg SDK: ~250 MB of headers, import libraries and DLLs, fetched by
+# `docs/fetch-ffmpeg.ps1` against a pinned hash. Never committed.
+/vendor/*
+
+# ...with one deliberate exception. `vendor/ffmpeg-binding.rs` is generated
+# code, and generated code normally does not belong in a repository — but this
+# file MUST be committed:
+#
+#   * `.cargo/config.toml` points `FFMPEG_BINDING_PATH` at it, and without it
+#     `rusty_ffmpeg`'s build script falls back to bindgen and fails with
+#     "Unable to find libclang".
+#   * Avoiding that libclang dependency is the entire reason ADR 002 chose this
+#     backend. Regenerating the file needs the LLVM toolchain that decision
+#     exists to keep off contributors' machines.
+#
+# So a fresh clone builds after `fetch-ffmpeg.ps1` and nothing else. Deleting
+# this line would break that, silently, for everyone but the person who has
+# LLVM already installed.
+!/vendor/ffmpeg-binding.rs
+
+# Runtime state. `.cache/` is the proxy and thumbnail store (§67), `recovery/`
+# holds crash-recovery journals (§39), and `*.vproj.tmp` is the scratch file an
+# atomic save writes before renaming (§38.1). All three are regenerated, and
+# none of them are the user's work.
+.cache/
+recovery/
+*.vproj.tmp
+
+# Editor and OS noise.
+/.vscode/
+/.idea/
+*.iml
+*.swp
+*~
+*.rs.bk
+.DS_Store
+Thumbs.db

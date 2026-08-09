@@ -1,0 +1,26 @@
+[package]
+name = "bettercut-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-editor-core.workspace = true
+bettercut-renderer.workspace = true
+bettercut-playback.workspace = true
+bettercut-audio.workspace = true
+bettercut-jobs.workspace = true
+bettercut-cache.workspace = true
+egui.workspace = true
+eframe.workspace = true
+rfd = "0.15"
+tracing.workspace = true
+
+[dev-dependencies]
+bettercut-media.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

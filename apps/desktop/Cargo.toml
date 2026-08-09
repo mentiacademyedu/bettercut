@@ -1,0 +1,23 @@
+[package]
+name = "bettercut-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bettercut"
+path = "src/main.rs"
+
+[dependencies]
+bettercut-editor-core.workspace = true
+bettercut-ui.workspace = true
+bettercut-cache.workspace = true
+eframe.workspace = true
+egui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

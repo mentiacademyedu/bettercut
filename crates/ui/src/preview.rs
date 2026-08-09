@@ -1,0 +1,306 @@
+//! The preview: playback clock, compositor, and the texture egui paints.
+//!
+//! This is where §4.1's central claim finally pays off. The compositor renders
+//! into a `wgpu::Texture`; `egui-wgpu` registers it as a `TextureId`; the
+//! preview panel paints it like any other image. No frame copy, no IPC, no
+//! overlay window — and panels and dialogs can overlap it freely.
+//!
+//! §20a.1 runs the loop: the audio device advances the clock, the clock picks
+//! the playhead, and the picture follows.
+
+use bettercut_audio::PlaybackClock;
+use bettercut_editor_core::Editor;
+use bettercut_editor_core::foundation::TimelineTime;
+use bettercut_playback::{PlaybackEngine, SyncDecision, plan_frame};
+use bettercut_renderer::{Compositor, Layer, PreviewQuality, RenderConfig};
+use eframe::egui_wgpu::RenderState;
+
+/// Everything needed to show moving pictures.
+pub struct Preview {
+    compositor: Compositor,
+    texture_id: egui::TextureId,
+    render_state: RenderState,
+
+    engine: PlaybackEngine,
+    clock: PlaybackClock,
+    sink: Option<bettercut_audio::AudioSink>,
+
+    quality: PreviewQuality,
+
+    /// Last position actually composited, so a still frame is not re-rendered
+    /// sixty times a second while paused (§81's idle target).
+    last_rendered: Option<TimelineTime>,
+    /// Consecutive dropped frames, feeding §17's quality reduction.
+    consecutive_drops: u32,
+    /// Consecutive frames presented on time, feeding §17's recovery.
+    consecutive_on_time: u32,
+    /// When quality last changed. §17: *"do not change quality more than once
+    /// per second, or the preview will visibly oscillate."*
+    last_quality_change: std::time::Instant,
+    dropped_total: u64,
+    has_content: bool,
+}
+
+impl Preview {
+    pub fn new(
+        render_state: &RenderState,
+        cache_bytes: usize,
+        decoder_threads: u32,
+    ) -> Result<Self, bettercut_renderer::RenderError> {
+        let resolution =
+            PreviewQuality::default().apply(bettercut_editor_core::timeline::Resolution::HD_1080);
+        let compositor = Compositor::new(
+            render_state.device.clone(),
+            render_state.queue.clone(),
+            RenderConfig::preview(resolution),
+        )?;
+
+        // `present_view`, not `target_view`: egui applies its own gamma decode
+        // and expects raw sRGB bytes, so an sRGB-aware view would be
+        // linearized twice and the picture would come out very dark.
+        let texture_id = render_state.renderer.write().register_native_texture(
+            &render_state.device,
+            compositor.present_view(),
+            bettercut_renderer::wgpu::FilterMode::Linear,
+        );
+
+        let (clock, sink) = PlaybackClock::open();
+        tracing::info!(audio = %clock.describe(), "playback ready");
+
+        Ok(Self {
+            compositor,
+            texture_id,
+            render_state: render_state.clone(),
+            engine: PlaybackEngine::new(cache_bytes, decoder_threads),
+            clock,
+            sink,
+            quality: PreviewQuality::default(),
+            last_rendered: None,
+            consecutive_drops: 0,
+            consecutive_on_time: 0,
+            last_quality_change: std::time::Instant::now(),
+            dropped_total: 0,
+            has_content: false,
+        })
+    }
+
+    pub fn texture_id(&self) -> egui::TextureId {
+        self.texture_id
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.clock.is_playing()
+    }
+
+    pub fn has_content(&self) -> bool {
+        self.has_content
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_total
+    }
+
+    pub fn underruns(&self) -> u32 {
+        self.clock.clock().underruns()
+    }
+
+    pub fn audio_description(&self) -> String {
+        self.clock.describe()
+    }
+
+    /// Start or stop playback (§55 `playback.play` / `playback.pause`).
+    pub fn set_playing(&mut self, editor: &Editor, playing: bool) {
+        if playing {
+            // Start the clock and the audio fill from wherever the playhead is,
+            // or the sound would resume from where it last stopped.
+            self.clock.seek_to(editor.playhead());
+            self.engine.reset_audio(editor.playhead());
+        }
+        self.clock.set_playing(playing);
+    }
+
+    /// Move the clock to follow a user-driven seek.
+    pub fn seek_to(&mut self, position: TimelineTime) {
+        self.clock.seek_to(position);
+        self.engine.reset_audio(position);
+        // Force a redraw: the picture must change even though we are paused.
+        self.last_rendered = None;
+    }
+
+    /// One frame of playback work. Returns whether a repaint is needed.
+    pub fn update(&mut self, editor: &mut Editor) -> bool {
+        self.clock.tick();
+
+        let playing = self.clock.is_playing();
+        if playing {
+            self.pump_audio(editor);
+
+            // §20a.1: the picture follows the clock, never the other way round.
+            let position = self.clock.position();
+            editor.set_playhead(position);
+
+            if let Some(end) = editor.active_sequence().map(|s| s.duration())
+                && position >= end
+            {
+                self.clock.set_playing(false);
+            }
+        }
+
+        let position = editor.playhead();
+        let needs_render = self.last_rendered != Some(position);
+        if needs_render {
+            self.render(editor, position);
+        }
+
+        playing || needs_render
+    }
+
+    fn pump_audio(&mut self, editor: &Editor) {
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        let Some(sequence) = editor.active_sequence() else {
+            return;
+        };
+        self.engine.fill_audio(editor.project(), sequence, sink);
+    }
+
+    fn render(&mut self, editor: &Editor, position: TimelineTime) {
+        let Some(sequence) = editor.active_sequence() else {
+            return;
+        };
+
+        // Keep the preview's aspect matched to the sequence, scaled by §17's
+        // quality setting.
+        let wanted = self.quality.apply(sequence.resolution);
+        match self.compositor.set_resolution(wanted) {
+            Ok(true) => self.reregister_texture(),
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(%err, "could not resize the preview");
+                return;
+            }
+        }
+
+        let resolved = self
+            .engine
+            .resolve_video(editor.project(), sequence, position);
+        self.has_content = !resolved.is_empty();
+
+        // §20a.5 / §47a.4: decide what to do with what we got. With a single
+        // still frame there is nothing to drop, but the accounting is what
+        // drives §17's quality reduction once playback is under load.
+        if self.clock.is_playing() {
+            let interval = TimelineTime::from_ticks(sequence.ticks_per_frame());
+            let clock_time = self.clock.position();
+            let frame_time = resolved.first().map_or(clock_time, |_| position);
+
+            let plan = plan_frame(frame_time, clock_time, interval, self.consecutive_drops);
+            match plan.decision {
+                SyncDecision::Drop => {
+                    self.consecutive_drops += 1;
+                    self.consecutive_on_time = 0;
+                    self.dropped_total += 1;
+                }
+                SyncDecision::Present | SyncDecision::Hold => {
+                    self.consecutive_drops = 0;
+                    self.consecutive_on_time += 1;
+                }
+            }
+            if plan.drift_is_alarming {
+                tracing::warn!(
+                    drift_ticks = plan.drift.ticks(),
+                    "sustained A/V drift beyond the §20a.5 threshold"
+                );
+            }
+            if plan.should_reduce_quality {
+                self.reduce_quality();
+            } else if self.consecutive_on_time > 120 {
+                // Two seconds of clean playback: try climbing back up (§17).
+                self.raise_quality();
+            }
+        }
+
+        let layers: Vec<Layer<'_>> = resolved
+            .iter()
+            .map(|resolved| Layer {
+                frame: &resolved.frame,
+                transform: resolved.transform,
+                opacity: resolved.opacity,
+            })
+            .collect();
+
+        if let Err(err) = self.compositor.composite(&layers) {
+            tracing::warn!(%err, "compositing failed");
+            return;
+        }
+        self.last_rendered = Some(position);
+    }
+
+    /// §17: step down a quality level, at most one step at a time.
+    fn reduce_quality(&mut self) {
+        let next = match self.quality {
+            PreviewQuality::Full => PreviewQuality::Half,
+            PreviewQuality::Half | PreviewQuality::Auto => PreviewQuality::Quarter,
+            PreviewQuality::Quarter => return, // already at the floor
+        };
+        self.change_quality(next, "reducing");
+    }
+
+    /// §17: climb back up once playback has been comfortable for a while.
+    ///
+    /// Without this the preview only ever gets worse: one rough patch early in
+    /// a session would leave it at quarter resolution for the rest of it.
+    fn raise_quality(&mut self) {
+        let next = match self.quality {
+            PreviewQuality::Quarter | PreviewQuality::Auto => PreviewQuality::Half,
+            PreviewQuality::Half => PreviewQuality::Full,
+            PreviewQuality::Full => return, // already at the ceiling
+        };
+        self.change_quality(next, "raising");
+    }
+
+    /// Apply a quality change, respecting §17's hysteresis.
+    ///
+    /// > Add hysteresis - do not change quality more than once per second, or
+    /// > the preview will visibly oscillate.
+    ///
+    /// Without it, a machine sitting right on the edge flips between levels
+    /// every few frames, which looks far worse than simply staying low.
+    fn change_quality(&mut self, next: PreviewQuality, direction: &str) {
+        if self.last_quality_change.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        tracing::info!(from = ?self.quality, to = ?next, "{direction} preview quality");
+        self.quality = next;
+        self.last_quality_change = std::time::Instant::now();
+        self.consecutive_drops = 0;
+        self.consecutive_on_time = 0;
+    }
+
+    /// Point playback at the proxy cache (§14).
+    pub fn set_proxy_source(&mut self, source: bettercut_playback::ProxySource) {
+        self.engine.set_proxy_source(Some(source));
+        self.last_rendered = None;
+    }
+
+    /// A proxy finished encoding: reopen this asset so preview picks it up.
+    pub fn proxy_ready(&mut self, media: bettercut_editor_core::foundation::MediaId) {
+        self.engine.invalidate(media);
+        self.last_rendered = None;
+    }
+
+    /// The texture object changed, so egui's registration has to be updated or
+    /// the panel keeps painting the old one.
+    fn reregister_texture(&mut self) {
+        self.render_state
+            .renderer
+            .write()
+            .update_egui_texture_from_wgpu_texture(
+                &self.render_state.device,
+                self.compositor.present_view(),
+                bettercut_renderer::wgpu::FilterMode::Linear,
+                self.texture_id,
+            );
+    }
+}
