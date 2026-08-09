@@ -204,7 +204,7 @@ Every number in §81 is judged on the §52.1 **reference machine**:
 Intel Core i5-8250U (4C/8T) · Intel UHD Graphics 620 · 8 GB · 256 GB SATA SSD
 ```
 
-A 2018 office laptop — the machine this product exists to serve.
+A 2019 office laptop — the machine this product exists to serve.
 
 **No such machine is currently available to benchmark on at the moment**, so §81's numbers are
 design targets, not measurements. Nothing here should be described as "meets
