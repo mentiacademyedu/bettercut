@@ -176,7 +176,7 @@ Intel Core i5-8250U (4C/8T) · Intel UHD Graphics 620 · 8 GB · 256 GB SATA SSD
 
 A 2018 office laptop — the machine this product exists to serve.
 
-**No such machine is currently available to benchmark on**, so §81's numbers are
+**No such machine is currently available to benchmark on at the moment**, so §81's numbers are
 design targets, not measurements. Nothing here should be described as "meets
 §81" until it has been measured there; §52.1 is explicit that benchmarks from a
 development machine do not count, and this one (Ryzen 5 5600X / RTX 4060) has no
