@@ -15,8 +15,8 @@ pub mod ops;
 pub mod recovery;
 
 pub use command::{
-    ClipPayload, Command, CommandGroup, EditorCommand, SettingChange, TrackFlag, TrackKindRepr,
-    TrackPayload, TrimEdge,
+    ClipPayload, Command, CommandGroup, EditorCommand, ResolutionRepr, SettingChange, TrackFlag,
+    TrackKindRepr, TrackPayload, TrimEdge,
 };
 pub use editor::Editor;
 pub use error::EditorError;

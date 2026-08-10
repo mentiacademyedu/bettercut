@@ -10,10 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-use bettercut_foundation::{ClipId, SequenceId, TimelineTime, TrackId};
+use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId};
 use bettercut_media::{FfmpegProber, MediaAsset, MediaProber};
 use bettercut_project_format::{PROJECT_EXTENSION, Project};
-use bettercut_timeline::{Sequence, TrackKind};
+use bettercut_timeline::{Resolution, Sequence, TrackKind};
 
 use crate::command::{ClipPayload, Command, CommandGroup, EditorCommand, TrackFlag, TrimEdge};
 use crate::error::EditorError;
@@ -311,6 +311,76 @@ impl Editor {
         id
     }
 
+    /// Match an empty sequence to the first video imported into it (§8).
+    ///
+    /// A new project is 1080p30 because it has to be *something*, but that is a
+    /// guess. Importing 25 fps footage into a 30 fps sequence makes every frame
+    /// land between grid points, which shows as judder — and the user has no
+    /// reason to suspect a "sequence format" is the cause.
+    ///
+    /// Only for an empty sequence, and only from a video with a usable rate:
+    /// once clips exist, the format is a decision the user has effectively made
+    /// and changing it under them would move where their cuts fall.
+    ///
+    /// Returns the command that was applied, if any, so the caller can say what
+    /// happened. Adopting silently would be its own surprise.
+    pub fn adopt_format_from(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+    ) -> Option<(Resolution, FrameRate)> {
+        let sequence = self.project.active()?;
+        if sequence.clip_count() > 0 {
+            return None;
+        }
+        let sequence_id = sequence.id;
+
+        let asset = self.project.media_asset(media)?;
+        if asset.kind != bettercut_media::MediaKind::Video {
+            return None;
+        }
+        let rate = asset.frame_rate?;
+        let resolution = Resolution::new(asset.width, asset.height);
+        if resolution.width == 0 || resolution.height == 0 {
+            return None;
+        }
+
+        // A rate the timebase cannot represent exactly is left alone rather
+        // than forced: §9 would rather keep an honest 30 fps grid than adopt a
+        // rate whose frame boundaries drift.
+        if bettercut_foundation::ticks_per_frame(rate).is_none() {
+            tracing::info!(%rate, "not adopting a frame rate the timebase cannot represent");
+            return None;
+        }
+
+        let current = (sequence.resolution, sequence.frame_rate);
+        if current == (resolution, rate) {
+            return None;
+        }
+
+        self.dispatch(Command::SetSequenceFormat {
+            sequence: sequence_id,
+            resolution: resolution.into(),
+            frame_rate: rate,
+        })
+        .ok()?;
+
+        Some((resolution, rate))
+    }
+
+    /// Set the active sequence's output format (§8, §36).
+    pub fn set_sequence_format(
+        &mut self,
+        resolution: Resolution,
+        frame_rate: FrameRate,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch(Command::SetSequenceFormat {
+            sequence,
+            resolution: resolution.into(),
+            frame_rate,
+        })
+    }
+
     // ---- persistence (§55 project.save) ----
 
     pub fn save(&mut self) -> Result<(), EditorError> {
@@ -407,6 +477,16 @@ impl Editor {
             Command::RenameProject { name } => Ok(Box::new(ops::RenameProject::new(name))),
 
             Command::ChangeSetting { change } => Ok(Box::new(ops::ChangeSetting::new(change))),
+
+            Command::SetSequenceFormat {
+                sequence,
+                resolution,
+                frame_rate,
+            } => Ok(Box::new(ops::SetSequenceFormat::new(
+                sequence,
+                resolution.into(),
+                frame_rate,
+            ))),
 
             Command::AddTrack {
                 sequence,

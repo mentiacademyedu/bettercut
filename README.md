@@ -46,6 +46,14 @@ Playback works: the preview shows composited video, audio plays through the
 device, and the **audio device is the master clock** (§20a.1) — the picture
 follows it, never a wall-clock timer.
 
+The sequence has a real format. Resolution and frame rate are set from the
+Inspector — 16:9, 9:16, 1:1 and 4K presets, and the nine frame rates §9's
+timebase divides exactly (23.976 through 120, NTSC rates included). Importing
+the first video into an empty sequence adopts its format automatically, so 25
+or 50 fps footage does not land on a 30 fps grid and judder. Changing the rate
+later **never moves a clip**: positions are absolute ticks, not frame numbers,
+so existing cuts keep their exact times rather than being silently re-snapped.
+
 Heavy footage gets a proxy. On import, anything §13 calls demanding — 4K or
 larger, HEVC/AV1/VP9, 10-bit, above 60 fps, or needing colour normalization — is
 re-encoded in the background to a small **all-intra** copy (§13.1), which is what
@@ -77,9 +85,9 @@ Two playback limits worth knowing before testing with your own footage:
   correctly tagged, and they trigger a proxy — but nothing converts them into
   the SDR working space (§21a.1), at upload or in the proxy encoder. HDR
   footage will look dark and flat. SDR footage is pixel-exact.
-* **One frame rate per project.** Nine rates are supported exactly by the
-  timebase (§9), but a new project is always 1080p30 and nothing exposes a
-  sequence-format control, so 25 or 50 fps footage plays onto a 30 fps grid.
+* **No custom sequence sizes in the UI.** The Inspector offers 16:9, 9:16, 1:1
+  and 4K presets; an arbitrary size round-trips through the project file but
+  cannot be typed in yet.
 
 ---
 

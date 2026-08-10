@@ -12,7 +12,7 @@
 //! "do not snapshot the entire project" hold at the same time: the journal
 //! records intent, and replaying intent reproduces the state.
 
-use bettercut_foundation::{ClipId, SequenceId, TimelineTime, TrackId};
+use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId};
 use bettercut_project_format::Project;
 use bettercut_timeline::{AudioClip, TrackKind, VideoClip};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,16 @@ pub enum Command {
     ChangeSetting {
         change: SettingChange,
     },
+    /// Change a sequence's output format (§8, §36).
+    ///
+    /// Both together, because they are one decision from the user's side —
+    /// "make this a 1080p50 project" — and applying them as two commands would
+    /// put two entries in the undo history for one choice.
+    SetSequenceFormat {
+        sequence: SequenceId,
+        resolution: ResolutionRepr,
+        frame_rate: FrameRate,
+    },
     AddTrack {
         sequence: SequenceId,
         kind: TrackKindRepr,
@@ -175,6 +185,32 @@ pub enum Command {
         /// entry twice yields two distinct, *reproducible* clips.
         new_id: ClipId,
     },
+}
+
+/// A sequence's pixel dimensions, as the wire form of `Resolution`.
+///
+/// `Resolution` itself is serializable, but commands are a stable format that
+/// the journal replays after a crash — going through a type declared here keeps
+/// the wire shape from changing whenever the timeline crate's type does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionRepr {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<bettercut_timeline::Resolution> for ResolutionRepr {
+    fn from(value: bettercut_timeline::Resolution) -> Self {
+        Self {
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+impl From<ResolutionRepr> for bettercut_timeline::Resolution {
+    fn from(value: ResolutionRepr) -> Self {
+        Self::new(value.width, value.height)
+    }
 }
 
 /// `TrackKind` lives in the timeline crate and is not serializable there

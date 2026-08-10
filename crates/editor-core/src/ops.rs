@@ -4,10 +4,12 @@
 //! name — and nothing else. §11: "Do not snapshot the entire project after
 //! every edit."
 
-use bettercut_foundation::{ClipId, MediaTime, SequenceId, TimelineTime, TrackId};
+use bettercut_foundation::{
+    ClipId, FrameRate, MediaTime, SequenceId, TimelineTime, TrackId, ticks_per_frame,
+};
 use bettercut_project_format::Project;
 use bettercut_timeline::{
-    AudioTrack, Clip, Sequence, SourceRange, TimelineRange, TrackKind, VideoTrack,
+    AudioTrack, Clip, Resolution, Sequence, SourceRange, TimelineRange, TrackKind, VideoTrack,
 };
 
 use crate::command::{ClipPayload, EditorCommand, SettingChange, TrackFlag, TrackPayload};
@@ -37,6 +39,15 @@ pub fn build_for_replay(
     Ok(match command {
         Command::RenameProject { name } => Box::new(RenameProject::new(name)),
         Command::ChangeSetting { change } => Box::new(ChangeSetting::new(change)),
+        Command::SetSequenceFormat {
+            sequence,
+            resolution,
+            frame_rate,
+        } => Box::new(SetSequenceFormat::new(
+            sequence,
+            resolution.into(),
+            frame_rate,
+        )),
 
         Command::AddTrack {
             sequence,
@@ -187,6 +198,85 @@ impl EditorCommand for RenameProject {
 
     fn label(&self) -> String {
         "Rename Project".to_owned()
+    }
+}
+
+// --------------------------------------------------------------------------
+
+/// Set a sequence's resolution and frame rate (§8, §36).
+///
+/// # Clips do not move
+///
+/// Positions are absolute ticks (§9), not frame numbers, so changing the rate
+/// leaves every clip exactly where it was in time. What changes is which
+/// instants count as frame boundaries — a cut made at frame 30 of a 30 fps
+/// sequence lands between frames at 25 fps.
+///
+/// Nothing is re-snapped, deliberately. Snapping would move the user's cuts
+/// without being asked, and §9's whole point is that a tick is exact whether or
+/// not it falls on a frame line. Future edits snap to the new grid; existing
+/// ones are left alone.
+#[derive(Debug)]
+pub struct SetSequenceFormat {
+    sequence: SequenceId,
+    resolution: Resolution,
+    frame_rate: FrameRate,
+    previous: Option<(Resolution, FrameRate)>,
+}
+
+impl SetSequenceFormat {
+    pub fn new(sequence: SequenceId, resolution: Resolution, frame_rate: FrameRate) -> Self {
+        Self {
+            sequence,
+            resolution,
+            frame_rate,
+            previous: None,
+        }
+    }
+}
+
+impl EditorCommand for SetSequenceFormat {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        // Validate before touching anything: a rate the timebase cannot divide
+        // exactly would make every frame boundary in the sequence drift (§9).
+        if ticks_per_frame(self.frame_rate).is_none() {
+            return Err(EditorError::Timeline(
+                bettercut_timeline::TimelineError::UnrepresentableFrameRate {
+                    rate: self.frame_rate.to_string(),
+                },
+            ));
+        }
+        if self.resolution.width == 0 || self.resolution.height == 0 {
+            return Err(EditorError::Timeline(
+                bettercut_timeline::TimelineError::UnrepresentableFrameRate {
+                    rate: format!(
+                        "resolution {}x{} has a zero dimension",
+                        self.resolution.width, self.resolution.height
+                    ),
+                },
+            ));
+        }
+
+        let sequence = sequence_mut(project, self.sequence)?;
+        self.previous = Some((sequence.resolution, sequence.frame_rate));
+        sequence.resolution = self.resolution;
+        sequence.frame_rate = self.frame_rate;
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let (resolution, frame_rate) = self.previous.take().ok_or(EditorError::NotExecuted)?;
+        let sequence = sequence_mut(project, self.sequence)?;
+        sequence.resolution = resolution;
+        sequence.frame_rate = frame_rate;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "Set Format to {}x{} @ {}",
+            self.resolution.width, self.resolution.height, self.frame_rate
+        )
     }
 }
 

@@ -6,7 +6,7 @@
 use bettercut_editor_core::foundation::{FrameRate, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_editor_core::project_format::PerformanceMode;
-use bettercut_editor_core::timeline::{SourceRange, VideoClip};
+use bettercut_editor_core::timeline::{Resolution, SourceRange, VideoClip};
 use bettercut_editor_core::{ClipPayload, Editor, SettingChange, TrackFlag};
 
 use crate::state::UiState;
@@ -337,24 +337,35 @@ pub fn inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
 }
 
 fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
-    let Some(sequence) = editor.active_sequence() else {
+    // Copy what the header needs, so the immutable borrow ends before the
+    // format controls — which dispatch commands — need `editor` mutably.
+    let Some((name, ticks, duration, clips, resolution, rate)) =
+        editor.active_sequence().map(|s| {
+            (
+                s.name.clone(),
+                s.ticks_per_frame(),
+                s.duration(),
+                s.clip_count(),
+                s.resolution,
+                s.frame_rate,
+            )
+        })
+    else {
         ui.label("No sequence");
         return;
     };
 
     ui.label(egui::RichText::new("Sequence").strong());
-    ui.monospace(format!("name      {}", sequence.name));
-    ui.monospace(format!(
-        "size      {}×{}",
-        sequence.resolution.width, sequence.resolution.height
-    ));
-    ui.monospace(format!("rate      {} fps", sequence.frame_rate));
-    ui.monospace(format!("frame     {} ticks", sequence.ticks_per_frame()));
-    ui.monospace(format!(
-        "duration  {}",
-        sequence.duration().format_timecode()
-    ));
-    ui.monospace(format!("clips     {}", sequence.clip_count()));
+    ui.monospace(format!("name      {name}"));
+    ui.monospace(format!("frame     {ticks} ticks"));
+    ui.monospace(format!("duration  {}", duration.format_timecode()));
+    ui.monospace(format!("clips     {clips}"));
+
+    sequence_format(ui, editor, state, resolution, rate);
+
+    let Some(sequence) = editor.active_sequence() else {
+        return;
+    };
 
     ui.separator();
     ui.label(egui::RichText::new("Selection").strong());
@@ -554,6 +565,110 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     });
 }
 
+/// Resolution and frame rate for the active sequence (§8, §36).
+///
+/// Both go through one command, because "make this a 1080p50 project" is one
+/// decision and should be one undo step.
+fn sequence_format(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    current: Resolution,
+    rate: FrameRate,
+) {
+    let mut wanted = (current, rate);
+
+    ui.horizontal(|ui| {
+        ui.label("size");
+        egui::ComboBox::from_id_salt("sequence_resolution")
+            .selected_text(format!("{}×{}", current.width, current.height))
+            .show_ui(ui, |ui| {
+                // §36's preset shapes plus the two common landscape sizes. A
+                // custom size still round-trips through the project file; this
+                // is a shortcut, not a restriction.
+                let presets = [
+                    (Resolution::HD_1080, "1920×1080", "Landscape 16:9"),
+                    (Resolution::HD_720, "1280×720", "Landscape 16:9, smaller"),
+                    (
+                        Resolution::VERTICAL_1080,
+                        "1080×1920",
+                        "Vertical 9:16 — Shorts, TikTok, Reels",
+                    ),
+                    (
+                        Resolution::new(1080, 1080),
+                        "1080×1080",
+                        "Square 1:1 — feed posts",
+                    ),
+                    (
+                        Resolution::new(3840, 2160),
+                        "3840×2160",
+                        "4K UHD. Export size; preview still scales down (§16)",
+                    ),
+                ];
+                for (value, label, hint) in presets {
+                    if ui
+                        .selectable_value(&mut wanted.0, value, label)
+                        .on_hover_text(hint)
+                        .changed()
+                    {
+                        wanted.0 = value;
+                    }
+                }
+            });
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("rate");
+        egui::ComboBox::from_id_salt("sequence_rate")
+            .selected_text(format!("{rate} fps"))
+            .show_ui(ui, |ui| {
+                // Only the nine rates §9's timebase divides exactly. Anything
+                // else would put every frame boundary slightly off.
+                for value in FrameRate::SUPPORTED {
+                    let hint = match value {
+                        FrameRate::FILM_23_976 | FrameRate::NTSC_29_97 | FrameRate::NTSC_59_94 => {
+                            "NTSC rate — exact, not rounded"
+                        }
+                        FrameRate::PAL_25 | FrameRate::PAL_50 => "PAL rate",
+                        FrameRate::FILM_24 => "Cinema",
+                        _ => "",
+                    };
+                    let response = ui.selectable_value(&mut wanted.1, value, format!("{value}"));
+                    if !hint.is_empty() {
+                        response.on_hover_text(hint);
+                    }
+                }
+            });
+    });
+
+    if wanted != (current, rate) {
+        match editor.set_sequence_format(wanted.0, wanted.1) {
+            Ok(()) => {
+                state.needs_repaint = true;
+                // §9: positions are ticks, so nothing moves. Say so, because
+                // "will this shift my cuts?" is the natural worry.
+                state.info(format!(
+                    "Sequence is now {}×{} @ {} fps — clips keep their exact positions",
+                    wanted.0.width, wanted.0.height, wanted.1
+                ));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    if clips_exist(editor) && rate != wanted.1 {
+        ui.label(
+            egui::RichText::new("Existing cuts keep their exact times and are not re-snapped.")
+                .small()
+                .color(theme::DISABLED),
+        );
+    }
+}
+
+fn clips_exist(editor: &Editor) -> bool {
+    editor.active_sequence().is_some_and(|s| s.clip_count() > 0)
+}
+
 /// The crash-recovery prompt (§39.4).
 ///
 /// §39.5: *"Never overwrite the original project automatically."* So this
@@ -749,10 +864,18 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
     let total = paths.len();
     let mut imported = 0;
     let mut failures: Vec<String> = Vec::new();
+    let mut adopted = None;
 
     for path in paths {
         match editor.import_file(&path) {
-            Ok(_) => imported += 1,
+            Ok(id) => {
+                imported += 1;
+                // §8: match an empty sequence to the first real video, so 25 or
+                // 50 fps footage does not land on a 30 fps grid and judder.
+                if adopted.is_none() {
+                    adopted = editor.adopt_format_from(id);
+                }
+            }
             Err(err) => {
                 // §50: one unreadable file must not abort the whole import.
                 let name = path.file_name().map_or_else(
@@ -766,7 +889,16 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
     }
 
     match failures.len() {
-        0 => state.info(format!("Imported {imported} file(s)")),
+        0 => match adopted {
+            // Say it rather than doing it silently: the sequence format is the
+            // user's to control, and a change they did not make should be
+            // visible and undoable.
+            Some((resolution, rate)) => state.info(format!(
+                "Imported {imported} file(s) — sequence set to {}x{} @ {rate} fps to match",
+                resolution.width, resolution.height
+            )),
+            None => state.info(format!("Imported {imported} file(s)")),
+        },
         n if n == total => state.error(format!("Could not read {}", failures.join(", "))),
         _ => state.error(format!(
             "Imported {imported} of {total}; could not read {}",
