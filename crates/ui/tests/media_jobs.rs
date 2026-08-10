@@ -15,7 +15,7 @@ use bettercut_cache::{CACHE_LIMIT_5_GB, CacheLayout, CacheStore};
 use bettercut_editor_core::Editor;
 use bettercut_editor_core::media::{MediaAsset, MediaKind, MediaProber};
 use bettercut_editor_core::project_format::PerformanceMode;
-use bettercut_ui::{ProxyManager, ProxyUpdate};
+use bettercut_ui::{MediaJobs, MediaUpdate};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -31,9 +31,9 @@ fn store(dir: &tempfile::TempDir) -> CacheStore {
 ///
 /// Encoding runs on a real job thread, so the test has to wait on it the same
 /// way the UI does — by polling, not by blocking on a handle.
-fn drain(manager: &mut ProxyManager, timeout: Duration) -> ProxyUpdate {
+fn drain(manager: &mut MediaJobs, timeout: Duration) -> MediaUpdate {
     let deadline = Instant::now() + timeout;
-    let mut all = ProxyUpdate::default();
+    let mut all = MediaUpdate::default();
 
     while Instant::now() < deadline {
         let update = manager.poll();
@@ -59,7 +59,7 @@ fn ordinary_footage_is_not_proxied() {
         .import_file(&fixture("ntsc-2997.mp4"))
         .expect("probe");
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
     manager.scan(&editor);
 
     assert_eq!(
@@ -91,7 +91,7 @@ fn a_heavy_import_produces_a_proxy_and_reports_it() {
     );
     let media = editor.import_media(asset);
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
     let queued = manager.scan(&editor);
 
     assert_eq!(manager.active_jobs(), 1, "nothing was queued on import");
@@ -132,7 +132,7 @@ fn rescanning_does_not_requeue() {
     asset.height = 2160;
     editor.import_media(asset);
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
     manager.scan(&editor);
     let after_first = manager.active_jobs();
     manager.scan(&editor);
@@ -163,7 +163,7 @@ fn disabling_automatic_proxies_queues_nothing() {
         })
         .expect("settings change");
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
     let messages = manager.scan(&editor);
 
     assert_eq!(manager.active_jobs(), 0);
@@ -194,7 +194,7 @@ fn changing_quality_repoints_the_source_and_requeues() {
         })
         .expect("settings change");
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Performance, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Performance, 1, 1);
     let (source, _) = manager.sync(&editor);
     assert!(source.is_none(), "nothing changed on the first sync");
     let before = manager.source().height;
@@ -235,7 +235,7 @@ fn a_steady_state_sync_says_nothing() {
 
     // Matched to the project so the first sync is a plain scan, not a mode change.
     let mode = editor.project().settings.performance_mode;
-    let mut manager = ProxyManager::new(store(&dir), mode, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), mode, 1, 1);
     let (_, first) = manager.sync(&editor);
     assert!(!first.is_empty(), "the first sync should announce the work");
 
@@ -270,7 +270,7 @@ fn a_failed_encode_is_reported() {
     asset.missing = false;
     editor.import_media(asset);
 
-    let mut manager = ProxyManager::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
     manager.scan(&editor);
     assert_eq!(manager.active_jobs(), 1);
 

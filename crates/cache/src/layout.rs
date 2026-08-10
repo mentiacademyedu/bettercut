@@ -74,6 +74,16 @@ impl CacheLayout {
         self.media_dir(media).join(PROXY_DIR)
     }
 
+    /// The poster thumbnail for an asset, at a given width.
+    ///
+    /// Keyed by width for the same reason proxies are keyed by height: the
+    /// media browser and a future timeline filmstrip want different sizes, and
+    /// regenerating one should not throw the other away.
+    pub fn thumbnail_file(&self, media: MediaId, width: u32) -> PathBuf {
+        self.thumbnails_dir(media)
+            .join(format!("poster-{width}.bct"))
+    }
+
     /// The proxy file for a given height, so switching quality does not discard
     /// the other one.
     pub fn proxy_file(&self, media: MediaId, height: u32) -> PathBuf {

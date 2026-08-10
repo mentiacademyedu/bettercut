@@ -5,16 +5,17 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod context_menu;
+pub mod media_jobs;
 pub mod panels;
 pub mod preview;
-pub mod proxies;
 pub mod shortcuts;
 pub mod state;
 pub mod theme;
+pub mod thumbnails;
 pub mod timeline;
 
+pub use media_jobs::{MediaJobs, MediaUpdate};
 pub use preview::Preview;
-pub use proxies::{ProxyManager, ProxyUpdate};
 pub use state::UiState;
 
 use bettercut_editor_core::{Editor, Event};

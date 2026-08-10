@@ -67,7 +67,7 @@ struct App {
     /// Proxy generation (§13). Owned here because it spans the editor (which
     /// media exist), the cache (what is already generated) and the preview
     /// (which copy to read).
-    proxies: bettercut_ui::ProxyManager,
+    proxies: bettercut_ui::MediaJobs,
     /// Title is recomputed only when it changes; setting it every frame would
     /// churn the window manager.
     last_title: String,
@@ -136,7 +136,7 @@ impl App {
             bettercut_cache::CacheLayout::default_location(),
             editor.project().settings.cache_limit_bytes,
         );
-        let mut proxies = bettercut_ui::ProxyManager::new(
+        let mut proxies = bettercut_ui::MediaJobs::new(
             cache,
             editor.project().settings.performance_mode,
             hardware.max_heavy_jobs(),
@@ -147,6 +147,11 @@ impl App {
         if let Some(preview) = preview.as_mut() {
             preview.set_proxy_source(proxies.source());
         }
+        // The browser reads thumbnails straight from the same cache.
+        ui.thumbnails.attach(
+            proxies.source().cache,
+            bettercut_ui::media_jobs::THUMBNAIL_WIDTH,
+        );
         // Anything already in the project may need a proxy (§13).
         for message in proxies.scan(&editor) {
             ui.info(message);
@@ -184,13 +189,17 @@ impl eframe::App for App {
                 preview.proxy_ready(*media);
             }
         }
+        for media in &update.thumbnails {
+            // Drop the remembered "no thumbnail yet" so it loads next frame.
+            self.ui.thumbnails.invalidate(*media);
+        }
         for message in update.messages {
             self.ui.info(message);
         }
         for failure in update.failures {
             self.ui.error(failure);
         }
-        if !update.ready.is_empty() {
+        if !update.ready.is_empty() || !update.thumbnails.is_empty() {
             self.ui.needs_repaint = true;
         }
 

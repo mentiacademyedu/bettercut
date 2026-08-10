@@ -308,6 +308,83 @@ fn a_missing_proxy_falls_back_to_the_original() {
     );
 }
 
+/// §12/§19: a poster thumbnail comes out of the real decode path, at the right
+/// size and aspect, and lands in the cache.
+#[test]
+fn a_thumbnail_is_generated_and_cached() {
+    use bettercut_cache::{CACHE_LIMIT_5_GB, CacheLayout, CacheStore, Thumbnail};
+    use bettercut_playback::ThumbnailJob;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = CacheStore::new(CacheLayout::new(dir.path()), CACHE_LIMIT_5_GB);
+
+    let asset = FfmpegProber
+        .probe(&fixture("ntsc-2997.mp4"))
+        .expect("probe");
+
+    let job = ThumbnailJob::new(&asset, 160, &cache, 1).expect("a job");
+    let (scheduler, events) = bettercut_jobs::JobScheduler::new(1);
+    scheduler.submit(Box::new(job));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut finished = false;
+    while std::time::Instant::now() < deadline {
+        match events.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(bettercut_jobs::JobEvent::Finished { .. }) => {
+                finished = true;
+                break;
+            }
+            Ok(bettercut_jobs::JobEvent::Failed { message, .. }) => {
+                panic!("thumbnail job failed: {message}")
+            }
+            _ => {}
+        }
+    }
+    assert!(finished, "the thumbnail job never finished");
+
+    let path = cache.layout().thumbnail_file(asset.id, 160);
+    assert!(path.exists(), "no thumbnail at {}", path.display());
+
+    let thumb = Thumbnail::read(&path).expect("read it back");
+    assert_eq!(thumb.width, 160);
+    // The fixture is 640x360, so 160 wide is 90 tall.
+    assert_eq!(thumb.height, 90, "aspect ratio was not preserved");
+    assert_eq!(thumb.rgba.len(), 160 * 90 * 4);
+
+    // The fixture is colour bars, so a thumbnail of it cannot be uniform.
+    // A single flat colour would mean the decode or the downscale silently
+    // produced nothing useful.
+    let distinct: std::collections::HashSet<[u8; 3]> = thumb
+        .rgba
+        .chunks_exact(4)
+        .map(|p| [p[0], p[1], p[2]])
+        .collect();
+    assert!(
+        distinct.len() > 4,
+        "thumbnail has only {} distinct colours; it is probably blank",
+        distinct.len()
+    );
+
+    // Asking again is a no-op, so a rescan does not redo the work.
+    assert!(
+        ThumbnailJob::new(&asset, 160, &cache, 1).is_none(),
+        "an already-cached thumbnail was queued again"
+    );
+}
+
+/// Audio has no picture; queuing a thumbnail for it would fail every time.
+#[test]
+fn audio_gets_no_thumbnail_job() {
+    use bettercut_cache::{CACHE_LIMIT_5_GB, CacheLayout, CacheStore};
+    use bettercut_playback::ThumbnailJob;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = CacheStore::new(CacheLayout::new(dir.path()), CACHE_LIMIT_5_GB);
+    let asset = FfmpegProber.probe(&fixture("tone-48k.wav")).expect("probe");
+
+    assert!(ThumbnailJob::new(&asset, 160, &cache, 1).is_none());
+}
+
 /// §9 again, at the level that matters for sync: 480 samples is exactly 10 ms
 /// and exactly 9,600 ticks, with no rounding to accumulate.
 #[test]

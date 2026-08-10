@@ -14,7 +14,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 |---|---|
 | **0 — Frame transport spike** | ✅ Done — [ADR 005](docs/adr/005-ui-shell.md) |
 | **1 — Application skeleton** | ✅ Done — reference machine recorded (§52.1) |
-| **2 — Media import** | 🟡 Probing and library done; thumbnails not started |
+| **2 — Media import** | ✅ Probing, library, poster thumbnails; waveforms still open |
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio play in sync; decode-ahead and hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery; media relink still open |
@@ -69,8 +69,16 @@ everything since the last save. On the next launch the snapshot plus the journal
 are replayed and the result is *offered* — §39.5 is explicit that recovery must
 never overwrite the user's file by itself, and it doesn't.
 
-**What does not work yet:** export, thumbnails, waveforms, effects, and text.
-Multi-selection is Ctrl+click only — there is no rubber-band box select.
+The media browser shows poster thumbnails, decoded a tenth of the way into each
+file — frame zero is so often black, a slate, or a fade that it makes a useless
+picture. They are generated in the background on the same job pool as proxies
+(§15's concurrency limit is one budget for the machine, not one per feature) and
+cached as raw RGBA, which costs ~57 KB each and avoids pulling in an image codec
+just to decode back to the bytes we started with.
+
+**What does not work yet:** export, waveforms, effects, and text. Multi-selection
+is Ctrl+click only — there is no rubber-band box select, and no filmstrip on
+timeline clips yet.
 
 Two playback limits worth knowing before testing with your own footage:
 

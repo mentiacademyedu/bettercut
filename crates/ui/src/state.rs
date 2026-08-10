@@ -124,6 +124,9 @@ pub struct UiState {
     /// is chosen would act on whatever happens to be under the cursor then.
     pub context: Option<ContextTarget>,
 
+    /// Poster thumbnails, uploaded on demand (§12).
+    pub thumbnails: crate::thumbnails::ThumbnailStore,
+
     /// The graphics adapter in use (§49), set once at startup.
     ///
     /// `None` when wgpu failed entirely and there is no preview (§50).
@@ -151,6 +154,7 @@ impl Default for UiState {
             pending_recovery: None,
             needs_repaint: true,
             context: None,
+            thumbnails: crate::thumbnails::ThumbnailStore::default(),
             gpu: None,
             proxy_progress: None,
         }

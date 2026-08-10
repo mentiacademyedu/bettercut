@@ -13,7 +13,9 @@
 pub mod error;
 pub mod layout;
 pub mod store;
+pub mod thumbnail;
 
 pub use error::CacheError;
 pub use layout::CacheLayout;
 pub use store::{CACHE_LIMIT_5_GB, CACHE_LIMIT_10_GB, CACHE_LIMIT_20_GB, CacheEntry, CacheStore};
+pub use thumbnail::Thumbnail;

@@ -1,13 +1,21 @@
-//! Proxy lifecycle (§13, §14, §67).
+//! Background work derived from imported media (§13, §14, §19, §67).
 //!
-//! Ties together the three pieces that already exist separately: the cache
-//! knows what has been generated, the scheduler runs the encoding, and the
-//! playback engine reads whichever copy is available.
+//! Ties together the pieces that exist separately: the cache knows what has
+//! been generated, the scheduler runs the work, and the playback engine reads
+//! whichever copy is available.
 //!
 //! ```text
-//! import -> should this have a proxy? (§13) -> queue (§15, priority 4)
-//!        -> encode all-intra (§13.1) -> invalidate -> preview uses it (§14)
+//! import ─┬─ should this have a proxy? (§13) → queue (§15, priority 4)
+//!         │     → encode all-intra (§13.1) → invalidate → preview uses it
+//!         └─ poster thumbnail (§12, §19) → queue (background priority)
+//!               → decode one frame → downscale → cache
 //! ```
+//!
+//! **One scheduler, deliberately.** Proxies and thumbnails share a single job
+//! pool because §15's concurrency limit is a budget for the whole machine; two
+//! pools each honouring the limit would oversubscribe exactly the hardware the
+//! limit exists to protect. Thumbnails are not `is_heavy()`, so they run
+//! alongside the one heavy proxy encode rather than queueing behind it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,25 +26,37 @@ use bettercut_editor_core::foundation::MediaId;
 use bettercut_editor_core::media::ProxyResolution;
 use bettercut_editor_core::project_format::PerformanceMode;
 use bettercut_jobs::{JobEvent, JobId, JobScheduler};
-use bettercut_playback::{ProxyJob, ProxySource};
+use bettercut_playback::{ProxyJob, ProxySource, ThumbnailJob};
 
-/// What happened to proxies this frame, for the caller to act on.
+/// What finished this frame, for the caller to act on.
 #[derive(Debug, Default)]
-pub struct ProxyUpdate {
+pub struct MediaUpdate {
     /// Proxies that became usable; their decoders must be reopened.
     pub ready: Vec<MediaId>,
+    /// Thumbnails that became readable; any cached "not there" must be dropped.
+    pub thumbnails: Vec<MediaId>,
     /// Messages worth showing.
     pub messages: Vec<String>,
     pub failures: Vec<String>,
 }
 
-impl ProxyUpdate {
+impl MediaUpdate {
     pub fn is_empty(&self) -> bool {
-        self.ready.is_empty() && self.messages.is_empty() && self.failures.is_empty()
+        self.ready.is_empty()
+            && self.thumbnails.is_empty()
+            && self.messages.is_empty()
+            && self.failures.is_empty()
     }
 }
 
-pub struct ProxyManager {
+/// Width of the poster thumbnails the media browser shows.
+///
+/// Fixed rather than derived from the panel: the cache is keyed by width, so a
+/// resizable value would regenerate every thumbnail whenever the user dragged a
+/// splitter.
+pub const THUMBNAIL_WIDTH: u32 = 160;
+
+pub struct MediaJobs {
     scheduler: JobScheduler,
     events: std::sync::mpsc::Receiver<JobEvent>,
     cache: Arc<CacheStore>,
@@ -44,8 +64,12 @@ pub struct ProxyManager {
     /// FFmpeg threads per encode (§15.1).
     threads: u32,
 
-    /// Jobs in flight, so a completion can be traced back to its asset.
+    /// Proxy jobs in flight, so a completion can be traced back to its asset.
     in_flight: HashMap<JobId, MediaId>,
+    /// Thumbnail jobs, kept separate so progress reporting counts only the
+    /// slow work — a thumbnail finishes in milliseconds and would make the
+    /// proxy progress bar jump around.
+    thumbnails: HashMap<JobId, MediaId>,
     /// Latest progress per job, for the status bar (§42).
     progress: HashMap<JobId, f32>,
     /// Assets already considered, so re-importing does not requeue.
@@ -55,7 +79,7 @@ pub struct ProxyManager {
     warned_about_space: bool,
 }
 
-impl ProxyManager {
+impl MediaJobs {
     pub fn new(cache: CacheStore, mode: PerformanceMode, max_heavy: usize, threads: u32) -> Self {
         let (scheduler, events) = JobScheduler::new(max_heavy);
         Self {
@@ -65,6 +89,7 @@ impl ProxyManager {
             resolution: mode.proxy_resolution(),
             threads,
             in_flight: HashMap::new(),
+            thumbnails: HashMap::new(),
             progress: HashMap::new(),
             considered: std::collections::HashSet::new(),
             warned_about_space: false,
@@ -137,16 +162,23 @@ impl ProxyManager {
         let mut messages = Vec::new();
         let mut queued = 0;
 
-        if !editor.project().settings.auto_generate_proxies {
-            // §13: "Allow the user to disable automatic proxies."
-            return messages;
-        }
+        // §13: "Allow the user to disable automatic proxies." Checked per asset
+        // rather than as an early return, because thumbnails are a separate
+        // decision and turning proxies off should not also blank the browser.
+        let proxies_enabled = editor.project().settings.auto_generate_proxies;
 
         for asset in &editor.project().media {
             if !self.considered.insert(asset.id) {
                 continue;
             }
-            if asset.missing || !asset.should_generate_proxy() {
+
+            if let Some(job) = ThumbnailJob::new(asset, THUMBNAIL_WIDTH, &self.cache, 1) {
+                let media = job.media();
+                let id = self.scheduler.submit(Box::new(job));
+                self.thumbnails.insert(id, media);
+            }
+
+            if !proxies_enabled || asset.missing || !asset.should_generate_proxy() {
                 continue;
             }
 
@@ -192,16 +224,24 @@ impl ProxyManager {
     }
 
     /// Drain job events. Called once per UI frame.
-    pub fn poll(&mut self) -> ProxyUpdate {
-        let mut update = ProxyUpdate::default();
+    pub fn poll(&mut self) -> MediaUpdate {
+        let mut update = MediaUpdate::default();
 
         while let Ok(event) = self.events.try_recv() {
             match event {
                 JobEvent::Progress { id, fraction } => {
-                    self.progress.insert(id, fraction);
+                    // Only proxy progress feeds the status bar; a thumbnail
+                    // finishes too fast to be worth showing.
+                    if self.in_flight.contains_key(&id) {
+                        self.progress.insert(id, fraction);
+                    }
                 }
                 JobEvent::Finished { id } => {
                     self.progress.remove(&id);
+                    if let Some(media) = self.thumbnails.remove(&id) {
+                        update.thumbnails.push(media);
+                        continue;
+                    }
                     if let Some(media) = self.in_flight.remove(&id) {
                         update.ready.push(media);
                     }
@@ -211,6 +251,14 @@ impl ProxyManager {
                 }
                 JobEvent::Failed { id, message } => {
                     self.progress.remove(&id);
+                    if self.thumbnails.remove(&id).is_some() {
+                        // A missing thumbnail costs the user a picture in the
+                        // browser, not the ability to edit. §74's "never
+                        // silently ignore" is satisfied by the log; putting it
+                        // in the status bar would bury real failures.
+                        tracing::warn!(%message, "thumbnail generation failed");
+                        continue;
+                    }
                     self.in_flight.remove(&id);
                     // §74 forbids silently ignoring an FFmpeg failure. Playback
                     // still works from the original, so this is a warning
@@ -222,6 +270,7 @@ impl ProxyManager {
                 JobEvent::Cancelled { id } => {
                     self.progress.remove(&id);
                     self.in_flight.remove(&id);
+                    self.thumbnails.remove(&id);
                 }
                 JobEvent::Started { .. } => {}
             }

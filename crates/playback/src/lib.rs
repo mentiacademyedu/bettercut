@@ -18,6 +18,7 @@ pub mod engine;
 pub mod error;
 pub mod proxy_job;
 pub mod sync;
+pub mod thumbnail_job;
 
 pub use audio_source::AudioSource;
 pub use cache::{FrameCache, FrameKey};
@@ -25,3 +26,4 @@ pub use engine::{AudibleClip, PlaybackEngine, ProxySource, ResolvedLayer, source
 pub use error::PlaybackError;
 pub use proxy_job::ProxyJob;
 pub use sync::{FramePlan, SyncDecision, plan_frame};
+pub use thumbnail_job::ThumbnailJob;

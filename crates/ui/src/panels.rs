@@ -206,6 +206,8 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (id, name, missing, no_duration, duration) in &assets {
             ui.group(|ui| {
+                thumbnail(ui, state, *id, *missing);
+
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(name).strong());
                     if *missing {
@@ -563,6 +565,47 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             }
         }
     });
+}
+
+/// One asset's poster image, or a placeholder of the same size.
+///
+/// The placeholder matters: without it the row height changes the moment a
+/// thumbnail finishes generating, and the whole list jumps under the pointer.
+fn thumbnail(ui: &mut egui::Ui, state: &mut UiState, media: MediaId, missing: bool) {
+    let width = ui.available_width().min(180.0);
+    // 16:9 is only a guess for the placeholder — a real thumbnail draws at its
+    // own aspect, letterboxed into this box rather than stretched.
+    let size = egui::vec2(width, width * 9.0 / 16.0);
+
+    let texture = state.thumbnails.texture(ui.ctx(), media).cloned();
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+
+    match texture {
+        Some(handle) if !missing => {
+            let image = handle.size_vec2();
+            let scale = (rect.width() / image.x).min(rect.height() / image.y);
+            let drawn = egui::Rect::from_center_size(rect.center(), image * scale);
+            ui.painter()
+                .rect_filled(rect, 4, theme::TIMELINE_BACKGROUND);
+            ui.painter().image(
+                handle.id(),
+                drawn,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        _ => {
+            ui.painter()
+                .rect_filled(rect, 4, theme::TIMELINE_BACKGROUND);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                if missing { "missing" } else { "…" },
+                egui::FontId::proportional(12.0),
+                theme::DISABLED,
+            );
+        }
+    }
 }
 
 /// Resolution and frame rate for the active sequence (§8, §36).
