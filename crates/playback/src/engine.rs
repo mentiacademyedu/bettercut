@@ -8,14 +8,17 @@
 //! frame, and late frames are dropped rather than queued. Nothing here consults
 //! a wall-clock timer to decide what to show.
 //!
-//! # What is not here yet
+//! # Where frames come from
 //!
-//! §47a.3's decode-ahead ring buffer. Video frames are currently decoded on
-//! demand and cached. That is honest for SD proxy-sized footage and **will**
-//! stutter on 1080p long-GOP source, which is precisely what §13.1's all-intra
-//! proxies exist to fix; until Milestone 7 lands them, §17's adaptive quality
-//! is what keeps this usable. The seam is `resolve_video`, which a prefetch
-//! thread can fill without the callers changing.
+//! Three places, checked in order: the frame cache (§18), then §47a.3's
+//! decode-ahead ring, then an inline decode. The ring is filled by a thread
+//! started when playback starts and stopped when it stops — a paused editor has
+//! nothing to run ahead of, and holding a decode thread for it works against
+//! §81's idle budget.
+//!
+//! Scrubbing still decodes inline, which is correct: the user is jumping around
+//! rather than moving forward, so there is nothing to predict. That path is
+//! what §13.1's all-intra proxies make cheap.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,9 +75,20 @@ pub struct ProxySource {
     pub height: u32,
 }
 
+/// Two sources are the same when they name the same cache and height.
+///
+/// Compared by pointer rather than by contents: a `CacheStore` has no
+/// meaningful value equality, and the question being asked is "is this the same
+/// source I already configured?", which pointer identity answers exactly.
+impl PartialEq for ProxySource {
+    fn eq(&self, other: &Self) -> bool {
+        self.height == other.height && std::sync::Arc::ptr_eq(&self.cache, &other.cache)
+    }
+}
+
 impl ProxySource {
     /// The proxy for `media`, if the cache actually holds one.
-    fn path_for(&self, media: MediaId) -> Option<std::path::PathBuf> {
+    pub(crate) fn path_for(&self, media: MediaId) -> Option<std::path::PathBuf> {
         let path = self.cache.layout().proxy_file(media, self.height);
         path.exists().then_some(path)
     }
@@ -113,6 +127,13 @@ pub struct PlaybackEngine {
     /// diagnostics because a persistently large value means seeking is not
     /// working and everything downstream will look subtly wrong.
     last_seek_error: TimelineTime,
+
+    /// The decode-ahead thread (§47a.3). `None` until playback starts, because
+    /// a paused editor has nothing to decode ahead of.
+    prefetcher: Option<crate::prefetcher::Prefetcher>,
+    /// Frames served from the ring rather than decoded inline — the number
+    /// that says whether decode-ahead is doing anything.
+    prefetch_hits: u64,
 }
 
 impl PlaybackEngine {
@@ -127,7 +148,110 @@ impl PlaybackEngine {
             master_gain: 1.0,
             limited_samples: 0,
             last_seek_error: TimelineTime::ZERO,
+            prefetcher: None,
+            prefetch_hits: 0,
         }
+    }
+
+    /// Start decoding ahead of the playhead (§47a.3).
+    ///
+    /// Called when playback starts. Idempotent — starting twice would run two
+    /// decode threads over the same files, which §74 forbids and which would be
+    /// slower than one.
+    pub fn start_prefetch(&mut self, budget_bytes: usize) {
+        if self.prefetcher.is_some() {
+            return;
+        }
+        self.prefetcher = Some(crate::prefetcher::Prefetcher::start(
+            budget_bytes,
+            self.decoder_threads,
+        ));
+    }
+
+    /// Stop decoding ahead. Called when playback stops: a paused editor should
+    /// not hold a decode thread or its share of the frame budget (§81).
+    pub fn stop_prefetch(&mut self) {
+        self.prefetcher = None;
+    }
+
+    pub fn prefetch_hits(&self) -> u64 {
+        self.prefetch_hits
+    }
+
+    /// Frames currently waiting in the ring.
+    pub fn prefetched_frames(&self) -> usize {
+        self.prefetcher.as_ref().map_or(0, |p| p.buffer().len())
+    }
+
+    /// Abandon decode-ahead work and start a new generation (§47a.5).
+    ///
+    /// Called on any seek: the frames queued for the old position are worthless
+    /// and the bytes they hold are needed for the new one.
+    pub fn reset_prefetch(&mut self) {
+        if let Some(prefetcher) = self.prefetcher.as_ref() {
+            prefetcher.reset();
+        }
+    }
+
+    /// Queue the next `span` of frames for the decode thread (§47a.3).
+    ///
+    /// Cheap: it walks the visible tracks at frame intervals and resolves which
+    /// media each instant needs. No decoding happens here — that is the whole
+    /// point — so this is safe to call every UI frame while playing.
+    pub fn prefetch_ahead(
+        &mut self,
+        project: &Project,
+        sequence: &Sequence,
+        from: TimelineTime,
+        span: TimelineTime,
+    ) {
+        let Some(prefetcher) = self.prefetcher.as_ref() else {
+            return;
+        };
+
+        let interval = sequence.ticks_per_frame().max(1);
+        let generation = prefetcher.generation();
+        let mut items = Vec::new();
+
+        let mut tick = from.ticks();
+        let end = from.ticks().saturating_add(span.ticks());
+        while tick < end {
+            let at = TimelineTime::from_ticks(tick);
+            for track in &sequence.video_tracks {
+                if !track.enabled {
+                    continue;
+                }
+                let Some(clip) = track.clip_at(at) else {
+                    continue;
+                };
+                let Some(asset) = project.media_asset(clip.media_id) else {
+                    continue;
+                };
+                let source = source_time_of(clip.timeline().start, clip.source().start, at);
+                let key = FrameKey {
+                    media: asset.id,
+                    timestamp: source,
+                };
+                // Skip what is already decoded: re-planning every frame would
+                // otherwise ask for the same second of work sixty times a
+                // second.
+                if self.cache.contains(&key) || prefetcher.buffer().contains(&key) {
+                    continue;
+                }
+                items.push((asset.clone(), source));
+            }
+            tick = tick.saturating_add(interval);
+        }
+
+        if items.is_empty() {
+            return;
+        }
+
+        prefetcher.submit(crate::prefetcher::Plan {
+            generation,
+            proxy: self.proxy.clone(),
+            items,
+        });
     }
 
     pub fn set_master_gain(&mut self, gain: f32) {
@@ -267,6 +391,8 @@ impl PlaybackEngine {
         // opened, and every cached frame came from one of them.
         self.decoders.clear();
         self.cache.clear();
+        // Frames already decoded ahead came from the old copy too.
+        self.reset_prefetch();
     }
 
     /// Forget everything cached or open for one asset.
@@ -385,6 +511,17 @@ impl PlaybackEngine {
             timestamp: source_time,
         };
         if let Some(frame) = self.cache.get(&key) {
+            return Ok(frame);
+        }
+
+        // §47a.3: the decode-ahead thread may already have this. Taking it
+        // frees its bytes back to the ring, which is what releases the decode
+        // thread to work further ahead.
+        if let Some(prefetcher) = self.prefetcher.as_ref()
+            && let Some(frame) = prefetcher.buffer().take(&key)
+        {
+            self.prefetch_hits += 1;
+            self.cache.insert(key, Arc::clone(&frame));
             return Ok(frame);
         }
 

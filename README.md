@@ -16,7 +16,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **1 — Application skeleton** | ✅ Done — reference machine recorded (§52.1) |
 | **2 — Media import** | ✅ Probing, library, poster thumbnails, audio waveforms |
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
-| **4 — Playback** | 🟡 Video + audio play in sync; decode-ahead and hardware decode still open |
+| **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
 | 6 — Export | ⛔ Blocked on §0.1 legal review |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
@@ -47,6 +47,14 @@ device, and the **audio device is the master clock** (§20a.1) — the picture
 follows it, never a wall-clock timer. Transport controls sit directly above the
 timeline — start, ±10 s, play/pause, end — with the playhead and sequence
 duration beside them.
+
+While playing, a decode thread runs half a second ahead of the playhead
+(§47a.3), filling a byte-bounded ring so the frame the clock asks for is
+usually already decoded. The ring pushes back rather than evicting — a full
+buffer stops the decoder instead of throwing away frames it is about to need —
+and a seek discards the work queued for the old position at the next frame
+boundary (§47a.5). It runs only while playing: scrubbing jumps around rather
+than moving forward, so there is nothing to predict.
 
 §16's preview scaling applies **only while playing**. Reducing resolution buys
 the ability to hit a frame deadline, and a paused frame has no deadline, so the
@@ -105,11 +113,10 @@ timeline clips yet.
 
 Two playback limits worth knowing before testing with your own footage:
 
-* **No decode-ahead ring buffer yet** (§47a.3). Frames are decoded on demand and
-  cached. §13.1's all-intra proxies now carry this — one decode per seek instead
-  of up to 250 — so editing is smooth, but scrubbing the *original* 1080p
-  long-GOP media (before its proxy finishes, or with proxies switched off) will
-  still stutter.
+* **Decode-ahead is unmeasured on the target machine.** It works — playback
+  takes frames from the ring rather than decoding inline, asserted by test —
+  but the half-second budget and the one-thread choice were sized by
+  calculation, not measured on §52.1 hardware.
 * **Software decode only.** §5's hardware-decode-to-texture path is still open;
   this is the RAM fallback §5 requires to exist.
 * **HDR is detected but not tone-mapped.** PQ and HLG sources are probed and

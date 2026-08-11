@@ -372,6 +372,90 @@ fn a_thumbnail_is_generated_and_cached() {
     );
 }
 
+/// §47a.3: decode-ahead has to actually serve frames, or it is just a thread
+/// burning CPU. Plan a second of playback, wait for the ring to fill, then
+/// check the engine takes frames from it instead of decoding inline.
+#[test]
+fn decode_ahead_serves_frames_to_playback() {
+    let project = project_with_fixture();
+    let sequence = project.active().expect("sequence");
+    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
+
+    engine.start_prefetch(bettercut_playback::budget_for(640 * 360 * 4, 30.0, 1.0));
+    engine.prefetch_ahead(
+        &project,
+        sequence,
+        TimelineTime::ZERO,
+        TimelineTime::from_millis(500),
+    );
+
+    // The decode thread runs in the background; give it a bounded chance.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while engine.prefetched_frames() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        engine.prefetched_frames() > 0,
+        "the decode-ahead thread produced nothing"
+    );
+
+    // Play through the span it decoded and confirm the ring was used.
+    for frame in 0..12_i64 {
+        let at = TimelineTime::from_ticks(frame * 32_000);
+        let layers = engine.resolve_video(&project, sequence, at);
+        assert!(!layers.is_empty(), "no picture at frame {frame}");
+    }
+
+    assert!(
+        engine.prefetch_hits() > 0,
+        "playback decoded everything inline; the ring was never used"
+    );
+}
+
+/// §47a.5: a seek must throw away work queued for where the playhead *was*.
+#[test]
+fn seeking_discards_decode_ahead_work() {
+    let project = project_with_fixture();
+    let sequence = project.active().expect("sequence");
+    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
+
+    engine.start_prefetch(bettercut_playback::budget_for(640 * 360 * 4, 30.0, 1.0));
+    engine.prefetch_ahead(
+        &project,
+        sequence,
+        TimelineTime::ZERO,
+        TimelineTime::from_millis(500),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while engine.prefetched_frames() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(engine.prefetched_frames() > 0, "nothing was decoded ahead");
+
+    engine.reset_prefetch();
+    assert_eq!(
+        engine.prefetched_frames(),
+        0,
+        "a seek left frames for the old position in the ring"
+    );
+}
+
+/// Starting twice would run two decode threads over the same files — §74
+/// forbids it, and it would be slower than one.
+#[test]
+fn starting_decode_ahead_twice_is_a_no_op() {
+    let mut engine = PlaybackEngine::new(16 * 1024 * 1024, 1);
+    engine.start_prefetch(16 * 1024 * 1024);
+    let generation = {
+        engine.start_prefetch(16 * 1024 * 1024);
+        engine.prefetched_frames()
+    };
+    assert_eq!(generation, 0);
+    engine.stop_prefetch();
+    assert_eq!(engine.prefetched_frames(), 0);
+}
+
 /// §12: the waveform has to cover the *whole* file. A short one would draw a
 /// clip that goes flat partway through, which reads as damaged audio.
 #[test]

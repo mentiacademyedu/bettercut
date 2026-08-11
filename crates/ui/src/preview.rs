@@ -31,6 +31,10 @@ pub struct Preview {
     /// report can name it — performance claims are meaningless without it.
     gpu: GpuDescription,
 
+    /// Height of the proxies being read, if any — decode-ahead is sized
+    /// against the frames actually decoded, not the sequence resolution (§14).
+    proxy_height: Option<u32>,
+
     /// Last position actually composited, so a still frame is not re-rendered
     /// sixty times a second while paused (§81's idle target).
     last_rendered: Option<TimelineTime>,
@@ -98,6 +102,7 @@ impl Preview {
             sink,
             quality: PreviewQuality::default(),
             gpu,
+            proxy_height: None,
             last_rendered: None,
             consecutive_drops: 0,
             consecutive_on_time: 0,
@@ -139,14 +144,48 @@ impl Preview {
             // or the sound would resume from where it last stopped.
             self.clock.seek_to(editor.playhead());
             self.engine.reset_audio(editor.playhead());
+            // §47a.3: decode ahead only while playing. A paused editor has
+            // nothing to run ahead of, and holding a decode thread and its
+            // share of the frame budget for nothing works against §81.
+            self.engine.start_prefetch(self.prefetch_budget(editor));
+        } else {
+            self.engine.stop_prefetch();
         }
         self.clock.set_playing(playing);
+    }
+
+    /// Bytes to reserve for decode-ahead (§47a.3, §81).
+    ///
+    /// Sized from the frames that will actually be decoded — the proxy when
+    /// there is one (§14), which is the case this exists to serve. Half a
+    /// second rather than a full one: §47a.3 allows 0.5–1.0 s, and at 1080p the
+    /// upper end would want ~250 MB, half of §81's entire budget.
+    fn prefetch_budget(&self, editor: &Editor) -> usize {
+        let Some(sequence) = editor.active_sequence() else {
+            return 8 * 1024 * 1024;
+        };
+        let resolution = sequence.resolution;
+        let height = self
+            .proxy_height
+            .unwrap_or(resolution.height)
+            .min(resolution.height.max(1));
+        let width = if resolution.height > 0 {
+            (u64::from(height) * u64::from(resolution.width) / u64::from(resolution.height)) as u32
+        } else {
+            height
+        };
+
+        let frame = (width as usize).saturating_mul(height as usize) * 4;
+        bettercut_playback::budget_for(frame, sequence.frame_rate.as_f64(), 0.5)
     }
 
     /// Move the clock to follow a user-driven seek.
     pub fn seek_to(&mut self, position: TimelineTime) {
         self.clock.seek_to(position);
         self.engine.reset_audio(position);
+        // §47a.5: frames queued for where the playhead was are worthless, and
+        // their bytes are needed for where it is going.
+        self.engine.reset_prefetch();
         // Force a redraw: the picture must change even though we are paused.
         self.last_rendered = None;
     }
@@ -158,6 +197,7 @@ impl Preview {
         let playing = self.clock.is_playing();
         if playing {
             self.pump_audio(editor);
+            self.pump_prefetch(editor);
 
             // §20a.1: the picture follows the clock, never the other way round.
             let position = self.clock.position();
@@ -201,6 +241,22 @@ impl Preview {
         } else {
             PreviewQuality::Full
         }
+    }
+
+    /// Keep the decode-ahead ring topped up (§47a.3).
+    ///
+    /// Planning is cheap — it resolves which media each upcoming instant needs
+    /// and skips anything already decoded — so running it every frame is
+    /// simpler and more responsive than tracking how far ahead we last planned.
+    fn pump_prefetch(&mut self, editor: &Editor) {
+        let Some(sequence) = editor.active_sequence() else {
+            return;
+        };
+        // Half a second, matching what the budget was sized for.
+        let span = TimelineTime::from_millis(500);
+        let project = editor.project();
+        self.engine
+            .prefetch_ahead(project, sequence, self.clock.position(), span);
     }
 
     fn pump_audio(&mut self, editor: &Editor) {
@@ -328,6 +384,7 @@ impl Preview {
 
     /// Point playback at the proxy cache (§14).
     pub fn set_proxy_source(&mut self, source: bettercut_playback::ProxySource) {
+        self.proxy_height = Some(source.height);
         self.engine.set_proxy_source(Some(source));
         self.last_rendered = None;
     }
