@@ -39,6 +39,7 @@ use std::path::Path;
 
 use rusty_ffmpeg::ffi;
 
+use super::filter::FilterGraph;
 use super::raii::{CodecContext, Frame, Packet, Resampler, Scaler};
 use super::{INTERNAL_SAMPLE_RATE, InputContext, error_string};
 use crate::asset::MediaAsset;
@@ -149,7 +150,10 @@ struct VideoLeg {
     timebase: ffi::AVRational,
     decoder: CodecContext,
     encoder: CodecContext,
-    scaler: Scaler,
+    /// Used for SDR sources. `None` when `tonemap` is doing the conversion.
+    scaler: Option<Scaler>,
+    /// Used for HDR sources: tone-map, convert and resize in one chain (§21a).
+    tonemap: Option<FilterGraph>,
     /// The picture handed to the encoder, in the proxy's own format.
     scaled: Frame,
     /// Constant-frame-rate output counter (§13.1).
@@ -175,9 +179,17 @@ impl VideoLeg {
         let decoder = CodecContext::open(params, threads)?;
 
         // SAFETY: `params` is non-null and owned by the stream.
-        let (src_width, src_height, src_format, src_range, src_space) = unsafe {
+        let (src_width, src_height, src_format, src_range, src_space, src_trc, src_primaries) = unsafe {
             let p = &*params;
-            (p.width, p.height, p.format, p.color_range, p.color_space)
+            (
+                p.width,
+                p.height,
+                p.format,
+                p.color_range,
+                p.color_space,
+                p.color_trc,
+                p.color_primaries,
+            )
         };
         if src_width <= 0 || src_height <= 0 {
             return Err(MediaError::DecodeFailed(
@@ -208,16 +220,76 @@ impl VideoLeg {
             global_header,
         )?;
 
-        // Source colour in, BT.709 limited out (§13.1's normalization).
-        let scaler = Scaler::to_yuv420p(
-            src_width,
-            src_height,
-            src_format,
-            src_range == ffi::AVCOL_RANGE_JPEG,
-            super::decode::sws_colorspace_of(src_space),
-            target_width,
-            target_height,
-        )?;
+        // §21a.1: HDR has to be tone-mapped, not merely retagged. swscale
+        // converts matrices and pixel formats but cannot convert a transfer
+        // function, so a PQ or HLG frame pushed straight through comes out
+        // around half as bright. When the source is HDR the whole conversion —
+        // tone-map, primaries, matrix, range, size — happens in one filter
+        // chain and the scaler is bypassed.
+        let hdr = matches!(
+            src_trc,
+            ffi::AVCOL_TRC_SMPTE2084 | ffi::AVCOL_TRC_ARIB_STD_B67
+        );
+
+        let (tonemap, scaler) = if hdr {
+            // The input side is stated explicitly rather than left to the
+            // frame's own tags. `zscale` reads those tags when they are there,
+            // and silently assumes SDR when they are not — which produces a
+            // proxy that looks *exactly* like the untone-mapped bug this
+            // guards against. We probed the source, so we already know.
+            let tin = match src_trc {
+                ffi::AVCOL_TRC_SMPTE2084 => "smpte2084",
+                _ => "arib-std-b67",
+            };
+            let pin = match src_primaries {
+                ffi::AVCOL_PRI_BT2020 => "bt2020",
+                ffi::AVCOL_PRI_BT709 => "bt709",
+                _ => "bt2020", // HDR is overwhelmingly BT.2020
+            };
+            let min = match src_space {
+                ffi::AVCOL_SPC_BT2020_NCL => "bt2020nc",
+                ffi::AVCOL_SPC_BT709 => "bt709",
+                _ => "bt2020nc",
+            };
+            let rin = if src_range == ffi::AVCOL_RANGE_JPEG {
+                "full"
+            } else {
+                "limited"
+            };
+
+            // `tonemap` is left on its default `desat`. Setting `desat=0`
+            // looks harmless — "do not desaturate highlights" — and roughly
+            // halves the result: measured 116 against 227 on the fixture. The
+            // default is what every reference chain uses.
+            let spec = format!(
+                "zscale=tin={tin}:pin={pin}:min={min}:rin={rin}:t=linear:npl=100,\
+                 tonemap=hable,\
+                 zscale=w={target_width}:h={target_height}:p=bt709:t=bt709:m=bt709:r=tv,\
+                 format=yuv420p"
+            );
+            let graph = FilterGraph::new(
+                &spec,
+                src_width,
+                src_height,
+                src_format,
+                timebase,
+                ffi::AVRational { num: 1, den: 1 },
+            )?;
+            tracing::info!(target_height, "tone-mapping an HDR source for its proxy");
+            (Some(graph), None)
+        } else {
+            // Source colour in, BT.709 limited out (§13.1's normalization).
+            let scaler = Scaler::to_yuv420p(
+                src_width,
+                src_height,
+                src_format,
+                src_range == ffi::AVCOL_RANGE_JPEG,
+                super::decode::sws_colorspace_of(src_space),
+                target_width,
+                target_height,
+            )?;
+            (None, Some(scaler))
+        };
 
         let scaled = Frame::video(target_width, target_height, ffi::AV_PIX_FMT_YUV420P)?;
 
@@ -227,6 +299,7 @@ impl VideoLeg {
             decoder,
             encoder,
             scaler,
+            tonemap,
             scaled,
             next_pts: 0,
             frame_rate,
@@ -251,7 +324,23 @@ impl VideoLeg {
             return Err(MediaError::Cancelled);
         }
 
-        self.scaler.convert_to_frame(decoded, &mut self.scaled)?;
+        match (self.scaler.as_mut(), self.tonemap.as_mut()) {
+            (Some(scaler), _) => scaler.convert_to_frame(decoded, &mut self.scaled)?,
+            (None, Some(graph)) => {
+                graph.push(decoded)?;
+                // A tone-mapping chain is 1:1, so a frame in yields a frame
+                // out. If it does not, there is nothing to encode yet and
+                // returning is correct rather than encoding a stale picture.
+                if !graph.pull(&mut self.scaled)? {
+                    return Ok(());
+                }
+            }
+            (None, None) => {
+                return Err(MediaError::DecodeFailed(
+                    "proxy video leg has no conversion path".to_owned(),
+                ));
+            }
+        }
 
         // SAFETY: `scaled` is a valid allocated frame.
         unsafe {
@@ -877,6 +966,56 @@ mod tests {
         assert_eq!(proxy.color.range, crate::color::ColorRange::Limited);
         assert_eq!(proxy.color.matrix, crate::color::ColorMatrix::Bt709);
         assert_eq!(proxy.color.primaries, crate::color::ColorPrimaries::Bt709);
+    }
+
+    /// §21a.1: an HDR source must be **tone-mapped**, not merely retagged.
+    ///
+    /// The failure this catches is silent and easy to miss: swscale converts
+    /// matrices and pixel formats happily but cannot convert a transfer
+    /// function, so a PQ or HLG frame pushed straight through lands as BT.709
+    /// values roughly half as bright. Measured on this fixture, mean luma is
+    /// 122 untone-mapped against 227 tone-mapped.
+    ///
+    /// Asserting the *tags* would not catch it — they would be right either
+    /// way. So this asserts brightness.
+    #[test]
+    fn an_hdr_source_is_tone_mapped_not_just_retagged() {
+        let source = FfmpegProber
+            .probe(&fixture("hlg-bt2020.mkv"))
+            .expect("probe the fixture");
+        assert!(
+            source.color.transfer.is_hdr(),
+            "the fixture is not tagged HDR; this test would prove nothing"
+        );
+
+        let (_dir, output, proxy) = encode("hlg-bt2020.mkv", 180);
+
+        // Still normalized, as §13.1 requires.
+        assert_eq!(proxy.color.bit_depth, 8);
+        assert!(!proxy.color.transfer.is_hdr(), "the proxy is still HDR");
+
+        // And actually bright. Decode a frame and measure it.
+        let mut decoder = crate::FfmpegDecoder::new(1).expect("decoder");
+        crate::MediaDecoder::open(&mut decoder, &proxy).expect("open the proxy");
+        let frame = crate::MediaDecoder::decode_frame(&mut decoder, &crate::NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+
+        let crate::FrameStorage::System { data, .. } = &frame.storage else {
+            panic!("expected a RAM frame");
+        };
+        let mean: f64 = data
+            .chunks_exact(4)
+            .map(|p| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) as f64 / 3.0)
+            .sum::<f64>()
+            / (data.len() / 4) as f64;
+
+        assert!(
+            mean > 150.0,
+            "proxy of an HDR source has mean luma {mean:.1}; it was not tone-mapped \
+             (untone-mapped measures ~122, tone-mapped ~227)"
+        );
+        let _ = output;
     }
 
     /// §13.1: "A proxy must preserve duration, timing, audio sync, aspect

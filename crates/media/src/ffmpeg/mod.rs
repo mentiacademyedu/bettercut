@@ -25,6 +25,7 @@
 
 mod decode;
 mod encode;
+mod filter;
 mod probe;
 mod raii;
 
