@@ -25,6 +25,9 @@ pub enum EditorError {
     #[error("no clip {0} on that track")]
     ClipNotFound(ClipId),
 
+    #[error("no media {0} in this project")]
+    MediaNotFound(bettercut_foundation::MediaId),
+
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 

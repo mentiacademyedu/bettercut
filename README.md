@@ -17,7 +17,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **2 — Media import** | ✅ Probing, library, poster thumbnails, audio waveforms |
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio play in sync; decode-ahead and hardware decode still open |
-| **5 — Persistence** | ✅ Journal, snapshots, crash recovery; media relink still open |
+| **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
 | 6 — Export | ⛔ Blocked on §0.1 legal review |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
@@ -70,6 +70,14 @@ it the moment it lands and falls back to the original if it is missing. Original
 are never touched, and export will always use them. The Inspector's **Proxies**
 section turns this off or changes the quality; the status bar shows progress
 while it runs.
+
+Moved media can be found again (§66). Files that have gone are marked on open,
+and the browser offers **Locate…** for one file or **Locate folder…** for all of
+them — matching by name and confirming by size, so a different file that happens
+to share a name is left alone rather than swapped in under existing cuts.
+Relinking changes only the location: duration, resolution and colour stay as
+imported, because relinking is meant to repair a project, not redefine what its
+clips contain. A whole folder undoes in one step.
 
 Work survives a crash. Every command is appended to a journal as it executes
 (§38.2), so a process that dies loses at most the one edit in flight rather than

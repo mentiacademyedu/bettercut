@@ -367,6 +367,90 @@ impl Editor {
         Some((resolution, rate))
     }
 
+    /// Point one asset at a file the user located (§66).
+    ///
+    /// Reads the new file's size here, outside the command, so the command
+    /// itself stays deterministic for §38.2's replay.
+    pub fn relink_media(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        path: impl AsRef<Path>,
+    ) -> Result<(), EditorError> {
+        let path = path.as_ref().to_path_buf();
+        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        self.dispatch(Command::RelinkMedia {
+            media,
+            path,
+            file_size,
+        })
+    }
+
+    /// "Locate folder" (§66): relink every missing asset found in `folder`.
+    ///
+    /// Matching is by file name, confirmed by size where one was recorded. That
+    /// is deliberately conservative — a same-named file of a different size is
+    /// a different file, and silently swapping it under existing cuts would be
+    /// worse than leaving the media missing.
+    ///
+    /// One undo step for the whole folder (§79): the user performed one action.
+    /// Returns how many were relinked.
+    pub fn relink_from_folder(&mut self, folder: impl AsRef<Path>) -> Result<usize, EditorError> {
+        let folder = folder.as_ref();
+
+        // Non-recursive. Walking a whole drive from a mis-chosen folder would
+        // hang the UI, and §66 asks for "locate folder", not "search the disk".
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return Ok(0);
+        };
+        let candidates: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+
+        let mut commands = Vec::new();
+        for asset in self.project.media.iter().filter(|m| m.missing) {
+            let Some(found) = candidates
+                .iter()
+                .find(|c| asset.matches_relink_candidate(c))
+            else {
+                continue;
+            };
+            commands.push(Command::RelinkMedia {
+                media: asset.id,
+                path: found.clone(),
+                file_size: std::fs::metadata(found).map(|m| m.len()).unwrap_or(0),
+            });
+        }
+
+        let count = commands.len();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        let label = if count == 1 {
+            "Relink Media".to_owned()
+        } else {
+            format!("Relink {count} Files")
+        };
+        self.dispatch_group(label, commands)?;
+        Ok(count)
+    }
+
+    /// Re-check every asset against the filesystem (§66).
+    ///
+    /// Returns how many are still missing. Not a command: it observes the world
+    /// rather than changing the user's project, and replaying an observation
+    /// would be meaningless.
+    pub fn refresh_missing_media(&mut self) -> usize {
+        let missing = self.project.refresh_missing_media();
+        for asset in self.project.media.iter().filter(|m| m.missing) {
+            self.events.emit(Event::MediaMissing(asset.id));
+        }
+        self.events.emit(Event::ProjectChanged);
+        missing
+    }
+
     /// Set the active sequence's output format (§8, §36).
     pub fn set_sequence_format(
         &mut self,
@@ -477,6 +561,12 @@ impl Editor {
             Command::RenameProject { name } => Ok(Box::new(ops::RenameProject::new(name))),
 
             Command::ChangeSetting { change } => Ok(Box::new(ops::ChangeSetting::new(change))),
+
+            Command::RelinkMedia {
+                media,
+                path,
+                file_size,
+            } => Ok(Box::new(ops::RelinkMedia::new(media, path, file_size))),
 
             Command::SetSequenceFormat {
                 sequence,

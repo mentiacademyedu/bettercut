@@ -104,6 +104,17 @@ pub enum Command {
     ChangeSetting {
         change: SettingChange,
     },
+    /// Point an asset at a file that has moved (§66).
+    ///
+    /// Carries the new size rather than re-reading it, because §38.2 replays
+    /// commands after a crash: a command that stats the filesystem would
+    /// produce a different result on replay than it did when the user ran it.
+    /// Validation belongs to whoever builds the command, not to replaying it.
+    RelinkMedia {
+        media: bettercut_foundation::MediaId,
+        path: std::path::PathBuf,
+        file_size: u64,
+    },
     /// Change a sequence's output format (§8, §36).
     ///
     /// Both together, because they are one decision from the user's side —

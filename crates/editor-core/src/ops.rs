@@ -5,7 +5,7 @@
 //! every edit."
 
 use bettercut_foundation::{
-    ClipId, FrameRate, MediaTime, SequenceId, TimelineTime, TrackId, ticks_per_frame,
+    ClipId, FrameRate, MediaId, MediaTime, SequenceId, TimelineTime, TrackId, ticks_per_frame,
 };
 use bettercut_project_format::Project;
 use bettercut_timeline::{
@@ -39,6 +39,11 @@ pub fn build_for_replay(
     Ok(match command {
         Command::RenameProject { name } => Box::new(RenameProject::new(name)),
         Command::ChangeSetting { change } => Box::new(ChangeSetting::new(change)),
+        Command::RelinkMedia {
+            media,
+            path,
+            file_size,
+        } => Box::new(RelinkMedia::new(media, path, file_size)),
         Command::SetSequenceFormat {
             sequence,
             resolution,
@@ -198,6 +203,90 @@ impl EditorCommand for RenameProject {
 
     fn label(&self) -> String {
         "Rename Project".to_owned()
+    }
+}
+
+// --------------------------------------------------------------------------
+
+/// Point an asset at a moved file (§66).
+///
+/// Only the location changes. Everything decoded from the file — duration,
+/// resolution, colour, codecs — is left exactly as imported, because relinking
+/// is meant to restore a project to working order, not to silently redefine the
+/// media underneath clips that were cut against it. A genuinely different file
+/// should be imported, not relinked.
+#[derive(Debug)]
+pub struct RelinkMedia {
+    media: MediaId,
+    path: std::path::PathBuf,
+    file_size: u64,
+    /// Where it pointed before, so undo restores the broken state exactly —
+    /// including `missing`, which is what makes the undo honest.
+    previous: Option<(std::path::PathBuf, String, u64, bool)>,
+}
+
+impl RelinkMedia {
+    pub fn new(media: MediaId, path: std::path::PathBuf, file_size: u64) -> Self {
+        Self {
+            media,
+            path,
+            file_size,
+            previous: None,
+        }
+    }
+}
+
+impl EditorCommand for RelinkMedia {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let asset = project
+            .media
+            .iter_mut()
+            .find(|m| m.id == self.media)
+            .ok_or(EditorError::MediaNotFound(self.media))?;
+
+        self.previous = Some((
+            asset.path.clone(),
+            asset.file_name.clone(),
+            asset.file_size,
+            asset.missing,
+        ));
+
+        // The name is taken from the new path: a user who renamed the file as
+        // well as moving it would otherwise keep seeing the old name forever.
+        asset.file_name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| asset.file_name.clone());
+        asset.path = self.path.clone();
+        asset.file_size = self.file_size;
+        asset.missing = false;
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let (path, file_name, file_size, missing) =
+            self.previous.take().ok_or(EditorError::NotExecuted)?;
+        let asset = project
+            .media
+            .iter_mut()
+            .find(|m| m.id == self.media)
+            .ok_or(EditorError::MediaNotFound(self.media))?;
+
+        asset.path = path;
+        asset.file_name = file_name;
+        asset.file_size = file_size;
+        asset.missing = missing;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "Relink {}",
+            self.path
+                .file_name()
+                .map_or_else(|| "media".to_owned(), |n| n.to_string_lossy().into_owned())
+        )
     }
 }
 

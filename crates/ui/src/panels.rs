@@ -202,6 +202,44 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         .collect();
 
     let mut place: Option<MediaId> = None;
+    let mut relink: Option<MediaId> = None;
+
+    // One banner rather than one button per broken asset: media usually moves a
+    // folder at a time, so the folder scan is the action that actually fixes
+    // the project (§66 "locate folder").
+    let missing_count = assets.iter().filter(|a| a.2).count();
+    if missing_count > 0 {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{missing_count} file(s) missing"))
+                    .color(theme::ERROR_TEXT),
+            );
+            if ui
+                .button("Locate folder…")
+                .on_hover_text(
+                    "Pick the folder they moved to. Files are matched by name and \
+                     confirmed by size, so a different file of the same name is \
+                     left alone.",
+                )
+                .clicked()
+            {
+                relink_folder(editor, state);
+            }
+            if ui
+                .button("Re-check")
+                .on_hover_text("Look again — useful after reconnecting a drive")
+                .clicked()
+            {
+                let still = editor.refresh_missing_media();
+                state.info(if still == 0 {
+                    "All media found".to_owned()
+                } else {
+                    format!("{still} file(s) still missing")
+                });
+            }
+        });
+        ui.separator();
+    }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (id, name, missing, no_duration, duration) in &assets {
@@ -234,6 +272,12 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     );
                 }
 
+                // §66: a missing file needs a way back, right where the problem
+                // is visible. Without it the project is simply broken.
+                if *missing && ui.button("Locate…").clicked() {
+                    relink = Some(*id);
+                }
+
                 let can_place = !*no_duration && !*missing;
                 if ui
                     .add_enabled(can_place, egui::Button::new("Add to timeline"))
@@ -251,6 +295,70 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
     if let Some(id) = place {
         place_on_timeline(editor, state, id);
+    }
+    if let Some(id) = relink {
+        relink_one(editor, state, id);
+    }
+}
+
+/// §66 "locate file": point one asset at a file the user picks.
+fn relink_one(editor: &mut Editor, state: &mut UiState, media: MediaId) {
+    let name = editor
+        .project()
+        .media_asset(media)
+        .map(|m| m.file_name.clone())
+        .unwrap_or_default();
+
+    let Some(path) = rfd::FileDialog::new()
+        .set_title(format!("Locate {name}"))
+        .pick_file()
+    else {
+        return;
+    };
+
+    // Warn rather than refuse. The user explicitly chose this file, and they
+    // may know something we do not — a re-encode, a trimmed master. §66's size
+    // check exists to stop *automatic* matching, not to overrule a person.
+    let mismatch = editor
+        .project()
+        .media_asset(media)
+        .is_some_and(|m| !m.matches_relink_candidate(&path));
+
+    match editor.relink_media(media, &path) {
+        Ok(()) => {
+            state.needs_repaint = true;
+            if mismatch {
+                state.error(format!(
+                    "Relinked to {} — it does not match the original's name and size",
+                    path.display()
+                ));
+            } else {
+                state.info(format!("Relinked {name}"));
+            }
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// §66 "locate folder": relink everything that moved together.
+fn relink_folder(editor: &mut Editor, state: &mut UiState) {
+    let Some(folder) = rfd::FileDialog::new()
+        .set_title("Locate the folder your media moved to")
+        .pick_folder()
+    else {
+        return;
+    };
+
+    match editor.relink_from_folder(&folder) {
+        Ok(0) => state.error(format!(
+            "Nothing in {} matched the missing files by name and size",
+            folder.display()
+        )),
+        Ok(n) => {
+            state.needs_repaint = true;
+            state.info(format!("Relinked {n} file(s)"));
+        }
+        Err(err) => state.error(err.to_string()),
     }
 }
 
