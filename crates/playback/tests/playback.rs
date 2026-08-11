@@ -372,6 +372,52 @@ fn a_thumbnail_is_generated_and_cached() {
     );
 }
 
+/// §12: the waveform has to cover the *whole* file. A short one would draw a
+/// clip that goes flat partway through, which reads as damaged audio.
+#[test]
+fn a_waveform_covers_the_whole_file() {
+    use bettercut_cache::{CACHE_LIMIT_5_GB, CacheLayout, CacheStore, Waveform};
+    use bettercut_playback::WaveformJob;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = CacheStore::new(CacheLayout::new(dir.path()), CACHE_LIMIT_5_GB);
+    let asset = FfmpegProber.probe(&fixture("tone-48k.wav")).expect("probe");
+    let expected = asset.duration.as_seconds_f64();
+
+    let job = WaveformJob::new(&asset, &cache, 1).expect("a job");
+    let (scheduler, events) = bettercut_jobs::JobScheduler::new(1);
+    scheduler.submit(Box::new(job));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut finished = false;
+    while std::time::Instant::now() < deadline {
+        match events.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(bettercut_jobs::JobEvent::Finished { .. }) => {
+                finished = true;
+                break;
+            }
+            Ok(bettercut_jobs::JobEvent::Failed { message, .. }) => {
+                panic!("waveform job failed: {message}")
+            }
+            _ => {}
+        }
+    }
+    assert!(finished, "the waveform job never finished");
+
+    let waveform = Waveform::read(&cache.layout().waveform_file(asset.id)).expect("read");
+    let covered = waveform.duration_seconds();
+    assert!(
+        (covered - expected).abs() < 0.1,
+        "waveform covers {covered:.2}s of a {expected:.2}s file"
+    );
+
+    // The fixture is a 440 Hz tone, so it must not read as silence.
+    assert!(
+        waveform.peaks.iter().any(|p| p.magnitude() > 0.1),
+        "a tone analysed as silence"
+    );
+}
+
 /// Audio has no picture; queuing a thumbnail for it would fail every time.
 #[test]
 fn audio_gets_no_thumbnail_job() {

@@ -152,6 +152,7 @@ impl App {
             proxies.source().cache,
             bettercut_ui::media_jobs::THUMBNAIL_WIDTH,
         );
+        ui.waveforms.attach(proxies.source().cache);
         // Anything already in the project may need a proxy (§13).
         for message in proxies.scan(&editor) {
             ui.info(message);
@@ -193,13 +194,17 @@ impl eframe::App for App {
             // Drop the remembered "no thumbnail yet" so it loads next frame.
             self.ui.thumbnails.invalidate(*media);
         }
+        for media in &update.waveforms {
+            self.ui.waveforms.invalidate(*media);
+        }
         for message in update.messages {
             self.ui.info(message);
         }
         for failure in update.failures {
             self.ui.error(failure);
         }
-        if !update.ready.is_empty() || !update.thumbnails.is_empty() {
+        if !update.ready.is_empty() || !update.thumbnails.is_empty() || !update.waveforms.is_empty()
+        {
             self.ui.needs_repaint = true;
         }
 

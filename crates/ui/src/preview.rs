@@ -43,6 +43,9 @@ pub struct Preview {
     last_quality_change: std::time::Instant,
     dropped_total: u64,
     has_content: bool,
+    /// Playback state last frame, so stopping can trigger a full-quality
+    /// redraw of the frame the user is left looking at.
+    was_playing: bool,
 }
 
 impl Preview {
@@ -101,6 +104,7 @@ impl Preview {
             last_quality_change: std::time::Instant::now(),
             dropped_total: 0,
             has_content: false,
+            was_playing: false,
         })
     }
 
@@ -166,6 +170,13 @@ impl Preview {
             }
         }
 
+        // Stopping is a reason to redraw: the frame on screen was rendered at
+        // playback quality, and now there is time to do it properly.
+        if self.was_playing && !playing {
+            self.last_rendered = None;
+        }
+        self.was_playing = playing;
+
         let position = editor.playhead();
         let needs_render = self.last_rendered != Some(position);
         if needs_render {
@@ -173,6 +184,23 @@ impl Preview {
         }
 
         playing || needs_render
+    }
+
+    /// The scale to render at right now (§16, §17).
+    ///
+    /// §17's reduction exists to keep *playback* smooth — it trades resolution
+    /// for the ability to hit the frame deadline. A paused preview has no
+    /// deadline, so the trade buys nothing and costs everything: the still
+    /// frame the user is actually looking at, and scrubbing to, would sit at a
+    /// quarter of each dimension. On a 1080p sequence that is 480x270 stretched
+    /// across the panel, which reads as "the preview is broken" rather than as
+    /// an adaptive quality system doing its job.
+    fn render_quality(&self) -> PreviewQuality {
+        if self.clock.is_playing() {
+            self.quality
+        } else {
+            PreviewQuality::Full
+        }
     }
 
     fn pump_audio(&mut self, editor: &Editor) {
@@ -191,8 +219,8 @@ impl Preview {
         };
 
         // Keep the preview's aspect matched to the sequence, scaled by §17's
-        // quality setting.
-        let wanted = self.quality.apply(sequence.resolution);
+        // quality setting while playing and full while paused.
+        let wanted = self.render_quality().apply(sequence.resolution);
         match self.compositor.set_resolution(wanted) {
             Ok(true) => self.reregister_texture(),
             Ok(false) => {}

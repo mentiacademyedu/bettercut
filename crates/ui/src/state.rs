@@ -127,6 +127,9 @@ pub struct UiState {
     /// Poster thumbnails, uploaded on demand (§12).
     pub thumbnails: crate::thumbnails::ThumbnailStore,
 
+    /// Audio peaks for drawing waveforms on audio clips (§12, §53).
+    pub waveforms: crate::waveforms::WaveformStore,
+
     /// The graphics adapter in use (§49), set once at startup.
     ///
     /// `None` when wgpu failed entirely and there is no preview (§50).
@@ -155,6 +158,7 @@ impl Default for UiState {
             needs_repaint: true,
             context: None,
             thumbnails: crate::thumbnails::ThumbnailStore::default(),
+            waveforms: crate::waveforms::WaveformStore::default(),
             gpu: None,
             proxy_progress: None,
         }

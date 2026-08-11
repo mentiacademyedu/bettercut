@@ -13,6 +13,7 @@ pub mod state;
 pub mod theme;
 pub mod thumbnails;
 pub mod timeline;
+pub mod waveforms;
 
 pub use media_jobs::{MediaJobs, MediaUpdate};
 pub use preview::Preview;
@@ -64,6 +65,8 @@ pub fn draw(
         .default_size(320.0)
         .min_size(140.0)
         .show(ui, |ui| {
+            panels::transport(ui, editor, state, preview.as_deref_mut());
+            ui.separator();
             timeline::draw(ui, editor, state);
         });
 

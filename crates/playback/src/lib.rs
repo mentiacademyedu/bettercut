@@ -19,6 +19,7 @@ pub mod error;
 pub mod proxy_job;
 pub mod sync;
 pub mod thumbnail_job;
+pub mod waveform_job;
 
 pub use audio_source::AudioSource;
 pub use cache::{FrameCache, FrameKey};
@@ -27,3 +28,4 @@ pub use error::PlaybackError;
 pub use proxy_job::ProxyJob;
 pub use sync::{FramePlan, SyncDecision, plan_frame};
 pub use thumbnail_job::ThumbnailJob;
+pub use waveform_job::WaveformJob;

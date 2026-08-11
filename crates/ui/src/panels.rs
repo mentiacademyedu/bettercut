@@ -567,6 +567,130 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     });
 }
 
+/// Transport controls, sitting directly above the timeline (§58).
+///
+/// Duplicates the toolbar's play button on purpose: this is where the eye
+/// already is while cutting, and reaching to the top of the window to pause is
+/// the kind of friction §88 says an editor must not have.
+///
+/// Labels are ASCII words rather than transport glyphs — egui's bundled font
+/// has no ▶ or ⏮, and a missing glyph renders as an empty box.
+pub fn transport(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    preview: Option<&mut crate::Preview>,
+) {
+    /// §55's `playback.skip`. Ten seconds is the conventional jump, and at
+    /// 960,000 ticks/second it is exact.
+    const SKIP: i64 = 10;
+
+    ui.horizontal(|ui| {
+        // Collect intent first, apply once at the end: `preview` is a single
+        // mutable borrow, and both the transport and the seek need it.
+        let mut seek_to: Option<TimelineTime> = None;
+        let mut toggle_play = false;
+        let playhead = editor.playhead();
+        let duration = editor
+            .active_sequence()
+            .map_or(TimelineTime::ZERO, |s| s.duration());
+        let at_start = playhead == TimelineTime::ZERO;
+
+        if ui
+            .add_enabled(!at_start, egui::Button::new("|<"))
+            .on_hover_text("Go to start (Home)")
+            .clicked()
+        {
+            seek_to = Some(TimelineTime::ZERO);
+        }
+        if ui
+            .add_enabled(!at_start, egui::Button::new("-10s"))
+            .on_hover_text("Back ten seconds")
+            .clicked()
+        {
+            // Saturating at zero rather than wrapping: a playhead before the
+            // start of the timeline is not a position.
+            seek_to = Some(
+                TimelineTime::from_ticks(
+                    playhead.ticks() - TimelineTime::from_seconds(SKIP).ticks(),
+                )
+                .max(TimelineTime::ZERO),
+            );
+        }
+
+        let playing = preview.as_ref().is_some_and(|p| p.is_playing());
+        let label = if playing { "Pause" } else { "Play" };
+        if ui
+            .add(egui::Button::new(egui::RichText::new(label).strong()))
+            .on_hover_text("Space")
+            .clicked()
+        {
+            toggle_play = true;
+        }
+
+        if ui
+            .button("+10s")
+            .on_hover_text("Forward ten seconds")
+            .clicked()
+        {
+            seek_to = Some(TimelineTime::from_ticks(
+                playhead.ticks() + TimelineTime::from_seconds(SKIP).ticks(),
+            ));
+        }
+        if ui
+            .add_enabled(playhead < duration, egui::Button::new(">|"))
+            .on_hover_text("Go to end (End)")
+            .clicked()
+        {
+            seek_to = Some(duration);
+        }
+
+        ui.separator();
+        ui.label(
+            egui::RichText::new(playhead.format_timecode())
+                .monospace()
+                .size(14.0),
+        );
+        ui.label(
+            egui::RichText::new(format!("/ {}", duration.format_timecode()))
+                .monospace()
+                .small()
+                .color(theme::DISABLED),
+        );
+
+        let width = ui.available_width().max(400.0);
+
+        match preview {
+            Some(preview) => {
+                if let Some(position) = seek_to {
+                    editor.set_playhead(position);
+                    // Keep the clock with the playhead, or resuming would jump
+                    // back to wherever playback last was (§20a.1).
+                    preview.seek_to(editor.playhead());
+                }
+                if toggle_play {
+                    preview.set_playing(editor, !playing);
+                    state.info(if playing { "Paused" } else { "Playing" });
+                }
+            }
+            None => {
+                // §50: no renderer is not a reason to stop the playhead moving.
+                if let Some(position) = seek_to {
+                    editor.set_playhead(position);
+                }
+                if toggle_play {
+                    state.error("No preview renderer");
+                }
+            }
+        }
+
+        if seek_to.is_some() || toggle_play {
+            state.scroll_to_reveal(editor.playhead(), width);
+            state.needs_repaint = true;
+        }
+    });
+}
+
 /// One asset's poster image, or a placeholder of the same size.
 ///
 /// The placeholder matters: without it the row height changes the moment a

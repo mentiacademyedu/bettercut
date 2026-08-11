@@ -25,4 +25,8 @@ pub enum CacheError {
     /// caller deletes the file and asks for it again rather than failing.
     #[error("malformed thumbnail: {detail}")]
     MalformedThumbnail { detail: String },
+
+    /// A cached waveform is not one, or does not match its own header.
+    #[error("malformed waveform: {detail}")]
+    MalformedWaveform { detail: String },
 }

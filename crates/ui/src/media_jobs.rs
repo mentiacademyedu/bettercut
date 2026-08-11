@@ -26,7 +26,7 @@ use bettercut_editor_core::foundation::MediaId;
 use bettercut_editor_core::media::ProxyResolution;
 use bettercut_editor_core::project_format::PerformanceMode;
 use bettercut_jobs::{JobEvent, JobId, JobScheduler};
-use bettercut_playback::{ProxyJob, ProxySource, ThumbnailJob};
+use bettercut_playback::{ProxyJob, ProxySource, ThumbnailJob, WaveformJob};
 
 /// What finished this frame, for the caller to act on.
 #[derive(Debug, Default)]
@@ -35,6 +35,8 @@ pub struct MediaUpdate {
     pub ready: Vec<MediaId>,
     /// Thumbnails that became readable; any cached "not there" must be dropped.
     pub thumbnails: Vec<MediaId>,
+    /// Waveforms that became readable.
+    pub waveforms: Vec<MediaId>,
     /// Messages worth showing.
     pub messages: Vec<String>,
     pub failures: Vec<String>,
@@ -44,6 +46,7 @@ impl MediaUpdate {
     pub fn is_empty(&self) -> bool {
         self.ready.is_empty()
             && self.thumbnails.is_empty()
+            && self.waveforms.is_empty()
             && self.messages.is_empty()
             && self.failures.is_empty()
     }
@@ -70,6 +73,8 @@ pub struct MediaJobs {
     /// slow work — a thumbnail finishes in milliseconds and would make the
     /// proxy progress bar jump around.
     thumbnails: HashMap<JobId, MediaId>,
+    /// Waveform analysis, tracked separately for the same reason.
+    waveforms: HashMap<JobId, MediaId>,
     /// Latest progress per job, for the status bar (§42).
     progress: HashMap<JobId, f32>,
     /// Assets already considered, so re-importing does not requeue.
@@ -90,6 +95,7 @@ impl MediaJobs {
             threads,
             in_flight: HashMap::new(),
             thumbnails: HashMap::new(),
+            waveforms: HashMap::new(),
             progress: HashMap::new(),
             considered: std::collections::HashSet::new(),
             warned_about_space: false,
@@ -178,6 +184,12 @@ impl MediaJobs {
                 self.thumbnails.insert(id, media);
             }
 
+            if let Some(job) = WaveformJob::new(asset, &self.cache, 1) {
+                let media = job.media();
+                let id = self.scheduler.submit(Box::new(job));
+                self.waveforms.insert(id, media);
+            }
+
             if !proxies_enabled || asset.missing || !asset.should_generate_proxy() {
                 continue;
             }
@@ -242,6 +254,10 @@ impl MediaJobs {
                         update.thumbnails.push(media);
                         continue;
                     }
+                    if let Some(media) = self.waveforms.remove(&id) {
+                        update.waveforms.push(media);
+                        continue;
+                    }
                     if let Some(media) = self.in_flight.remove(&id) {
                         update.ready.push(media);
                     }
@@ -251,6 +267,10 @@ impl MediaJobs {
                 }
                 JobEvent::Failed { id, message } => {
                     self.progress.remove(&id);
+                    if self.waveforms.remove(&id).is_some() {
+                        tracing::warn!(%message, "waveform analysis failed");
+                        continue;
+                    }
                     if self.thumbnails.remove(&id).is_some() {
                         // A missing thumbnail costs the user a picture in the
                         // browser, not the ability to edit. §74's "never
@@ -271,6 +291,7 @@ impl MediaJobs {
                     self.progress.remove(&id);
                     self.in_flight.remove(&id);
                     self.thumbnails.remove(&id);
+                    self.waveforms.remove(&id);
                 }
                 JobEvent::Started { .. } => {}
             }

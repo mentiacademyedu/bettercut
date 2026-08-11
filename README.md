@@ -14,7 +14,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 |---|---|
 | **0 — Frame transport spike** | ✅ Done — [ADR 005](docs/adr/005-ui-shell.md) |
 | **1 — Application skeleton** | ✅ Done — reference machine recorded (§52.1) |
-| **2 — Media import** | ✅ Probing, library, poster thumbnails; waveforms still open |
+| **2 — Media import** | ✅ Probing, library, poster thumbnails, audio waveforms |
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio play in sync; decode-ahead and hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery; media relink still open |
@@ -44,7 +44,15 @@ keyboard shortcut and shows that shortcut beside it.
 
 Playback works: the preview shows composited video, audio plays through the
 device, and the **audio device is the master clock** (§20a.1) — the picture
-follows it, never a wall-clock timer.
+follows it, never a wall-clock timer. Transport controls sit directly above the
+timeline — start, ±10 s, play/pause, end — with the playhead and sequence
+duration beside them.
+
+§16's preview scaling applies **only while playing**. Reducing resolution buys
+the ability to hit a frame deadline, and a paused frame has no deadline, so the
+still image you are actually looking at and scrubbing through renders at full
+size. Playback still starts at quarter scale and climbs as frames arrive on
+time (§17).
 
 The sequence has a real format. Resolution and frame rate are set from the
 Inspector — 16:9, 9:16, 1:1 and 4K presets, and the nine frame rates §9's
@@ -76,8 +84,15 @@ picture. They are generated in the background on the same job pool as proxies
 cached as raw RGBA, which costs ~57 KB each and avoids pulling in an image codec
 just to decode back to the bytes we started with.
 
-**What does not work yet:** export, waveforms, effects, and text. Multi-selection
-is Ctrl+click only — there is no rubber-band box select, and no filmstrip on
+Audio clips show waveforms, analysed once in the background and cached as peaks
+— 200 buckets per second, each holding the minimum and maximum it covers, which
+is what produces the familiar mirrored shape. Storing the mean instead would
+draw a thin line through every loud passage, because audio is symmetric around
+zero. A minute costs 24 KB. The timeline reads peaks only: a repaint never opens
+a media file, and a clip whose analysis has not finished draws as a plain block.
+
+**What does not work yet:** export, effects, and text. Multi-selection is
+Ctrl+click only — there is no rubber-band box select, and no filmstrip on
 timeline clips yet.
 
 Two playback limits worth knowing before testing with your own footage:

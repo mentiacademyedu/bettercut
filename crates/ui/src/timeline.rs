@@ -9,9 +9,10 @@
 //!
 //! Rules from §53 that are easy to break later:
 //!
-//! * **A timeline repaint must never trigger a decode.** Waveforms and
-//!   thumbnails read from cache only. Those caches do not exist yet, so nothing
-//!   here draws them — rather than drawing them the expensive way for now.
+//! * **A timeline repaint must never trigger a decode.** Waveforms are drawn
+//!   from cached peaks and nothing else; the peaks are loaded once, before the
+//!   draw pass, and a clip whose analysis has not finished simply draws as a
+//!   plain block. Nothing here ever opens a media file.
 //! * Pixel↔tick conversion is integer arithmetic (§74). `ticks_per_pixel` comes
 //!   from a fixed ladder, never from a float ratio.
 //!
@@ -22,7 +23,7 @@
 //! one gesture; §11's history is meant to hold user intentions, not mouse
 //! samples.
 
-use bettercut_editor_core::foundation::{ClipId, TimelineTime, TrackId};
+use bettercut_editor_core::foundation::{ClipId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::project_format::Project;
 use bettercut_editor_core::timeline::{Sequence, TimelineRange, TrackKind, snap};
 use bettercut_editor_core::{Editor, TrimEdge};
@@ -128,6 +129,29 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
 
     handle_scroll_and_zoom(ui, &response, state);
 
+    // Load the peaks the visible audio clips need *before* the draw pass, which
+    // borrows the project immutably and cannot also borrow `state` mutably.
+    // Collecting the ids first ends that borrow.
+    let audio_media: Vec<bettercut_editor_core::foundation::MediaId> = editor
+        .project()
+        .active()
+        .map(|sequence| {
+            let mut ids: Vec<_> = sequence
+                .audio_tracks
+                .iter()
+                .flat_map(|t| t.clips().iter().map(|c| c.media_id))
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        })
+        .unwrap_or_default();
+
+    let waveforms: std::collections::HashMap<_, _> = audio_media
+        .into_iter()
+        .filter_map(|id| state.waveforms.get(id).map(|w| (id, w)))
+        .collect();
+
     let mut interaction = Interaction {
         pointer: response
             .interact_pointer_pos()
@@ -155,6 +179,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             sequence,
             lane_width,
             &mut interaction,
+            &waveforms,
         );
         draw_drag_preview(&painter, viewport, state, &lanes);
         draw_playhead(&painter, rect, viewport, playhead);
@@ -573,6 +598,10 @@ fn draw_lanes(
     sequence: &Sequence,
     lane_width: f32,
     interaction: &mut Interaction,
+    waveforms: &std::collections::HashMap<
+        bettercut_editor_core::foundation::MediaId,
+        std::sync::Arc<bettercut_cache::Waveform>,
+    >,
 ) -> Vec<LaneLayout> {
     let visible = viewport.visible_range(lane_width);
     let mut lanes = Vec::with_capacity(sequence.track_count());
@@ -605,6 +634,8 @@ fn draw_lanes(
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
                     body: theme::VIDEO_CLIP,
                     top: theme::VIDEO_CLIP_TOP,
+                    // Filmstrips on video clips are a separate feature (§53).
+                    waveform: None,
                 },
                 clip.id,
                 track.id,
@@ -644,6 +675,9 @@ fn draw_lanes(
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
                     body: theme::AUDIO_CLIP,
                     top: theme::AUDIO_CLIP_TOP,
+                    waveform: waveforms
+                        .get(&clip.media_id)
+                        .map(|w| (w.as_ref(), clip.source.start)),
                 },
                 clip.id,
                 track.id,
@@ -724,6 +758,63 @@ struct ClipVisual<'a> {
     dragging: bool,
     body: Color32,
     top: Color32,
+    /// Peaks plus where in the media this clip starts, so a trimmed clip shows
+    /// the part of the waveform it actually plays.
+    waveform: Option<(&'a bettercut_cache::Waveform, MediaTime)>,
+}
+
+/// Paint the peaks a clip covers, mirrored around its centre line.
+///
+/// One vertical segment per pixel column, each showing the loudest sample in
+/// that column. Drawing every peak instead would emit thousands of shapes for a
+/// clip a few hundred pixels wide, and they would land on the same pixels
+/// anyway — the column *is* the unit of resolution on screen.
+fn draw_waveform(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    viewport: Viewport,
+    waveform: &bettercut_cache::Waveform,
+    timeline_start: TimelineTime,
+    source_start: MediaTime,
+) {
+    if waveform.peaks.is_empty() || clip_rect.width() < 2.0 {
+        return;
+    }
+
+    let centre = clip_rect.center().y;
+    // Leave the top cap and a small margin alone so the shape reads as being
+    // inside the clip rather than overflowing it.
+    let half_height = ((clip_rect.height() - 10.0) / 2.0).max(1.0);
+    let per_second = f64::from(waveform.peaks_per_second);
+    let ticks_per_second = bettercut_editor_core::foundation::TICKS_PER_SECOND as f64;
+
+    // Bucket index for a timeline instant: back to the clip's start, forward to
+    // where that sits in the media, then into peaks.
+    let bucket_at = |x: f32| -> usize {
+        let tick = viewport.raw_tick_of(x);
+        let into_clip = (tick - timeline_start.ticks()).max(0);
+        let source_ticks = source_start.ticks() + into_clip;
+        ((source_ticks as f64 / ticks_per_second) * per_second) as usize
+    };
+
+    let mut segments = Vec::with_capacity(clip_rect.width() as usize + 1);
+    let mut x = clip_rect.left();
+    while x < clip_rect.right() {
+        let next = x + 1.0;
+        let peak = waveform.peak_over(bucket_at(x), bucket_at(next).max(bucket_at(x) + 1));
+        let magnitude = peak.magnitude();
+
+        // Always draw at least a hairline: a silent passage is information, and
+        // a gap in the middle of a clip reads as missing data.
+        let extent = (magnitude * half_height).max(0.5);
+        segments.push([Pos2::new(x, centre - extent), Pos2::new(x, centre + extent)]);
+        x = next;
+    }
+
+    let colour = theme::CLIP_TEXT.gamma_multiply(0.55);
+    for [from, to] in segments {
+        painter.line_segment([from, to], Stroke::new(1.0, colour));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -783,6 +874,18 @@ fn draw_clip(
         Pos2::new(clip_rect.right(), clip_rect.top() + 4.0),
     );
     painter.rect_filled(cap, theme::CLIP_CORNER_RADIUS, top);
+
+    // Under the label and over the body, so the file name stays readable.
+    if let Some((waveform, source_start)) = visual.waveform {
+        draw_waveform(
+            painter,
+            clip_rect,
+            viewport,
+            waveform,
+            visual.range.start,
+            source_start,
+        );
+    }
 
     if visual.selected {
         painter.rect_stroke(
