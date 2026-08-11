@@ -69,6 +69,28 @@ pub struct StatusMessage {
     pub is_error: bool,
 }
 
+/// A rubber-band selection in progress.
+///
+/// Held as screen positions rather than a time range because it is drawn as a
+/// rectangle: converting to time happens once, on release, when it is used.
+#[derive(Debug, Clone, Copy)]
+pub struct Marquee {
+    pub origin: egui::Pos2,
+    pub current: egui::Pos2,
+    /// Ctrl was held when the drag started: add to the selection rather than
+    /// replacing it, matching Ctrl+click.
+    pub additive: bool,
+    /// Set once the pointer actually moves. A press that never moves is a
+    /// click, and must still move the playhead rather than clearing it.
+    pub moved: bool,
+}
+
+impl Marquee {
+    pub fn rect(&self) -> egui::Rect {
+        egui::Rect::from_two_pos(self.origin, self.current)
+    }
+}
+
 /// Where a right-click landed on the timeline.
 ///
 /// Three cases, because the useful actions differ completely: a clip, a track's
@@ -106,6 +128,9 @@ pub struct UiState {
 
     /// The drag in progress, if any.
     pub drag: Option<DragState>,
+
+    /// A rubber-band selection being dragged out (§10 "Multi-select clips").
+    pub marquee: Option<Marquee>,
 
     /// Work found from a session that did not shut down cleanly (§39).
     ///
@@ -154,6 +179,7 @@ impl Default for UiState {
             show_diagnostics: false,
             snapping: true,
             drag: None,
+            marquee: None,
             pending_recovery: None,
             needs_repaint: true,
             context: None,

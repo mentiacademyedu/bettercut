@@ -152,6 +152,33 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         .filter_map(|id| state.waveforms.get(id).map(|w| (id, w)))
         .collect();
 
+    // Same reason as the waveforms: loading a texture needs `&mut state`, and
+    // the draw pass holds the project immutably.
+    let video_media: Vec<bettercut_editor_core::foundation::MediaId> = editor
+        .project()
+        .active()
+        .map(|sequence| {
+            let mut ids: Vec<_> = sequence
+                .video_tracks
+                .iter()
+                .flat_map(|t| t.clips().iter().map(|c| c.media_id))
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        })
+        .unwrap_or_default();
+
+    let strips: std::collections::HashMap<_, _> = video_media
+        .into_iter()
+        .filter_map(|id| {
+            state
+                .thumbnails
+                .filmstrip(ui.ctx(), id)
+                .map(|strip| (id, strip))
+        })
+        .collect();
+
     let mut interaction = Interaction {
         pointer: response
             .interact_pointer_pos()
@@ -180,8 +207,10 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             lane_width,
             &mut interaction,
             &waveforms,
+            &strips,
         );
         draw_drag_preview(&painter, viewport, state, &lanes);
+        draw_marquee(&painter, state);
         draw_playhead(&painter, rect, viewport, playhead);
 
         if sequence.clip_count() == 0 {
@@ -288,6 +317,54 @@ fn apply_interaction(
         return;
     }
 
+    // A press on empty lane space starts a rubber band (§10 "Multi-select").
+    // Captured on press like a clip drag, and only *becomes* a marquee once the
+    // pointer moves — a press that never moves is a click and must still put
+    // the playhead where the user clicked.
+    if state.marquee.is_none()
+        && state.drag.is_none()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && rect.contains(pos)
+        && pos.x >= viewport.origin_x
+        && pos.y >= rect.top() + theme::RULER_HEIGHT
+        && interaction.hit.is_none()
+    {
+        state.marquee = Some(crate::state::Marquee {
+            origin: pos,
+            current: pos,
+            additive: interaction.additive,
+            moved: false,
+        });
+        return;
+    }
+
+    if state.marquee.is_some() {
+        if response.dragged() {
+            if let Some(marquee) = state.marquee.as_mut() {
+                // A few pixels of travel is a shaky click, not a selection.
+                if (pos - marquee.origin).length() > 3.0 {
+                    marquee.moved = true;
+                }
+                marquee.current = pos;
+            }
+            state.needs_repaint = true;
+            return;
+        }
+
+        // Released. `drag_stopped` alone is unreliable when the pointer leaves
+        // the widget mid-drag, so the button state is checked directly.
+        if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            state.needs_repaint = true;
+            if let Some(marquee) = state.marquee.take()
+                && marquee.moved
+            {
+                select_within(marquee, viewport, lanes, editor, state);
+                return;
+            }
+            // Fall through: a press that never moved is an ordinary click.
+        }
+    }
+
     if pos.x < viewport.origin_x {
         return; // track-header column
     }
@@ -373,6 +450,68 @@ fn capture_context(
     state.context = Some(ContextTarget::Empty {
         at: viewport.tick_of(pos.x.max(viewport.origin_x)),
     });
+}
+
+/// Select every clip the rubber band touches (§10).
+///
+/// Works in time and track space rather than against the pixel rects the draw
+/// pass produced: a clip scrolled off the left edge is still *inside* the band
+/// if the band covers its span, and testing screen rectangles would miss it.
+fn select_within(
+    marquee: crate::state::Marquee,
+    viewport: Viewport,
+    lanes: &[LaneLayout],
+    editor: &Editor,
+    state: &mut UiState,
+) {
+    let rect = marquee.rect();
+    let start = viewport.tick_of(rect.left());
+    // At least one tick wide, or a vertical band would select nothing.
+    let end = TimelineTime::from_ticks(
+        viewport
+            .tick_of(rect.right())
+            .ticks()
+            .max(start.ticks() + 1),
+    );
+    let band = TimelineRange { start, end };
+
+    if !marquee.additive {
+        state.clear_selection();
+    }
+
+    let Some(sequence) = editor.active_sequence() else {
+        return;
+    };
+
+    let mut selected = 0;
+    for lane in lanes
+        .iter()
+        .filter(|l| l.rect.top() < rect.bottom() && l.rect.bottom() > rect.top())
+    {
+        match lane.kind {
+            TrackKind::Video => {
+                if let Some(track) = sequence.video_tracks.iter().find(|t| t.id == lane.track) {
+                    for clip in track.clips_in_range(band) {
+                        state.selected_clips.insert(clip.id);
+                        selected += 1;
+                    }
+                }
+            }
+            TrackKind::Audio => {
+                if let Some(track) = sequence.audio_tracks.iter().find(|t| t.id == lane.track) {
+                    for clip in track.clips_in_range(band) {
+                        state.selected_clips.insert(clip.id);
+                        selected += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    state.needs_repaint = true;
+    if selected > 0 {
+        state.info(format!("Selected {selected} clip(s)"));
+    }
 }
 
 fn begin_drag(hit: ClipHit, pos: Pos2, additive: bool, viewport: Viewport, state: &mut UiState) {
@@ -602,6 +741,10 @@ fn draw_lanes(
         bettercut_editor_core::foundation::MediaId,
         std::sync::Arc<bettercut_cache::Waveform>,
     >,
+    strips: &std::collections::HashMap<
+        bettercut_editor_core::foundation::MediaId,
+        (egui::TextureHandle, u32),
+    >,
 ) -> Vec<LaneLayout> {
     let visible = viewport.visible_range(lane_width);
     let mut lanes = Vec::with_capacity(sequence.track_count());
@@ -634,8 +777,13 @@ fn draw_lanes(
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
                     body: theme::VIDEO_CLIP,
                     top: theme::VIDEO_CLIP_TOP,
-                    // Filmstrips on video clips are a separate feature (§53).
                     waveform: None,
+                    filmstrip: strips
+                        .get(&clip.media_id)
+                        .map(|(handle, tiles)| (handle, *tiles, clip.source.start)),
+                    duration_of_media: project
+                        .media_asset(clip.media_id)
+                        .map_or(MediaTime::ZERO, |m| m.duration),
                 },
                 clip.id,
                 track.id,
@@ -678,6 +826,8 @@ fn draw_lanes(
                     waveform: waveforms
                         .get(&clip.media_id)
                         .map(|w| (w.as_ref(), clip.source.start)),
+                    filmstrip: None,
+                    duration_of_media: MediaTime::ZERO,
                 },
                 clip.id,
                 track.id,
@@ -761,6 +911,101 @@ struct ClipVisual<'a> {
     /// Peaks plus where in the media this clip starts, so a trimmed clip shows
     /// the part of the waveform it actually plays.
     waveform: Option<(&'a bettercut_cache::Waveform, MediaTime)>,
+    /// Filmstrip sheet, its tile count, and where in the media this clip
+    /// starts — the same trimming question as the waveform.
+    filmstrip: Option<(&'a egui::TextureHandle, u32, MediaTime)>,
+    /// Length of the whole source file, which is what the tiles span.
+    duration_of_media: MediaTime,
+}
+
+/// The rubber band itself: a translucent fill with a crisp edge.
+///
+/// Drawn after the clips so it reads as being over them, and only once it has
+/// actually become a drag — a one-pixel box flashing under every click would be
+/// visual noise.
+fn draw_marquee(painter: &egui::Painter, state: &UiState) {
+    let Some(marquee) = state.marquee else {
+        return;
+    };
+    if !marquee.moved {
+        return;
+    }
+
+    let rect = marquee.rect();
+    painter.rect_filled(rect, 2, theme::SELECTION.gamma_multiply(0.18));
+    painter.rect_stroke(
+        rect,
+        2,
+        Stroke::new(1.0, theme::SELECTION),
+        StrokeKind::Inside,
+    );
+}
+
+/// Paint the filmstrip tiles a clip covers (§53).
+///
+/// Tiles span the whole source file, so a trimmed clip shows only the slice it
+/// plays. Each tile is drawn at the screen position of the source time it was
+/// sampled from, which keeps the strip aligned with the footage as the user
+/// trims and zooms rather than stretching to fit the clip.
+#[allow(clippy::too_many_arguments)]
+fn draw_filmstrip(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    viewport: Viewport,
+    sheet: &egui::TextureHandle,
+    tiles: u32,
+    timeline_start: TimelineTime,
+    source_start: MediaTime,
+    media_duration: MediaTime,
+) {
+    let media_ticks = media_duration.ticks();
+    if tiles == 0 || media_ticks <= 0 || clip_rect.width() < 4.0 {
+        return;
+    }
+
+    let per_tile = media_ticks / i64::from(tiles).max(1);
+    if per_tile <= 0 {
+        return;
+    }
+
+    // Tile width on screen: how much timeline one tile of source covers.
+    let tile_px = (per_tile / viewport.ticks_per_pixel.max(1)) as f32;
+    if tile_px < 1.0 {
+        // Zoomed out so far that a tile is under a pixel; drawing it would be
+        // noise, and thousands of draw calls for it.
+        return;
+    }
+
+    let strip = painter.with_clip_rect(clip_rect);
+    let uv_step = 1.0 / tiles as f32;
+
+    // Walk source-tile boundaries rather than screen columns, so tiles land on
+    // frame content instead of sliding as the clip scrolls.
+    let first = (source_start.ticks() / per_tile).max(0);
+    let mut index = first;
+    while index < i64::from(tiles) {
+        let tile_source = index * per_tile;
+        let into_clip = tile_source - source_start.ticks();
+        let x = viewport.x_of(TimelineTime::from_ticks(timeline_start.ticks() + into_clip));
+        if x > clip_rect.right() {
+            break;
+        }
+
+        let rect = Rect::from_min_size(
+            Pos2::new(x, clip_rect.top() + 4.0),
+            vec2(tile_px, clip_rect.height() - 4.0),
+        );
+        if rect.right() >= clip_rect.left() {
+            let u0 = index as f32 * uv_step;
+            strip.image(
+                sheet.id(),
+                rect,
+                Rect::from_min_max(Pos2::new(u0, 0.0), Pos2::new(u0 + uv_step, 1.0)),
+                Color32::WHITE.gamma_multiply(0.85),
+            );
+        }
+        index += 1;
+    }
 }
 
 /// Paint the peaks a clip covers, mirrored around its centre line.
@@ -874,6 +1119,19 @@ fn draw_clip(
         Pos2::new(clip_rect.right(), clip_rect.top() + 4.0),
     );
     painter.rect_filled(cap, theme::CLIP_CORNER_RADIUS, top);
+
+    if let Some((sheet, tiles, source_start)) = visual.filmstrip {
+        draw_filmstrip(
+            painter,
+            clip_rect,
+            viewport,
+            sheet,
+            tiles,
+            visual.range.start,
+            source_start,
+            visual.duration_of_media,
+        );
+    }
 
     // Under the label and over the body, so the file name stays readable.
     if let Some((waveform, source_start)) = visual.waveform {

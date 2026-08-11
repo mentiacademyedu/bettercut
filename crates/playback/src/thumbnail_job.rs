@@ -149,7 +149,7 @@ impl Task for ThumbnailJob {
 /// neighbour on a 10x reduction aliases badly, and a thumbnail is looked at
 /// closely precisely because it is small. Integer arithmetic throughout, so the
 /// result is identical on every machine — golden-image tests depend on that.
-fn downscale(
+pub(crate) fn downscale(
     data: &[u8],
     stride: usize,
     src_width: u32,

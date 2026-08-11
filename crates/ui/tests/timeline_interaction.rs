@@ -335,6 +335,127 @@ fn dragging_along_the_ruler_keeps_scrubbing() {
     h.release(Pos2::new(h.x_of(target), RULER_H / 2.0));
 }
 
+// ---- rubber-band selection -----------------------------------------------
+
+/// §10 "Multi-select clips": drag a box over empty canvas and everything it
+/// touches is selected.
+#[test]
+fn dragging_over_empty_canvas_selects_the_clips_it_covers() {
+    let mut h = Harness::new();
+    let first = h.add_clip(2, 3);
+    let second = h.add_clip(7, 3);
+    h.add_clip(20, 3); // outside the band
+
+    // Start above and left of the clips, in empty lane space, and drag past
+    // the second one.
+    let y = h.video_lane_y();
+    h.press(Pos2::new(h.x_of(secs(1)) - 4.0, y - 20.0));
+    h.drag_to(Pos2::new(h.x_of(secs(11)), y + 20.0));
+    h.release(Pos2::new(h.x_of(secs(11)), y + 20.0));
+
+    assert!(
+        h.state.selected_clips.contains(&first),
+        "missed the first clip"
+    );
+    assert!(
+        h.state.selected_clips.contains(&second),
+        "missed the second clip"
+    );
+    assert_eq!(
+        h.state.selected_clips.len(),
+        2,
+        "selected a clip the band did not cover"
+    );
+}
+
+/// The band must not become a scrub. Before this existed, any drag on empty
+/// canvas moved the playhead.
+#[test]
+fn dragging_a_band_does_not_move_the_playhead() {
+    let mut h = Harness::new();
+    h.add_clip(2, 3);
+    h.editor.set_playhead(TimelineTime::from_seconds(1));
+    let before = h.editor.playhead().ticks();
+
+    let y = h.video_lane_y();
+    h.press(Pos2::new(h.x_of(secs(6)), y - 20.0));
+    h.drag_to(Pos2::new(h.x_of(secs(14)), y + 20.0));
+    h.release(Pos2::new(h.x_of(secs(14)), y + 20.0));
+
+    assert_eq!(
+        h.editor.playhead().ticks(),
+        before,
+        "the rubber band scrubbed the playhead"
+    );
+}
+
+/// A press that never moves is still a click: it must move the playhead and
+/// clear the selection, exactly as before.
+#[test]
+fn a_click_on_empty_canvas_still_moves_the_playhead() {
+    let mut h = Harness::new();
+    let clip = h.add_clip(2, 3);
+    h.click(Pos2::new(h.x_of(secs(3)), h.video_lane_y()));
+    assert!(
+        h.state.selected_clips.contains(&clip),
+        "setup: clip selected"
+    );
+
+    let target = secs(16);
+    h.click(Pos2::new(h.x_of(target), h.video_lane_y()));
+
+    assert!(
+        h.state.selected_clips.is_empty(),
+        "clicking empty canvas did not clear the selection"
+    );
+    let landed = h.editor.playhead().ticks();
+    assert!(
+        (landed - target).abs() <= h.tpp() * 2,
+        "clicking empty canvas at {target} left the playhead at {landed}"
+    );
+}
+
+/// Dragging the ruler must still scrub rather than starting a band.
+#[test]
+fn dragging_the_ruler_still_scrubs_not_selects() {
+    let mut h = Harness::new();
+    h.add_clip(2, 3);
+
+    h.press(Pos2::new(h.x_of(secs(4)), RULER_H / 2.0));
+    let target = secs(12);
+    h.drag_to(Pos2::new(h.x_of(target), RULER_H / 2.0));
+    h.release(Pos2::new(h.x_of(target), RULER_H / 2.0));
+
+    assert!(
+        h.state.selected_clips.is_empty(),
+        "the ruler started a rubber band"
+    );
+    let landed = h.editor.playhead().ticks();
+    assert!(
+        (landed - target).abs() <= h.tpp() * 2,
+        "ruler did not scrub"
+    );
+}
+
+/// Dragging from *on* a clip moves it — the band must not steal that gesture.
+#[test]
+fn dragging_from_a_clip_still_moves_it() {
+    let mut h = Harness::new();
+    let clip = h.add_clip(2, 4);
+    let start_before = h.clip_start(clip);
+
+    let y = h.video_lane_y();
+    h.press(Pos2::new(h.x_of(secs(4)), y));
+    h.drag_to(Pos2::new(h.x_of(secs(8)), y));
+    h.release(Pos2::new(h.x_of(secs(8)), y));
+
+    assert_ne!(
+        h.clip_start(clip),
+        start_before,
+        "dragging a clip started a rubber band instead of moving it"
+    );
+}
+
 // ---- right-click menu ----------------------------------------------------
 
 /// The target has to be captured at click time. The pointer moves onto the menu

@@ -84,6 +84,14 @@ impl CacheLayout {
             .join(format!("poster-{width}.bct"))
     }
 
+    /// A filmstrip sheet: `tiles` frames packed side by side, each `tile_width`
+    /// across. One file rather than one per tile — a clip draws all of them at
+    /// once, so a single read and a single texture is the whole point.
+    pub fn filmstrip_file(&self, media: MediaId, tiles: u32, tile_width: u32) -> PathBuf {
+        self.thumbnails_dir(media)
+            .join(format!("strip-{tiles}x{tile_width}.bct"))
+    }
+
     /// The proxy file for a given height, so switching quality does not discard
     /// the other one.
     pub fn proxy_file(&self, media: MediaId, height: u32) -> PathBuf {

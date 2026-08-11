@@ -27,6 +27,9 @@ pub struct ThumbnailStore {
     cache: Option<Arc<CacheStore>>,
     width: u32,
     slots: HashMap<MediaId, Slot>,
+    /// Filmstrip sheets, kept in their own map because a clip wants the strip
+    /// and the browser wants the poster, and neither substitutes for the other.
+    strips: HashMap<MediaId, Slot>,
 }
 
 impl ThumbnailStore {
@@ -35,11 +38,65 @@ impl ThumbnailStore {
         self.cache = Some(cache);
         self.width = width;
         self.slots.clear();
+        self.strips.clear();
     }
 
     /// A thumbnail became available, so the remembered "absent" is now wrong.
     pub fn invalidate(&mut self, media: MediaId) {
         self.slots.remove(&media);
+        self.strips.remove(&media);
+    }
+
+    /// The filmstrip sheet for a clip, loading it on first request (§53).
+    ///
+    /// Returns the texture and how many tiles it holds, so the caller can map a
+    /// position along the clip onto a tile.
+    pub fn filmstrip(
+        &mut self,
+        ctx: &egui::Context,
+        media: MediaId,
+    ) -> Option<(egui::TextureHandle, u32)> {
+        if !self.strips.contains_key(&media) {
+            let slot = self
+                .load_strip(ctx, media)
+                .map_or(Slot::Absent, Slot::Ready);
+            self.strips.insert(media, slot);
+        }
+        match self.strips.get(&media) {
+            Some(Slot::Ready(handle)) => Some((handle.clone(), bettercut_playback::TILES)),
+            _ => None,
+        }
+    }
+
+    fn load_strip(&self, ctx: &egui::Context, media: MediaId) -> Option<egui::TextureHandle> {
+        let cache = self.cache.as_ref()?;
+        let path = cache.layout().filmstrip_file(
+            media,
+            bettercut_playback::TILES,
+            bettercut_playback::TILE_WIDTH,
+        );
+        if !path.exists() {
+            return None;
+        }
+
+        let sheet = match Thumbnail::read(&path) {
+            Ok(sheet) => sheet,
+            Err(err) => {
+                tracing::warn!(%err, path = %path.display(), "discarding a bad filmstrip");
+                let _ = std::fs::remove_file(&path);
+                return None;
+            }
+        };
+
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [sheet.width as usize, sheet.height as usize],
+            &sheet.rgba,
+        );
+        Some(ctx.load_texture(
+            format!("strip-{media:?}"),
+            image,
+            egui::TextureOptions::LINEAR,
+        ))
     }
 
     /// The texture for an asset, loading it on first request.

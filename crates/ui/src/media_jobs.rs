@@ -26,7 +26,7 @@ use bettercut_editor_core::foundation::MediaId;
 use bettercut_editor_core::media::ProxyResolution;
 use bettercut_editor_core::project_format::PerformanceMode;
 use bettercut_jobs::{JobEvent, JobId, JobScheduler};
-use bettercut_playback::{ProxyJob, ProxySource, ThumbnailJob, WaveformJob};
+use bettercut_playback::{FilmstripJob, ProxyJob, ProxySource, ThumbnailJob, WaveformJob};
 
 /// What finished this frame, for the caller to act on.
 #[derive(Debug, Default)]
@@ -188,6 +188,14 @@ impl MediaJobs {
                 let media = job.media();
                 let id = self.scheduler.submit(Box::new(job));
                 self.waveforms.insert(id, media);
+            }
+
+            if let Some(job) = FilmstripJob::new(asset, &self.cache, 1) {
+                let media = job.media();
+                let id = self.scheduler.submit(Box::new(job));
+                // Filmstrips share the thumbnail bookkeeping: both are pictures
+                // the browser and timeline reload the same way.
+                self.thumbnails.insert(id, media);
             }
 
             if !proxies_enabled || asset.missing || !asset.should_generate_proxy() {

@@ -29,7 +29,8 @@ of §10's editing list —
 ```text
 add · move (within and across tracks) · trim both edges · split at playhead
 delete · ripple delete · duplicate · copy / paste · snapping
-track add/remove/hide/mute/lock · zoom · scrub · multi-select · undo / redo
+track add/remove/hide/mute/lock · zoom · scrub · undo / redo
+multi-select: Ctrl+click and rubber-band box select
 ```
 
 Clips are dragged and trimmed directly on the canvas, with snapping to clip
@@ -107,9 +108,23 @@ draw a thin line through every loud passage, because audio is symmetric around
 zero. A minute costs 24 KB. The timeline reads peaks only: a repaint never opens
 a media file, and a clip whose analysis has not finished draws as a plain block.
 
-**What does not work yet:** export, effects, and text. Multi-selection is
-Ctrl+click only — there is no rubber-band box select, and no filmstrip on
-timeline clips yet.
+Video clips show a filmstrip: 32 frames sampled across each file, packed into
+one cached sheet so a clip costs one texture rather than dozens. Tiles are drawn
+at the screen position of the source time they came from, so trimming and
+zooming keep them aligned with the footage instead of stretching to fit. The
+strip is deliberately **coarse** — on a one-hour file the tiles are minutes
+apart, so zooming in repeats a frame across a stretch of timeline. Rendering
+more tiles as you zoom needs the zoom level to drive cache keys; this is the
+version that works everywhere first.
+
+Dragging on empty timeline space draws a rubber band and selects every clip it
+covers; Ctrl adds to the selection instead of replacing it. Selection is
+resolved in time and track space rather than against screen rectangles, so a
+clip scrolled past the left edge is still selected when the band covers its
+span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
+press that never moves is still an ordinary click.
+
+**What does not work yet:** export, effects, and text.
 
 Two playback limits worth knowing before testing with your own footage:
 
