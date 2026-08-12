@@ -629,24 +629,76 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         // §44: the editor configures itself for the machine. Showing what it
         // decided means a slow session can be diagnosed without a debug build.
         let hardware = editor.hardware();
+        // Everything below the mode line is derived *from* the mode, so it has
+        // to be the project's mode and not the hardware's recommendation —
+        // otherwise the panel reports a mode beside numbers from a different
+        // one, which is what it used to do.
+        let mode = editor.project().settings.performance_mode;
+        let recommended = hardware.recommended_mode();
+
         ui.monospace(format!("processors {}", hardware.logical_processors));
         ui.monospace(format!(
             "~cores     {}",
             hardware.estimated_physical_cores()
         ));
-        ui.monospace(format!(
-            "mode       {:?}",
-            editor.project().settings.performance_mode
-        ));
-        ui.monospace(format!("heavy jobs {}", hardware.max_heavy_jobs()));
+        ui.monospace(format!("mode       {mode:?}"));
+        if mode != recommended {
+            ui.monospace(
+                egui::RichText::new(format!("           (machine suggests {recommended:?})"))
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        }
+        ui.monospace(format!("heavy jobs {}", hardware.max_heavy_jobs(mode)));
         ui.monospace(format!(
             "ffmpeg     {} thread(s)/job",
-            hardware.ffmpeg_threads_per_job()
+            hardware.ffmpeg_threads_per_job(mode)
         ));
         ui.monospace(format!(
             "frame cache {} MB",
-            hardware.frame_cache_bytes() / (1024 * 1024)
+            hardware.frame_cache_bytes(mode) / (1024 * 1024)
         ));
+        ui.monospace(format!("proxies    {}p", mode.proxy_resolution().height()));
+
+        // §52/§81: the numbers that decide whether playback is actually
+        // working. Counted whether or not anyone looks; showing them is what
+        // makes a report reproducible.
+        if let Some(stats) = state.playback {
+            ui.separator();
+            ui.monospace(format!(
+                "playback   {}",
+                if stats.playing { "playing" } else { "paused" }
+            ));
+            ui.monospace(format!("preview    {} scale", stats.quality));
+            ui.monospace(format!("ring       {} frames", stats.ring_frames));
+            ui.monospace(format!("prefetched {}", stats.prefetch_hits));
+
+            // Coloured only when non-zero: a red number that is always there
+            // stops being read.
+            let dropped = format!("dropped    {}", stats.dropped_frames);
+            if stats.dropped_frames > 0 {
+                ui.monospace(egui::RichText::new(dropped).color(theme::ERROR_TEXT))
+                    .on_hover_text("§47a.4: frames too late to show. The machine is behind.");
+            } else {
+                ui.monospace(dropped);
+            }
+
+            let underruns = format!("underruns  {}", stats.underruns);
+            if stats.underruns > 0 {
+                ui.monospace(egui::RichText::new(underruns).color(theme::ERROR_TEXT))
+                    .on_hover_text("§20a: the audio device ran dry. This is audible.");
+            } else {
+                ui.monospace(underruns);
+            }
+
+            if stats.limited_samples > 0 {
+                ui.monospace(
+                    egui::RichText::new(format!("clipped    {}", stats.limited_samples))
+                        .color(theme::ERROR_TEXT),
+                )
+                .on_hover_text("§20a.4: the mix is too hot and the limiter is working.");
+            }
+        }
 
         // §49/§50: which adapter wgpu picked. Every performance number this
         // project has produced so far came from one discrete GPU, so a report
@@ -1025,6 +1077,27 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &UiState) {
                     .color(theme::DISABLED),
                 );
             }
+        }
+
+        // §47a.4 / §20a: quiet when playback is keeping up, loud when it is
+        // not. A counter shown permanently stops being read; one that appears
+        // only when something is wrong is worth looking at.
+        if let Some(stats) = state.playback
+            && (stats.dropped_frames > 0 || stats.underruns > 0)
+        {
+            ui.separator();
+            let mut parts = Vec::new();
+            if stats.dropped_frames > 0 {
+                parts.push(format!("{} dropped", stats.dropped_frames));
+            }
+            if stats.underruns > 0 {
+                parts.push(format!("{} audio underrun(s)", stats.underruns));
+            }
+            ui.label(egui::RichText::new(parts.join(" · ")).color(theme::ERROR_TEXT))
+                .on_hover_text(
+                    "Playback is not keeping up. Inspector → System has the full \
+                     counters; lowering Proxies → Quality is the usual fix.",
+                );
         }
 
         // §42: background work has to be visible while it runs. Sits next to

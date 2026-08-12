@@ -68,6 +68,9 @@ struct App {
     /// media exist), the cache (what is already generated) and the preview
     /// (which copy to read).
     proxies: bettercut_ui::MediaJobs,
+    /// The performance mode the running session was configured with, so a
+    /// change can be detected and applied (§43).
+    applied_mode: bettercut_editor_core::project_format::PerformanceMode,
     /// Title is recomputed only when it changes; setting it every frame would
     /// churn the window manager.
     last_title: String,
@@ -97,12 +100,16 @@ impl App {
         // §44: the decoder thread cap and cache budget come from the detected
         // hardware, not from a constant.
         let hardware = editor.hardware();
+        // §43: the *project's* mode drives these, not the machine's suggestion.
+        // A loaded project carries the user's choice, and honouring the
+        // recommendation instead would quietly override it.
+        let mode = editor.project().settings.performance_mode;
         let preview =
             cc.wgpu_render_state.as_ref().and_then(
                 |render_state| match bettercut_ui::Preview::new(
                     render_state,
-                    hardware.frame_cache_bytes(),
-                    hardware.ffmpeg_threads_per_job(),
+                    hardware.frame_cache_bytes(mode),
+                    hardware.ffmpeg_threads_per_job(mode),
                 ) {
                     Ok(preview) => Some(preview),
                     Err(err) => {
@@ -138,9 +145,9 @@ impl App {
         );
         let mut proxies = bettercut_ui::MediaJobs::new(
             cache,
-            editor.project().settings.performance_mode,
-            hardware.max_heavy_jobs(),
-            hardware.ffmpeg_threads_per_job(),
+            mode,
+            hardware.max_heavy_jobs(mode),
+            hardware.ffmpeg_threads_per_job(mode),
         );
 
         let mut preview = preview;
@@ -165,6 +172,7 @@ impl App {
             ui,
             preview,
             proxies,
+            applied_mode: mode,
             last_title,
         }
     }
@@ -181,6 +189,9 @@ impl eframe::App for App {
             Some(preview) => preview.update(&mut self.editor),
             None => false,
         };
+
+        // §52: mirror the playback counters so the System panel can show them.
+        self.ui.playback = self.preview.as_ref().map(bettercut_ui::Preview::stats);
 
         // §13: pick up proxies that finished encoding, and queue any new
         // imports. Both are cheap when nothing has changed.
@@ -223,6 +234,24 @@ impl eframe::App for App {
 
         // After drawing, because both the import button and the quality setting
         // live in panels this call would otherwise be a frame behind.
+        // §43: a mode change must reach the parts that can follow it live. The
+        // frame cache can be resized; the job pool's concurrency limit is fixed
+        // for the session, because restarting the scheduler would cancel work
+        // already running. That limit takes effect next launch.
+        let mode = self.editor.project().settings.performance_mode;
+        if mode != self.applied_mode {
+            self.applied_mode = mode;
+            let bytes = self.editor.hardware().frame_cache_bytes(mode);
+            if let Some(preview) = self.preview.as_mut() {
+                preview.set_cache_bytes(bytes);
+            }
+            tracing::info!(
+                ?mode,
+                cache_mb = bytes / (1024 * 1024),
+                "performance mode changed"
+            );
+        }
+
         let (new_source, messages) = self.proxies.sync(&self.editor);
         if let Some(source) = new_source
             && let Some(preview) = self.preview.as_mut()

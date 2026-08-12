@@ -69,6 +69,27 @@ pub struct StatusMessage {
     pub is_error: bool,
 }
 
+/// What playback is actually doing, for the System panel (§49, §52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackStats {
+    pub playing: bool,
+    /// §47a.4: frames arriving too late to show. Non-zero while playing means
+    /// the machine is not keeping up.
+    pub dropped_frames: u64,
+    /// §20a: the audio device ran out of samples. Audible, and the one number
+    /// that must stay at zero.
+    pub underruns: u32,
+    /// §20a.4: samples the limiter had to clamp — the mix is too hot.
+    pub limited_samples: u64,
+    /// §47a.3: frames served from the decode-ahead ring rather than decoded
+    /// inline. Zero while playing means decode-ahead is not helping.
+    pub prefetch_hits: u64,
+    /// Frames currently waiting in that ring.
+    pub ring_frames: usize,
+    /// §16's preview scale in force right now.
+    pub quality: &'static str,
+}
+
 /// A rubber-band selection in progress.
 ///
 /// Held as screen positions rather than a time range because it is drawn as a
@@ -119,7 +140,14 @@ pub struct UiState {
     pub selected_track: Option<TrackId>,
 
     pub status: Option<StatusMessage>,
-    pub show_diagnostics: bool,
+
+    /// Live playback counters, mirrored each frame while a preview exists.
+    ///
+    /// §52's benchmarks and §81's targets are numbers, and the first report
+    /// from real hardware came back as "it felt smooth" — because nothing put
+    /// these on screen. They are counted either way; showing them costs a few
+    /// lines and turns an adjective into evidence.
+    pub playback: Option<PlaybackStats>,
 
     /// §10 "Snapping". On by default; hold Alt during a drag to bypass it,
     /// which is the convention every editor uses and the fastest way to place
@@ -176,7 +204,7 @@ impl Default for UiState {
             selected_clips: HashSet::new(),
             selected_track: None,
             status: None,
-            show_diagnostics: false,
+            playback: None,
             snapping: true,
             drag: None,
             marquee: None,

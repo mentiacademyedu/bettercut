@@ -134,6 +134,27 @@ impl Preview {
         self.clock.clock().underruns()
     }
 
+    /// Everything worth reporting about a playback session (§52, §81).
+    ///
+    /// Gathered in one call so the panel showing it cannot drift from the
+    /// engine, and so a bug report is a screenshot rather than a description.
+    pub fn stats(&self) -> crate::state::PlaybackStats {
+        crate::state::PlaybackStats {
+            playing: self.clock.is_playing(),
+            dropped_frames: self.dropped_total,
+            underruns: self.clock.clock().underruns(),
+            limited_samples: self.engine.limited_samples(),
+            prefetch_hits: self.engine.prefetch_hits(),
+            ring_frames: self.engine.prefetched_frames(),
+            quality: match self.render_quality() {
+                bettercut_renderer::PreviewQuality::Full => "full",
+                bettercut_renderer::PreviewQuality::Half => "half",
+                bettercut_renderer::PreviewQuality::Quarter
+                | bettercut_renderer::PreviewQuality::Auto => "quarter",
+            },
+        }
+    }
+
     pub fn audio_description(&self) -> String {
         self.clock.describe()
     }
@@ -388,6 +409,11 @@ impl Preview {
         self.proxy_height = Some(source.height);
         self.engine.set_proxy_source(Some(source));
         self.last_rendered = None;
+    }
+
+    /// Resize the frame cache (§18), after a performance-mode change.
+    pub fn set_cache_bytes(&mut self, bytes: usize) {
+        self.engine.set_cache_bytes(bytes);
     }
 
     /// The adapter wgpu is rendering with.

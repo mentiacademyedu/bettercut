@@ -36,12 +36,13 @@ impl HardwareProfile {
 
             let profile = Self { logical_processors };
 
+            let mode = profile.recommended_mode();
             tracing::info!(
                 logical = profile.logical_processors,
                 estimated_cores = profile.estimated_physical_cores(),
-                mode = ?profile.recommended_mode(),
-                heavy_jobs = profile.max_heavy_jobs(),
-                ffmpeg_threads = profile.ffmpeg_threads_per_job(),
+                recommends = ?mode,
+                heavy_jobs = profile.max_heavy_jobs(mode),
+                ffmpeg_threads = profile.ffmpeg_threads_per_job(mode),
                 "detected hardware profile"
             );
 
@@ -84,31 +85,42 @@ impl HardwareProfile {
     }
 
     /// Heavy background jobs allowed at once (§15).
-    pub fn max_heavy_jobs(&self) -> usize {
-        self.recommended_mode()
-            .max_heavy_jobs(self.estimated_physical_cores())
+    ///
+    /// Takes the mode rather than reading `recommended_mode()`, because these
+    /// three limits are what §43's mode *is*. They used to derive from the
+    /// recommendation, which meant changing the mode moved the proxy
+    /// resolution and nothing else — and the diagnostics panel cheerfully
+    /// showed `mode Quality` beside numbers computed from Balanced.
+    ///
+    /// Requiring the argument makes that mistake impossible to repeat: there
+    /// is no longer a version of this that silently ignores the user.
+    pub fn max_heavy_jobs(&self, mode: PerformanceMode) -> usize {
+        mode.max_heavy_jobs(self.estimated_physical_cores())
     }
 
     /// FFmpeg's internal thread cap **per background job** (§15.1).
-    pub fn ffmpeg_threads_per_job(&self) -> u32 {
-        self.recommended_mode()
-            .ffmpeg_threads_per_job(self.estimated_physical_cores())
+    pub fn ffmpeg_threads_per_job(&self, mode: PerformanceMode) -> u32 {
+        mode.ffmpeg_threads_per_job(self.estimated_physical_cores())
     }
 
     /// Frame cache budget in bytes (§18).
-    pub fn frame_cache_bytes(&self) -> usize {
-        self.recommended_mode().frame_cache_bytes()
+    pub fn frame_cache_bytes(&self, mode: PerformanceMode) -> usize {
+        mode.frame_cache_bytes()
     }
 
     /// One-line summary for diagnostics and the settings UI.
+    ///
+    /// Describes the machine and what it *would* choose, not what the project
+    /// is set to — the caller knows that and the profile does not.
     pub fn summary(&self) -> String {
+        let mode = self.recommended_mode();
         format!(
-            "{} logical processors (~{} cores) · {:?} mode · {} heavy job(s) · {} FFmpeg thread(s)/job",
+            "{} logical processors (~{} cores) · recommends {:?} mode · {} heavy job(s) · {} FFmpeg thread(s)/job",
             self.logical_processors,
             self.estimated_physical_cores(),
-            self.recommended_mode(),
-            self.max_heavy_jobs(),
-            self.ffmpeg_threads_per_job(),
+            mode,
+            self.max_heavy_jobs(mode),
+            self.ffmpeg_threads_per_job(mode),
         )
     }
 }
@@ -130,32 +142,67 @@ mod tests {
     fn the_reference_machine_lands_in_the_single_job_tier() {
         let reference = profile(8); // 4C/8T
         assert_eq!(reference.estimated_physical_cores(), 4);
-        assert_eq!(reference.recommended_mode(), PerformanceMode::Performance);
-        assert_eq!(reference.max_heavy_jobs(), 1);
-        assert_eq!(reference.ffmpeg_threads_per_job(), 1);
+        let mode = reference.recommended_mode();
+        assert_eq!(mode, PerformanceMode::Performance);
+        assert_eq!(reference.max_heavy_jobs(mode), 1);
+        assert_eq!(reference.ffmpeg_threads_per_job(mode), 1);
     }
+
+    /// Every mode, not just the recommended one.
+    ///
+    /// The user can select any of them, so an invariant that only held for the
+    /// machine's own suggestion would not be an invariant at all.
+    const ALL_MODES: [PerformanceMode; 3] = [
+        PerformanceMode::Performance,
+        PerformanceMode::Balanced,
+        PerformanceMode::Quality,
+    ];
 
     /// §74: "Let FFmpeg use all CPU cores in a background job" is prohibited.
     #[test]
     fn ffmpeg_is_never_given_more_than_two_threads() {
         for logical in 1..=128 {
-            let threads = profile(logical).ffmpeg_threads_per_job();
-            assert!(
-                (1..=2).contains(&threads),
-                "{logical} logical processors gave {threads} FFmpeg threads"
-            );
+            for mode in ALL_MODES {
+                let threads = profile(logical).ffmpeg_threads_per_job(mode);
+                assert!(
+                    (1..=2).contains(&threads),
+                    "{logical} logical processors in {mode:?} gave {threads} FFmpeg threads"
+                );
+            }
         }
     }
 
     #[test]
     fn heavy_jobs_never_exceed_four_and_never_reach_zero() {
         for logical in 1..=128 {
-            let jobs = profile(logical).max_heavy_jobs();
-            assert!(
-                (1..=4).contains(&jobs),
-                "{logical} logical processors gave {jobs} heavy jobs"
-            );
+            for mode in ALL_MODES {
+                let jobs = profile(logical).max_heavy_jobs(mode);
+                assert!(
+                    (1..=4).contains(&jobs),
+                    "{logical} logical processors in {mode:?} gave {jobs} heavy jobs"
+                );
+            }
         }
+    }
+
+    /// The point of the fix: the limits follow the *chosen* mode. If they did
+    /// not, changing the mode would move the proxy resolution and nothing else.
+    #[test]
+    fn the_limits_follow_the_mode_not_the_recommendation() {
+        // A large machine, whose recommendation is Quality.
+        let big = profile(32);
+        assert_eq!(big.recommended_mode(), PerformanceMode::Quality);
+
+        assert!(
+            big.frame_cache_bytes(PerformanceMode::Performance)
+                < big.frame_cache_bytes(PerformanceMode::Quality),
+            "asking for Performance did not shrink the frame cache"
+        );
+        assert!(
+            big.max_heavy_jobs(PerformanceMode::Performance)
+                <= big.max_heavy_jobs(PerformanceMode::Quality),
+            "asking for Performance did not reduce background work"
+        );
     }
 
     #[test]
@@ -187,7 +234,7 @@ mod tests {
     fn detection_returns_something_usable_on_this_machine() {
         let detected = HardwareProfile::detect();
         assert!(detected.logical_processors >= 1);
-        assert!(detected.max_heavy_jobs() >= 1);
+        assert!(detected.max_heavy_jobs(detected.recommended_mode()) >= 1);
         assert!(!detected.summary().is_empty());
     }
 }
