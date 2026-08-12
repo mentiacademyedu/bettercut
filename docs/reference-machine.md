@@ -86,6 +86,49 @@ handle the GPU adaptively at run time — preview starts at quarter resolution a
 climbs only if frames arrive on time. If this machine shows the preview stuck at
 a low tier, that is the adaptive system working, and the number worth reporting.
 
+### Adapter, as reported by the editor
+
+```text
+gpu        Intel(R) Iris(R) Xe Graphics
+           integrated · vulkan
+driver     Intel Corporation Intel driver
+```
+
+Two things follow that the "felt smooth" does not say on its own.
+
+**Iris Xe is not UHD 620.** The §52.1 target is a 2018 UHD 620 with 24 execution
+units; Iris Xe is the 2021-and-later part with up to 96. It is the right *class*
+of hardware — integrated, shared memory bandwidth, no dedicated VRAM — and
+several times the graphics throughput. So this validates the path, not the
+performance.
+
+**wgpu chose Vulkan.** So did the development machine. The **DX12 backend has
+therefore never run**, and wgpu selects per machine, so some users will get it.
+Backend-specific rendering bugs are common — the sRGB view distinction fixed
+earlier is exactly that kind of detail — so DX12 is an untested path rather than
+an assumed-equivalent one.
+
+The driver string carries no version. That is a Vulkan-on-Intel reporting gap
+rather than a missing field: the DX12 adapter on the dev machine reported
+`32.0.16.1088`. Vendor and device IDs are logged alongside it for that reason.
+
+### First result — 2026-08-11
+
+**Qualitative, and that is all it is.** The editor ran smoothly on this machine
+on battery, which is the first time any of it has run on integrated graphics.
+That establishes one thing clearly: wgpu initialises, the compositor works, and
+the interface is usable on Intel graphics under power throttling.
+
+It does **not** establish §81. No number was measured, the CPU is roughly three
+times the reference machine's, memory is double and storage is almost certainly
+NVMe. §52.1 is explicit that results from a faster machine do not transfer, and
+"felt smooth" is not a measurement even on the right hardware.
+
+Still outstanding for this machine: the adapter line (which GPU and backend wgpu
+actually chose), and whether playback specifically was exercised — decode-ahead
+(§47a.3) only runs while playing, so a session spent importing and cutting never
+touches it.
+
 ### What to capture
 
 1. `RUST_LOG=info cargo run -p bettercut-desktop` — the first few lines record

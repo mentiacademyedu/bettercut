@@ -81,6 +81,7 @@ impl Preview {
             kind = gpu.kind.label(),
             backend = %gpu.backend,
             driver = %gpu.driver,
+            hardware_id = %gpu.hardware_id,
             surface = ?render_state.target_format,
             "graphics adapter selected"
         );

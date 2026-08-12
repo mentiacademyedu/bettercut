@@ -657,6 +657,7 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 ui.monospace(format!("gpu        {}", gpu.name));
                 ui.monospace(format!("           {} · {}", gpu.kind.label(), gpu.backend));
                 ui.monospace(format!("driver     {}", gpu.driver));
+                ui.monospace(format!("device     {}", gpu.hardware_id));
                 if gpu.kind.is_software() {
                     ui.label(
                         egui::RichText::new(

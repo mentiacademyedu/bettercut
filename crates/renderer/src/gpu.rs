@@ -52,7 +52,14 @@ pub struct GpuDescription {
     pub kind: GpuKind,
     /// Driver name and version, when the backend reports them. Intel and AMD
     /// driver versions matter for graphics bugs, so they are worth carrying.
+    ///
+    /// Not always a version: Vulkan on Intel reports only
+    /// `"Intel Corporation Intel driver"`, where the same machine's DX12
+    /// adapter gives `"32.0.16.1088"`. That is why the PCI ids below are
+    /// carried too — they identify the part when the string does not.
     pub driver: String,
+    /// PCI vendor and device ids, e.g. `8086:9a49`.
+    pub hardware_id: String,
 }
 
 impl GpuDescription {
@@ -79,6 +86,7 @@ impl GpuDescription {
             backend: info.backend.to_string(),
             kind,
             driver,
+            hardware_id: format!("{:04x}:{:04x}", info.vendor, info.device),
         }
     }
 }
