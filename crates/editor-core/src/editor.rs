@@ -367,6 +367,52 @@ impl Editor {
         Some((resolution, rate))
     }
 
+    /// Set a clip property (§59), collapsing a drag into one undo step.
+    ///
+    /// `continuing` is true while a slider is being dragged and false on the
+    /// first change of a gesture. The caller knows which, because it owns the
+    /// widget; the editor cannot tell a drag from a series of clicks.
+    pub fn set_clip_property(
+        &mut self,
+        clip: ClipId,
+        property: crate::command::ClipProperty,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let command = Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property,
+        };
+
+        if !continuing {
+            return self.dispatch(command);
+        }
+
+        // Same shape as `dispatch`, but coalescing. Journalled either way: a
+        // crash mid-drag should recover the value the user was looking at.
+        self.ensure_journal_baseline();
+        let built = self.build(command.clone())?;
+        let kind = property.kind();
+        let result = self
+            .history
+            .execute_coalescing(built, &mut self.project, |top| {
+                top.label() == format!("Change {kind}")
+            });
+
+        match result {
+            Ok(()) => {
+                self.dirty = true;
+                self.journal.append(&command);
+                self.events.emit(Event::ProjectChanged);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     /// Point one asset at a file the user located (§66).
     ///
     /// Reads the new file's size here, outside the command, so the command
@@ -567,6 +613,15 @@ impl Editor {
                 path,
                 file_size,
             } => Ok(Box::new(ops::RelinkMedia::new(media, path, file_size))),
+
+            Command::SetClipProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            } => Ok(Box::new(ops::SetClipProperty::new(
+                sequence, track, clip, property,
+            ))),
 
             Command::SetSequenceFormat {
                 sequence,

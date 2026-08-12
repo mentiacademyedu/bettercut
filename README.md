@@ -117,6 +117,13 @@ apart, so zooming in repeats a frame across a stretch of timeline. Rendering
 more tiles as you zoom needs the zoom level to drive cache keys; this is the
 version that works everywhere first.
 
+Select a clip and the Inspector edits it: **opacity**, **scale**, **position**
+and **rotation** on video, **volume** on audio — enough for picture-in-picture
+and a layered composite. The renderer already composited all of this; there was
+simply no way to set it. Dragging a slider updates the preview live and lands as
+**one** undo step, not sixty: §11's history holds intentions, not mouse samples,
+and undo returns to the value from before the drag began.
+
 Dragging on empty timeline space draws a rubber band and selects every clip it
 covers; Ctrl adds to the selection instead of replacing it. Selection is
 resolved in time and track space rather than against screen rectangles, so a

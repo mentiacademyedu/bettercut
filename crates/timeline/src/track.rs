@@ -132,6 +132,17 @@ impl<C: Clip> Track<C> {
         self.clips.iter().find(|c| c.id() == id)
     }
 
+    /// Mutable access to one clip, for editing its **properties**.
+    ///
+    /// Opacity, gain and transform are safe to change here. The clip's
+    /// `timeline` range is **not**: the track keeps its clips sorted by start
+    /// and relies on that for the range queries §53 draws with, and moving a
+    /// clip through this would break the ordering without anything noticing.
+    /// Use `move_clip` / `trim` for anything that changes when a clip plays.
+    pub fn get_mut(&mut self, id: ClipId) -> Option<&mut C> {
+        self.clips.iter_mut().find(|c| c.id() == id)
+    }
+
     /// The clip containing `t`, if any.
     pub fn clip_at(&self, t: TimelineTime) -> Option<&C> {
         let index = self.clips.partition_point(|c| c.timeline().end <= t);

@@ -9,10 +9,12 @@ use bettercut_foundation::{
 };
 use bettercut_project_format::Project;
 use bettercut_timeline::{
-    AudioTrack, Clip, Resolution, Sequence, SourceRange, TimelineRange, TrackKind, VideoTrack,
+    AudioTrack, Clip, Resolution, Sequence, SourceRange, TimelineRange, TrackKind, Vec2, VideoTrack,
 };
 
-use crate::command::{ClipPayload, EditorCommand, SettingChange, TrackFlag, TrackPayload};
+use crate::command::{
+    ClipPayload, ClipProperty, EditorCommand, SettingChange, TrackFlag, TrackPayload,
+};
 use crate::error::EditorError;
 
 fn sequence_mut(project: &mut Project, id: SequenceId) -> Result<&mut Sequence, EditorError> {
@@ -44,6 +46,12 @@ pub fn build_for_replay(
             path,
             file_size,
         } => Box::new(RelinkMedia::new(media, path, file_size)),
+        Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property,
+        } => Box::new(SetClipProperty::new(sequence, track, clip, property)),
         Command::SetSequenceFormat {
             sequence,
             resolution,
@@ -203,6 +211,116 @@ impl EditorCommand for RenameProject {
 
     fn label(&self) -> String {
         "Rename Project".to_owned()
+    }
+}
+
+// --------------------------------------------------------------------------
+
+/// Set one property of one clip (§59).
+///
+/// Values are clamped on the way in rather than trusted. A slider cannot send
+/// an opacity of 40, but the journal replays whatever was written and a
+/// hand-edited project file is a supported input — §50's rule is that bad data
+/// degrades rather than corrupts.
+#[derive(Debug)]
+pub struct SetClipProperty {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    property: ClipProperty,
+    previous: Option<ClipProperty>,
+}
+
+impl SetClipProperty {
+    pub fn new(sequence: SequenceId, track: TrackId, clip: ClipId, property: ClipProperty) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            property,
+            previous: None,
+        }
+    }
+
+    /// True when `other` is the same slider being dragged: same clip, same
+    /// property. Used to collapse a drag into one undo step (§11).
+    pub fn is_same_gesture(&self, other: &Self) -> bool {
+        self.clip == other.clip && self.property.kind() == other.property.kind()
+    }
+
+    /// Apply, returning what was there before.
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        property: ClipProperty,
+    ) -> Result<ClipProperty, EditorError> {
+        with_track(
+            project,
+            sequence,
+            track,
+            |video| {
+                let clip = video.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                Ok(match property {
+                    ClipProperty::Opacity(value) => {
+                        let was = clip.opacity;
+                        clip.opacity = value.clamp(0.0, 1.0);
+                        ClipProperty::Opacity(was)
+                    }
+                    ClipProperty::Position { x, y } => {
+                        let was = clip.transform.position;
+                        clip.transform.position = Vec2::new(x, y);
+                        ClipProperty::Position { x: was.x, y: was.y }
+                    }
+                    ClipProperty::Scale { x, y } => {
+                        let was = clip.transform.scale;
+                        // Zero scale renders nothing and cannot be dragged back
+                        // out of, so it has a floor.
+                        clip.transform.scale = Vec2::new(x.clamp(0.01, 10.0), y.clamp(0.01, 10.0));
+                        ClipProperty::Scale { x: was.x, y: was.y }
+                    }
+                    ClipProperty::Rotation(value) => {
+                        let was = clip.transform.rotation_degrees;
+                        clip.transform.rotation_degrees = value;
+                        ClipProperty::Rotation(was)
+                    }
+                    // Gain is an audio property; a video clip has none.
+                    ClipProperty::Gain(_) => return Err(EditorError::ClipKindMismatch),
+                })
+            },
+            |audio| {
+                let clip = audio.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                match property {
+                    ClipProperty::Gain(value) => {
+                        let was = clip.gain;
+                        clip.gain = value.clamp(0.0, 4.0);
+                        Ok(ClipProperty::Gain(was))
+                    }
+                    _ => Err(EditorError::ClipKindMismatch),
+                }
+            },
+        )
+    }
+}
+
+impl EditorCommand for SetClipProperty {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.track, self.clip, self.property)?;
+        // Only on the first execute: a redo must restore the value from before
+        // the whole gesture, not from the previous redo step.
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, self.clip, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        format!("Change {}", self.property.kind())
     }
 }
 

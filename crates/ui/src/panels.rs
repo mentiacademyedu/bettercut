@@ -481,38 +481,57 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.label(egui::RichText::new("Selection").strong());
 
     let selected: Vec<_> = state.selected_clips.iter().copied().collect();
-    if selected.is_empty() {
-        ui.label(egui::RichText::new("Nothing selected").color(theme::DISABLED));
-    } else if selected.len() == 1 {
-        let id = selected[0];
-        let found = sequence.video_tracks.iter().find_map(|t| {
-            t.get(id).map(|c| {
-                (
-                    c.timeline.start,
-                    c.timeline.duration(),
-                    c.opacity,
-                    c.media_id,
-                )
-            })
+    // Gather what the controls need, so the immutable borrow of the project
+    // ends before any of them dispatches a command.
+    let single = (selected.len() == 1).then(|| selected[0]).map(|id| {
+        let video = sequence.video_tracks.iter().find_map(|t| {
+            t.get(id)
+                .map(|c| (c.timeline, c.opacity, c.transform, c.media_id))
         });
-        match found {
-            Some((start, duration, opacity, media_id)) => {
-                let name = editor
-                    .project()
-                    .media_asset(media_id)
-                    .map_or_else(|| "(missing)".to_owned(), |m| m.file_name.clone());
-                ui.monospace(format!("media     {name}"));
-                ui.monospace(format!("start     {}", start.format_timecode()));
-                ui.monospace(format!("duration  {}", duration.format_timecode()));
-                ui.monospace(format!("opacity   {opacity:.2}"));
+        let audio = sequence
+            .audio_tracks
+            .iter()
+            .find_map(|t| t.get(id).map(|c| (c.timeline, c.gain, c.media_id)));
+        (id, video, audio)
+    });
+
+    match (selected.len(), single) {
+        (0, _) => {
+            ui.label(egui::RichText::new("Nothing selected").color(theme::DISABLED));
+        }
+        (1, Some((id, video, audio))) => {
+            let media_id = video.map(|v| v.3).or_else(|| audio.map(|a| a.2));
+            let name = media_id
+                .and_then(|m| editor.project().media_asset(m))
+                .map_or_else(|| "(missing)".to_owned(), |m| m.file_name.clone());
+            let range = video.map(|v| v.0).or_else(|| audio.map(|a| a.0));
+
+            ui.monospace(format!("media     {name}"));
+            if let Some(range) = range {
+                ui.monospace(format!("start     {}", range.start.format_timecode()));
+                ui.monospace(format!("duration  {}", range.duration().format_timecode()));
             }
-            None => {
-                ui.label(egui::RichText::new("Audio clip selected").color(theme::DISABLED));
+
+            if let Some((_, opacity, transform, _)) = video {
+                clip_video_properties(ui, editor, state, id, opacity, transform);
+            }
+            if let Some((_, gain, _)) = audio {
+                clip_audio_properties(ui, editor, state, id, gain);
             }
         }
-    } else {
-        ui.label(format!("{} clips selected", selected.len()));
+        (n, _) => {
+            ui.label(format!("{n} clips selected"));
+            ui.label(
+                egui::RichText::new("Select one clip to adjust its properties.")
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        }
     }
+
+    let Some(sequence) = editor.active_sequence() else {
+        return;
+    };
 
     ui.separator();
     ui.label(egui::RichText::new("Tracks").strong());
@@ -891,6 +910,145 @@ fn thumbnail(ui: &mut egui::Ui, state: &mut UiState, media: MediaId, missing: bo
             );
         }
     }
+}
+
+/// Opacity and transform for the selected video clip (§59).
+///
+/// Every control dispatches while being dragged, so the preview updates live,
+/// and the whole drag collapses into one undo step — `continuing` is true
+/// except on the frame the drag starts (§11: history holds intentions, not
+/// mouse samples).
+fn clip_video_properties(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    opacity: f32,
+    transform: bettercut_editor_core::timeline::Transform,
+) {
+    use bettercut_editor_core::ClipProperty;
+
+    ui.add_space(4.0);
+    let mut change: Option<(ClipProperty, bool)> = None;
+
+    let mut value = opacity;
+    let response = ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("opacity"));
+    if response.changed() {
+        change = Some((ClipProperty::Opacity(value), response.dragged()));
+    }
+
+    // One control for both axes: non-uniform scale is a distortion effect, not
+    // something a user reaches for while cutting, and two boxes would imply it
+    // is the normal case.
+    let mut scale = transform.scale.x;
+    let response = ui.add(
+        egui::Slider::new(&mut scale, 0.05..=4.0)
+            .logarithmic(true)
+            .text("scale"),
+    );
+    if response.changed() {
+        change = Some((
+            ClipProperty::Scale { x: scale, y: scale },
+            response.dragged(),
+        ));
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("position");
+        let mut x = transform.position.x;
+        let mut y = transform.position.y;
+        // Normalized units: 1.0 is a whole frame width, so the useful range is
+        // about ±1 and a coarse step would make centring impossible.
+        let rx = ui.add(egui::DragValue::new(&mut x).speed(0.005).range(-2.0..=2.0));
+        let ry = ui.add(egui::DragValue::new(&mut y).speed(0.005).range(-2.0..=2.0));
+        if rx.changed() || ry.changed() {
+            change = Some((
+                ClipProperty::Position { x, y },
+                rx.dragged() || ry.dragged(),
+            ));
+        }
+    });
+
+    let mut rotation = transform.rotation_degrees;
+    let response = ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation"));
+    if response.changed() {
+        change = Some((ClipProperty::Rotation(rotation), response.dragged()));
+    }
+
+    if (!transform.is_identity() || opacity < 1.0)
+        && ui
+            .button("Reset")
+            .on_hover_text("Back to full opacity, no scale, no offset, no rotation")
+            .clicked()
+    {
+        reset_video_properties(editor, state, clip);
+    }
+
+    if let Some((property, continuing)) = change {
+        apply_clip_property(editor, state, clip, property, continuing);
+    }
+}
+
+/// Volume for the selected audio clip (§20a.4).
+fn clip_audio_properties(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    gain: f32,
+) {
+    use bettercut_editor_core::ClipProperty;
+
+    ui.add_space(4.0);
+    let mut value = gain;
+    // Up to 2x rather than the model's 4x ceiling: past that a clip is almost
+    // certainly clipping, and the limiter's work is not a volume control.
+    let response = ui.add(egui::Slider::new(&mut value, 0.0..=2.0).text("volume"));
+    if response.changed() {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            ClipProperty::Gain(value),
+            response.dragged(),
+        );
+    }
+}
+
+fn apply_clip_property(
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    property: bettercut_editor_core::ClipProperty,
+    continuing: bool,
+) {
+    match editor.set_clip_property(clip, property, continuing) {
+        Ok(()) => state.needs_repaint = true,
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Put a clip's look back to default, as one undo step (§79).
+fn reset_video_properties(
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::ClipProperty;
+
+    for property in [
+        ClipProperty::Opacity(1.0),
+        ClipProperty::Scale { x: 1.0, y: 1.0 },
+        ClipProperty::Position { x: 0.0, y: 0.0 },
+        ClipProperty::Rotation(0.0),
+    ] {
+        if let Err(err) = editor.set_clip_property(clip, property, false) {
+            state.error(err.to_string());
+            return;
+        }
+    }
+    state.needs_repaint = true;
+    state.info("Clip reset");
 }
 
 /// Resolution and frame rate for the active sequence (§8, §36).

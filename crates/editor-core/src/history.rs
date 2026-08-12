@@ -66,6 +66,48 @@ impl History {
         Ok(())
     }
 
+    /// Execute a command that continues the gesture already on top of the
+    /// stack, replacing that entry instead of adding one (§11).
+    ///
+    /// Dragging a slider produces a value per frame. Recorded plainly that is
+    /// sixty undo steps for one adjustment, and §11 is explicit that history
+    /// holds user intentions rather than mouse samples.
+    ///
+    /// The previous entry is **undone** before the new one runs, so the single
+    /// surviving entry restores the value from before the drag began — not
+    /// from one frame earlier, which is what makes undo useless here.
+    ///
+    /// `same_gesture` decides. It is given the entry currently on top; the
+    /// caller answers whether the incoming command continues it.
+    pub fn execute_coalescing(
+        &mut self,
+        mut command: Box<dyn EditorCommand>,
+        project: &mut Project,
+        same_gesture: impl FnOnce(&dyn EditorCommand) -> bool,
+    ) -> Result<(), EditorError> {
+        let continues = self
+            .undo
+            .back()
+            .is_some_and(|top| same_gesture(top.as_ref()));
+
+        if continues && let Some(mut previous) = self.undo.pop_back() {
+            // Roll the gesture back so the new command captures the value from
+            // before it started. A failure here means the project moved under
+            // us, so the entry is dropped rather than left half-applied.
+            if let Err(err) = previous.undo(project) {
+                tracing::warn!(?err, "could not coalesce; keeping the edit separate");
+            }
+        }
+
+        command.execute(project)?;
+        self.redo.clear();
+        self.undo.push_back(command);
+        while self.undo.len() > self.limit {
+            self.undo.pop_front();
+        }
+        Ok(())
+    }
+
     pub fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
         let mut command = self.undo.pop_back().ok_or(EditorError::NothingToUndo)?;
         match command.undo(project) {

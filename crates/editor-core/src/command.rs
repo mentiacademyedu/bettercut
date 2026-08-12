@@ -104,6 +104,13 @@ pub enum Command {
     ChangeSetting {
         change: SettingChange,
     },
+    /// Adjust one property of one clip (§59).
+    SetClipProperty {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        property: ClipProperty,
+    },
     /// Point an asset at a file that has moved (§66).
     ///
     /// Carries the new size rather than re-reading it, because §38.2 replays
@@ -196,6 +203,47 @@ pub enum Command {
         /// entry twice yields two distinct, *reproducible* clips.
         new_id: ClipId,
     },
+}
+
+/// One adjustable property of a clip (§59 "Basic transform", §20a gain).
+///
+/// A closed enum rather than a path-and-value pair, for the same reason as
+/// [`SettingChange`]: the journal replays these after a crash, so every variant
+/// that can be written has to be one the current build knows how to apply.
+///
+/// Values are plain numbers rather than the timeline's `Vec2`, keeping the wire
+/// format independent of a type that exists for rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "property", content = "value", rename_all = "snake_case")]
+pub enum ClipProperty {
+    /// 0.0–1.0. Video only.
+    Opacity(f32),
+    /// Linear gain, 0.0–4.0. Audio only.
+    Gain(f32),
+    /// Offset from centre in normalized output units. Video only.
+    Position {
+        x: f32,
+        y: f32,
+    },
+    Scale {
+        x: f32,
+        y: f32,
+    },
+    Rotation(f32),
+}
+
+impl ClipProperty {
+    /// Shown in the undo menu, and used to decide whether two edits are the
+    /// same gesture and should collapse into one history entry.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Opacity(_) => "Opacity",
+            Self::Gain(_) => "Volume",
+            Self::Position { .. } => "Position",
+            Self::Scale { .. } => "Scale",
+            Self::Rotation(_) => "Rotation",
+        }
+    }
 }
 
 /// A sequence's pixel dimensions, as the wire form of `Resolution`.
