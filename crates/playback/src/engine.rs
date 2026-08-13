@@ -45,6 +45,62 @@ pub struct ResolvedLayer {
     pub blur: f32,
 }
 
+/// One layer to draw, resolved except for the frame itself.
+///
+/// The part of "what is on screen at this instant" that does not depend on how
+/// the frame is obtained: which clips, where in their source, and what they
+/// look like there.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerRequest {
+    pub clip: ClipId,
+    pub track: TrackId,
+    pub media: MediaId,
+    pub source_time: MediaTime,
+    /// §24: animation applied, so the static fields are already overridden.
+    pub look: bettercut_timeline::ClipLook,
+}
+
+/// Everything visible at `position`, bottom track first (§22).
+///
+/// A free function, and **the only place this rule lives** (§46). Preview
+/// decodes through a cache and a decode-ahead ring; export walks the file
+/// sequentially at full quality from the original media. Those are genuinely
+/// different strategies, but *which clips are visible, where in their source
+/// they are reading, and what they look like there* must not be — and the way
+/// to guarantee that is for both to call this rather than each to re-derive it.
+pub fn layer_requests(
+    project: &Project,
+    sequence: &Sequence,
+    position: TimelineTime,
+) -> Vec<LayerRequest> {
+    let mut requests = Vec::new();
+
+    for track in &sequence.video_tracks {
+        if !track.enabled {
+            continue; // hidden tracks are skipped by the renderer (§8)
+        }
+        let Some(clip) = track.clip_at(position) else {
+            continue;
+        };
+        if project.media_asset(clip.media_id).is_none() {
+            continue; // §66: missing media leaves a gap, not a failure
+        }
+
+        let source_time = source_time_of(clip.timeline().start, clip.source().start, position);
+        requests.push(LayerRequest {
+            clip: clip.id,
+            track: track.id,
+            media: clip.media_id,
+            source_time,
+            // §24: resolved in the timeline crate, once, so an animated fade
+            // exports as the fade the user watched.
+            look: clip.look_at(source_time),
+        });
+    }
+
+    requests
+}
+
 /// One audio clip audible at a given instant.
 #[derive(Debug, Clone, Copy)]
 pub struct AudibleClip {
@@ -414,31 +470,20 @@ impl PlaybackEngine {
     ) -> Vec<ResolvedLayer> {
         let mut layers = Vec::new();
 
-        for track in &sequence.video_tracks {
-            if !track.enabled {
-                continue; // hidden tracks are skipped by the renderer (§8)
-            }
-            let Some(clip) = track.clip_at(position) else {
-                continue;
-            };
-            let Some(asset) = project.media_asset(clip.media_id) else {
+        for request in layer_requests(project, sequence, position) {
+            let Some(asset) = project.media_asset(request.media) else {
                 continue;
             };
 
-            let source_time = source_time_of(clip.timeline().start, clip.source().start, position);
-            // §24: animated parameters override the static ones, resolved in
-            // the timeline crate so preview and export cannot disagree (§46).
-            let look = clip.look_at(source_time);
-
-            match self.frame_at(asset, source_time) {
+            match self.frame_at(asset, request.source_time) {
                 Ok(frame) => layers.push(ResolvedLayer {
-                    clip: clip.id,
-                    track: track.id,
+                    clip: request.clip,
+                    track: request.track,
                     frame,
-                    transform: look.transform,
-                    opacity: look.opacity,
-                    color: look.color,
-                    blur: look.blur,
+                    transform: request.look.transform,
+                    opacity: request.look.opacity,
+                    color: request.look.color,
+                    blur: request.look.blur,
                 }),
                 Err(err) => {
                     tracing::warn!(

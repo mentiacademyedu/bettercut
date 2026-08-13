@@ -543,6 +543,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bettercut-export"
+version = "0.1.0"
+dependencies = [
+ "bettercut-audio",
+ "bettercut-foundation",
+ "bettercut-media",
+ "bettercut-playback",
+ "bettercut-project-format",
+ "bettercut-renderer",
+ "bettercut-timeline",
+ "pollster 0.4.0",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "bettercut-foundation"
 version = "0.1.0"
 dependencies = [

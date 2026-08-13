@@ -1,0 +1,25 @@
+[package]
+name = "bettercut-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bettercut-foundation.workspace = true
+bettercut-timeline.workspace = true
+bettercut-media.workspace = true
+bettercut-audio.workspace = true
+bettercut-project-format.workspace = true
+bettercut-playback.workspace = true
+bettercut-renderer.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Export owns its GPU device and drives it synchronously on a worker thread —
+# `request_adapter` and `request_device` are async, and this is the smallest
+# way to await them without pulling in a runtime for two calls.
+pollster = "0.4"
+
+[lints]
+workspace = true

@@ -16,7 +16,6 @@ use bettercut_media::{
     CancellationToken, ExportFormat, FfmpegDecoder, FfmpegProber, MediaDecoder, MediaProber,
     NeverCancelled, VideoWriter,
 };
-use rusty_ffmpeg::ffi;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -49,7 +48,7 @@ fn format(channels: usize) -> ExportFormat {
     ExportFormat {
         width: WIDTH,
         height: HEIGHT,
-        frame_rate: ffi::AVRational { num: 24, den: 1 },
+        frame_rate: bettercut_foundation::FrameRate::FILM_24,
         channels,
         threads: 2,
     }
@@ -288,10 +287,7 @@ fn a_silent_export_has_no_audio_stream() {
 fn ntsc_rates_produce_an_exact_duration() {
     let scratch = Scratch::new("ntsc");
     let ntsc = ExportFormat {
-        frame_rate: ffi::AVRational {
-            num: 30_000,
-            den: 1001,
-        },
+        frame_rate: bettercut_foundation::FrameRate::NTSC_29_97,
         ..format(0)
     };
 

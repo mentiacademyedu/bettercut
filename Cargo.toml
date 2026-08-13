@@ -11,6 +11,7 @@ members = [
     "crates/jobs",
     "crates/cache",
     "crates/project-format",
+    "crates/export",
     "crates/editor-core",
     "crates/ui",
 ]
@@ -32,6 +33,7 @@ bettercut-media = { path = "crates/media" }
 bettercut-audio = { path = "crates/audio" }
 bettercut-renderer = { path = "crates/renderer" }
 bettercut-playback = { path = "crates/playback" }
+bettercut-export = { path = "crates/export" }
 bettercut-jobs = { path = "crates/jobs" }
 bettercut-cache = { path = "crates/cache" }
 bettercut-project-format = { path = "crates/project-format" }

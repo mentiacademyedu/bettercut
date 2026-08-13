@@ -18,7 +18,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
-| **6 — Export** | 🟡 Encoder selection and the file writer work; rendering the timeline into them is next |
+| **6 — Export** | 🟡 The timeline renders to a playable MP4; the UI to trigger it is next |
 | **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes, and the effect graph |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
@@ -255,9 +255,25 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**Export** is half built. The back half — choosing an encoder and writing the
-file — works and is tested end to end; the front half, rendering the timeline
-into it, is next.
+**Export** renders the timeline to a playable MP4. There is no button for it
+yet — that is the next piece — but the path underneath is complete and tested
+against real footage: a project goes in, an H.264/AAC file comes out, and tests
+decode it back to check the frame count, the duration, and that the *edit* is in
+it rather than a copy of the source. A clip at quarter opacity exports darker; a
+keyframed fade exports as a fade.
+
+There is no export renderer. §46 says there is exactly one render graph and that
+preview and export are configurations of it, so export builds the same
+`Compositor` with `RenderConfig::export_to_texture` and feeds it from the same
+`layer_requests` the preview calls — one function that decides which clips are
+visible, where in their source they are reading, and what they look like there.
+What actually differs is §46's four axes: resolution, original media instead of
+proxies (§14), the full effect tier, and where the pixels go.
+
+Export walks the timeline forward, which is §47a.2's `Playback` mode — never
+seek, read the next frame. An export is the longest forward walk the program
+ever does, so the per-frame seek that made playback quadratic would have cost
+the most here.
 
 §0.1 requires OS-provided encoders and forbids linking anything GPL. So the
 encoder is chosen by **opening** it, not by looking up its name: a stock Windows
@@ -281,7 +297,7 @@ it by dropping the packet. Disabling B-frames fixes it, costs little at these
 bitrates, and makes all four encoders behave alike. The export tests run against
 each encoder the machine has.
 
-**What does not work yet:** exporting from the timeline, transitions, and text.
+**What does not work yet:** an export button, transitions, and text.
 
 Some limits worth knowing before testing with your own footage:
 

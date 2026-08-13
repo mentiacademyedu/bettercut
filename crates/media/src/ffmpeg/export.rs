@@ -27,6 +27,8 @@ use rusty_ffmpeg::ffi;
 
 use crate::error::MediaError;
 
+use bettercut_foundation::FrameRate;
+
 use super::INTERNAL_SAMPLE_RATE;
 use super::encode::{Muxer, drain_encoder};
 use super::encoders::{EncodeTarget, EncoderChoice, open_best};
@@ -37,7 +39,9 @@ use super::raii::{CodecContext, Frame, Scaler};
 pub struct ExportFormat {
     pub width: u32,
     pub height: u32,
-    pub frame_rate: ffi::AVRational,
+    /// The exact ratio §9 stores — 30000/1001, not 29.97. Rounding it puts a
+    /// long export's audio adrift by the end.
+    pub frame_rate: FrameRate,
     /// Channels of audio, or zero for a silent file.
     pub channels: usize,
     /// §15.1: FFmpeg never gets every core, not even for the last job running.
@@ -106,7 +110,7 @@ impl VideoWriter {
         let target = EncodeTarget {
             width: format.width,
             height: format.height,
-            frame_rate: format.frame_rate,
+            frame_rate: av_rational(format.frame_rate),
             threads: format.threads,
             global_header,
         };
@@ -150,7 +154,7 @@ impl VideoWriter {
             source: Frame::video(width, height, ffi::AV_PIX_FMT_RGBA)?,
             picture: Frame::video(width, height, ffi::AV_PIX_FMT_YUV420P)?,
             frames: 0,
-            frame_rate: format.frame_rate,
+            frame_rate: av_rational(format.frame_rate),
             encoder,
             width: format.width,
             height: format.height,
@@ -376,6 +380,15 @@ impl AudioTrack {
         }
         self.samples += count as i64;
         Ok(Some(self.frame.as_ptr()))
+    }
+}
+
+/// A `FrameRate` as FFmpeg's rational, exactly.
+fn av_rational(rate: FrameRate) -> ffi::AVRational {
+    let ratio = rate.as_rational();
+    ffi::AVRational {
+        num: ratio.num() as i32,
+        den: ratio.den() as i32,
     }
 }
 

@@ -27,7 +27,10 @@ pub mod waveform_job;
 
 pub use audio_source::AudioSource;
 pub use cache::{FrameCache, FrameKey};
-pub use engine::{AudibleClip, PlaybackEngine, ProxySource, ResolvedLayer, source_time_of};
+pub use engine::{
+    AudibleClip, LayerRequest, PlaybackEngine, ProxySource, ResolvedLayer, layer_requests,
+    source_time_of,
+};
 pub use error::PlaybackError;
 pub use filmstrip_job::{FilmstripJob, TILE_WIDTH, TILES};
 pub use frame_source::FrameSource;
