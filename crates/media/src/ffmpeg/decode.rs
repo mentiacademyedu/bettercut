@@ -94,6 +94,14 @@ pub struct FfmpegDecoder {
     /// and why all-intra proxies (§13.1) matter: with GOP=1 this skips nothing,
     /// with a 250-frame GOP it skips up to 249 decodes.
     skip_until: Option<MediaTime>,
+
+    /// Timestamp of the last frame handed out, which is where the demuxer now
+    /// stands. `None` until something has been decoded.
+    ///
+    /// This is what lets a caller tell "the next frame in the file" from "a
+    /// real jump", and therefore what lets ordinary playback avoid seeking at
+    /// all (§47a.2).
+    position: Option<MediaTime>,
 }
 
 // SAFETY: every field is an FFmpeg context that FFmpeg permits one thread to
@@ -126,6 +134,7 @@ impl FfmpegDecoder {
             color: crate::color::ColorMetadata::default(),
             drained: false,
             skip_until: None,
+            position: None,
         })
     }
 
@@ -350,6 +359,10 @@ impl MediaDecoder for FfmpegDecoder {
         self.video = video;
         self.audio = audio;
         self.drained = false;
+        // Reopening reuses the struct, so a position left over from the
+        // previous file would be read as this one's.
+        self.position = None;
+        self.skip_until = None;
 
         tracing::debug!(
             file = %asset.file_name,
@@ -406,6 +419,10 @@ impl MediaDecoder for FfmpegDecoder {
             a.codec.flush();
         }
         self.drained = false;
+        // The demuxer moved and the codec was flushed, so nothing has been
+        // decoded from here yet. Leaving a stale position would let the next
+        // request mistake a fresh seek for sequential reading.
+        self.position = None;
 
         // §47a.2 distinguishes the three seek kinds by what they optimise for.
         // Only `Precise` pays to decode forward; `Scrub` wants the lowest
@@ -468,6 +485,11 @@ impl MediaDecoder for FfmpegDecoder {
             .ok_or_else(|| MediaError::DecodeFailed("no scaler for this stream".to_owned()))?;
         scaler.convert(&self.frame, &mut self.rgba)?;
 
+        // Where the demuxer now stands, so the next request can tell whether
+        // it is simply the next frame along (§47a.2's `Playback`) or a real
+        // seek.
+        self.position = Some(timestamp);
+
         Ok(Some(VideoFrame {
             timestamp,
             width: self.width,
@@ -479,6 +501,33 @@ impl MediaDecoder for FfmpegDecoder {
                 stride: self.width * 4,
             },
         }))
+    }
+
+    fn decode_frame_at(
+        &mut self,
+        target: MediaTime,
+        cancel: &dyn CancellationToken,
+    ) -> Result<Option<VideoFrame>, MediaError> {
+        // Exactly the rule a `Precise` seek uses to pick its frame, reused
+        // rather than restated: the frame wanted is the one whose span
+        // contains `target`. Two copies of that comparison would eventually
+        // disagree by one frame, and a preview off by one frame from the
+        // decode-ahead ring is the kind of fault that looks like a stutter.
+        //
+        // The difference from `seek` is everything it does *not* do: no
+        // container seek, no codec flush. It just keeps reading.
+        self.skip_until = Some(target);
+        self.decode_frame(cancel)
+    }
+
+    fn position(&self) -> Option<MediaTime> {
+        self.position
+    }
+
+    fn frame_duration(&self) -> MediaTime {
+        self.video
+            .as_ref()
+            .map_or(MediaTime::ZERO, |v| v.frame_duration)
     }
 
     fn decode_audio(
@@ -672,6 +721,123 @@ mod tests {
                 frame.timestamp.ticks()
             );
         }
+    }
+
+    /// §47a.2's `Playback`: reading forward must land on exactly the frames a
+    /// seek would have found.
+    ///
+    /// This is the property the whole sequential path rests on. If the two
+    /// disagree by a frame, playback shows something one frame off from what
+    /// stepping and scrubbing show, and the decode-ahead ring fills with
+    /// frames the preview will never ask for.
+    #[test]
+    fn reading_forward_returns_the_same_frames_as_seeking_to_each() {
+        let frame_ticks = 32_032; // one 29.97 fps frame
+        let frames = 24;
+
+        let mut seeking = open("ntsc-2997.mp4");
+        let mut expected = Vec::new();
+        for index in 0..frames {
+            let target = MediaTime::from_ticks(index * frame_ticks);
+            seeking.seek(target, SeekMode::Precise).expect("seek");
+            let frame = seeking
+                .decode_frame(&NeverCancelled)
+                .expect("decode")
+                .expect("a frame");
+            expected.push(frame.timestamp.ticks());
+        }
+
+        let mut sequential = open("ntsc-2997.mp4");
+        let mut actual = Vec::new();
+        for index in 0..frames {
+            let target = MediaTime::from_ticks(index * frame_ticks);
+            // Only the first request seeks; from then on the decoder is
+            // already sitting on the previous frame.
+            let frame = if index == 0 {
+                sequential.seek(target, SeekMode::Precise).expect("seek");
+                sequential.decode_frame(&NeverCancelled)
+            } else {
+                sequential.decode_frame_at(target, &NeverCancelled)
+            }
+            .expect("decode")
+            .expect("a frame");
+            actual.push(frame.timestamp.ticks());
+        }
+
+        assert_eq!(
+            actual, expected,
+            "reading forward disagreed with seeking to each frame"
+        );
+    }
+
+    /// The position is what tells a caller "the next frame" from "a jump", so
+    /// it has to be absent exactly when there is nothing to read forward from.
+    #[test]
+    fn position_is_only_set_once_something_has_been_decoded() {
+        let mut decoder = open("ntsc-2997.mp4");
+        assert_eq!(decoder.position(), None, "nothing decoded yet");
+        assert!(decoder.frame_duration().ticks() > 0, "29.97 fps is known");
+
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!(decoder.position(), Some(frame.timestamp));
+
+        // A seek moves the demuxer and flushes the codec, so the old position
+        // no longer describes where the next read will start.
+        decoder
+            .seek(MediaTime::from_millis(500), SeekMode::Precise)
+            .expect("seek");
+        assert_eq!(decoder.position(), None, "a seek must clear the position");
+    }
+
+    /// §47a.1, made concrete: this fixture is single-GOP, so seeking to frame
+    /// N decodes N frames to get there. Playing it that way is quadratic, and
+    /// that is exactly what made playback crawl on media without a proxy.
+    ///
+    /// Timing in a test is normally a bad idea. It earns its place here because
+    /// the difference is asymptotic rather than constant — 60 frames costs 60
+    /// decodes one way and about 1,800 the other — so the margin below is met
+    /// by a wide margin on any machine that can run the suite at all. Measured
+    /// at 27 ms against 377 ms - 14x - on a 640x360 fixture; the gap widens
+    /// with resolution and with GOP length.
+    #[test]
+    fn reading_forward_is_dramatically_cheaper_than_seeking_each_frame() {
+        let frame_ticks = 32_032;
+        let frames = 50;
+
+        let mut sequential = open("ntsc-2997.mp4");
+        let start = std::time::Instant::now();
+        sequential
+            .seek(MediaTime::ZERO, SeekMode::Precise)
+            .expect("seek");
+        sequential.decode_frame(&NeverCancelled).expect("decode");
+        for index in 1..frames {
+            sequential
+                .decode_frame_at(MediaTime::from_ticks(index * frame_ticks), &NeverCancelled)
+                .expect("decode");
+        }
+        let forward = start.elapsed();
+
+        let mut seeking = open("ntsc-2997.mp4");
+        let start = std::time::Instant::now();
+        for index in 0..frames {
+            seeking
+                .seek(
+                    MediaTime::from_ticks(index * frame_ticks),
+                    SeekMode::Precise,
+                )
+                .expect("seek");
+            seeking.decode_frame(&NeverCancelled).expect("decode");
+        }
+        let seeked = start.elapsed();
+
+        assert!(
+            forward * 3 < seeked,
+            "reading forward took {forward:?} and seeking each frame took {seeked:?}; \
+             the sequential path is not paying off"
+        );
     }
 
     /// A scrub seek does not pay to decode forward: §47a.2 says lowest latency

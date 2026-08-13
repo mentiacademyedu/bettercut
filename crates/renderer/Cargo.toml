@@ -18,5 +18,11 @@ tracing.workspace = true
 # and a texture from one is unusable by the other.
 eframe.workspace = true
 
+[dev-dependencies]
+naga.workspace = true
+# Only to drive wgpu's async device setup from a synchronous test. wgpu
+# already depends on it, so this adds nothing to the build.
+pollster = "0.4"
+
 [lints]
 workspace = true

@@ -184,6 +184,24 @@ mod tests {
             Ok(None)
         }
 
+        // Audio only, so there is no video position to report and nothing for
+        // the sequential-read path to work with.
+        fn decode_frame_at(
+            &mut self,
+            _target: MediaTime,
+            _cancel: &dyn CancellationToken,
+        ) -> Result<Option<VideoFrame>, MediaError> {
+            Ok(None)
+        }
+
+        fn position(&self) -> Option<MediaTime> {
+            None
+        }
+
+        fn frame_duration(&self) -> MediaTime {
+            MediaTime::ZERO
+        }
+
         fn decode_audio(
             &mut self,
             _cancel: &dyn CancellationToken,

@@ -230,6 +230,13 @@ pub enum ClipProperty {
         y: f32,
     },
     Rotation(f32),
+    /// §45's cheap colour adjustment. 1.0 leaves the picture alone.
+    Brightness(f32),
+    Contrast(f32),
+    Saturation(f32),
+    /// §45's blur, 0–100. Video only. A fraction of frame height rather than a
+    /// pixel radius, so preview and export agree (§46).
+    Blur(f32),
 }
 
 impl ClipProperty {
@@ -242,6 +249,10 @@ impl ClipProperty {
             Self::Position { .. } => "Position",
             Self::Scale { .. } => "Scale",
             Self::Rotation(_) => "Rotation",
+            Self::Brightness(_) => "Brightness",
+            Self::Contrast(_) => "Contrast",
+            Self::Saturation(_) => "Saturation",
+            Self::Blur(_) => "Blur",
         }
     }
 }

@@ -18,7 +18,8 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
-| 6 — Export | ⛔ Blocked on §0.1 legal review |
+| 6 — Export | ⛔ Blocked on §0.1 legal review — **the only §60 criterion left** |
+| **8 — Effects** | 🟡 Transform, opacity, basic colour, blur; keyframes and the render-graph node structure open |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
 **What works today:** new/open/save projects as versioned JSON with atomic
@@ -48,6 +49,16 @@ device, and the **audio device is the master clock** (§20a.1) — the picture
 follows it, never a wall-clock timer. Transport controls sit directly above the
 timeline — start, ±10 s, play/pause, end — with the playhead and sequence
 duration beside them.
+
+Playback reads **sequentially** — §47a.2's `Playback` mode, "never seeks". This
+matters more than it sounds. A container seek only reaches the preceding
+keyframe, so a frame-accurate seek costs up to a whole GOP of decodes, and §47a.1
+puts that at 250 on ordinary long-GOP footage. Doing that *per displayed frame*
+made playback quadratic: measured at 27 ms to read 50 frames forward against
+377 ms to seek to each one, on a small 640×360 fixture. All-intra proxies (§13.1)
+hide it, because there the preceding keyframe *is* the frame — which is exactly
+why it survived so long, and why it appeared the moment footage played before its
+proxy had finished building. A jump still seeks; the next frame along does not.
 
 While playing, a decode thread runs half a second ahead of the playhead
 (§47a.3), filling a byte-bounded ring so the frame the clock asks for is
@@ -117,12 +128,37 @@ apart, so zooming in repeats a frame across a stretch of timeline. Rendering
 more tiles as you zoom needs the zoom level to drive cache keys; this is the
 version that works everywhere first.
 
-Select a clip and the Inspector edits it: **opacity**, **scale**, **position**
-and **rotation** on video, **volume** on audio — enough for picture-in-picture
-and a layered composite. The renderer already composited all of this; there was
-simply no way to set it. Dragging a slider updates the preview live and lands as
-**one** undo step, not sixty: §11's history holds intentions, not mouse samples,
-and undo returns to the value from before the drag began.
+Select a clip and the Inspector edits it: **opacity**, **scale**, **position**,
+**rotation**, **brightness / contrast / saturation** and **blur** on video,
+**volume** on audio — enough for picture-in-picture, a layered composite and a
+colour pass. Colour is three multiplies in the fragment shader (§45 rates it
+*Cheap*), applied in linear light: contrast pivots on 0.18 rather than 0.5,
+because the source is sampled through an sRGB texture and perceptual mid-grey is
+0.18 before the curve. Pivoting at 0.5 would darken the picture every time you
+added contrast. Dragging a slider updates the preview live and lands as **one**
+undo step, not sixty: §11's history holds intentions, not mouse samples, and undo
+returns to the value from before the drag began.
+
+**Blur** is the first effect that could not ride along in the composite pass —
+it reads a neighbourhood rather than one texel — so it runs as a separable
+Gaussian: two 1D passes instead of one 2D kernel, which at the export tier is 162
+samples per pixel rather than 6561. Two decisions are worth knowing about:
+
+- The stored amount is a **fraction of frame height, not a pixel radius.** §46
+  has the preview reading a 720p proxy while export reads the 1080p original; a
+  radius in pixels would mean the preview showed two-thirds of the blur that
+  actually got encoded, and you would only find out after the export finished.
+- The kernel is normalised by **the weights it actually used**, not by the
+  Gaussian's analytic constant. Truncated and sparse kernels do not sum to one,
+  and dividing by the wrong number darkens every blurred clip — more the wider
+  the blur, so it reads as a vignette rather than a bug. A GPU test composites a
+  white square and checks total brightness survives to within 0.5%.
+
+§45 rates blur *Medium*, so it is the first effect where the quality tier does
+anything: preview spends 16 taps a side, export 40. The tier changes **only that
+number** — both cover the same radius, and a GPU test asserts the two agree. At
+wide radii the kernel becomes sparse rather than narrower, which can alias on
+fine detail; downsampling first is the fix, and is worth doing when export lands.
 
 Dragging on empty timeline space draws a rubber band and selects every clip it
 covers; Ctrl adds to the selection instead of replacing it. Selection is
@@ -131,9 +167,9 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**What does not work yet:** export, effects, and text.
+**What does not work yet:** export, keyframes, transitions, and text.
 
-Two playback limits worth knowing before testing with your own footage:
+Some limits worth knowing before testing with your own footage:
 
 * **Decode-ahead is unmeasured on the target machine.** It works — playback
   takes frames from the ring rather than decoding inline, asserted by test —
@@ -141,10 +177,12 @@ Two playback limits worth knowing before testing with your own footage:
   calculation, not measured on §52.1 hardware.
 * **Software decode only.** §5's hardware-decode-to-texture path is still open;
   this is the RAM fallback §5 requires to exist.
-* **HDR is detected but not tone-mapped.** PQ and HLG sources are probed and
-  correctly tagged, and they trigger a proxy — but nothing converts them into
-  the SDR working space (§21a.1), at upload or in the proxy encoder. HDR
-  footage will look dark and flat. SDR footage is pixel-exact.
+* **HDR is tone-mapped in the proxy, not at upload.** PQ and HLG sources are
+  probed, tagged, and converted into the SDR working space (§21a.1) by the proxy
+  encoder — a real conversion, not a retag, asserted by a test that measures mean
+  luma. But the direct-decode path has no equivalent, so an HDR file looks dark
+  and flat for as long as it takes its proxy to build. SDR is pixel-exact
+  throughout.
 * **No custom sequence sizes in the UI.** The Inspector offers 16:9, 9:16, 1:1
   and 4K presets; an arbitrary size round-trips through the project file but
   cannot be typed in yet.
@@ -258,9 +296,19 @@ divides exactly by every NTSC rate. See
 **The timeline is a canvas, not a widget tree** (§53). One `Painter`, one rect,
 and only the clips intersecting the viewport get drawn.
 
-**Preview and export are one render graph** (§46). Not built yet, but no code
-here assumes otherwise — a second renderer implementation is on §74's prohibited
-list because divergence is a certainty, not a risk.
+**Preview and export are one render graph** (§46). Export is not built yet, but
+no code here assumes otherwise — a second renderer implementation is on §74's
+prohibited list because divergence is a certainty, not a risk. Blur is the first
+effect where the two configurations could have drifted, so it is also the first
+one a test pins: the preview and export tiers must render the same picture.
+
+Two dev-dependencies were added for that, both already in the tree via wgpu, so
+neither adds anything to a build (§74 asks for justification, not abstinence):
+`naga` parses and type-checks the WGSL during `cargo test`, which previously
+happened only when a real device was created — a shader typo used to survive the
+entire suite and surface as a panic on the first frame drawn. `pollster` drives
+wgpu's async setup from a synchronous test. The GPU tests skip themselves when no
+adapter is available, since §52.1's target and a headless CI box may have none.
 
 ---
 

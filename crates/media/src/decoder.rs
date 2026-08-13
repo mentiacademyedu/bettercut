@@ -115,6 +115,33 @@ pub trait MediaDecoder {
         cancel: &dyn CancellationToken,
     ) -> Result<Option<VideoFrame>, MediaError>;
 
+    /// Decode forward to the frame whose span contains `target`, **without
+    /// seeking** (§47a.2's `Playback`: "never seeks; reads sequentially").
+    ///
+    /// This is the mode ordinary playback runs in, and the reason it exists is
+    /// §47a.1: a container seek only reaches the preceding keyframe, so a
+    /// frame-accurate seek costs up to a whole GOP of decodes — up to 250 —
+    /// *per displayed frame*. It also flushes the codec, which throws away the
+    /// decoder's pipeline. Neither is acceptable once a frame, and neither is
+    /// necessary when the next frame wanted is simply the next frame in the
+    /// file.
+    ///
+    /// The caller is responsible for only calling this when `target` is ahead
+    /// of [`MediaDecoder::position`]; there is no rewinding without a seek.
+    fn decode_frame_at(
+        &mut self,
+        target: MediaTime,
+        cancel: &dyn CancellationToken,
+    ) -> Result<Option<VideoFrame>, MediaError>;
+
+    /// Timestamp of the last video frame returned, if there was one.
+    ///
+    /// `None` after `open` or `seek`, because neither has decoded anything yet.
+    fn position(&self) -> Option<MediaTime>;
+
+    /// How long one video frame lasts, or zero if no video stream is open.
+    fn frame_duration(&self) -> MediaTime;
+
     fn decode_audio(
         &mut self,
         cancel: &dyn CancellationToken,

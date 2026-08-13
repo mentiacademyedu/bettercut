@@ -58,6 +58,48 @@ impl Transform {
     }
 }
 
+/// Basic colour adjustment (§45 "Colour adjustment → Cheap", Milestone 8).
+///
+/// Three numbers, each `1.0` when it does nothing, so the default is the
+/// identity and `is_identity` lets the renderer skip the work entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColorAdjust {
+    /// Exposure-style multiply. 1.0 leaves the picture alone.
+    pub brightness: f32,
+    /// Expansion around mid-grey. 1.0 leaves the picture alone.
+    pub contrast: f32,
+    /// 0.0 is greyscale, 1.0 is unchanged, above 1.0 is more saturated.
+    pub saturation: f32,
+}
+
+impl Default for ColorAdjust {
+    fn default() -> Self {
+        Self {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        }
+    }
+}
+
+impl ColorAdjust {
+    /// True when this does nothing, so the shader can take the cheap path.
+    pub fn is_identity(&self) -> bool {
+        self.brightness == 1.0 && self.contrast == 1.0 && self.saturation == 1.0
+    }
+}
+
+/// Gaussian blur strength, on the 0–100 scale §35's effect schema defines
+/// (`{"id": "gaussian_blur", "parameters": [{"id": "amount", "min": 0,
+/// "max": 100, "default": 0}]}`).
+///
+/// Deliberately *not* a pixel radius. Preview and export differ in resolution
+/// and in which media they read — proxy versus original (§46) — so a radius in
+/// pixels would blur a 720p proxy and a 1080p original by visibly different
+/// amounts and the preview would be lying about the result. The renderer turns
+/// this into texels against whatever it is actually sampling.
+pub const MAX_BLUR: f32 = 100.0;
+
 /// The span a clip occupies on the timeline, half-open: `[start, end)`.
 ///
 /// Half-open is what makes two clips butt-joined without a one-tick gap or a
@@ -125,6 +167,13 @@ pub struct VideoClip {
     pub transform: Transform,
     #[serde(default = "one")]
     pub opacity: f32,
+    #[serde(default)]
+    pub color: ColorAdjust,
+    /// Gaussian blur, 0–100 ([`MAX_BLUR`]). Zero is no blur, which is also
+    /// `f32::default()`, so `serde(default)` gives older projects the right
+    /// answer without a helper.
+    #[serde(default)]
+    pub blur: f32,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -216,6 +265,8 @@ impl VideoClip {
             source,
             transform: Transform::default(),
             opacity: 1.0,
+            color: ColorAdjust::default(),
+            blur: 0.0,
             enabled: true,
         })
     }

@@ -47,6 +47,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 eframe = "0.36"
 egui = "0.36"
+# Tests only, and not really a new dependency: wgpu already compiles every
+# shader through this exact version at run time. Pulling it in directly lets
+# the WGSL be parsed and type-checked by `cargo test`, on a machine with no
+# GPU, instead of failing when the first frame is drawn.
+naga = { version = "30", features = ["wgsl-in"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -24,15 +24,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime, TrackId};
-use bettercut_media::{
-    FfmpegDecoder, MediaAsset, MediaDecoder, NeverCancelled, SeekMode, VideoFrame,
-};
+use bettercut_media::{FfmpegDecoder, MediaAsset, NeverCancelled, SeekMode, VideoFrame};
 use bettercut_project_format::Project;
 use bettercut_timeline::{Clip, Sequence, Transform};
 
 use crate::audio_source::AudioSource;
 use crate::cache::{FrameCache, FrameKey};
 use crate::error::PlaybackError;
+use crate::frame_source::FrameSource;
 
 /// One video layer to draw, resolved for a given instant.
 pub struct ResolvedLayer {
@@ -41,6 +40,9 @@ pub struct ResolvedLayer {
     pub frame: Arc<VideoFrame>,
     pub transform: Transform,
     pub opacity: f32,
+    pub color: bettercut_timeline::ColorAdjust,
+    /// §45's blur amount, 0–100.
+    pub blur: f32,
 }
 
 /// One audio clip audible at a given instant.
@@ -94,18 +96,13 @@ impl ProxySource {
     }
 }
 
-/// Which copy of a media file a decoder was opened against.
-///
-/// Part of the decoder key: switching to a proxy mid-session must open a new
-/// decoder rather than reuse the one pointed at the original.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Source {
-    Original,
-    Proxy,
-}
-
 pub struct PlaybackEngine {
-    decoders: HashMap<(MediaId, Source), FfmpegDecoder>,
+    /// The decoder pool. The *same* type the decode-ahead thread runs, which
+    /// is the point: this used to be a second, hand-rolled copy of it here,
+    /// and the copy is what let §47a.2's sequential-read rule be implemented
+    /// in one of the two places and missed in the other.
+    frames: FrameSource,
+    /// Kept only to size the decode-ahead budget; the pool owns the rest.
     proxy: Option<ProxySource>,
     cache: FrameCache,
     /// FFmpeg threads per decoder (§15.1), from `HardwareProfile`.
@@ -123,11 +120,6 @@ pub struct PlaybackEngine {
     master_gain: f32,
     limited_samples: u64,
 
-    /// How far the last decode landed from what was asked for. Surfaced in
-    /// diagnostics because a persistently large value means seeking is not
-    /// working and everything downstream will look subtly wrong.
-    last_seek_error: TimelineTime,
-
     /// The decode-ahead thread (§47a.3). `None` until playback starts, because
     /// a paused editor has nothing to decode ahead of.
     prefetcher: Option<crate::prefetcher::Prefetcher>,
@@ -139,7 +131,7 @@ pub struct PlaybackEngine {
 impl PlaybackEngine {
     pub fn new(cache_bytes: usize, decoder_threads: u32) -> Self {
         Self {
-            decoders: HashMap::new(),
+            frames: FrameSource::new(decoder_threads),
             proxy: None,
             cache: FrameCache::new(cache_bytes),
             decoder_threads: decoder_threads.max(1),
@@ -147,7 +139,6 @@ impl PlaybackEngine {
             audio_filled_to: TimelineTime::ZERO,
             master_gain: 1.0,
             limited_samples: 0,
-            last_seek_error: TimelineTime::ZERO,
             prefetcher: None,
             prefetch_hits: 0,
         }
@@ -380,16 +371,16 @@ impl PlaybackEngine {
     }
 
     pub fn last_seek_error(&self) -> TimelineTime {
-        self.last_seek_error
+        TimelineTime::from_ticks(self.frames.last_seek_error().ticks())
     }
 
     /// Drop cached frames and decoders for one asset.
     /// Read preview frames from proxies where they exist (§14).
     pub fn set_proxy_source(&mut self, proxy: Option<ProxySource>) {
-        self.proxy = proxy;
+        self.proxy = proxy.clone();
         // Every open decoder points at whichever copy was current when it was
         // opened, and every cached frame came from one of them.
-        self.decoders.clear();
+        self.frames.set_proxy_source(proxy);
         self.cache.clear();
         // Frames already decoded ahead came from the old copy too.
         self.reset_prefetch();
@@ -402,7 +393,7 @@ impl PlaybackEngine {
     /// the proxy, and keeping both wastes the budget.
     pub fn invalidate(&mut self, media: MediaId) {
         self.cache.invalidate_media(media);
-        self.decoders.retain(|(cached, _), _| *cached != media);
+        self.frames.invalidate(media);
         self.audio_sources.remove(&media);
     }
 
@@ -443,6 +434,8 @@ impl PlaybackEngine {
                     frame,
                     transform: clip.transform,
                     opacity: clip.opacity,
+                    color: clip.color,
+                    blur: clip.blur,
                 }),
                 Err(err) => {
                     tracing::warn!(
@@ -525,42 +518,20 @@ impl PlaybackEngine {
             return Ok(frame);
         }
 
-        // §14: preview reads the proxy when there is one. §13.1's all-intra
-        // encoding is what makes the seek below cost one decode instead of a
-        // walk forward from the previous keyframe.
-        let (source, opened) = match self.proxy.as_ref().and_then(|p| p.path_for(asset.id)) {
-            Some(path) => {
-                let mut proxy_asset = asset.clone();
-                proxy_asset.path = path;
-                (Source::Proxy, proxy_asset)
-            }
-            None => (Source::Original, asset.clone()),
-        };
-
-        let threads = self.decoder_threads;
-        let decoder = match self.decoders.entry((asset.id, source)) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let mut decoder = FfmpegDecoder::new(threads)?;
-                decoder.open(&opened)?;
-                entry.insert(decoder)
-            }
-        };
-
-        // §47a.2: `Precise` decodes forward to the exact frame. Scrubbing will
-        // want `Scrub` here once §17's quality ladder is wired up.
-        decoder.seek(source_time, SeekMode::Precise)?;
-        let frame = decoder
-            .decode_frame(&NeverCancelled)?
-            .ok_or(PlaybackError::NoFrame { at: source_time })?;
-
-        self.last_seek_error =
-            TimelineTime::from_ticks((frame.timestamp.ticks() - source_time.ticks()).abs());
+        // Nothing had it, so decode here and now — on the UI thread, which is
+        // why keeping this cheap matters. `FrameSource` reads forward without
+        // seeking when the frame wanted is simply the next one (§47a.2), and
+        // falls back to a `Precise` seek when the playhead has actually jumped.
+        //
+        // Scrubbing will want `Scrub` here once §17's quality ladder is wired
+        // up; `Precise` is the right fallback for stepping and for stopping.
+        let frame = self
+            .frames
+            .decode(asset, source_time, SeekMode::Precise, &NeverCancelled)?;
 
         // Key the cache by the frame's *actual* timestamp as well, so a later
         // request landing on the same frame is a hit even if it asks for a
         // slightly different instant.
-        let frame = Arc::new(frame);
         self.cache.insert(key, Arc::clone(&frame));
         Ok(frame)
     }

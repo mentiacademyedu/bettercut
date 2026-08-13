@@ -15,7 +15,9 @@ pub mod sequence;
 pub mod snap;
 pub mod track;
 
-pub use clip::{AudioClip, Clip, SourceRange, TimelineRange, Transform, Vec2, VideoClip};
+pub use clip::{
+    AudioClip, Clip, ColorAdjust, MAX_BLUR, SourceRange, TimelineRange, Transform, Vec2, VideoClip,
+};
 pub use error::TimelineError;
 pub use sequence::{Resolution, Sequence, TrackKind};
 pub use snap::{SnapKind, SnapTarget};

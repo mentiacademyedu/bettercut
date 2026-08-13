@@ -485,8 +485,14 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     // ends before any of them dispatches a command.
     let single = (selected.len() == 1).then(|| selected[0]).map(|id| {
         let video = sequence.video_tracks.iter().find_map(|t| {
-            t.get(id)
-                .map(|c| (c.timeline, c.opacity, c.transform, c.media_id))
+            t.get(id).map(|c| VideoLook {
+                timeline: c.timeline,
+                media_id: c.media_id,
+                opacity: c.opacity,
+                transform: c.transform,
+                color: c.color,
+                blur: c.blur,
+            })
         });
         let audio = sequence
             .audio_tracks
@@ -500,11 +506,11 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             ui.label(egui::RichText::new("Nothing selected").color(theme::DISABLED));
         }
         (1, Some((id, video, audio))) => {
-            let media_id = video.map(|v| v.3).or_else(|| audio.map(|a| a.2));
+            let media_id = video.map(|v| v.media_id).or_else(|| audio.map(|a| a.2));
             let name = media_id
                 .and_then(|m| editor.project().media_asset(m))
                 .map_or_else(|| "(missing)".to_owned(), |m| m.file_name.clone());
-            let range = video.map(|v| v.0).or_else(|| audio.map(|a| a.0));
+            let range = video.map(|v| v.timeline).or_else(|| audio.map(|a| a.0));
 
             ui.monospace(format!("media     {name}"));
             if let Some(range) = range {
@@ -512,8 +518,8 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 ui.monospace(format!("duration  {}", range.duration().format_timecode()));
             }
 
-            if let Some((_, opacity, transform, _)) = video {
-                clip_video_properties(ui, editor, state, id, opacity, transform);
+            if let Some(look) = video {
+                clip_video_properties(ui, editor, state, id, look);
             }
             if let Some((_, gain, _)) = audio {
                 clip_audio_properties(ui, editor, state, id, gain);
@@ -912,7 +918,23 @@ fn thumbnail(ui: &mut egui::Ui, state: &mut UiState, media: MediaId, missing: bo
     }
 }
 
-/// Opacity and transform for the selected video clip (§59).
+/// What the inspector needs to know about the selected video clip.
+///
+/// A struct rather than the tuple this started as. Milestone 8 added a field
+/// per effect, and each one shifted the positional indices every reader used —
+/// a rename the compiler cannot catch, because `.4` is still valid after the
+/// meaning of position 4 changes.
+#[derive(Clone, Copy)]
+struct VideoLook {
+    timeline: bettercut_editor_core::timeline::TimelineRange,
+    media_id: MediaId,
+    opacity: f32,
+    transform: bettercut_editor_core::timeline::Transform,
+    color: bettercut_editor_core::timeline::ColorAdjust,
+    blur: f32,
+}
+
+/// Opacity, transform and effects for the selected video clip (§59, §45).
 ///
 /// Every control dispatches while being dragged, so the preview updates live,
 /// and the whole drag collapses into one undo step — `continuing` is true
@@ -923,10 +945,17 @@ fn clip_video_properties(
     editor: &mut Editor,
     state: &mut UiState,
     clip: bettercut_editor_core::foundation::ClipId,
-    opacity: f32,
-    transform: bettercut_editor_core::timeline::Transform,
+    look: VideoLook,
 ) {
     use bettercut_editor_core::ClipProperty;
+
+    let VideoLook {
+        opacity,
+        transform,
+        color,
+        blur,
+        ..
+    } = look;
 
     ui.add_space(4.0);
     let mut change: Option<(ClipProperty, bool)> = None;
@@ -975,7 +1004,59 @@ fn clip_video_properties(
         change = Some((ClipProperty::Rotation(rotation), response.dragged()));
     }
 
-    if (!transform.is_identity() || opacity < 1.0)
+    // Colour is its own group: transform is where a clip *is*, colour is how it
+    // looks, and mixing the two makes a long undifferentiated list of sliders.
+    egui::CollapsingHeader::new("Colour")
+        .default_open(!color.is_identity())
+        .show(ui, |ui| {
+            let mut brightness = color.brightness;
+            let response = ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness"));
+            if response.changed() {
+                change = Some((ClipProperty::Brightness(brightness), response.dragged()));
+            }
+
+            let mut contrast = color.contrast;
+            let response = ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast"));
+            if response.changed() {
+                change = Some((ClipProperty::Contrast(contrast), response.dragged()));
+            }
+
+            let mut saturation = color.saturation;
+            let response = ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation"));
+            if response.changed() {
+                change = Some((ClipProperty::Saturation(saturation), response.dragged()));
+            }
+
+            ui.label(
+                egui::RichText::new("0 saturation is black and white; 1.0 is untouched.")
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        });
+
+    // One slider, so no header of its own — but it does not belong with the
+    // colour group either: everything in there is free, and this is not.
+    let mut amount = blur;
+    let response = ui.add(
+        egui::Slider::new(&mut amount, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
+            .text("blur")
+            .suffix("%"),
+    );
+    if response.changed() {
+        change = Some((ClipProperty::Blur(amount), response.dragged()));
+    }
+    if amount > 0.0 {
+        // §45 rates blur Medium and §44 says to avoid expensive realtime
+        // effects on weak hardware. Saying so where the slider is beats
+        // leaving the user to wonder why playback got choppy.
+        ui.label(
+            egui::RichText::new("Blur costs more than the controls above; playback may drop.")
+                .small()
+                .color(theme::DISABLED),
+        );
+    }
+
+    if (!transform.is_identity() || opacity < 1.0 || !color.is_identity() || blur > 0.0)
         && ui
             .button("Reset")
             .on_hover_text("Back to full opacity, no scale, no offset, no rotation")
@@ -1041,6 +1122,10 @@ fn reset_video_properties(
         ClipProperty::Scale { x: 1.0, y: 1.0 },
         ClipProperty::Position { x: 0.0, y: 0.0 },
         ClipProperty::Rotation(0.0),
+        ClipProperty::Brightness(1.0),
+        ClipProperty::Contrast(1.0),
+        ClipProperty::Saturation(1.0),
+        ClipProperty::Blur(0.0),
     ] {
         if let Err(err) = editor.set_clip_property(clip, property, false) {
             state.error(err.to_string());

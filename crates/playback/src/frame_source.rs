@@ -104,10 +104,26 @@ impl FrameSource {
             }
         };
 
-        decoder.seek(source_time, mode)?;
-        let frame = decoder
-            .decode_frame(cancel)?
-            .ok_or(PlaybackError::NoFrame { at: source_time })?;
+        // §47a.2's `Playback`: **never seeks; reads sequentially.**
+        //
+        // This is the difference between playback working and playback
+        // crawling. Asking for a frame used to mean seeking to it, and a
+        // container seek only reaches the preceding keyframe — §47a.1 puts
+        // that at up to 250 decodes on long-GOP media, *for every frame
+        // displayed*, plus a codec flush that discards the pipeline. All-intra
+        // proxies (§13.1) hide it, because there the preceding keyframe is the
+        // frame itself; the moment playback runs on the original, or before a
+        // proxy has finished building, the cost is the whole GOP.
+        //
+        // During ordinary playback the next frame wanted is the next frame in
+        // the file, and reading it costs one decode.
+        let frame = if is_next_frame(decoder, source_time) {
+            decoder.decode_frame_at(source_time, cancel)?
+        } else {
+            decoder.seek(source_time, mode)?;
+            decoder.decode_frame(cancel)?
+        };
+        let frame = frame.ok_or(PlaybackError::NoFrame { at: source_time })?;
 
         self.last_seek_error =
             MediaTime::from_ticks((frame.timestamp.ticks() - source_time.ticks()).abs());
@@ -121,6 +137,38 @@ impl FrameSource {
     }
 }
 
+/// How far ahead of the decoder a request may be and still be read forward.
+///
+/// One frame is the playback case. A few more covers frames dropped under load
+/// (§47a.4) and arrow-key stepping, which would otherwise pay for a seek to
+/// reach the very next frame.
+///
+/// It has to stay small. Walking forward is only a win while it is cheaper than
+/// a seek, and on an all-intra proxy a seek costs exactly one decode — so a
+/// generous window would make proxies slower to serve the very case they exist
+/// for. Past this, seeking is the better bet.
+const MAX_SEQUENTIAL_FRAMES: i64 = 4;
+
+/// Whether `target` is close enough ahead of the decoder to read forward to.
+///
+/// Deliberately strict about the lower bound: `target` must be past the end of
+/// the frame the decoder last produced. A request landing *inside* that frame
+/// wants the frame already decoded, and reading forward would return the next
+/// one — a silent off-by-one that a seek gets right.
+fn is_next_frame(decoder: &impl MediaDecoder, target: MediaTime) -> bool {
+    let (Some(position), duration) = (decoder.position(), decoder.frame_duration()) else {
+        return false;
+    };
+    if duration.ticks() <= 0 {
+        // No frame duration means no way to judge the distance; a stream that
+        // does not report one is unusual enough to be worth a real seek.
+        return false;
+    }
+
+    let ahead = target.ticks() - position.ticks();
+    ahead >= duration.ticks() && ahead <= duration.ticks() * MAX_SEQUENTIAL_FRAMES
+}
+
 // `FrameSource` is `Send` automatically: `FfmpegDecoder` already declares it
 // (with the justification, in the one crate permitted `unsafe`), and everything
 // else here is a plain map, an `Arc` and a number. Moving one onto the decode
@@ -130,3 +178,128 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<FrameSource>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bettercut_media::{AudioBuffer, CancellationToken, MediaError};
+
+    /// Reports a position and a frame duration; decodes nothing.
+    struct Stub {
+        position: Option<MediaTime>,
+        duration: MediaTime,
+    }
+
+    impl MediaDecoder for Stub {
+        fn open(&mut self, _asset: &MediaAsset) -> Result<(), MediaError> {
+            Ok(())
+        }
+        fn seek(&mut self, _timestamp: MediaTime, _mode: SeekMode) -> Result<(), MediaError> {
+            Ok(())
+        }
+        fn decode_frame(
+            &mut self,
+            _cancel: &dyn CancellationToken,
+        ) -> Result<Option<VideoFrame>, MediaError> {
+            Ok(None)
+        }
+        fn decode_frame_at(
+            &mut self,
+            _target: MediaTime,
+            _cancel: &dyn CancellationToken,
+        ) -> Result<Option<VideoFrame>, MediaError> {
+            Ok(None)
+        }
+        fn decode_audio(
+            &mut self,
+            _cancel: &dyn CancellationToken,
+        ) -> Result<Option<AudioBuffer>, MediaError> {
+            Ok(None)
+        }
+        fn position(&self) -> Option<MediaTime> {
+            self.position
+        }
+        fn frame_duration(&self) -> MediaTime {
+            self.duration
+        }
+        fn duration(&self) -> MediaTime {
+            MediaTime::ZERO
+        }
+    }
+
+    /// 29.97 fps.
+    const FRAME: i64 = 32_032;
+
+    fn at(position_frames: i64) -> Stub {
+        Stub {
+            position: Some(MediaTime::from_ticks(position_frames * FRAME)),
+            duration: MediaTime::from_ticks(FRAME),
+        }
+    }
+
+    fn wants(decoder: &Stub, frame: i64) -> bool {
+        is_next_frame(decoder, MediaTime::from_ticks(frame * FRAME))
+    }
+
+    /// The case this exists for: playing frame 11 after frame 10.
+    #[test]
+    fn the_very_next_frame_is_read_forward() {
+        assert!(wants(&at(10), 11));
+    }
+
+    /// A few frames dropped under load (§47a.4) still beats a seek.
+    #[test]
+    fn a_short_gap_is_still_read_forward() {
+        assert!(wants(&at(10), 12));
+        assert!(wants(&at(10), 14));
+    }
+
+    /// Past the window, seeking wins — and on an all-intra proxy a seek is one
+    /// decode, so the window must not be generous.
+    #[test]
+    fn a_long_jump_seeks() {
+        assert!(!wants(&at(10), 15));
+        assert!(!wants(&at(10), 600));
+    }
+
+    /// Backwards is never sequential; there is no rewinding without a seek.
+    #[test]
+    fn going_backwards_seeks() {
+        assert!(!wants(&at(10), 9));
+        assert!(!wants(&at(10), 0));
+    }
+
+    /// A request landing *inside* the frame already decoded wants that frame,
+    /// not the next one. Reading forward would quietly return the wrong one,
+    /// so it has to seek.
+    #[test]
+    fn a_request_inside_the_current_frame_seeks() {
+        assert!(!wants(&at(10), 10));
+        let decoder = at(10);
+        assert!(
+            !is_next_frame(&decoder, MediaTime::from_ticks(10 * FRAME + FRAME / 2)),
+            "half a frame ahead is still inside the frame already decoded"
+        );
+    }
+
+    /// Nothing decoded yet means nothing to read forward from.
+    #[test]
+    fn a_fresh_decoder_seeks() {
+        let fresh = Stub {
+            position: None,
+            duration: MediaTime::from_ticks(FRAME),
+        };
+        assert!(!is_next_frame(&fresh, MediaTime::from_ticks(FRAME)));
+    }
+
+    /// Without a frame duration there is no way to judge the distance, and
+    /// guessing would risk handing back the wrong frame.
+    #[test]
+    fn a_stream_with_no_declared_rate_seeks() {
+        let unknown = Stub {
+            position: Some(MediaTime::ZERO),
+            duration: MediaTime::ZERO,
+        };
+        assert!(!is_next_frame(&unknown, MediaTime::from_ticks(FRAME)));
+    }
+}

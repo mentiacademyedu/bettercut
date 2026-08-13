@@ -285,6 +285,26 @@ impl SetClipProperty {
                         clip.transform.rotation_degrees = value;
                         ClipProperty::Rotation(was)
                     }
+                    ClipProperty::Brightness(value) => {
+                        let was = clip.color.brightness;
+                        clip.color.brightness = value.clamp(0.0, 4.0);
+                        ClipProperty::Brightness(was)
+                    }
+                    ClipProperty::Contrast(value) => {
+                        let was = clip.color.contrast;
+                        clip.color.contrast = value.clamp(0.0, 4.0);
+                        ClipProperty::Contrast(was)
+                    }
+                    ClipProperty::Saturation(value) => {
+                        let was = clip.color.saturation;
+                        clip.color.saturation = value.clamp(0.0, 4.0);
+                        ClipProperty::Saturation(was)
+                    }
+                    ClipProperty::Blur(value) => {
+                        let was = clip.blur;
+                        clip.blur = value.clamp(0.0, bettercut_timeline::MAX_BLUR);
+                        ClipProperty::Blur(was)
+                    }
                     // Gain is an audio property; a video clip has none.
                     ClipProperty::Gain(_) => return Err(EditorError::ClipKindMismatch),
                 })

@@ -365,7 +365,15 @@ fn apply_interaction(
         }
     }
 
-    if pos.x < viewport.origin_x {
+    // The track-header column is not part of the timeline, so a *click* there
+    // must not move the playhead. A drag already under way is different: the
+    // pointer crossing back over the headers is how a user drags the playhead
+    // to the start, and bailing out here left tick 0 sitting on a single
+    // boundary pixel — reachable only by landing on it exactly, and not
+    // reachable at all once the view had scrolled. That is the whole reason
+    // the start of a sequence could only be got at with the -10s button.
+    let dragging = response.dragged();
+    if pos.x < viewport.origin_x && !dragging {
         return; // track-header column
     }
 
@@ -380,7 +388,24 @@ fn apply_interaction(
     // Dragging outside a clip scrubs; so does the ruler, but only while the
     // button is held. Hovering the ruler must not move the playhead.
     let holding = ui.input(|i| i.pointer.primary_down());
-    if response.dragged() || (in_ruler && holding) {
+    if dragging || (in_ruler && holding) {
+        // Dragging past an edge scrolls the view, so a scrub can reach
+        // material that is currently off screen without letting go. Without
+        // this the reachable range is whatever happens to be visible, which
+        // is most obvious at the start: scrolled forward, there is no way
+        // back to zero.
+        //
+        // The viewport was resolved at the top of this frame, so the scroll
+        // lands on the next one. That is what makes holding at the edge scroll
+        // continuously rather than jumping once.
+        if pos.x < viewport.origin_x {
+            state.scroll_by_pixels(pos.x - viewport.origin_x);
+        } else if pos.x > rect.right() {
+            state.scroll_by_pixels(pos.x - rect.right());
+        }
+
+        // `tick_of` clamps at zero, so dragging off the left edge settles on
+        // the start of the sequence rather than running negative.
         editor.set_playhead(viewport.tick_of(pos.x));
         state.needs_repaint = true;
         return;

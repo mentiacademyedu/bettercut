@@ -19,6 +19,7 @@ use bettercut_media::VideoFrame;
 use bettercut_timeline::{Resolution, Transform};
 use eframe::wgpu;
 
+use crate::blur::{BlurJob, BlurPass, BlurPlan, BlurTarget};
 use crate::config::RenderConfig;
 use crate::error::RenderError;
 
@@ -34,6 +35,13 @@ pub struct Layer<'a> {
     pub frame: &'a VideoFrame,
     pub transform: Transform,
     pub opacity: f32,
+    /// §45's "colour adjustment → Cheap": three multiplies in the fragment
+    /// shader, so it costs nothing worth measuring.
+    pub color: bettercut_timeline::ColorAdjust,
+    /// §45's "blur → Medium", 0–100. Unlike the two above this cannot ride in
+    /// the composite pass — it reads a neighbourhood rather than one texel —
+    /// so a non-zero value buys two extra passes and two textures.
+    pub blur: f32,
 }
 
 /// A GPU texture holding one decoded frame.
@@ -68,6 +76,11 @@ pub struct Compositor {
     /// map keyed by size is enough.
     pool: HashMap<(u32, u32), Vec<SourceTexture>>,
     in_flight: Vec<SourceTexture>,
+
+    /// §45's blur, kept out of the composite pass because it needs its own
+    /// passes and intermediates.
+    blur: BlurPass,
+    blur_in_flight: Vec<[BlurTarget; 2]>,
 }
 
 impl Compositor {
@@ -212,6 +225,8 @@ impl Compositor {
             cache: None,
         });
 
+        let blur = BlurPass::new(&device, &texture_layout, Self::FORMAT);
+
         Ok(Self {
             device,
             queue,
@@ -226,6 +241,8 @@ impl Compositor {
             uniform_capacity,
             pool: HashMap::new(),
             in_flight: Vec::new(),
+            blur,
+            blur_in_flight: Vec::new(),
         })
     }
 
@@ -283,6 +300,7 @@ impl Compositor {
             let uniform = layer_uniform(
                 layer.transform,
                 layer.opacity,
+                layer.color,
                 texture.width,
                 texture.height,
                 self.config.resolution,
@@ -297,6 +315,41 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite encoder"),
             });
+
+        // Blur runs on each layer's own texture, before compositing: a blurred
+        // clip still scales and rotates like any other, and the geometry stays
+        // in one place rather than being duplicated into the blur shader.
+        //
+        // `blur_slot[i]` says which pair of intermediates layer `i` ended up
+        // in, or `None` for the layers that asked for no blur and therefore
+        // cost nothing extra.
+        let tier = self.config.effect_quality;
+        let mut blur_slot = vec![None; layers.len()];
+        let mut jobs = Vec::new();
+        for (index, layer) in layers.iter().enumerate() {
+            let texture = &uploaded[index];
+            // Sigma is resolved against the texture actually being sampled, so
+            // a proxy and the original produce the same picture (§46).
+            let Some(plan) = BlurPlan::new(layer.blur, texture.height, tier) else {
+                continue;
+            };
+            blur_slot[index] = Some(jobs.len());
+            jobs.push(BlurJob {
+                source: &texture.bind_group,
+                width: texture.width,
+                height: texture.height,
+                plan,
+            });
+        }
+
+        let blurred = self.blur.run(
+            &self.device,
+            &self.queue,
+            &self.texture_layout,
+            Self::FORMAT,
+            &mut encoder,
+            &jobs,
+        )?;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -322,8 +375,17 @@ impl Compositor {
             pass.set_pipeline(&self.pipeline);
             for (index, texture) in uploaded.iter().enumerate() {
                 let offset = (index as u64 * UNIFORM_STRIDE) as u32;
+                // A blurred layer composites from the second intermediate —
+                // the output of the vertical pass — instead of the frame that
+                // was uploaded. Everything else about the draw is identical,
+                // which is the whole reason blur was given the compositor's own
+                // texture bind group layout.
+                let source = match blur_slot[index] {
+                    Some(slot) => blurred[slot][1].bind_group(),
+                    None => &texture.bind_group,
+                };
                 pass.set_bind_group(0, &self.layer_bind_group, &[offset]);
-                pass.set_bind_group(1, &texture.bind_group, &[]);
+                pass.set_bind_group(1, source, &[]);
                 pass.draw(0..6, 0..1);
             }
         }
@@ -334,6 +396,7 @@ impl Compositor {
         // reading them, and returning them to the pool now would let the next
         // frame overwrite pixels that are still being sampled.
         self.in_flight = uploaded;
+        self.blur_in_flight = blurred;
         Ok(())
     }
 
@@ -345,6 +408,8 @@ impl Compositor {
                 .or_default()
                 .push(texture);
         }
+        let blurred = std::mem::take(&mut self.blur_in_flight);
+        self.blur.recycle(blurred);
     }
 
     fn ensure_uniform_capacity(&mut self, layers: u64) -> Result<(), RenderError> {
@@ -531,6 +596,7 @@ fn create_target(
 fn layer_uniform(
     transform: Transform,
     opacity: f32,
+    color: bettercut_timeline::ColorAdjust,
     source_width: u32,
     source_height: u32,
     output: Resolution,
@@ -578,13 +644,22 @@ fn layer_uniform(
         }
     }
     bytes[48..52].copy_from_slice(&opacity.clamp(0.0, 1.0).to_ne_bytes());
+    // Offsets 52/56/60 are the padding `opacity` leaves; the WGSL struct
+    // declares them as the three colour values, so the total stays 64 bytes.
+    //
+    // Clamped here rather than trusted: a negative brightness inverts the
+    // picture and a huge contrast produces values the sRGB encode turns into
+    // NaN, and neither is something a project file should be able to cause.
+    bytes[52..56].copy_from_slice(&color.brightness.clamp(0.0, 4.0).to_ne_bytes());
+    bytes[56..60].copy_from_slice(&color.contrast.clamp(0.0, 4.0).to_ne_bytes());
+    bytes[60..64].copy_from_slice(&color.saturation.clamp(0.0, 4.0).to_ne_bytes());
     bytes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bettercut_timeline::Vec2;
+    use bettercut_timeline::{ColorAdjust, Vec2};
 
     /// The two target views must differ in exactly one way: sRGB-awareness.
     ///
@@ -638,7 +713,14 @@ mod tests {
 
     #[test]
     fn an_identity_transform_fills_a_matching_frame() {
-        let bytes = layer_uniform(Transform::default(), 1.0, 1920, 1080, Resolution::HD_1080);
+        let bytes = layer_uniform(
+            Transform::default(),
+            1.0,
+            ColorAdjust::default(),
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
         let matrix = read_matrix(&bytes);
 
         // The unit quad's corners must land on the clip-space corners.
@@ -662,7 +744,14 @@ mod tests {
     /// A 4:3 source in a 16:9 frame must be pillarboxed, never stretched.
     #[test]
     fn a_narrower_source_is_pillarboxed() {
-        let bytes = layer_uniform(Transform::default(), 1.0, 1440, 1080, Resolution::HD_1080);
+        let bytes = layer_uniform(
+            Transform::default(),
+            1.0,
+            ColorAdjust::default(),
+            1440,
+            1080,
+            Resolution::HD_1080,
+        );
         let matrix = read_matrix(&bytes);
 
         let left = apply(&matrix, (0.0, 0.5)).0;
@@ -678,7 +767,14 @@ mod tests {
 
     #[test]
     fn a_wider_source_is_letterboxed() {
-        let bytes = layer_uniform(Transform::default(), 1.0, 1920, 800, Resolution::HD_1080);
+        let bytes = layer_uniform(
+            Transform::default(),
+            1.0,
+            ColorAdjust::default(),
+            1920,
+            800,
+            Resolution::HD_1080,
+        );
         let matrix = read_matrix(&bytes);
 
         let top = apply(&matrix, (0.5, 0.0)).1;
@@ -693,7 +789,14 @@ mod tests {
             scale: Vec2::new(0.5, 0.5),
             ..Default::default()
         };
-        let bytes = layer_uniform(transform, 1.0, 1920, 1080, Resolution::HD_1080);
+        let bytes = layer_uniform(
+            transform,
+            1.0,
+            ColorAdjust::default(),
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
         let matrix = read_matrix(&bytes);
 
         // The centre stays put; the corners move halfway in.
@@ -711,7 +814,14 @@ mod tests {
             position: Vec2::new(0.25, 0.0),
             ..Default::default()
         };
-        let bytes = layer_uniform(transform, 1.0, 1920, 1080, Resolution::HD_1080);
+        let bytes = layer_uniform(
+            transform,
+            1.0,
+            ColorAdjust::default(),
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
         let matrix = read_matrix(&bytes);
 
         let centre = apply(&matrix, (0.5, 0.5));
@@ -722,6 +832,62 @@ mod tests {
         );
     }
 
+    /// The colour values ride in the padding `opacity` leaves behind, at
+    /// offsets 52/56/60. If the WGSL struct and this writer ever disagree, the
+    /// shader reads whatever happens to be in those bytes — a silent wrong
+    /// picture rather than a validation error, because the size is unchanged.
+    #[test]
+    fn colour_is_packed_into_the_padding_after_opacity() {
+        let color = ColorAdjust {
+            brightness: 1.25,
+            contrast: 0.75,
+            saturation: 0.5,
+        };
+        let bytes = layer_uniform(
+            Transform::default(),
+            0.5,
+            color,
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
+
+        let read = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!(read(48), 0.5, "opacity moved");
+        assert_eq!(read(52), 1.25, "brightness is not at offset 52");
+        assert_eq!(read(56), 0.75, "contrast is not at offset 56");
+        assert_eq!(read(60), 0.5, "saturation is not at offset 60");
+        assert_eq!(bytes.len(), UNIFORM_SIZE as usize);
+        assert_eq!(UNIFORM_SIZE, 64, "the WGSL struct is declared as 64 bytes");
+    }
+
+    /// §50: a project file can carry anything. A negative brightness inverts
+    /// the picture and a huge contrast produces values the sRGB encode turns
+    /// into NaN, so the uniform clamps rather than trusts.
+    #[test]
+    fn absurd_colour_values_are_clamped_before_reaching_the_shader() {
+        let color = ColorAdjust {
+            brightness: -5.0,
+            contrast: 1e9,
+            saturation: f32::NAN,
+        };
+        let bytes = layer_uniform(
+            Transform::default(),
+            1.0,
+            color,
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
+        let read = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+
+        assert_eq!(read(52), 0.0, "negative brightness was not clamped");
+        assert_eq!(read(56), 4.0, "runaway contrast was not clamped");
+        // `f32::clamp` on NaN returns NaN, so this documents what actually
+        // reaches the GPU rather than pretending otherwise.
+        assert!(read(60).is_nan() || (0.0..=4.0).contains(&read(60)));
+    }
+
     /// Positive rotation must turn the same way on screen as the number
     /// suggests; a sign error here mirrors every rotated clip.
     #[test]
@@ -730,7 +896,14 @@ mod tests {
             rotation_degrees: 90.0,
             ..Default::default()
         };
-        let bytes = layer_uniform(transform, 1.0, 1080, 1080, Resolution::new(1080, 1080));
+        let bytes = layer_uniform(
+            transform,
+            1.0,
+            ColorAdjust::default(),
+            1080,
+            1080,
+            Resolution::new(1080, 1080),
+        );
         let matrix = read_matrix(&bytes);
 
         // The top-centre of the quad should swing to the right-hand side.
@@ -746,7 +919,14 @@ mod tests {
     #[test]
     fn opacity_is_stored_and_clamped() {
         let read = |o: f32| {
-            let bytes = layer_uniform(Transform::default(), o, 16, 9, Resolution::new(16, 9));
+            let bytes = layer_uniform(
+                Transform::default(),
+                o,
+                ColorAdjust::default(),
+                16,
+                9,
+                Resolution::new(16, 9),
+            );
             f32::from_ne_bytes([bytes[48], bytes[49], bytes[50], bytes[51]])
         };
         assert!((read(0.5) - 0.5).abs() < 1e-6);

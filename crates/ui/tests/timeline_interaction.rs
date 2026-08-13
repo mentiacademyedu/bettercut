@@ -279,6 +279,78 @@ fn dragging_above_the_timeline_does_not_scrub() {
     );
 }
 
+/// Dragging the playhead to the very start must work with the mouse.
+///
+/// It did not. The handler returned early whenever the pointer sat left of the
+/// lane area — correct for a click on a track header, wrong for a drag already
+/// under way. Tick 0 is at exactly the lane area's left edge, so reaching it
+/// meant landing on one specific pixel; a pixel further left and the playhead
+/// simply stopped following. The reported symptom was having to use the -10s
+/// button to get back to the beginning.
+#[test]
+fn dragging_off_the_left_edge_reaches_the_start() {
+    let mut h = Harness::new();
+    h.add_clip(2, 4);
+
+    h.press(Pos2::new(h.x_of(secs(10)), RULER_H / 2.0));
+    // Well into the track-header column, as an unhurried drag to the start
+    // naturally goes.
+    h.drag_to(Pos2::new(HEADER_W / 2.0, RULER_H / 2.0));
+
+    assert_eq!(
+        h.editor.playhead().ticks(),
+        0,
+        "dragging past the left edge did not reach the start of the sequence"
+    );
+}
+
+/// The same, once the view has scrolled — which is the state playback leaves
+/// it in, and where the start was not merely fiddly to hit but unreachable:
+/// the leftmost visible tick was the scroll position, not zero.
+#[test]
+fn dragging_left_while_scrolled_still_reaches_the_start() {
+    let mut h = Harness::new();
+    h.add_clip(2, 4);
+
+    h.state.scroll_ticks = secs(30);
+    assert!(h.state.scroll_ticks > 0, "the test needs a scrolled view");
+
+    h.press(Pos2::new(h.x_of(secs(40)), RULER_H / 2.0));
+    // Hold at the left edge. Each frame scrolls a little further back, exactly
+    // as holding the pointer there does in the app.
+    for _ in 0..80 {
+        h.drag_to(Pos2::new(HEADER_W / 2.0, RULER_H / 2.0));
+    }
+
+    assert_eq!(
+        h.editor.playhead().ticks(),
+        0,
+        "could not drag back to the start from a scrolled view"
+    );
+    assert_eq!(
+        h.state.scroll_ticks, 0,
+        "the view did not scroll back with the drag"
+    );
+}
+
+/// The guard that was relaxed still has to do its job: clicking a track header
+/// is not a click on the timeline, and must leave the playhead alone.
+#[test]
+fn clicking_a_track_header_does_not_move_the_playhead() {
+    let mut h = Harness::new();
+    h.add_clip(2, 4);
+    h.editor.set_playhead(TimelineTime::from_seconds(7));
+    let before = h.editor.playhead().ticks();
+
+    h.click(Pos2::new(HEADER_W / 2.0, h.video_lane_y()));
+
+    assert_eq!(
+        h.editor.playhead().ticks(),
+        before,
+        "clicking a track header scrubbed the timeline"
+    );
+}
+
 /// Hovering the ruler is not scrubbing either — the button has to be down.
 #[test]
 fn hovering_the_ruler_does_not_scrub() {

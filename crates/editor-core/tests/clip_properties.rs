@@ -189,6 +189,215 @@ fn redo_restores_the_end_of_the_drag() {
     );
 }
 
+// ---- colour --------------------------------------------------------------
+
+fn color_of(editor: &Editor, clip: ClipId) -> bettercut_editor_core::timeline::ColorAdjust {
+    editor.active_sequence().unwrap().video_tracks[0]
+        .get(clip)
+        .unwrap()
+        .color
+}
+
+/// §45's cheap colour adjustment, and Milestone 8's "basic colour".
+#[test]
+fn brightness_contrast_and_saturation_apply_and_undo() {
+    let (mut editor, video, _) = editor_with_clips();
+    assert!(
+        color_of(&editor, video).is_identity(),
+        "default is identity"
+    );
+
+    editor
+        .set_clip_property(video, ClipProperty::Brightness(1.4), false)
+        .unwrap();
+    editor
+        .set_clip_property(video, ClipProperty::Contrast(1.2), false)
+        .unwrap();
+    editor
+        .set_clip_property(video, ClipProperty::Saturation(0.0), false)
+        .unwrap();
+
+    let c = color_of(&editor, video);
+    assert!((c.brightness - 1.4).abs() < 1e-6);
+    assert!((c.contrast - 1.2).abs() < 1e-6);
+    assert_eq!(c.saturation, 0.0, "saturation 0 is black and white");
+    assert!(!c.is_identity());
+
+    editor.undo().unwrap();
+    editor.undo().unwrap();
+    editor.undo().unwrap();
+    assert!(
+        color_of(&editor, video).is_identity(),
+        "undoing every colour change did not return to the identity"
+    );
+}
+
+/// A colour drag collapses like any other property drag.
+#[test]
+fn a_colour_drag_collapses_into_one_undo_step() {
+    let (mut editor, video, _) = editor_with_clips();
+
+    editor
+        .set_clip_property(video, ClipProperty::Saturation(0.9), false)
+        .unwrap();
+    for step in 1..=15 {
+        editor
+            .set_clip_property(
+                video,
+                ClipProperty::Saturation(0.9 - step as f32 * 0.06),
+                true,
+            )
+            .unwrap();
+    }
+
+    editor.undo().unwrap();
+    assert!(
+        color_of(&editor, video).is_identity(),
+        "undo did not return to before the drag"
+    );
+}
+
+/// Colour lives on video clips only.
+#[test]
+fn colour_is_refused_on_an_audio_clip() {
+    let (mut editor, _, audio) = editor_with_clips();
+    assert!(
+        editor
+            .set_clip_property(audio, ClipProperty::Brightness(1.5), false)
+            .is_err()
+    );
+}
+
+/// A saved project from before colour existed must still load, with the
+/// identity rather than zeros — `serde(default)` on a struct whose Default is
+/// all-1.0 is the only thing making that true.
+#[test]
+fn a_project_without_colour_loads_as_the_identity() {
+    let (editor, video, _) = editor_with_clips();
+    let json = serde_json::to_string(editor.project()).expect("serialize");
+
+    // Strip the colour field, as an older file would not have had it.
+    let mut value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    for sequence in value["sequences"].as_array_mut().expect("sequences") {
+        for track in sequence["video_tracks"].as_array_mut().expect("tracks") {
+            for clip in track["clips"].as_array_mut().expect("clips") {
+                clip.as_object_mut().expect("object").remove("color");
+            }
+        }
+    }
+
+    let reloaded: bettercut_editor_core::project_format::Project =
+        serde_json::from_value(value).expect("a file without colour must still load");
+    let clip = reloaded.sequences[0].video_tracks[0].get(video).unwrap();
+    assert!(
+        clip.color.is_identity(),
+        "an older project loaded with a non-identity colour: {:?}",
+        clip.color
+    );
+}
+
+// ---- blur ----------------------------------------------------------------
+
+fn blur_of(editor: &Editor, clip: ClipId) -> f32 {
+    editor.active_sequence().unwrap().video_tracks[0]
+        .get(clip)
+        .unwrap()
+        .blur
+}
+
+/// §45's "blur → Medium", and the last of Milestone 8's four effects.
+#[test]
+fn blur_applies_and_undoes() {
+    let (mut editor, video, _) = editor_with_clips();
+    assert_eq!(blur_of(&editor, video), 0.0, "clips start unblurred");
+
+    editor
+        .set_clip_property(video, ClipProperty::Blur(35.0), false)
+        .unwrap();
+    assert!((blur_of(&editor, video) - 35.0).abs() < 1e-6);
+
+    editor.undo().unwrap();
+    assert_eq!(blur_of(&editor, video), 0.0);
+    editor.redo().unwrap();
+    assert!((blur_of(&editor, video) - 35.0).abs() < 1e-6);
+}
+
+/// The whole point of the 0–100 scale: it is a fraction of frame height, so
+/// the same number has to survive a change of sequence resolution untouched.
+/// A pixel radius would have to be rewritten here, and rewriting stored values
+/// on a format change is how projects get silently altered.
+#[test]
+fn blur_is_unaffected_by_the_sequence_resolution() {
+    use bettercut_editor_core::timeline::Resolution;
+
+    let (mut editor, video, _) = editor_with_clips();
+    editor
+        .set_clip_property(video, ClipProperty::Blur(60.0), false)
+        .unwrap();
+
+    let rate = editor.active_sequence().unwrap().frame_rate;
+    editor
+        .set_sequence_format(Resolution::HD_720, rate)
+        .unwrap();
+    assert!(
+        (blur_of(&editor, video) - 60.0).abs() < 1e-6,
+        "changing the sequence resolution rewrote the blur amount"
+    );
+}
+
+#[test]
+fn a_blur_drag_collapses_into_one_undo_step() {
+    let (mut editor, video, _) = editor_with_clips();
+
+    editor
+        .set_clip_property(video, ClipProperty::Blur(2.0), false)
+        .unwrap();
+    for step in 1..=20 {
+        editor
+            .set_clip_property(video, ClipProperty::Blur(2.0 + step as f32 * 3.0), true)
+            .unwrap();
+    }
+
+    editor.undo().unwrap();
+    assert_eq!(
+        blur_of(&editor, video),
+        0.0,
+        "undo did not return to before the drag"
+    );
+}
+
+#[test]
+fn blur_is_refused_on_an_audio_clip() {
+    let (mut editor, _, audio) = editor_with_clips();
+    assert!(
+        editor
+            .set_clip_property(audio, ClipProperty::Blur(20.0), false)
+            .is_err()
+    );
+}
+
+/// Blur is the one property whose "does nothing" value is zero rather than
+/// one, so `serde(default)` is enough on its own — but only because of that.
+#[test]
+fn a_project_without_blur_loads_unblurred() {
+    let (editor, video, _) = editor_with_clips();
+    let json = serde_json::to_string(editor.project()).expect("serialize");
+
+    let mut value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    for sequence in value["sequences"].as_array_mut().expect("sequences") {
+        for track in sequence["video_tracks"].as_array_mut().expect("tracks") {
+            for clip in track["clips"].as_array_mut().expect("clips") {
+                clip.as_object_mut().expect("object").remove("blur");
+            }
+        }
+    }
+
+    let reloaded: bettercut_editor_core::project_format::Project =
+        serde_json::from_value(value).expect("a file without blur must still load");
+    let clip = reloaded.sequences[0].video_tracks[0].get(video).unwrap();
+    assert_eq!(clip.blur, 0.0, "an older project loaded already blurred");
+}
+
 // ---- audio ---------------------------------------------------------------
 
 #[test]
@@ -248,6 +457,21 @@ fn out_of_range_values_are_clamped() {
         .set_clip_property(audio, ClipProperty::Gain(99.0), false)
         .unwrap();
     assert!(gain_of(&editor, audio) <= 4.0);
+
+    // A blur far past the top of the slider would spend the whole tap budget
+    // on a kernel wider than the frame, for no visible gain.
+    editor
+        .set_clip_property(video, ClipProperty::Blur(5000.0), false)
+        .unwrap();
+    assert_eq!(
+        blur_of(&editor, video),
+        bettercut_editor_core::timeline::MAX_BLUR
+    );
+
+    editor
+        .set_clip_property(video, ClipProperty::Blur(-10.0), false)
+        .unwrap();
+    assert_eq!(blur_of(&editor, video), 0.0);
 }
 
 /// §38.2: the journal replays these after a crash.
@@ -259,6 +483,10 @@ fn the_command_round_trips_through_json() {
         ClipProperty::Position { x: 0.1, y: -0.2 },
         ClipProperty::Scale { x: 2.0, y: 2.0 },
         ClipProperty::Rotation(45.0),
+        ClipProperty::Brightness(1.2),
+        ClipProperty::Contrast(0.8),
+        ClipProperty::Saturation(0.0),
+        ClipProperty::Blur(40.0),
     ] {
         let command = bettercut_editor_core::Command::SetClipProperty {
             sequence: bettercut_editor_core::foundation::SequenceId::new(),

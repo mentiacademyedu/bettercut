@@ -19,11 +19,13 @@ pub mod composite {
     pub const SHADER: &str = include_str!("composite.wgsl");
 }
 
+pub mod blur;
 pub mod compositor;
 pub mod config;
 pub mod error;
 pub mod gpu;
 
+pub use blur::BlurPlan;
 pub use compositor::{Compositor, Layer};
 pub use config::{MediaSourceMode, PreviewQuality, QualityTier, RenderConfig, RenderTarget};
 pub use error::RenderError;

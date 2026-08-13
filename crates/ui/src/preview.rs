@@ -350,6 +350,8 @@ impl Preview {
         let layers: Vec<Layer<'_>> = resolved
             .iter()
             .map(|resolved| Layer {
+                color: resolved.color,
+                blur: resolved.blur,
                 frame: &resolved.frame,
                 transform: resolved.transform,
                 opacity: resolved.opacity,
