@@ -21,5 +21,8 @@ pub use decoder::{
     SeekMode, VideoFrame,
 };
 pub use error::MediaError;
-pub use ffmpeg::{FfmpegDecoder, FfmpegProber, generate_proxy};
+pub use ffmpeg::{
+    EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, ExportFormat, FfmpegDecoder,
+    FfmpegProber, VideoWriter, generate_proxy, probe_all,
+};
 pub use proxy::{ProxyAsset, ProxyResolution, ProxySpec, ProxyStatus};

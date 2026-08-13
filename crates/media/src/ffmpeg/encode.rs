@@ -670,7 +670,7 @@ fn receive_frame(codec: *mut ffi::AVCodecContext, into: &mut Frame) -> Result<bo
 }
 
 /// Push a frame (or a flush) into an encoder and mux everything it emits.
-fn drain_encoder(
+pub(super) fn drain_encoder(
     encoder: *mut ffi::AVCodecContext,
     frame: Option<*mut ffi::AVFrame>,
     muxer: &mut Muxer,
@@ -709,7 +709,7 @@ fn drain_encoder(
 }
 
 /// The output file.
-struct Muxer {
+pub(super) struct Muxer {
     context: *mut ffi::AVFormatContext,
     video_stream: Option<i32>,
     audio_stream: Option<i32>,
@@ -721,7 +721,7 @@ impl Muxer {
     ///
     /// Separate from [`Self::begin`] because the caller needs
     /// [`Self::needs_global_header`] *before* it opens any encoder.
-    fn allocate(path: &Path) -> Result<Self, MediaError> {
+    pub(super) fn allocate(path: &Path) -> Result<Self, MediaError> {
         let c_path = super::path_to_cstring(path)?;
         let mut context: *mut ffi::AVFormatContext = std::ptr::null_mut();
 
@@ -750,24 +750,38 @@ impl Muxer {
     }
 
     /// Does this container keep codec headers out of the stream?
-    fn needs_global_header(&self) -> bool {
+    pub(super) fn video_stream(&self) -> Option<i32> {
+        self.video_stream
+    }
+
+    pub(super) fn audio_stream(&self) -> Option<i32> {
+        self.audio_stream
+    }
+
+    pub(super) fn needs_global_header(&self) -> bool {
         // SAFETY: `context` is allocated and its `oformat` is set by
         // avformat_alloc_output_context2.
         unsafe { (*(*self.context).oformat).flags & ffi::AVFMT_GLOBALHEADER as i32 != 0 }
     }
 
-    fn add_video(&mut self, encoder: *mut ffi::AVCodecContext) -> Result<(), MediaError> {
+    pub(super) fn add_video(
+        &mut self,
+        encoder: *mut ffi::AVCodecContext,
+    ) -> Result<(), MediaError> {
         self.video_stream = Some(self.add_stream(encoder)?);
         Ok(())
     }
 
-    fn add_audio(&mut self, encoder: *mut ffi::AVCodecContext) -> Result<(), MediaError> {
+    pub(super) fn add_audio(
+        &mut self,
+        encoder: *mut ffi::AVCodecContext,
+    ) -> Result<(), MediaError> {
         self.audio_stream = Some(self.add_stream(encoder)?);
         Ok(())
     }
 
     /// Open the file and write the header. Streams must already be added.
-    fn begin(&mut self, path: &Path) -> Result<(), MediaError> {
+    pub(super) fn begin(&mut self, path: &Path) -> Result<(), MediaError> {
         let c_path = super::path_to_cstring(path)?;
 
         // SAFETY: `context` is allocated; `c_path` outlives the call.
@@ -850,7 +864,7 @@ impl Muxer {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<(), MediaError> {
+    pub(super) fn finish(&mut self) -> Result<(), MediaError> {
         if !self.header_written {
             return Ok(());
         }

@@ -19,9 +19,10 @@ use bettercut_media::VideoFrame;
 use bettercut_timeline::{Resolution, Transform};
 use eframe::wgpu;
 
-use crate::blur::{BlurJob, BlurPass, BlurPlan, BlurTarget};
+use crate::blur::BlurPass;
 use crate::config::RenderConfig;
 use crate::error::RenderError;
+use crate::graph::{EffectContext, EffectInput, EffectNode, EffectTexture, TargetPool, run_chain};
 
 /// Uniform stride. wgpu requires dynamic uniform offsets to be aligned, and
 /// 256 is the limit on every backend we target.
@@ -77,10 +78,18 @@ pub struct Compositor {
     pool: HashMap<(u32, u32), Vec<SourceTexture>>,
     in_flight: Vec<SourceTexture>,
 
-    /// §45's blur, kept out of the composite pass because it needs its own
-    /// passes and intermediates.
-    blur: BlurPass,
-    blur_in_flight: Vec<[BlurTarget; 2]>,
+    /// The effect graph (§20): effects that need their own passes, in the order
+    /// they run, ahead of the composite draw.
+    ///
+    /// Fixed for now because there is one of them. It is a `Vec<Box<dyn ..>>`
+    /// rather than a field per effect because that is the difference between
+    /// adding an effect and *editing the compositor* to add an effect — and
+    /// §29 wants effect chains to become data, which starts by them being a
+    /// list at all.
+    effects: Vec<Box<dyn EffectNode>>,
+    /// Scratch textures shared by every node, so a two-node chain reuses what
+    /// the frame before finished with instead of allocating twice as much.
+    targets: TargetPool,
 }
 
 impl Compositor {
@@ -225,7 +234,11 @@ impl Compositor {
             cache: None,
         });
 
-        let blur = BlurPass::new(&device, &texture_layout, Self::FORMAT);
+        let effects: Vec<Box<dyn EffectNode>> = vec![Box::new(BlurPass::new(
+            &device,
+            &texture_layout,
+            Self::FORMAT,
+        ))];
 
         Ok(Self {
             device,
@@ -241,8 +254,8 @@ impl Compositor {
             uniform_capacity,
             pool: HashMap::new(),
             in_flight: Vec::new(),
-            blur,
-            blur_in_flight: Vec::new(),
+            effects,
+            targets: TargetPool::new(Self::FORMAT),
         })
     }
 
@@ -316,40 +329,46 @@ impl Compositor {
                 label: Some("composite encoder"),
             });
 
-        // Blur runs on each layer's own texture, before compositing: a blurred
-        // clip still scales and rotates like any other, and the geometry stays
-        // in one place rather than being duplicated into the blur shader.
+        // Each layer runs its effect chain on its own texture, before
+        // compositing: an affected clip still scales and rotates like any
+        // other, and the geometry stays in one place rather than being
+        // duplicated into every effect shader (§20).
         //
-        // `blur_slot[i]` says which pair of intermediates layer `i` ended up
-        // in, or `None` for the layers that asked for no blur and therefore
-        // cost nothing extra.
-        let tier = self.config.effect_quality;
-        let mut blur_slot = vec![None; layers.len()];
-        let mut jobs = Vec::new();
-        for (index, layer) in layers.iter().enumerate() {
-            let texture = &uploaded[index];
-            // Sigma is resolved against the texture actually being sampled, so
-            // a proxy and the original produce the same picture (§46).
-            let Some(plan) = BlurPlan::new(layer.blur, texture.height, tier) else {
-                continue;
-            };
-            blur_slot[index] = Some(jobs.len());
-            jobs.push(BlurJob {
-                source: &texture.bind_group,
-                width: texture.width,
-                height: texture.height,
-                plan,
-            });
-        }
+        // `effected[i]` is what layer `i` ended up with, or `None` for the
+        // layers no node touched — which is most of them, and they cost
+        // nothing but the comparison.
+        let effected = {
+            let Self {
+                effects,
+                targets,
+                device,
+                queue,
+                texture_layout,
+                config,
+                ..
+            } = self;
+            let mut ctx = EffectContext::new(
+                device,
+                queue,
+                texture_layout,
+                config.effect_quality,
+                targets,
+            );
+            for node in effects.iter_mut() {
+                node.begin_frame(ctx.device(), layers.len());
+            }
 
-        let blurred = self.blur.run(
-            &self.device,
-            &self.queue,
-            &self.texture_layout,
-            Self::FORMAT,
-            &mut encoder,
-            &jobs,
-        )?;
+            let mut effected = Vec::with_capacity(layers.len());
+            for (index, layer) in layers.iter().enumerate() {
+                let source = EffectInput {
+                    bind_group: &uploaded[index].bind_group,
+                    width: uploaded[index].width,
+                    height: uploaded[index].height,
+                };
+                effected.push(run_chain(effects, &mut ctx, &mut encoder, layer, source)?);
+            }
+            effected
+        };
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -375,15 +394,14 @@ impl Compositor {
             pass.set_pipeline(&self.pipeline);
             for (index, texture) in uploaded.iter().enumerate() {
                 let offset = (index as u64 * UNIFORM_STRIDE) as u32;
-                // A blurred layer composites from the second intermediate —
-                // the output of the vertical pass — instead of the frame that
-                // was uploaded. Everything else about the draw is identical,
-                // which is the whole reason blur was given the compositor's own
-                // texture bind group layout.
-                let source = match blur_slot[index] {
-                    Some(slot) => blurred[slot][1].bind_group(),
-                    None => &texture.bind_group,
-                };
+                // A layer whose chain produced something composites from that
+                // instead of the frame that was uploaded. Everything else about
+                // the draw is identical, which is the whole reason effect
+                // targets are built with the compositor's own texture bind
+                // group layout.
+                let source = effected[index]
+                    .as_ref()
+                    .map_or(&texture.bind_group, EffectTexture::bind_group);
                 pass.set_bind_group(0, &self.layer_bind_group, &[offset]);
                 pass.set_bind_group(1, source, &[]);
                 pass.draw(0..6, 0..1);
@@ -396,8 +414,17 @@ impl Compositor {
         // reading them, and returning them to the pool now would let the next
         // frame overwrite pixels that are still being sampled.
         self.in_flight = uploaded;
-        self.blur_in_flight = blurred;
+        for texture in effected.into_iter().flatten() {
+            self.targets.retire(texture);
+        }
         Ok(())
+    }
+
+    /// Intermediate textures the effect graph is holding, for §73's memory
+    /// diagnostics — and for asserting that they are reused rather than
+    /// reallocated every frame.
+    pub fn intermediate_count(&self) -> usize {
+        self.targets.len()
     }
 
     /// Return last frame's textures to the pool.
@@ -408,8 +435,7 @@ impl Compositor {
                 .or_default()
                 .push(texture);
         }
-        let blurred = std::mem::take(&mut self.blur_in_flight);
-        self.blur.recycle(blurred);
+        self.targets.recycle();
     }
 
     fn ensure_uniform_capacity(&mut self, layers: u64) -> Result<(), RenderError> {

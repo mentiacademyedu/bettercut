@@ -25,12 +25,16 @@
 
 mod decode;
 mod encode;
+mod encoders;
+mod export;
 mod filter;
 mod probe;
 mod raii;
 
 pub use decode::FfmpegDecoder;
 pub use encode::generate_proxy;
+pub use encoders::{EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, probe_all};
+pub use export::{ExportFormat, VideoWriter};
 pub use probe::FfmpegProber;
 
 /// The one internal audio format (§20a.3).

@@ -24,12 +24,14 @@ pub mod compositor;
 pub mod config;
 pub mod error;
 pub mod gpu;
+pub mod graph;
 
 pub use blur::BlurPlan;
 pub use compositor::{Compositor, Layer};
 pub use config::{MediaSourceMode, PreviewQuality, QualityTier, RenderConfig, RenderTarget};
 pub use error::RenderError;
 pub use gpu::{GpuDescription, GpuKind};
+pub use graph::{EffectContext, EffectInput, EffectNode, EffectTexture};
 
 /// The wgpu this crate was built against.
 ///

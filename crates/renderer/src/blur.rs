@@ -20,12 +20,12 @@
 //! taps the kernel may spend — and nothing else. There is no separate
 //! "fast blur" shader to diverge from the real one.
 
-use std::collections::HashMap;
-
 use eframe::wgpu;
 
+use crate::compositor::Layer;
 use crate::config::QualityTier;
 use crate::error::RenderError;
+use crate::graph::{EffectContext, EffectInput, EffectNode, EffectTexture};
 
 /// Sigma at full strength, as a fraction of frame height.
 ///
@@ -123,33 +123,6 @@ impl BlurPlan {
     }
 }
 
-/// An intermediate texture a blur pass renders into.
-///
-/// Carries a bind group built from the compositor's *source* texture layout,
-/// so the result of a blur can be fed straight back in as the next pass's
-/// input and, finally, as the layer the composite pass draws.
-pub struct BlurTarget {
-    view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    width: u32,
-    height: u32,
-}
-
-impl BlurTarget {
-    /// The bind group to hand the composite pass in place of the source frame.
-    pub fn bind_group(&self) -> &wgpu::BindGroup {
-        &self.bind_group
-    }
-}
-
-/// One layer that needs blurring.
-pub struct BlurJob<'a> {
-    pub source: &'a wgpu::BindGroup,
-    pub width: u32,
-    pub height: u32,
-    pub plan: BlurPlan,
-}
-
 pub struct BlurPass {
     pipeline: wgpu::RenderPipeline,
     params_layout: wgpu::BindGroupLayout,
@@ -157,11 +130,13 @@ pub struct BlurPass {
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     capacity: u64,
-
-    /// Intermediate textures, keyed by size and reused between frames — the
-    /// same argument as the compositor's source pool (§68, §73): a blurred
-    /// 1080p layer would otherwise allocate 16 MB of texture per frame.
-    pool: HashMap<(u32, u32), Vec<BlurTarget>>,
+    /// Pass slots used so far this frame.
+    ///
+    /// Every layer's two passes need their own slice of the uniform buffer:
+    /// `write_buffer` calls are staged and applied before the submit, so two
+    /// layers sharing a slot would both end up rendering with whichever wrote
+    /// last. Reset in `begin_frame`.
+    next_pass: u64,
 }
 
 impl BlurPass {
@@ -264,64 +239,8 @@ impl BlurPass {
             bind_group,
             uniforms,
             capacity: INITIAL_PASS_CAPACITY,
-            pool: HashMap::new(),
+            next_pass: 0,
         }
-    }
-
-    /// Record every job's two passes into `encoder`.
-    ///
-    /// Returns one pair of intermediates per job, in order. The second of each
-    /// pair holds the finished blur; both must outlive the submission, so the
-    /// caller holds them until the next frame.
-    pub fn run(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        texture_layout: &wgpu::BindGroupLayout,
-        format: wgpu::TextureFormat,
-        encoder: &mut wgpu::CommandEncoder,
-        jobs: &[BlurJob<'_>],
-    ) -> Result<Vec<[BlurTarget; 2]>, RenderError> {
-        if jobs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Two passes per job, each needing its own slice of the uniform buffer.
-        self.ensure_capacity(device, jobs.len() as u64 * 2);
-
-        // Acquire every texture before recording anything: the render passes
-        // below borrow this struct immutably, and the pool cannot be touched
-        // while they do.
-        let mut pairs = Vec::with_capacity(jobs.len());
-        for job in jobs {
-            let first = self.acquire(device, texture_layout, format, job.width, job.height);
-            let second = self.acquire(device, texture_layout, format, job.width, job.height);
-            pairs.push([first, second]);
-        }
-
-        for (index, (job, pair)) in jobs.iter().zip(pairs.iter()).enumerate() {
-            let horizontal = index as u64 * 2;
-            let vertical = horizontal + 1;
-
-            // Step is one texel along the axis being blurred. Both are derived
-            // from this texture's own size, which is what makes the result the
-            // same whether the source was a proxy or the original (§46).
-            queue.write_buffer(
-                &self.uniforms,
-                horizontal * UNIFORM_STRIDE,
-                &job.plan.write([1.0 / job.width.max(1) as f32, 0.0]),
-            );
-            queue.write_buffer(
-                &self.uniforms,
-                vertical * UNIFORM_STRIDE,
-                &job.plan.write([0.0, 1.0 / job.height.max(1) as f32]),
-            );
-
-            self.record(encoder, job.source, &pair[0].view, horizontal);
-            self.record(encoder, pair[0].bind_group(), &pair[1].view, vertical);
-        }
-
-        Ok(pairs)
     }
 
     /// One full-screen pass: sample `source`, write `target`.
@@ -359,72 +278,6 @@ impl BlurPass {
         pass.draw(0..6, 0..1);
     }
 
-    /// Hand last frame's intermediates back for reuse.
-    pub fn recycle(&mut self, targets: Vec<[BlurTarget; 2]>) {
-        for pair in targets {
-            for target in pair {
-                self.pool
-                    .entry((target.width, target.height))
-                    .or_default()
-                    .push(target);
-            }
-        }
-    }
-
-    fn acquire(
-        &mut self,
-        device: &wgpu::Device,
-        texture_layout: &wgpu::BindGroupLayout,
-        format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> BlurTarget {
-        if let Some(pooled) = self
-            .pool
-            .get_mut(&(width, height))
-            .and_then(std::vec::Vec::pop)
-        {
-            return pooled;
-        }
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("blur intermediate"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // The compositor's working-space format (§21a.1). sRGB-aware, so
-            // the hardware hands the shader linear values and re-encodes what
-            // it writes: the averaging happens in linear light, which is what
-            // an out-of-focus lens actually does. Averaging sRGB-encoded
-            // numbers instead would darken every soft edge.
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blur intermediate bind group"),
-            layout: texture_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            }],
-        });
-
-        BlurTarget {
-            view,
-            bind_group,
-            width,
-            height,
-        }
-    }
-
     fn ensure_capacity(&mut self, device: &wgpu::Device, passes: u64) {
         if passes <= self.capacity {
             return;
@@ -440,6 +293,77 @@ impl BlurPass {
         // The old bind group still points at the buffer that was just replaced.
         self.bind_group =
             params_bind_group(device, &self.params_layout, &self.sampler, &self.uniforms);
+    }
+}
+
+impl EffectNode for BlurPass {
+    fn name(&self) -> &'static str {
+        "blur"
+    }
+
+    fn begin_frame(&mut self, device: &wgpu::Device, layers: usize) {
+        self.next_pass = 0;
+        // Two passes per layer, worst case every layer blurred. Sized here
+        // rather than on demand: growing the buffer replaces the bind group,
+        // and the passes already recorded this frame are holding the old one.
+        self.ensure_capacity(device, layers as u64 * 2);
+    }
+
+    /// Two passes — horizontal, then vertical — into two intermediates.
+    ///
+    /// The horizontal result is retired straight after the vertical pass reads
+    /// it. Commands run in the order they were recorded, so by the time the
+    /// pool could hand it out again, the pass that reads it has run.
+    fn apply(
+        &mut self,
+        ctx: &mut EffectContext<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        layer: &Layer<'_>,
+        input: EffectInput<'_>,
+    ) -> Result<Option<EffectTexture>, RenderError> {
+        // Sigma is resolved against the texture actually being sampled, so a
+        // proxy and the original produce the same picture (§46).
+        let Some(plan) = BlurPlan::new(layer.blur, input.height, ctx.tier()) else {
+            return Ok(None);
+        };
+
+        let horizontal = self.next_pass;
+        let vertical = horizontal + 1;
+        self.next_pass += 2;
+        if vertical >= self.capacity {
+            // `begin_frame` sizes for every layer being blurred, so this cannot
+            // happen. Declining beats recording a pass that would read whatever
+            // is at a stale offset.
+            tracing::warn!(
+                pass = vertical,
+                capacity = self.capacity,
+                "blur ran out of uniform slots; skipping this layer"
+            );
+            return Ok(None);
+        }
+
+        // Step is one texel along the axis being blurred, derived from this
+        // texture's own size — the other half of what makes a proxy and the
+        // original agree.
+        ctx.queue().write_buffer(
+            &self.uniforms,
+            horizontal * UNIFORM_STRIDE,
+            &plan.write([1.0 / input.width.max(1) as f32, 0.0]),
+        );
+        ctx.queue().write_buffer(
+            &self.uniforms,
+            vertical * UNIFORM_STRIDE,
+            &plan.write([0.0, 1.0 / input.height.max(1) as f32]),
+        );
+
+        let first = ctx.acquire(input.width, input.height);
+        let second = ctx.acquire(input.width, input.height);
+
+        self.record(encoder, input.bind_group, first.view(), horizontal);
+        self.record(encoder, first.bind_group(), second.view(), vertical);
+
+        ctx.retire(first);
+        Ok(Some(second))
     }
 }
 

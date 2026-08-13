@@ -18,8 +18,8 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
-| 6 — Export | ⛔ Blocked on §0.1 legal review — **the only §60 criterion left** |
-| **8 — Effects** | 🟡 Transform, opacity, basic colour, blur, keyframes; the render-graph node structure is open |
+| **6 — Export** | 🟡 Encoder selection and the file writer work; rendering the timeline into them is next |
+| **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes, and the effect graph |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
 **What works today:** new/open/save projects as versioned JSON with atomic
@@ -195,6 +195,59 @@ renderer stops reading it — so editing one with the playhead off the clip is
 refused with a message rather than silently changing a number nothing reads.
 Reset clears the keys along with the values, in one undo step.
 
+Behind both of those is the **effect graph** (§20): effects are nodes in a
+per-layer chain, not fixed stages in the compositor. Adding one is writing an
+`EffectNode` — reserve per-frame resources, record your passes, hand back what
+you wrote — rather than editing the compositor to make room for it. Blur is the
+first and currently only node.
+
+Opacity, colour and the transform are deliberately *not* nodes. They are
+per-texel functions evaluated during the composite draw that was going to happen
+anyway, so making them nodes would buy a full-frame pass and a full-frame
+texture each, for arithmetic that costs nothing where it is. "Effects are nodes"
+is about the ones that need a pass.
+
+The refactor introduced a hazard worth naming, because it is the kind that only
+shows up on a stacked composite: nodes write per-pass uniforms, and
+`write_buffer` stages its writes until the submit, so two layers sharing one
+slot would both render with whichever wrote *last*. A single-layer preview looks
+perfect. The graph tests composite two layers blurred by amounts five times
+apart and check the two halves differ — and both layers have to be blurred for
+the test to bite, since a layer at zero declines before it writes anything. I
+verified that by reintroducing the bug and watching the test fail.
+
+**Golden-frame tests** (§51.1) are what keep §46 honest — one render graph, two
+configurations — and §51.1 calls a failure a release blocker. Two checks, because
+there are two different questions:
+
+- *Does export match preview?* Render the same layers under both configs and
+  compare per pixel. Driver-independent, since both sides run on whatever GPU is
+  present. The tiers genuinely differ — blur spends 16 taps a side under preview
+  and 40 under export — so this is not comparing a thing to itself.
+- *Did the picture change at all?* The check above cannot answer that: a
+  regression hitting both configs equally keeps it green. So each case also has
+  a stored signature under `crates/renderer/tests/golden/`.
+
+The signatures are not reference PNGs. A byte-exact image would need
+regenerating per GPU — an NVIDIA card and an Intel iGPU disagree in the last bit
+of 8-bit rounding — and a reference that fails for reasons that aren't
+regressions is a reference that gets deleted. Each is a 4×4 grid holding, per
+cell, mean linear RGB and the sharpest step between neighbouring texels: where
+the light is, and how crisp it is.
+
+That second term took three attempts, and the reason is the interesting part.
+Blur preserves total brightness by design, so a mean-only signature reads a
+blurred frame and a sharp one as *the same picture*. Standard deviation didn't
+fix it either — over a 64-texel cell it's dominated by the fixture's gradient,
+which a small blur barely touches. Nor did mean neighbour difference, which
+divides a 64-texel edge away across 4096 smooth ones. The sharpest step works:
+1.0 at a hard edge, 0.14 once blurred. A test asserting the signatures can tell
+the cases apart is what caught each of those, rather than my noticing.
+
+I verified the pair is complementary by changing the contrast pivot from 0.18 to
+0.5 — the exact mistake described above. The signature check failed; the
+preview/export check stayed green, because the bug hits both equally.
+
 Dragging on empty timeline space draws a rubber band and selects every clip it
 covers; Ctrl adds to the selection instead of replacing it. Selection is
 resolved in time and track space rather than against screen rectangles, so a
@@ -202,7 +255,33 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**What does not work yet:** export, transitions, and text.
+**Export** is half built. The back half — choosing an encoder and writing the
+file — works and is tested end to end; the front half, rendering the timeline
+into it, is next.
+
+§0.1 requires OS-provided encoders and forbids linking anything GPL. So the
+encoder is chosen by **opening** it, not by looking up its name: a stock Windows
+FFmpeg contains `h264_nvenc` on a machine with an AMD card and `h264_qsv` on one
+with no Intel graphics, and both are *found*. Candidates are tried in §0.1's
+order — NVENC, Quick Sync, AMF, Media Foundation, then openh264 — each opened at
+the real resolution and frame rate, and the first that survives is used. On this
+machine that is NVENC; Quick Sync is rejected for wanting `nv12`, and AMF for a
+missing driver DLL. Nothing GPL is a candidate, and a test asserts it.
+
+Choosing an OS encoder also means we distribute no encoder at all, which keeps
+§0.1's patent-pool question away from the binary. `libopenh264` is the fallback
+for machines with no hardware encoder — BSD, and already linked because proxies
+use it.
+
+One finding worth recording. The first end-to-end test wrote 48 frames and read
+47 back — on NVENC only, while openh264 returned all 48. B-frames are coded
+after the frames they reference, so the first packet's decode timestamp is
+*negative*, and MP4 cannot store that without an edit list; the muxer resolves
+it by dropping the packet. Disabling B-frames fixes it, costs little at these
+bitrates, and makes all four encoders behave alike. The export tests run against
+each encoder the machine has.
+
+**What does not work yet:** exporting from the timeline, transitions, and text.
 
 Some limits worth knowing before testing with your own footage:
 
