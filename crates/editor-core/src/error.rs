@@ -31,6 +31,11 @@ pub enum EditorError {
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 
+    /// A keyframe is always placed at the frame the user is looking at, so
+    /// there is nowhere to put one while the playhead is elsewhere (§24).
+    #[error("move the playhead over the clip to add a keyframe")]
+    PlayheadOffClip,
+
     #[error("nothing to undo")]
     NothingToUndo,
 

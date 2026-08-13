@@ -22,6 +22,9 @@ pub const CLIP_TEXT: Color32 = Color32::from_rgb(238, 242, 248);
 pub const SELECTION: Color32 = Color32::from_rgb(255, 196, 84);
 
 pub const PLAYHEAD: Color32 = Color32::from_rgb(238, 92, 92);
+/// Keyframes, in the inspector and on the clip (§24). Deliberately not the
+/// selection colour: a key and a selected clip are often on screen together.
+pub const KEYFRAME: Color32 = Color32::from_rgb(126, 200, 255);
 pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
 pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
 pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);

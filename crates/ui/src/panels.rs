@@ -6,7 +6,7 @@
 use bettercut_editor_core::foundation::{FrameRate, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_editor_core::project_format::PerformanceMode;
-use bettercut_editor_core::timeline::{Resolution, SourceRange, VideoClip};
+use bettercut_editor_core::timeline::{AnimatedParameter, Resolution, SourceRange, VideoClip};
 use bettercut_editor_core::{ClipPayload, Editor, SettingChange, TrackFlag};
 
 use crate::state::UiState;
@@ -483,17 +483,12 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let selected: Vec<_> = state.selected_clips.iter().copied().collect();
     // Gather what the controls need, so the immutable borrow of the project
     // ends before any of them dispatches a command.
+    let playhead = editor.playhead();
     let single = (selected.len() == 1).then(|| selected[0]).map(|id| {
-        let video = sequence.video_tracks.iter().find_map(|t| {
-            t.get(id).map(|c| VideoLook {
-                timeline: c.timeline,
-                media_id: c.media_id,
-                opacity: c.opacity,
-                transform: c.transform,
-                color: c.color,
-                blur: c.blur,
-            })
-        });
+        let video = sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(id).map(|c| VideoLook::of(c, playhead)));
         let audio = sequence
             .audio_tracks
             .iter()
@@ -932,6 +927,74 @@ struct VideoLook {
     transform: bettercut_editor_core::timeline::Transform,
     color: bettercut_editor_core::timeline::ColorAdjust,
     blur: f32,
+    /// Where in the source the playhead is, or `None` when it is off the clip.
+    /// A keyframe goes at the frame the user is looking at, so this is also
+    /// whether one can be added at all (§24).
+    source_time: Option<MediaTime>,
+    /// Animation state per parameter, indexed as [`AnimatedParameter::ALL`].
+    keys: [KeyState; AnimatedParameter::ALL.len()],
+}
+
+/// What the keyframe button on one row should show.
+#[derive(Clone, Copy, Default)]
+struct KeyState {
+    /// The parameter is driven by keys rather than by its slider.
+    animated: bool,
+    /// A key sits exactly at the playhead, so the button deletes rather than
+    /// adds.
+    at_playhead: bool,
+}
+
+impl VideoLook {
+    /// Read a clip at the playhead.
+    ///
+    /// The values are the *animated* ones — what is on screen — so a slider
+    /// always starts from the number the user can see. With no keys that is
+    /// simply the static value.
+    fn of(clip: &VideoClip, playhead: TimelineTime) -> Self {
+        let source_time = clip
+            .timeline
+            .contains(playhead)
+            .then(|| clip.source_time_at(playhead));
+        // Off the clip, show its first frame rather than nothing: the inspector
+        // still has to display something, and the opening value is the least
+        // surprising choice.
+        let look = clip.look_at(source_time.unwrap_or(clip.source.start));
+
+        Self {
+            timeline: clip.timeline,
+            media_id: clip.media_id,
+            opacity: look.opacity,
+            transform: look.transform,
+            color: look.color,
+            blur: look.blur,
+            source_time,
+            keys: AnimatedParameter::ALL.map(|parameter| KeyState {
+                animated: clip.keyframes.is_animated(parameter),
+                at_playhead: source_time
+                    .is_some_and(|at| clip.keyframes.get(parameter, at).is_some()),
+            }),
+        }
+    }
+
+    /// The state of one control's row: a control that writes two parameters
+    /// (position, scale) counts as animated when either of them is.
+    fn row(&self, property: bettercut_editor_core::ClipProperty) -> KeyState {
+        property
+            .animated()
+            .into_iter()
+            .flatten()
+            .filter_map(|(parameter, _)| {
+                let index = AnimatedParameter::ALL
+                    .iter()
+                    .position(|p| *p == parameter)?;
+                self.keys.get(index).copied()
+            })
+            .fold(KeyState::default(), |acc, state| KeyState {
+                animated: acc.animated || state.animated,
+                at_playhead: acc.at_playhead || state.at_playhead,
+            })
+    }
 }
 
 /// Opacity, transform and effects for the selected video clip (§59, §45).
@@ -959,9 +1022,16 @@ fn clip_video_properties(
 
     ui.add_space(4.0);
     let mut change: Option<(ClipProperty, bool)> = None;
+    let mut toggle: Option<ClipProperty> = None;
 
     let mut value = opacity;
-    let response = ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("opacity"));
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Opacity(opacity),
+        &mut toggle,
+        |ui| ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("opacity")),
+    );
     if response.changed() {
         change = Some((ClipProperty::Opacity(value), response.dragged()));
     }
@@ -970,10 +1040,21 @@ fn clip_video_properties(
     // something a user reaches for while cutting, and two boxes would imply it
     // is the normal case.
     let mut scale = transform.scale.x;
-    let response = ui.add(
-        egui::Slider::new(&mut scale, 0.05..=4.0)
-            .logarithmic(true)
-            .text("scale"),
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Scale {
+            x: transform.scale.x,
+            y: transform.scale.y,
+        },
+        &mut toggle,
+        |ui| {
+            ui.add(
+                egui::Slider::new(&mut scale, 0.05..=4.0)
+                    .logarithmic(true)
+                    .text("scale"),
+            )
+        },
     );
     if response.changed() {
         change = Some((
@@ -982,7 +1063,11 @@ fn clip_video_properties(
         ));
     }
 
-    ui.horizontal(|ui| {
+    let position = ClipProperty::Position {
+        x: transform.position.x,
+        y: transform.position.y,
+    };
+    keyed_row(ui, &look, position, &mut toggle, |ui| {
         ui.label("position");
         let mut x = transform.position.x;
         let mut y = transform.position.y;
@@ -999,7 +1084,13 @@ fn clip_video_properties(
     });
 
     let mut rotation = transform.rotation_degrees;
-    let response = ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation"));
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Rotation(transform.rotation_degrees),
+        &mut toggle,
+        |ui| ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation")),
+    );
     if response.changed() {
         change = Some((ClipProperty::Rotation(rotation), response.dragged()));
     }
@@ -1010,19 +1101,37 @@ fn clip_video_properties(
         .default_open(!color.is_identity())
         .show(ui, |ui| {
             let mut brightness = color.brightness;
-            let response = ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness"));
+            let response = keyed_row(
+                ui,
+                &look,
+                ClipProperty::Brightness(color.brightness),
+                &mut toggle,
+                |ui| ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness")),
+            );
             if response.changed() {
                 change = Some((ClipProperty::Brightness(brightness), response.dragged()));
             }
 
             let mut contrast = color.contrast;
-            let response = ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast"));
+            let response = keyed_row(
+                ui,
+                &look,
+                ClipProperty::Contrast(color.contrast),
+                &mut toggle,
+                |ui| ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast")),
+            );
             if response.changed() {
                 change = Some((ClipProperty::Contrast(contrast), response.dragged()));
             }
 
             let mut saturation = color.saturation;
-            let response = ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation"));
+            let response = keyed_row(
+                ui,
+                &look,
+                ClipProperty::Saturation(color.saturation),
+                &mut toggle,
+                |ui| ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation")),
+            );
             if response.changed() {
                 change = Some((ClipProperty::Saturation(saturation), response.dragged()));
             }
@@ -1037,11 +1146,13 @@ fn clip_video_properties(
     // One slider, so no header of its own — but it does not belong with the
     // colour group either: everything in there is free, and this is not.
     let mut amount = blur;
-    let response = ui.add(
-        egui::Slider::new(&mut amount, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
-            .text("blur")
-            .suffix("%"),
-    );
+    let response = keyed_row(ui, &look, ClipProperty::Blur(blur), &mut toggle, |ui| {
+        ui.add(
+            egui::Slider::new(&mut amount, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
+                .text("blur")
+                .suffix("%"),
+        )
+    });
     if response.changed() {
         change = Some((ClipProperty::Blur(amount), response.dragged()));
     }
@@ -1056,17 +1167,148 @@ fn clip_video_properties(
         );
     }
 
-    if (!transform.is_identity() || opacity < 1.0 || !color.is_identity() || blur > 0.0)
+    animation_summary(ui, editor, state, clip, &look);
+
+    // Also offered while animated even if the values happen to be default at
+    // this frame: the clip is not in its default state, it only looks like it
+    // from here.
+    let animated = look.keys.iter().any(|key| key.animated);
+    if (animated || !transform.is_identity() || opacity < 1.0 || !color.is_identity() || blur > 0.0)
         && ui
             .button("Reset")
-            .on_hover_text("Back to full opacity, no scale, no offset, no rotation")
+            .on_hover_text(
+                "Back to full opacity, no scale, no offset, no rotation — and no keyframes",
+            )
             .clicked()
     {
         reset_video_properties(editor, state, clip);
     }
 
+    if let Some(property) = toggle {
+        match editor.toggle_keyframe(clip, property) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
     if let Some((property, continuing)) = change {
         apply_clip_property(editor, state, clip, property, continuing);
+    }
+}
+
+/// One animatable control: its keyframe button, then the control itself.
+///
+/// The button is first so the column of them lines up down the left edge and
+/// reads as one thing — which of these move, and which are fixed.
+fn keyed_row<R>(
+    ui: &mut egui::Ui,
+    look: &VideoLook,
+    current: bettercut_editor_core::ClipProperty,
+    toggle: &mut Option<bettercut_editor_core::ClipProperty>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        let state = look.row(current);
+        let (glyph, hint) = match (state.animated, state.at_playhead) {
+            (false, _) => (
+                "○",
+                "Animate this. A keyframe is added here, and another wherever \
+                 you next change it.",
+            ),
+            (true, false) => ("◇", "Add a keyframe at the playhead"),
+            (true, true) => ("◆", "Remove the keyframe at the playhead"),
+        };
+
+        let colour = if state.animated {
+            theme::KEYFRAME
+        } else {
+            theme::DISABLED
+        };
+        let button = egui::Button::new(egui::RichText::new(glyph).color(colour))
+            .frame(false)
+            .min_size(egui::vec2(18.0, 18.0));
+
+        // No playhead over the clip means no frame to key at, so the button is
+        // shown disabled with the reason rather than hidden — a control that
+        // vanishes is harder to understand than one that explains itself (§41).
+        let response = ui.add_enabled(look.source_time.is_some(), button);
+        let response = if look.source_time.is_some() {
+            response.on_hover_text(hint)
+        } else {
+            response.on_disabled_hover_text("Move the playhead over this clip to add a keyframe")
+        };
+        if response.clicked() {
+            *toggle = Some(current);
+        }
+
+        control(ui)
+    })
+    .inner
+}
+
+/// How many keys the clip has, and a way back to them (§24).
+///
+/// Without this, animation is invisible unless the playhead happens to be
+/// sitting on a key: the buttons show ◇ everywhere and there is nothing saying
+/// the clip is animated at all.
+fn animation_summary(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    look: &VideoLook,
+) {
+    let Some(video) = editor.video_clip(clip) else {
+        return;
+    };
+    if video.keyframes.is_empty() {
+        return;
+    }
+
+    let count = video.keyframes.len();
+    let times = video.keyframes.times();
+    let at = look.source_time;
+    // Resolved before dispatching, because both borrow the editor.
+    let previous = at.and_then(|at| times.iter().rev().find(|t| **t < at).copied());
+    let next = at.and_then(|at| times.iter().find(|t| **t > at).copied());
+    let start = look.timeline.start;
+    let source_start = video.source.start;
+
+    let mut jump_to: Option<MediaTime> = None;
+
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(if count == 1 {
+                "1 keyframe".to_owned()
+            } else {
+                format!("{count} keyframes")
+            })
+            .small()
+            .color(theme::KEYFRAME),
+        );
+        if ui
+            .add_enabled(previous.is_some(), egui::Button::new("◀").frame(false))
+            .on_hover_text("Previous keyframe")
+            .clicked()
+        {
+            jump_to = previous;
+        }
+        if ui
+            .add_enabled(next.is_some(), egui::Button::new("▶").frame(false))
+            .on_hover_text("Next keyframe")
+            .clicked()
+        {
+            jump_to = next;
+        }
+    });
+
+    if let Some(target) = jump_to {
+        // Source time back to timeline time: the clip's own offset, in the
+        // integer ticks §9 requires.
+        let into_source = target.ticks() - source_start.ticks();
+        editor.set_playhead(TimelineTime::from_ticks(start.ticks() + into_source));
+        state.needs_repaint = true;
     }
 }
 
@@ -1103,7 +1345,10 @@ fn apply_clip_property(
     property: bettercut_editor_core::ClipProperty,
     continuing: bool,
 ) {
-    match editor.set_clip_property(clip, property, continuing) {
+    // `set_clip_value`, not `set_clip_property`: an animated parameter is
+    // edited by moving its keyframe, and the control does not need to know
+    // which it is doing (§24).
+    match editor.set_clip_value(clip, property, continuing) {
         Ok(()) => state.needs_repaint = true,
         Err(err) => state.error(err.to_string()),
     }
@@ -1115,25 +1360,13 @@ fn reset_video_properties(
     state: &mut UiState,
     clip: bettercut_editor_core::foundation::ClipId,
 ) {
-    use bettercut_editor_core::ClipProperty;
-
-    for property in [
-        ClipProperty::Opacity(1.0),
-        ClipProperty::Scale { x: 1.0, y: 1.0 },
-        ClipProperty::Position { x: 0.0, y: 0.0 },
-        ClipProperty::Rotation(0.0),
-        ClipProperty::Brightness(1.0),
-        ClipProperty::Contrast(1.0),
-        ClipProperty::Saturation(1.0),
-        ClipProperty::Blur(0.0),
-    ] {
-        if let Err(err) = editor.set_clip_property(clip, property, false) {
-            state.error(err.to_string());
-            return;
+    match editor.reset_clip_look(clip) {
+        Ok(()) => {
+            state.needs_repaint = true;
+            state.info("Clip reset");
         }
+        Err(err) => state.error(err.to_string()),
     }
-    state.needs_repaint = true;
-    state.info("Clip reset");
 }
 
 /// Resolution and frame rate for the active sequence (§8, §36).

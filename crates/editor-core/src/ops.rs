@@ -9,7 +9,8 @@ use bettercut_foundation::{
 };
 use bettercut_project_format::Project;
 use bettercut_timeline::{
-    AudioTrack, Clip, Resolution, Sequence, SourceRange, TimelineRange, TrackKind, Vec2, VideoTrack,
+    AnimatedParameter, AudioTrack, Clip, Keyframe, Resolution, Sequence, SourceRange,
+    TimelineRange, TrackKind, Vec2, VideoTrack,
 };
 
 use crate::command::{
@@ -52,6 +53,20 @@ pub fn build_for_replay(
             clip,
             property,
         } => Box::new(SetClipProperty::new(sequence, track, clip, property)),
+        Command::SetKeyframe {
+            sequence,
+            track,
+            clip,
+            parameter,
+            key,
+        } => Box::new(SetKeyframe::set(sequence, track, clip, parameter, key)),
+        Command::RemoveKeyframe {
+            sequence,
+            track,
+            clip,
+            parameter,
+            time,
+        } => Box::new(SetKeyframe::remove(sequence, track, clip, parameter, time)),
         Command::SetSequenceFormat {
             sequence,
             resolution,
@@ -263,46 +278,55 @@ impl SetClipProperty {
             |video| {
                 let clip = video.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
                 Ok(match property {
+                    // Every limit below comes from `AnimatedParameter::limits`
+                    // rather than a literal here. A keyed value goes through
+                    // the same clamp, and two lists of numbers would eventually
+                    // disagree — leaving an animated opacity able to reach 1.4
+                    // where the slider stops at 1.0.
                     ClipProperty::Opacity(value) => {
                         let was = clip.opacity;
-                        clip.opacity = value.clamp(0.0, 1.0);
+                        clip.opacity = AnimatedParameter::Opacity.clamp(value);
                         ClipProperty::Opacity(was)
                     }
                     ClipProperty::Position { x, y } => {
                         let was = clip.transform.position;
-                        clip.transform.position = Vec2::new(x, y);
+                        clip.transform.position = Vec2::new(
+                            AnimatedParameter::PositionX.clamp(x),
+                            AnimatedParameter::PositionY.clamp(y),
+                        );
                         ClipProperty::Position { x: was.x, y: was.y }
                     }
                     ClipProperty::Scale { x, y } => {
                         let was = clip.transform.scale;
-                        // Zero scale renders nothing and cannot be dragged back
-                        // out of, so it has a floor.
-                        clip.transform.scale = Vec2::new(x.clamp(0.01, 10.0), y.clamp(0.01, 10.0));
+                        clip.transform.scale = Vec2::new(
+                            AnimatedParameter::ScaleX.clamp(x),
+                            AnimatedParameter::ScaleY.clamp(y),
+                        );
                         ClipProperty::Scale { x: was.x, y: was.y }
                     }
                     ClipProperty::Rotation(value) => {
                         let was = clip.transform.rotation_degrees;
-                        clip.transform.rotation_degrees = value;
+                        clip.transform.rotation_degrees = AnimatedParameter::Rotation.clamp(value);
                         ClipProperty::Rotation(was)
                     }
                     ClipProperty::Brightness(value) => {
                         let was = clip.color.brightness;
-                        clip.color.brightness = value.clamp(0.0, 4.0);
+                        clip.color.brightness = AnimatedParameter::Brightness.clamp(value);
                         ClipProperty::Brightness(was)
                     }
                     ClipProperty::Contrast(value) => {
                         let was = clip.color.contrast;
-                        clip.color.contrast = value.clamp(0.0, 4.0);
+                        clip.color.contrast = AnimatedParameter::Contrast.clamp(value);
                         ClipProperty::Contrast(was)
                     }
                     ClipProperty::Saturation(value) => {
                         let was = clip.color.saturation;
-                        clip.color.saturation = value.clamp(0.0, 4.0);
+                        clip.color.saturation = AnimatedParameter::Saturation.clamp(value);
                         ClipProperty::Saturation(was)
                     }
                     ClipProperty::Blur(value) => {
                         let was = clip.blur;
-                        clip.blur = value.clamp(0.0, bettercut_timeline::MAX_BLUR);
+                        clip.blur = AnimatedParameter::Blur.clamp(value);
                         ClipProperty::Blur(was)
                     }
                     // Gain is an audio property; a video clip has none.
@@ -321,6 +345,135 @@ impl SetClipProperty {
                 }
             },
         )
+    }
+}
+
+/// Add, replace, or delete one keyframe (§24).
+///
+/// One command for both directions: removing a key is setting it to nothing,
+/// and writing them as two types would duplicate the undo logic, which is the
+/// part with the subtlety in it — undoing an *insert* has to delete, while
+/// undoing a *replace* has to put the old key back.
+#[derive(Debug)]
+pub struct SetKeyframe {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    parameter: AnimatedParameter,
+    time: MediaTime,
+    /// The key to write; `None` deletes whatever is at `time`.
+    key: Option<Keyframe>,
+    /// What was at `time` before the first execute. The outer `Option` is
+    /// "has this run"; the inner is "was there a key there".
+    previous: Option<Option<Keyframe>>,
+}
+
+impl SetKeyframe {
+    pub fn set(
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        parameter: AnimatedParameter,
+        key: Keyframe,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            parameter,
+            time: key.time,
+            key: Some(key),
+            previous: None,
+        }
+    }
+
+    pub fn remove(
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        parameter: AnimatedParameter,
+        time: MediaTime,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            parameter,
+            time,
+            key: None,
+            previous: None,
+        }
+    }
+
+    /// Write `key` (or delete, when `None`), returning what was there.
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        parameter: AnimatedParameter,
+        time: MediaTime,
+        key: Option<Keyframe>,
+    ) -> Result<Option<Keyframe>, EditorError> {
+        with_track(
+            project,
+            sequence,
+            track,
+            |video| {
+                let clip = video.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                Ok(match key {
+                    Some(mut key) => {
+                        key.value = parameter.clamp(key.value);
+                        key.time = time;
+                        clip.keyframes.set(parameter, key)
+                    }
+                    None => clip.keyframes.remove(parameter, time),
+                })
+            },
+            // §59 lists clip gain as keyframeable, but Milestone 8 animates the
+            // video parameters only. Refusing here beats silently accepting a
+            // key that nothing would ever read.
+            |_audio| Err(EditorError::ClipKindMismatch),
+        )
+    }
+}
+
+impl EditorCommand for SetKeyframe {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            self.parameter,
+            self.time,
+            self.key,
+        )?;
+        // First execute only, for the same reason as `SetClipProperty`: a redo
+        // must restore what was there before the gesture, not before the redo.
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            self.parameter,
+            self.time,
+            previous,
+        )?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        match self.key {
+            Some(_) => format!("Keyframe {}", self.parameter.label()),
+            None => format!("Delete {} keyframe", self.parameter.label()),
+        }
     }
 }
 

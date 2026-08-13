@@ -14,7 +14,7 @@
 
 use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId};
 use bettercut_project_format::Project;
-use bettercut_timeline::{AudioClip, TrackKind, VideoClip};
+use bettercut_timeline::{AnimatedParameter, AudioClip, Keyframe, TrackKind, VideoClip};
 use serde::{Deserialize, Serialize};
 
 use crate::error::EditorError;
@@ -110,6 +110,25 @@ pub enum Command {
         track: TrackId,
         clip: ClipId,
         property: ClipProperty,
+    },
+    /// Add or replace one keyframe (§10's `SetKeyframeCommand`, §24).
+    ///
+    /// The key carries its own time, in the source media — see
+    /// [`bettercut_timeline::keyframe`] for why keys are anchored there rather
+    /// than to the timeline.
+    SetKeyframe {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        parameter: AnimatedParameter,
+        key: Keyframe,
+    },
+    RemoveKeyframe {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        parameter: AnimatedParameter,
+        time: bettercut_foundation::MediaTime,
     },
     /// Point an asset at a file that has moved (§66).
     ///
@@ -240,6 +259,31 @@ pub enum ClipProperty {
 }
 
 impl ClipProperty {
+    /// The animatable parameters this property writes, with the values it is
+    /// writing to them.
+    ///
+    /// Two entries for the pairs, one for the scalars, none for gain — audio is
+    /// not animated in Milestone 8. This is what lets the same slider write a
+    /// static value or a keyframe without the interface having two of every
+    /// control.
+    ///
+    /// A fixed array rather than a `Vec`: this runs on every frame a slider is
+    /// dragged, and there is nothing here worth an allocation.
+    pub fn animated(self) -> [Option<(AnimatedParameter, f32)>; 2] {
+        use AnimatedParameter as P;
+        match self {
+            Self::Opacity(v) => [Some((P::Opacity, v)), None],
+            Self::Position { x, y } => [Some((P::PositionX, x)), Some((P::PositionY, y))],
+            Self::Scale { x, y } => [Some((P::ScaleX, x)), Some((P::ScaleY, y))],
+            Self::Rotation(v) => [Some((P::Rotation, v)), None],
+            Self::Brightness(v) => [Some((P::Brightness, v)), None],
+            Self::Contrast(v) => [Some((P::Contrast, v)), None],
+            Self::Saturation(v) => [Some((P::Saturation, v)), None],
+            Self::Blur(v) => [Some((P::Blur, v)), None],
+            Self::Gain(_) => [None, None],
+        }
+    }
+
     /// Shown in the undo menu, and used to decide whether two edits are the
     /// same gesture and should collapse into one history entry.
     pub fn kind(&self) -> &'static str {
@@ -437,6 +481,31 @@ mod tests {
                 sequence: seq,
                 track,
                 clip: ClipId::new(),
+            },
+            // §38.2 replays these to rebuild an animation after a crash, so the
+            // curve has to survive the wire as exactly as the value does.
+            Command::SetKeyframe {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                parameter: AnimatedParameter::Opacity,
+                key: Keyframe::new(
+                    MediaTime::from_ticks(4800),
+                    0.5,
+                    bettercut_timeline::Interpolation::Bezier {
+                        x1: 0.25,
+                        y1: 0.1,
+                        x2: 0.25,
+                        y2: 1.0,
+                    },
+                ),
+            },
+            Command::RemoveKeyframe {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                parameter: AnimatedParameter::Blur,
+                time: MediaTime::from_ticks(4800),
             },
         ];
         for cmd in variants {

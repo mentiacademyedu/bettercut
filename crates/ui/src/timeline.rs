@@ -809,6 +809,8 @@ fn draw_lanes(
                     duration_of_media: project
                         .media_asset(clip.media_id)
                         .map_or(MediaTime::ZERO, |m| m.duration),
+                    keyframes: (!clip.keyframes.is_empty())
+                        .then_some((&clip.keyframes, clip.source.start)),
                 },
                 clip.id,
                 track.id,
@@ -853,6 +855,7 @@ fn draw_lanes(
                         .map(|w| (w.as_ref(), clip.source.start)),
                     filmstrip: None,
                     duration_of_media: MediaTime::ZERO,
+                    keyframes: None,
                 },
                 clip.id,
                 track.id,
@@ -941,6 +944,10 @@ struct ClipVisual<'a> {
     filmstrip: Option<(&'a egui::TextureHandle, u32, MediaTime)>,
     /// Length of the whole source file, which is what the tiles span.
     duration_of_media: MediaTime,
+    /// The clip's animation and where in the media it starts, drawn as marks
+    /// along the bottom edge (§24). `None` for audio, which Milestone 8 does
+    /// not animate.
+    keyframes: Option<(&'a bettercut_editor_core::timeline::Keyframes, MediaTime)>,
 }
 
 /// The rubber band itself: a translucent fill with a crisp edge.
@@ -1180,6 +1187,17 @@ fn draw_clip(
         draw_trim_handles(painter, clip_rect);
     }
 
+    if let Some((keyframes, source_start)) = visual.keyframes {
+        draw_keyframes(
+            painter,
+            clip_rect,
+            viewport,
+            keyframes,
+            visual.range.start,
+            source_start,
+        );
+    }
+
     // Only label a clip wide enough to read it; below that the text is noise.
     if clip_rect.width() > 46.0 {
         let text_painter = painter.with_clip_rect(clip_rect.shrink(4.0));
@@ -1190,6 +1208,52 @@ fn draw_clip(
             FontId::proportional(12.0),
             theme::CLIP_TEXT,
         );
+    }
+}
+
+/// Diamonds along the bottom edge of a clip, one per instant that has a key.
+///
+/// Merged across parameters rather than one row each: at this height a lane has
+/// room for one strip of marks, and what the user needs from the timeline is
+/// *where* the animation happens. Which parameter moves is the inspector's job.
+fn draw_keyframes(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    viewport: Viewport,
+    keyframes: &bettercut_editor_core::timeline::Keyframes,
+    clip_start: TimelineTime,
+    source_start: MediaTime,
+) {
+    const RADIUS: f32 = 3.5;
+
+    // Too short to place a mark inside without it covering the whole clip.
+    if clip_rect.width() < RADIUS * 4.0 {
+        return;
+    }
+    let y = clip_rect.bottom() - RADIUS - 1.0;
+
+    for time in keyframes.times() {
+        // Source ticks back to timeline ticks, integer throughout (§9, §74).
+        let at =
+            TimelineTime::from_ticks(clip_start.ticks() + (time.ticks() - source_start.ticks()));
+        let x = viewport.x_of(at);
+        // Keys can sit outside the visible span, and a trimmed clip can hold
+        // keys outside itself entirely — they are anchored to the media, and
+        // trimming does not delete them so that trimming back restores them.
+        if x < clip_rect.left() + RADIUS || x > clip_rect.right() - RADIUS {
+            continue;
+        }
+
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(x, y - RADIUS),
+                Pos2::new(x + RADIUS, y),
+                Pos2::new(x, y + RADIUS),
+                Pos2::new(x - RADIUS, y),
+            ],
+            theme::KEYFRAME,
+            Stroke::new(1.0, theme::TIMELINE_BACKGROUND),
+        ));
     }
 }
 

@@ -10,10 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId};
+use bettercut_foundation::{ClipId, FrameRate, MediaTime, SequenceId, TimelineTime, TrackId};
 use bettercut_media::{FfmpegProber, MediaAsset, MediaProber};
 use bettercut_project_format::{PROJECT_EXTENSION, Project};
-use bettercut_timeline::{Resolution, Sequence, TrackKind};
+use bettercut_timeline::{Interpolation, Keyframe, Resolution, Sequence, TrackKind};
 
 use crate::command::{ClipPayload, Command, CommandGroup, EditorCommand, TrackFlag, TrimEdge};
 use crate::error::EditorError;
@@ -387,30 +387,305 @@ impl Editor {
             property,
         };
 
+        self.dispatch_gesture(
+            format!("Change {}", property.kind()),
+            vec![command],
+            continuing,
+        )
+    }
+
+    /// Execute commands as one undo entry, continuing the entry on top of the
+    /// stack while `continuing` (§11).
+    ///
+    /// The label is the identity of the gesture: `execute_coalescing` matches
+    /// on it, and a group of one carries it just as a bare command does, so a
+    /// drag that starts as a static slider edit and a drag that writes two
+    /// keyframes coalesce by exactly the same rule.
+    fn dispatch_gesture(
+        &mut self,
+        label: String,
+        commands: Vec<Command>,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        if commands.is_empty() {
+            return Ok(());
+        }
         if !continuing {
-            return self.dispatch(command);
+            return self.dispatch_group(label, commands);
         }
 
-        // Same shape as `dispatch`, but coalescing. Journalled either way: a
-        // crash mid-drag should recover the value the user was looking at.
+        // Same shape as `dispatch_group`, but coalescing. Journalled either
+        // way: a crash mid-drag should recover the value the user was looking
+        // at. Deliberately `journal.append` rather than `journal_command` —
+        // this runs once per frame of a drag, and a snapshot check per frame is
+        // work the user would feel.
         self.ensure_journal_baseline();
-        let built = self.build(command.clone())?;
-        let kind = property.kind();
-        let result = self
-            .history
-            .execute_coalescing(built, &mut self.project, |top| {
-                top.label() == format!("Change {kind}")
-            });
-
-        match result {
-            Ok(()) => {
-                self.dirty = true;
-                self.journal.append(&command);
-                self.events.emit(Event::ProjectChanged);
-                Ok(())
-            }
-            Err(err) => Err(err),
+        let mut group = CommandGroup::new(label.clone());
+        for command in &commands {
+            group.push(self.build(command.clone())?);
         }
+
+        self.history
+            .execute_coalescing(Box::new(group), &mut self.project, |top| {
+                top.label() == label
+            })?;
+
+        self.dirty = true;
+        for command in &commands {
+            self.journal.append(command);
+        }
+        self.events.emit(Event::ProjectChanged);
+        Ok(())
+    }
+
+    /// Apply an inspector control (§59), as keyframes where the parameter is
+    /// animated and as a static value where it is not (§24).
+    ///
+    /// This is the whole reason animating does not need a second set of
+    /// controls: the slider does not know or care which it is writing. One
+    /// control per parameter, one place that decides.
+    pub fn set_clip_value(
+        &mut self,
+        clip: ClipId,
+        property: crate::command::ClipProperty,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let Some(video) = self.video_clip(clip) else {
+            return self.set_clip_property(clip, property, continuing);
+        };
+        let animated = property
+            .animated()
+            .into_iter()
+            .flatten()
+            .any(|(parameter, _)| video.keyframes.is_animated(parameter));
+
+        let Some(at) = self.source_time_at_playhead(clip) else {
+            // An animated parameter has no static value to change — writing one
+            // would move a number the renderer never reads, and the control
+            // would appear not to work. Refused, with a message saying where to
+            // put the playhead.
+            if animated {
+                return Err(EditorError::PlayheadOffClip);
+            }
+            return self.set_clip_property(clip, property, continuing);
+        };
+        // Re-borrowed: `source_time_at_playhead` took the editor immutably.
+        let Some(video) = self.video_clip(clip) else {
+            return self.set_clip_property(clip, property, continuing);
+        };
+
+        let keyed: Vec<_> = property
+            .animated()
+            .into_iter()
+            .flatten()
+            .filter(|(parameter, _)| video.keyframes.is_animated(*parameter))
+            .map(|(parameter, value)| {
+                // Keep the curve the key already had; a drag changes the value,
+                // not the easing the user chose for it.
+                let interpolation = video
+                    .keyframes
+                    .get(parameter, at)
+                    .map_or_else(Interpolation::default, |key| key.interpolation);
+                (parameter, Keyframe::new(at, value, interpolation))
+            })
+            .collect();
+
+        if keyed.is_empty() {
+            return self.set_clip_property(clip, property, continuing);
+        }
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let commands = keyed
+            .into_iter()
+            .map(|(parameter, key)| Command::SetKeyframe {
+                sequence,
+                track,
+                clip,
+                parameter,
+                key,
+            })
+            .collect();
+
+        self.dispatch_gesture(
+            format!("Keyframe {}", property.kind()),
+            commands,
+            continuing,
+        )
+    }
+
+    /// Put a clip's look back to default — including its animation — as one
+    /// undo step (§79).
+    ///
+    /// Clearing the keys is the part that matters: a keyed parameter ignores
+    /// its static value, so resetting the numbers alone would leave a clip that
+    /// still fades while every control claims it does not.
+    pub fn reset_clip_look(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        use crate::command::ClipProperty;
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        let mut commands: Vec<Command> = video
+            .keyframes
+            .iter()
+            .flat_map(|animation| {
+                let parameter = animation.parameter;
+                animation
+                    .keys()
+                    .iter()
+                    .map(move |key| Command::RemoveKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        time: key.time,
+                    })
+            })
+            .collect();
+
+        commands.extend(
+            [
+                ClipProperty::Opacity(1.0),
+                ClipProperty::Scale { x: 1.0, y: 1.0 },
+                ClipProperty::Position { x: 0.0, y: 0.0 },
+                ClipProperty::Rotation(0.0),
+                ClipProperty::Brightness(1.0),
+                ClipProperty::Contrast(1.0),
+                ClipProperty::Saturation(1.0),
+                ClipProperty::Blur(0.0),
+            ]
+            .into_iter()
+            .map(|property| Command::SetClipProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            }),
+        );
+
+        self.dispatch_group("Reset Clip", commands)
+    }
+
+    /// Add a keyframe for every parameter of one inspector control, or delete
+    /// them if they are already there (§24).
+    ///
+    /// One button rather than the usual stopwatch-plus-diamond pair: the first
+    /// click starts the animation from wherever the control is now, later
+    /// clicks add or remove a key at the playhead, and there is no mode to be
+    /// in (§41 — the interface explains itself).
+    pub fn toggle_keyframe(
+        &mut self,
+        clip: ClipId,
+        property: crate::command::ClipProperty,
+    ) -> Result<(), EditorError> {
+        let at = self
+            .source_time_at_playhead(clip)
+            .ok_or(EditorError::PlayheadOffClip)?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+
+        let parameters: Vec<_> = property.animated().into_iter().flatten().collect();
+        // Removing only when *every* parameter of the control has a key there,
+        // so a half-keyed row fills in rather than emptying out.
+        let remove = !parameters.is_empty()
+            && parameters
+                .iter()
+                .all(|(parameter, _)| video.keyframes.get(*parameter, at).is_some());
+
+        let commands: Vec<Command> = parameters
+            .into_iter()
+            .map(|(parameter, value)| {
+                if remove {
+                    Command::RemoveKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        time: at,
+                    }
+                } else {
+                    Command::SetKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        key: Keyframe::new(at, value, Interpolation::default()),
+                    }
+                }
+            })
+            .collect();
+
+        let verb = if remove { "Delete" } else { "Add" };
+        self.dispatch_group(format!("{verb} {} Keyframe", property.kind()), commands)
+    }
+
+    /// The video clip behind an id, for reading its animation.
+    pub fn video_clip(&self, clip: ClipId) -> Option<&bettercut_timeline::VideoClip> {
+        self.project
+            .active()?
+            .video_tracks
+            .iter()
+            .find_map(|track| track.get(clip))
+    }
+
+    /// Where in a clip's source media the playhead is sitting.
+    ///
+    /// `None` when the playhead is not over the clip at all, which is the
+    /// signal that there is nothing to key: a keyframe is always placed at the
+    /// frame the user is looking at.
+    pub fn source_time_at_playhead(&self, clip: ClipId) -> Option<MediaTime> {
+        let clip = self.video_clip(clip)?;
+        let playhead = self.playhead();
+        clip.timeline
+            .contains(playhead)
+            .then(|| clip.source_time_at(playhead))
+    }
+
+    /// Add or replace one keyframe (§24).
+    ///
+    /// The single-parameter primitive. The inspector goes through
+    /// [`Self::set_clip_value`] instead, which knows which of its parameters
+    /// are animated; this is for callers that already do.
+    pub fn set_keyframe(
+        &mut self,
+        clip: ClipId,
+        parameter: bettercut_timeline::AnimatedParameter,
+        key: Keyframe,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::SetKeyframe {
+            sequence,
+            track,
+            clip,
+            parameter,
+            key,
+        })
+    }
+
+    /// Delete the keyframe at `time` (§24).
+    pub fn remove_keyframe(
+        &mut self,
+        clip: ClipId,
+        parameter: bettercut_timeline::AnimatedParameter,
+        time: MediaTime,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::RemoveKeyframe {
+            sequence,
+            track,
+            clip,
+            parameter,
+            time,
+        })
     }
 
     /// Point one asset at a file the user located (§66).
@@ -621,6 +896,26 @@ impl Editor {
                 property,
             } => Ok(Box::new(ops::SetClipProperty::new(
                 sequence, track, clip, property,
+            ))),
+
+            Command::SetKeyframe {
+                sequence,
+                track,
+                clip,
+                parameter,
+                key,
+            } => Ok(Box::new(ops::SetKeyframe::set(
+                sequence, track, clip, parameter, key,
+            ))),
+
+            Command::RemoveKeyframe {
+                sequence,
+                track,
+                clip,
+                parameter,
+                time,
+            } => Ok(Box::new(ops::SetKeyframe::remove(
+                sequence, track, clip, parameter, time,
             ))),
 
             Command::SetSequenceFormat {

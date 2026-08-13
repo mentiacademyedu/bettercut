@@ -426,16 +426,19 @@ impl PlaybackEngine {
             };
 
             let source_time = source_time_of(clip.timeline().start, clip.source().start, position);
+            // §24: animated parameters override the static ones, resolved in
+            // the timeline crate so preview and export cannot disagree (§46).
+            let look = clip.look_at(source_time);
 
             match self.frame_at(asset, source_time) {
                 Ok(frame) => layers.push(ResolvedLayer {
                     clip: clip.id,
                     track: track.id,
                     frame,
-                    transform: clip.transform,
-                    opacity: clip.opacity,
-                    color: clip.color,
-                    blur: clip.blur,
+                    transform: look.transform,
+                    opacity: look.opacity,
+                    color: look.color,
+                    blur: look.blur,
                 }),
                 Err(err) => {
                     tracing::warn!(

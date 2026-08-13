@@ -19,7 +19,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
 | 6 — Export | ⛔ Blocked on §0.1 legal review — **the only §60 criterion left** |
-| **8 — Effects** | 🟡 Transform, opacity, basic colour, blur; keyframes and the render-graph node structure open |
+| **8 — Effects** | 🟡 Transform, opacity, basic colour, blur, keyframes; the render-graph node structure is open |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
 **What works today:** new/open/save projects as versioned JSON with atomic
@@ -160,6 +160,41 @@ number** — both cover the same radius, and a GPU test asserts the two agree. A
 wide radii the kernel becomes sparse rather than narrower, which can alias on
 fine detail; downsampling first is the fix, and is worth doing when export lands.
 
+**Keyframes** (§24) make any of those parameters move over time. Every control
+in the Inspector has a diamond next to it: click it once and the parameter
+starts animating from wherever it is, with a key at the playhead. Move the
+playhead, drag the slider, and you get a second key — the same slider, no mode
+to be in. A filled diamond means there is a key on this exact frame and clicking
+removes it. Keys show as marks along the bottom of the clip, and ◀ ▶ jump
+between them.
+
+Three decisions carry most of the weight:
+
+- **Keys are anchored to the source media, not to the timeline.** Everything
+  else about a clip already moves — dragging it, trimming either edge,
+  splitting, cut and paste — and timeline-anchored keys would have to be
+  rewritten by every one of those operations, with every undo putting them back.
+  A fade that drifts off its shot after an unrelated ripple delete is easy to
+  write and hard to notice. Anchored to the source, none of those operations has
+  to do anything, and a test moves a clip 90 000 ticks to prove the animation
+  stays on the picture.
+- **The limits live on the parameter, not at the point of editing.** There are
+  now two ways to set a value — a slider and an interpolated curve — and §24's
+  Bézier is allowed to overshoot on purpose, because that is how you get a
+  bounce. Both go through the same clamp, so an animated opacity cannot reach
+  1.4 where the slider stops at 1.0.
+- **One evaluator for every curve.** Linear, the four named easings and a custom
+  Bézier are all cubic Béziers over the unit square, using the same control
+  points CSS does. The curve parameter is *not* the horizontal position, so
+  reading the curve at `t = x` gives an easing that is subtly wrong everywhere
+  except its endpoints; solving for x is what the tests check, by asserting that
+  ease-in lags the linear midpoint and ease-out leads it.
+
+Animating a parameter takes its slider away from the static value — the
+renderer stops reading it — so editing one with the playhead off the clip is
+refused with a message rather than silently changing a number nothing reads.
+Reset clears the keys along with the values, in one undo step.
+
 Dragging on empty timeline space draws a rubber band and selects every clip it
 covers; Ctrl adds to the selection instead of replacing it. Selection is
 resolved in time and track space rather than against screen rectangles, so a
@@ -167,7 +202,7 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**What does not work yet:** export, keyframes, transitions, and text.
+**What does not work yet:** export, transitions, and text.
 
 Some limits worth knowing before testing with your own footage:
 

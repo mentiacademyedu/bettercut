@@ -8,6 +8,7 @@ use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TimelineError;
+use crate::keyframe::{AnimatedParameter, Keyframes};
 
 /// A 2D point or size. Spatial, not temporal — floats are fine here (§74 bans
 /// them only in timeline position arithmetic).
@@ -174,8 +175,23 @@ pub struct VideoClip {
     /// answer without a helper.
     #[serde(default)]
     pub blur: f32,
+    /// Parameters that change over the clip (§24). Empty for most clips.
+    #[serde(default)]
+    pub keyframes: Keyframes,
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// A clip's appearance at one instant, with animation already applied.
+///
+/// The fields above are what the user set with the sliders; this is what the
+/// renderer draws. They differ only where a parameter is keyed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipLook {
+    pub transform: Transform,
+    pub opacity: f32,
+    pub color: ColorAdjust,
+    pub blur: f32,
 }
 
 /// An audio clip on an audio track (§8).
@@ -267,8 +283,76 @@ impl VideoClip {
             opacity: 1.0,
             color: ColorAdjust::default(),
             blur: 0.0,
+            keyframes: Keyframes::default(),
             enabled: true,
         })
+    }
+
+    /// What to draw at `source_time` (§24, §46).
+    ///
+    /// A keyed parameter overrides its static field; everything else passes
+    /// through. Both render configurations call this — preview and export must
+    /// not each decide what "animated" means, or the exported fade would differ
+    /// from the one the user watched.
+    ///
+    /// The time is in the *source* media, which is where keys are anchored: see
+    /// [`crate::keyframe`].
+    pub fn look_at(&self, source_time: MediaTime) -> ClipLook {
+        let mut look = ClipLook {
+            transform: self.transform,
+            opacity: self.opacity,
+            color: self.color,
+            blur: self.blur,
+        };
+        if self.keyframes.is_empty() {
+            return look;
+        }
+
+        let animated = |parameter: AnimatedParameter, into: &mut f32| {
+            if let Some(value) = self.keyframes.value_at(parameter, source_time) {
+                *into = parameter.clamp(value);
+            }
+        };
+        animated(AnimatedParameter::Opacity, &mut look.opacity);
+        animated(AnimatedParameter::PositionX, &mut look.transform.position.x);
+        animated(AnimatedParameter::PositionY, &mut look.transform.position.y);
+        animated(AnimatedParameter::ScaleX, &mut look.transform.scale.x);
+        animated(AnimatedParameter::ScaleY, &mut look.transform.scale.y);
+        animated(
+            AnimatedParameter::Rotation,
+            &mut look.transform.rotation_degrees,
+        );
+        animated(AnimatedParameter::Brightness, &mut look.color.brightness);
+        animated(AnimatedParameter::Contrast, &mut look.color.contrast);
+        animated(AnimatedParameter::Saturation, &mut look.color.saturation);
+        animated(AnimatedParameter::Blur, &mut look.blur);
+        look
+    }
+
+    /// The static value of one parameter — what the slider shows when the
+    /// parameter is not animated, and the value a first keyframe starts from.
+    pub fn parameter(&self, parameter: AnimatedParameter) -> f32 {
+        match parameter {
+            AnimatedParameter::Opacity => self.opacity,
+            AnimatedParameter::PositionX => self.transform.position.x,
+            AnimatedParameter::PositionY => self.transform.position.y,
+            AnimatedParameter::ScaleX => self.transform.scale.x,
+            AnimatedParameter::ScaleY => self.transform.scale.y,
+            AnimatedParameter::Rotation => self.transform.rotation_degrees,
+            AnimatedParameter::Brightness => self.color.brightness,
+            AnimatedParameter::Contrast => self.color.contrast,
+            AnimatedParameter::Saturation => self.color.saturation,
+            AnimatedParameter::Blur => self.blur,
+        }
+    }
+
+    /// Where in the source media the playhead at `position` is reading.
+    ///
+    /// Integer throughout (§74): the offset into the clip is the offset into
+    /// the source, because the MVP has no speed change (§59).
+    pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
+        let into_clip = position.ticks() - self.timeline.start.ticks();
+        MediaTime::from_ticks(self.source.start.ticks() + into_clip)
     }
 }
 
@@ -349,5 +433,125 @@ mod tests {
     #[test]
     fn default_transform_is_identity() {
         assert!(Transform::default().is_identity());
+    }
+
+    fn animated_clip() -> VideoClip {
+        let source = SourceRange::new(
+            bettercut_foundation::MediaTime::from_ticks(1000),
+            bettercut_foundation::MediaTime::from_ticks(5000),
+        )
+        .expect("non-empty");
+        VideoClip::new(
+            bettercut_foundation::MediaId::new(),
+            TimelineTime::from_ticks(500),
+            source,
+        )
+        .expect("valid")
+    }
+
+    fn media(ticks: i64) -> bettercut_foundation::MediaTime {
+        bettercut_foundation::MediaTime::from_ticks(ticks)
+    }
+
+    /// With no keys the look is exactly the static fields, which is the path
+    /// every clip in a project takes.
+    #[test]
+    fn an_unanimated_clip_looks_like_its_static_values() {
+        let mut clip = animated_clip();
+        clip.opacity = 0.5;
+        clip.blur = 20.0;
+        let look = clip.look_at(media(3000));
+        assert_eq!(look.opacity, 0.5);
+        assert_eq!(look.blur, 20.0);
+        assert_eq!(look.transform, clip.transform);
+    }
+
+    /// The whole point: a keyed parameter ignores its slider.
+    #[test]
+    fn a_keyed_parameter_overrides_the_static_value() {
+        let mut clip = animated_clip();
+        clip.opacity = 1.0;
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            crate::keyframe::Keyframe::new(media(1000), 0.0, crate::Interpolation::Linear),
+        );
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            crate::keyframe::Keyframe::new(media(5000), 1.0, crate::Interpolation::Linear),
+        );
+
+        assert_eq!(clip.look_at(media(1000)).opacity, 0.0);
+        assert_eq!(clip.look_at(media(5000)).opacity, 1.0);
+        let mid = clip.look_at(media(3000)).opacity;
+        assert!((mid - 0.5).abs() < 1e-6, "midpoint was {mid}");
+        // Untouched parameters still come from the fields.
+        assert_eq!(clip.look_at(media(3000)).blur, clip.blur);
+    }
+
+    /// A curve that overshoots must not produce a value the slider could never
+    /// reach: §24's Bézier is allowed to bounce, the renderer is not.
+    #[test]
+    fn an_overshooting_curve_is_clamped_to_the_parameter_limits() {
+        let mut clip = animated_clip();
+        let bounce = crate::Interpolation::Bezier {
+            x1: 0.5,
+            y1: 0.0,
+            x2: 0.5,
+            y2: 2.5,
+        };
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            crate::keyframe::Keyframe::new(media(1000), 0.0, bounce),
+        );
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            crate::keyframe::Keyframe::new(media(5000), 1.0, crate::Interpolation::Linear),
+        );
+
+        for tick in (1000..=5000).step_by(50) {
+            let opacity = clip.look_at(media(tick)).opacity;
+            assert!(
+                (0.0..=1.0).contains(&opacity),
+                "opacity left its range at {tick}: {opacity}"
+            );
+        }
+    }
+
+    /// Keys are anchored to the source, so moving the clip must not move the
+    /// animation relative to the picture.
+    #[test]
+    fn moving_a_clip_does_not_move_its_animation() {
+        let mut clip = animated_clip();
+        clip.keyframes.set(
+            AnimatedParameter::Blur,
+            crate::keyframe::Keyframe::new(media(2000), 60.0, crate::Interpolation::Linear),
+        );
+
+        let before = clip.look_at(clip.source_time_at(TimelineTime::from_ticks(1500)));
+        // The same edit `MoveClip` makes: timeline moves, source does not.
+        clip.timeline = TimelineRange::new(
+            TimelineTime::from_ticks(90_000),
+            TimelineTime::from_ticks(94_000),
+        )
+        .expect("valid");
+        let after = clip.look_at(clip.source_time_at(TimelineTime::from_ticks(91_000)));
+
+        assert_eq!(
+            before.blur, after.blur,
+            "the animation drifted when the clip moved"
+        );
+    }
+
+    #[test]
+    fn source_time_tracks_the_offset_into_the_clip() {
+        let clip = animated_clip(); // timeline 500.., source 1000..
+        assert_eq!(
+            clip.source_time_at(TimelineTime::from_ticks(500)).ticks(),
+            1000
+        );
+        assert_eq!(
+            clip.source_time_at(TimelineTime::from_ticks(1500)).ticks(),
+            2000
+        );
     }
 }

@@ -11,14 +11,17 @@
 
 pub mod clip;
 pub mod error;
+pub mod keyframe;
 pub mod sequence;
 pub mod snap;
 pub mod track;
 
 pub use clip::{
-    AudioClip, Clip, ColorAdjust, MAX_BLUR, SourceRange, TimelineRange, Transform, Vec2, VideoClip,
+    AudioClip, Clip, ClipLook, ColorAdjust, MAX_BLUR, SourceRange, TimelineRange, Transform, Vec2,
+    VideoClip,
 };
 pub use error::TimelineError;
+pub use keyframe::{AnimatedParameter, Interpolation, Keyframe, KeyframeTrack, Keyframes};
 pub use sequence::{Resolution, Sequence, TrackKind};
 pub use snap::{SnapKind, SnapTarget};
 pub use track::{AudioTrack, SplitOutcome, Track, VideoTrack};
