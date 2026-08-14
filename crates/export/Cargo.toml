@@ -12,6 +12,7 @@ bettercut-timeline.workspace = true
 bettercut-media.workspace = true
 bettercut-audio.workspace = true
 bettercut-project-format.workspace = true
+bettercut-jobs.workspace = true
 bettercut-playback.workspace = true
 bettercut-renderer.workspace = true
 thiserror.workspace = true

@@ -225,12 +225,50 @@ impl eframe::App for App {
             .proxies
             .overall_progress()
             .map(|fraction| (self.proxies.active_jobs(), fraction));
-        if self.ui.proxy_progress.is_some() {
+
+        let export = self.proxies.export_progress();
+        self.ui.export_progress = export.map(|(_, fraction)| fraction);
+        if self.ui.export_stop_requested {
+            self.ui.export_stop_requested = false;
+            if let Some((id, _)) = export {
+                self.proxies.cancel(id);
+            }
+        }
+
+        if self.ui.proxy_progress.is_some() || self.ui.export_progress.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
 
         bettercut_ui::draw(ui, &mut self.editor, &mut self.ui, self.preview.as_mut());
+
+        // The Export window is drawn here rather than inside `draw`, because
+        // starting an export needs the job scheduler and the scheduler belongs
+        // to the shell. §74: it runs on a worker, never on this thread.
+        let exporting = self.proxies.export_in_flight().is_some();
+        let mut dialog = std::mem::take(&mut self.ui.export_dialog);
+        let requested = bettercut_ui::export_dialog::show(
+            ui.ctx(),
+            &self.editor,
+            &mut self.ui,
+            &mut dialog,
+            exporting,
+        );
+        self.ui.export_dialog = dialog;
+
+        if let Some(settings) = requested {
+            match self.editor.active_sequence().map(|s| s.id) {
+                Some(sequence) => {
+                    let job =
+                        bettercut_export::ExportJob::new(self.editor.project(), sequence, settings);
+                    let label = job.label_for_status();
+                    self.proxies.submit_export(job);
+                    self.ui.info(label);
+                    self.ui.needs_repaint = true;
+                }
+                None => self.ui.error("There is no sequence to export"),
+            }
+        }
 
         // After drawing, because both the import button and the quality setting
         // live in panels this call would otherwise be a frame behind.

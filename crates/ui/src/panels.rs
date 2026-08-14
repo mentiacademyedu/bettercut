@@ -43,6 +43,13 @@ pub fn toolbar(
         if ui.button("Save").on_hover_text("Ctrl+S").clicked() {
             save_project(editor, state);
         }
+        if ui
+            .button("Export…")
+            .on_hover_text("Render the timeline to a video file")
+            .clicked()
+        {
+            state.export_dialog.open(editor);
+        }
 
         ui.separator();
 
@@ -1535,7 +1542,7 @@ pub fn recovery_prompt(ctx: &egui::Context, editor: &mut Editor, state: &mut UiS
 }
 
 /// Status bar: project state at a glance, plus the last message.
-pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &UiState) {
+pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
     ui.horizontal(|ui| {
         match &state.status {
             Some(message) if message.is_error => {
@@ -1590,6 +1597,25 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &UiState) {
                 "Generating edit-friendly copies of your media.\n\
                  Editing works meanwhile; it just uses the originals.",
             );
+        }
+
+        // An export is the one background job the user is waiting on, so it
+        // gets its own bar and a way to stop it (§42, §48).
+        if let Some(fraction) = state.export_progress {
+            ui.separator();
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .desired_width(140.0)
+                    .text(format!("Exporting {:.0}%", fraction * 100.0)),
+            )
+            .on_hover_text("Rendering your timeline to a video file.");
+            if ui
+                .button("Stop")
+                .on_hover_text("Cancel the export. The partial file is removed.")
+                .clicked()
+            {
+                state.export_stop_requested = true;
+            }
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

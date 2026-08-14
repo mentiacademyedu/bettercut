@@ -520,6 +520,7 @@ version = "0.1.0"
 dependencies = [
  "bettercut-cache",
  "bettercut-editor-core",
+ "bettercut-export",
  "bettercut-ui",
  "eframe",
  "egui",
@@ -548,6 +549,7 @@ version = "0.1.0"
 dependencies = [
  "bettercut-audio",
  "bettercut-foundation",
+ "bettercut-jobs",
  "bettercut-media",
  "bettercut-playback",
  "bettercut-project-format",
@@ -648,6 +650,7 @@ dependencies = [
  "bettercut-audio",
  "bettercut-cache",
  "bettercut-editor-core",
+ "bettercut-export",
  "bettercut-jobs",
  "bettercut-media",
  "bettercut-playback",

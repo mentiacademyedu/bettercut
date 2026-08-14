@@ -5,6 +5,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod context_menu;
+pub mod export_dialog;
 pub mod media_jobs;
 pub mod panels;
 pub mod preview;

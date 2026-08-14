@@ -160,6 +160,11 @@ pub struct UiState {
     /// A rubber-band selection being dragged out (§10 "Multi-select clips").
     pub marquee: Option<Marquee>,
 
+    /// The Export window's state (Milestone 6). Kept here rather than in the
+    /// panel so it survives between frames and so the shell, which owns the
+    /// job scheduler, can read what the user chose.
+    pub export_dialog: crate::export_dialog::ExportDialog,
+
     /// Work found from a session that did not shut down cleanly (§39).
     ///
     /// Held rather than applied: §39.5 says never overwrite the original
@@ -194,6 +199,12 @@ pub struct UiState {
     /// because §42 wants background work *visible* and the status bar should
     /// not have to know what a job scheduler is.
     pub proxy_progress: Option<(usize, f32)>,
+
+    /// The running export and its progress, plus whether the user pressed
+    /// stop. The shell owns the scheduler, so the button sets a flag here and
+    /// the shell acts on it.
+    pub export_progress: Option<f32>,
+    pub export_stop_requested: bool,
 }
 
 impl Default for UiState {
@@ -208,6 +219,7 @@ impl Default for UiState {
             snapping: true,
             drag: None,
             marquee: None,
+            export_dialog: crate::export_dialog::ExportDialog::default(),
             pending_recovery: None,
             needs_repaint: true,
             context: None,
@@ -215,6 +227,8 @@ impl Default for UiState {
             waveforms: crate::waveforms::WaveformStore::default(),
             gpu: None,
             proxy_progress: None,
+            export_progress: None,
+            export_stop_requested: false,
         }
     }
 }

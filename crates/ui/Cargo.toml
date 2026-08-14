@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 bettercut-editor-core.workspace = true
 bettercut-renderer.workspace = true
+bettercut-export.workspace = true
 bettercut-playback.workspace = true
 bettercut-audio.workspace = true
 bettercut-jobs.workspace = true

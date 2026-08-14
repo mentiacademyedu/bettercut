@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 bettercut-editor-core.workspace = true
 bettercut-ui.workspace = true
+bettercut-export.workspace = true
 bettercut-cache.workspace = true
 eframe.workspace = true
 egui.workspace = true

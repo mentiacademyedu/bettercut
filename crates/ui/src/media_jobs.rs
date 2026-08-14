@@ -25,6 +25,7 @@ use bettercut_editor_core::Editor;
 use bettercut_editor_core::foundation::MediaId;
 use bettercut_editor_core::media::ProxyResolution;
 use bettercut_editor_core::project_format::PerformanceMode;
+use bettercut_export::{ExportJob, Outcome as ExportOutcome};
 use bettercut_jobs::{JobEvent, JobId, JobScheduler};
 use bettercut_playback::{FilmstripJob, ProxyJob, ProxySource, ThumbnailJob, WaveformJob};
 
@@ -77,6 +78,11 @@ pub struct MediaJobs {
     waveforms: HashMap<JobId, MediaId>,
     /// Latest progress per job, for the status bar (§42).
     progress: HashMap<JobId, f32>,
+    /// Exports in flight, with the slot their outcome lands in. Tracked apart
+    /// from proxies because an export is something the user asked for and is
+    /// waiting on: its progress and its result both need reporting, where a
+    /// proxy's are background noise.
+    exports: HashMap<JobId, Arc<std::sync::Mutex<Option<ExportOutcome>>>>,
     /// Assets already considered, so re-importing does not requeue.
     considered: std::collections::HashSet<MediaId>,
     /// True once §67's limit has been reported, so the warning appears once
@@ -97,6 +103,7 @@ impl MediaJobs {
             thumbnails: HashMap::new(),
             waveforms: HashMap::new(),
             progress: HashMap::new(),
+            exports: HashMap::new(),
             considered: std::collections::HashSet::new(),
             warned_about_space: false,
         }
@@ -125,6 +132,16 @@ impl MediaJobs {
             .map(|id| self.progress.get(id).copied().unwrap_or(0.0))
             .sum();
         Some(total / self.in_flight.len() as f32)
+    }
+
+    /// The running export, if any, and how far along it is (§42).
+    ///
+    /// Reported apart from proxy progress because it is the one piece of
+    /// background work the user is actually waiting on — it gets its own bar
+    /// and its own stop button rather than being averaged into a count.
+    pub fn export_progress(&self) -> Option<(JobId, f32)> {
+        let id = *self.exports.keys().next()?;
+        Some((id, self.progress.get(&id).copied().unwrap_or(0.0)))
     }
 
     /// Reconcile with the project's settings, then queue any missing proxies.
@@ -243,6 +260,26 @@ impl MediaJobs {
         messages
     }
 
+    /// Queue an export (§15, §74 — never block the UI while FFmpeg runs).
+    ///
+    /// Returns the job id so a cancel button has something to name.
+    pub fn submit_export(&mut self, job: ExportJob) -> JobId {
+        let outcome = job.outcome();
+        let id = self.scheduler.submit(Box::new(job));
+        self.exports.insert(id, outcome);
+        id
+    }
+
+    /// Whether an export is running, so the interface can offer to stop it
+    /// rather than start a second one.
+    pub fn export_in_flight(&self) -> Option<JobId> {
+        self.exports.keys().copied().next()
+    }
+
+    pub fn cancel(&self, id: JobId) {
+        self.scheduler.cancel(id);
+    }
+
     /// Drain job events. Called once per UI frame.
     pub fn poll(&mut self) -> MediaUpdate {
         let mut update = MediaUpdate::default();
@@ -252,12 +289,16 @@ impl MediaJobs {
                 JobEvent::Progress { id, fraction } => {
                     // Only proxy progress feeds the status bar; a thumbnail
                     // finishes too fast to be worth showing.
-                    if self.in_flight.contains_key(&id) {
+                    if self.in_flight.contains_key(&id) || self.exports.contains_key(&id) {
                         self.progress.insert(id, fraction);
                     }
                 }
                 JobEvent::Finished { id } => {
                     self.progress.remove(&id);
+                    if let Some(slot) = self.exports.remove(&id) {
+                        update.messages.push(describe_export(&slot));
+                        continue;
+                    }
                     if let Some(media) = self.thumbnails.remove(&id) {
                         update.thumbnails.push(media);
                         continue;
@@ -275,6 +316,12 @@ impl MediaJobs {
                 }
                 JobEvent::Failed { id, message } => {
                     self.progress.remove(&id);
+                    if self.exports.remove(&id).is_some() {
+                        // Unlike a proxy, an export failing means the user did
+                        // not get the thing they asked for. It is an error.
+                        update.failures.push(format!("Export failed: {message}"));
+                        continue;
+                    }
                     if self.waveforms.remove(&id).is_some() {
                         tracing::warn!(%message, "waveform analysis failed");
                         continue;
@@ -297,6 +344,9 @@ impl MediaJobs {
                 }
                 JobEvent::Cancelled { id } => {
                     self.progress.remove(&id);
+                    if self.exports.remove(&id).is_some() {
+                        update.messages.push("Export cancelled".to_owned());
+                    }
                     self.in_flight.remove(&id);
                     self.thumbnails.remove(&id);
                     self.waveforms.remove(&id);
@@ -311,6 +361,33 @@ impl MediaJobs {
     /// Stop everything in flight (§48). Called when closing.
     pub fn cancel_all(&self) {
         self.scheduler.cancel_all();
+    }
+}
+
+/// Turn a finished export's outcome into something to show the user.
+///
+/// Names the encoder, because "why was that fast" and "why was that slow" have
+/// the same answer and §41 says the interface should explain itself.
+fn describe_export(slot: &Arc<std::sync::Mutex<Option<ExportOutcome>>>) -> String {
+    match slot.lock().ok().and_then(|guard| guard.clone()) {
+        Some(ExportOutcome::Finished {
+            path,
+            frames,
+            encoder,
+            hardware,
+        }) => {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let how = if hardware { "hardware" } else { "software" };
+            format!("Exported {name} — {frames} frames, {encoder} ({how})")
+        }
+        Some(ExportOutcome::Cancelled) => "Export cancelled".to_owned(),
+        Some(ExportOutcome::Failed(message)) => format!("Export failed: {message}"),
+        // The job reported success without writing an outcome, which would be a
+        // bug here rather than something the user did.
+        None => "Export finished".to_owned(),
     }
 }
 

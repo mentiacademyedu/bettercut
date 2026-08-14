@@ -18,7 +18,7 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **3 — Timeline editing** | ✅ Done — every operation in §10 |
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
-| **6 — Export** | 🟡 The timeline renders to a playable MP4; the UI to trigger it is next |
+| **6 — Export** | ✅ Export… in the toolbar, on the job pool, with progress and a stop button |
 | **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes, and the effect graph |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
 
@@ -255,12 +255,23 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**Export** renders the timeline to a playable MP4. There is no button for it
-yet — that is the next piece — but the path underneath is complete and tested
-against real footage: a project goes in, an H.264/AAC file comes out, and tests
-decode it back to check the frame count, the duration, and that the *edit* is in
-it rather than a copy of the source. A clip at quarter opacity exports darker; a
-keyframed fade exports as a fade.
+**Export** is in the toolbar. Pick a file, pick full/half/quarter size, press
+Export; the job runs on the same scheduler as proxies and thumbnails, the status
+bar shows a bar and a Stop button, and the finished message names the encoder
+that ran. §74 is blunt that FFmpeg must never block the UI, and an export is the
+longest FFmpeg run the program does.
+
+The job takes a **snapshot** of the project rather than borrowing it. Editing
+during an export is the obvious thing to do with the minutes it takes, and a job
+reading live state would render half its frames from before an edit and half
+from after. A project is references and numbers, never media, so the copy is
+nearly free.
+
+The path underneath is tested against real footage: a project goes in, an
+H.264/AAC file comes out, and tests decode it back to check the frame count, the
+duration, and that the *edit* is in it rather than a copy of the source. A clip
+at quarter opacity exports darker; a keyframed fade exports as a fade. Cancelling
+deletes the partial file — something that looks finished is worse than nothing.
 
 There is no export renderer. §46 says there is exactly one render graph and that
 preview and export are configurations of it, so export builds the same
@@ -297,7 +308,7 @@ it by dropping the packet. Disabling B-frames fixes it, costs little at these
 bitrates, and makes all four encoders behave alike. The export tests run against
 each encoder the machine has.
 
-**What does not work yet:** an export button, transitions, and text.
+**What does not work yet:** transitions and text (both Phase 2, §61).
 
 Some limits worth knowing before testing with your own footage:
 

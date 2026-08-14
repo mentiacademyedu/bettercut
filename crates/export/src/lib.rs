@@ -48,9 +48,11 @@ use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
 use bettercut_timeline::{Resolution, Sequence, TimelineRange};
 
 mod error;
+mod job;
 mod readback;
 
 pub use error::ExportError;
+pub use job::{ExportJob, Outcome};
 
 /// What to export, and where.
 #[derive(Debug, Clone)]
