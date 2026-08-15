@@ -99,9 +99,31 @@ fn tone(samples: usize, channels: usize) -> Vec<Vec<f32>> {
         .collect()
 }
 
+/// Serialises the tests that open a real encoder.
+///
+/// Opening a hardware encoder initialises a vendor runtime — Media Foundation,
+/// the AMD or NVIDIA driver — and doing many at once wedges them. The media
+/// crate holds a lock around it for the same reason, but that lock is
+/// per-process and cargo runs every test binary as its own process, so the
+/// binaries still overlap each other.
+///
+/// This brings each binary down to one encoder open at a time. A handful of
+/// binaries at once is fine; twenty is what hung the suite indefinitely.
+static ENCODER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the lock for the rest of the current test.
+fn encoder_guard() -> std::sync::MutexGuard<'static, ()> {
+    // A panic in another test says nothing about this one, and a poisoned lock
+    // would turn one failure into every failure.
+    ENCODER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The whole point: a file that exists, decodes, and says what it should.
 #[test]
 fn a_written_file_probes_as_the_format_it_was_asked_for() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("format");
 
     let mut writer = VideoWriter::create(scratch.path(), format(2)).expect("create");
@@ -138,6 +160,7 @@ fn a_written_file_probes_as_the_format_it_was_asked_for() {
 /// plays, and quietly ends early.
 #[test]
 fn every_frame_survives_to_the_file() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("frames");
 
     let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("create");
@@ -170,6 +193,7 @@ fn every_frame_survives_to_the_file() {
 /// checks the block is where it was put, at the start and at the end.
 #[test]
 fn the_picture_moves_the_way_it_was_drawn() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("picture");
 
     let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("create");
@@ -225,6 +249,7 @@ fn brightest_column(frame: &bettercut_media::VideoFrame) -> u32 {
 /// pixel smaller than the sequence would be worse than refusing.
 #[test]
 fn an_odd_resolution_is_refused_before_anything_is_written() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("odd");
     let odd = ExportFormat {
         width: 321,
@@ -242,6 +267,7 @@ fn an_odd_resolution_is_refused_before_anything_is_written() {
 /// to 21 ms goes missing off the end of every export.
 #[test]
 fn a_partial_audio_block_at_the_end_is_still_written() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("audio-tail");
 
     let mut writer = VideoWriter::create(scratch.path(), format(2)).expect("create");
@@ -264,6 +290,7 @@ fn a_partial_audio_block_at_the_end_is_still_written() {
 /// not produce an empty audio stream that players stumble over.
 #[test]
 fn a_silent_export_has_no_audio_stream() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("silent");
 
     let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("create");
@@ -288,6 +315,7 @@ fn a_silent_export_has_no_audio_stream() {
 /// sync only near the end — the hardest kind to notice before shipping.
 #[test]
 fn ntsc_rates_produce_an_exact_duration() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("ntsc");
     let ntsc = ExportFormat {
         frame_rate: bettercut_foundation::FrameRate::NTSC_29_97,
@@ -313,6 +341,7 @@ fn ntsc_rates_produce_an_exact_duration() {
 /// part-way through without leaving the process in a bad state (§48).
 #[test]
 fn abandoning_a_writer_mid_export_is_safe() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("abandoned");
     {
         let mut writer = VideoWriter::create(scratch.path(), format(2)).expect("create");
@@ -335,6 +364,7 @@ const _: fn() = || {
 /// A frame smaller than the format is a caller bug, not something to pad.
 #[test]
 fn a_short_frame_is_refused() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("short");
     let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("create");
     assert!(writer.push_frame(&[0_u8; 16]).is_err());
@@ -344,6 +374,7 @@ fn a_short_frame_is_refused() {
 /// above would pass for the wrong reason.
 #[test]
 fn the_fixture_actually_moves() {
+    let _encoder = encoder_guard();
     let start = frame(0);
     let end = frame(FRAMES - 1);
     assert_ne!(start, end, "the fixture is the same at both ends");
@@ -355,6 +386,7 @@ fn the_fixture_actually_moves() {
 /// export that defaulted to the source directory would invite exactly that.
 #[test]
 fn the_writer_writes_only_where_it_is_told() {
+    let _encoder = encoder_guard();
     let scratch = Scratch::new("location");
     let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("create");
     writer.push_frame(&frame(0)).expect("push");

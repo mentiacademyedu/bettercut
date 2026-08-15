@@ -231,6 +231,21 @@ impl ExportDialog {
         }
     }
 
+    /// The rate control that will actually be used.
+    ///
+    /// Every choice but `Recommended` shows the radios and carries whatever was
+    /// picked. `Recommended` does not offer them — the point of it is not
+    /// having to decide — so it must not silently inherit a `Constant` left
+    /// over from a tier the user moved away from, which would pad the file for
+    /// a reason they never asked for and could no longer see.
+    fn rate_control_for_export(&self) -> RateControl {
+        if self.bitrate == BitrateChoice::Recommended {
+            RateControl::Variable
+        } else {
+            self.rate_control
+        }
+    }
+
     fn path(&self) -> Option<std::path::PathBuf> {
         let name = if self.name.trim().is_empty() {
             "video"
@@ -359,12 +374,9 @@ pub fn show(
         frame_rate: dialog.frame_rate.unwrap_or(native_rate),
         codec: dialog.codec,
         bitrate: Some(i64::from(dialog.effective_kbps(native)) * 1_000),
-        // Only a typed rate carries a rate-control choice; see `bitrate_rows`.
-        rate_control: if dialog.bitrate == BitrateChoice::Custom {
-            dialog.rate_control
-        } else {
-            RateControl::Variable
-        },
+        // Recommended has no rate-control control, so it must not carry one a
+        // previous selection left behind (see `bitrate_rows`).
+        rate_control: dialog.rate_control_for_export(),
         range,
         // §15.1: FFmpeg never gets every core. The renderer and the decoder are
         // both working during an export, and leaving the machine responsive
@@ -573,11 +585,12 @@ fn bitrate_rows(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution
             response.on_hover_text("Higher is better looking and larger. 8000 suits 1080p.");
         });
         dialog.custom_kbps = Some(kbps);
+    }
 
-        // Rate control is offered only here. The named tiers all mean "spend
-        // about this much", which is variable by definition; someone who needs
-        // a rate held exactly — a broadcast or ingest spec — has an exact
-        // number to type, and types it.
+    // Offered for every rate the user has taken a view on, and hidden only for
+    // Recommended — where the whole point is not having to decide, and where
+    // constant rate would pad a file for no reason the user asked for.
+    if dialog.bitrate != BitrateChoice::Recommended {
         row(ui, "", |ui| {
             ui.vertical(|ui| {
                 for mode in [RateControl::Constant, RateControl::Variable] {
@@ -1001,6 +1014,40 @@ mod tests {
             "Lower at 4K ({}) should exceed High at 480p ({})",
             big.effective_kbps(native),
             small.effective_kbps(native)
+        );
+    }
+
+    /// Rate control travels with every tier the user has taken a view on, and
+    /// Recommended stays variable however it was reached — including after the
+    /// user set Constant on another tier and switched back, where the control
+    /// is no longer on screen to explain itself.
+    #[test]
+    fn only_recommended_forces_variable_rate_control() {
+        let mut dialog = ExportDialog {
+            rate_control: RateControl::Constant,
+            ..ExportDialog::default()
+        };
+
+        for choice in [
+            BitrateChoice::Lower,
+            BitrateChoice::Medium,
+            BitrateChoice::High,
+            BitrateChoice::Custom,
+        ] {
+            dialog.bitrate = choice;
+            assert_eq!(
+                dialog.rate_control_for_export(),
+                RateControl::Constant,
+                "{} should carry the chosen rate control",
+                choice.label()
+            );
+        }
+
+        dialog.bitrate = BitrateChoice::Recommended;
+        assert_eq!(
+            dialog.rate_control_for_export(),
+            RateControl::Variable,
+            "Recommended has no rate-control control, so it must not inherit one"
         );
     }
 

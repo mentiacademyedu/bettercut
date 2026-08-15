@@ -27,7 +27,7 @@ pub mod gpu;
 pub mod graph;
 
 pub use blur::BlurPlan;
-pub use compositor::{Compositor, Layer};
+pub use compositor::{Compositor, Layer, fit_scale};
 pub use config::{MediaSourceMode, PreviewQuality, QualityTier, RenderConfig, RenderTarget};
 pub use error::RenderError;
 pub use gpu::{GpuDescription, GpuKind};

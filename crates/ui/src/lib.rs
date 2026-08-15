@@ -9,6 +9,7 @@ pub mod export_dialog;
 pub mod media_jobs;
 pub mod panels;
 pub mod preview;
+pub mod preview_overlay;
 pub mod shortcuts;
 pub mod state;
 pub mod theme;

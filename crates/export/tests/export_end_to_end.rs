@@ -110,6 +110,27 @@ macro_rules! gpu_or_skip {
     };
 }
 
+/// Serialises the tests that open a real encoder.
+///
+/// Opening a hardware encoder initialises a vendor runtime — Media Foundation,
+/// the AMD or NVIDIA driver — and doing many at once wedges them. The media
+/// crate holds a lock around it for the same reason, but that lock is
+/// per-process and cargo runs every test binary as its own process, so the
+/// binaries still overlap each other.
+///
+/// This brings each binary down to one encoder open at a time. A handful of
+/// binaries at once is fine; twenty is what hung the suite indefinitely.
+static ENCODER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the lock for the rest of the current test.
+fn encoder_guard() -> std::sync::MutexGuard<'static, ()> {
+    // A panic in another test says nothing about this one, and a poisoned lock
+    // would turn one failure into every failure.
+    ENCODER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn run(project: &Project, settings: &ExportSettings) -> bettercut_export::ExportSummary {
     let sequence = project.active().expect("sequence");
     let mut seen = Vec::new();
@@ -140,6 +161,7 @@ fn run(project: &Project, settings: &ExportSettings) -> bettercut_export::Export
 /// §60 criterion 10, in one test.
 #[test]
 fn a_project_exports_to_a_playable_file() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("basic");
     let project = project_with_fixture();
@@ -170,6 +192,7 @@ fn a_project_exports_to_a_playable_file() {
 /// that caught B-frame reordering silently dropping one.
 #[test]
 fn every_counted_frame_reaches_the_file() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("frames");
     let project = project_with_fixture();
@@ -198,6 +221,7 @@ fn every_counted_frame_reaches_the_file() {
 /// exporter is copying the file rather than rendering the timeline.
 #[test]
 fn the_export_contains_the_edit_rather_than_the_source() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let project = project_with_fixture();
 
@@ -226,6 +250,7 @@ fn the_export_contains_the_edit_rather_than_the_source() {
 /// failure §46 exists to prevent.
 #[test]
 fn an_animated_fade_exports_as_a_fade() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("fade");
     let mut project = project_with_fixture();
@@ -270,6 +295,7 @@ fn an_animated_fade_exports_as_a_fade() {
 /// more importantly, from the full-quality source.
 #[test]
 fn export_uses_the_sequence_resolution_not_the_sources() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("resolution");
     let project = project_with_fixture();
@@ -286,6 +312,7 @@ fn export_uses_the_sequence_resolution_not_the_sources() {
 /// user asked for their video is worse than no file: it looks finished.
 #[test]
 fn cancelling_removes_the_partial_file() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("cancelled");
     let project = project_with_fixture();
@@ -317,6 +344,7 @@ fn cancelling_removes_the_partial_file() {
 /// An empty range is refused rather than producing a zero-length file.
 #[test]
 fn an_empty_range_is_refused() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("empty");
     let project = project_with_fixture();
@@ -376,6 +404,7 @@ fn frame_luma(frame: &bettercut_media::VideoFrame) -> f64 {
 /// second of timeline becomes a different number of frames.
 #[test]
 fn a_different_frame_rate_retimes_the_output() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let scratch = Scratch::new("retimed");
     let project = project_with_fixture();
@@ -404,6 +433,7 @@ fn a_different_frame_rate_retimes_the_output() {
 /// and a decorative field would show no difference whatsoever.
 #[test]
 fn an_explicit_bitrate_changes_the_file_size() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let project = project_with_fixture();
 
@@ -430,6 +460,7 @@ fn an_explicit_bitrate_changes_the_file_size() {
 /// without a GPU encoder legitimately cannot run this.
 #[test]
 fn h265_exports_when_the_machine_can_write_it() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let resolution = Resolution::new(640, 360);
     if !codec_is_available(VideoCodec::H265, resolution, FrameRate::NTSC_29_97) {
@@ -457,6 +488,7 @@ fn h265_exports_when_the_machine_can_write_it() {
 /// and §74 is explicit that the interface must not stall behind FFmpeg.
 #[test]
 fn asking_about_a_codec_is_cheap_after_the_first_time() {
+    let _encoder = encoder_guard();
     let resolution = Resolution::new(1920, 1080);
     let rate = FrameRate::FPS_30;
 
@@ -487,6 +519,7 @@ fn asking_about_a_codec_is_cheap_after_the_first_time() {
 /// also the check that `rate_control` reaches the encoder at all.
 #[test]
 fn constant_rate_control_produces_a_larger_file_than_variable() {
+    let _encoder = encoder_guard();
     gpu_or_skip!();
     let project = project_with_fixture();
 

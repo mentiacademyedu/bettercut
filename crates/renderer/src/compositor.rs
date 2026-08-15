@@ -619,6 +619,25 @@ fn create_target(
 /// Maps the unit quad onto the output, letterboxing the source so it fills the
 /// frame without distorting — a 4:3 clip in a 16:9 sequence gets pillarbox
 /// bars, not stretched faces.
+/// How much of the frame a source fills when fitted inside it, per axis.
+///
+/// A source wider than the frame is limited by width and letterboxed top and
+/// bottom; a narrower one is limited by height and pillarboxed. The result is
+/// the fraction of the frame the picture covers before the clip's own scale is
+/// applied.
+///
+/// **Public because the interface has to agree with the shader.** The preview's
+/// drag handles are drawn around exactly the rectangle this produces, and if the
+/// two ever computed it differently the handles would sit somewhere the picture
+/// is not — so there is one implementation and both call it.
+pub fn fit_scale(source_aspect: f32, output_aspect: f32) -> (f32, f32) {
+    if source_aspect > output_aspect {
+        (1.0, output_aspect / source_aspect)
+    } else {
+        (source_aspect / output_aspect, 1.0)
+    }
+}
+
 fn layer_uniform(
     transform: Transform,
     opacity: f32,
@@ -627,15 +646,10 @@ fn layer_uniform(
     source_height: u32,
     output: Resolution,
 ) -> [u8; UNIFORM_SIZE as usize] {
-    let source_aspect = source_width.max(1) as f32 / source_height.max(1) as f32;
-    let output_aspect = output.width.max(1) as f32 / output.height.max(1) as f32;
-
-    // Fit inside the frame.
-    let (fit_x, fit_y) = if source_aspect > output_aspect {
-        (1.0, output_aspect / source_aspect)
-    } else {
-        (source_aspect / output_aspect, 1.0)
-    };
+    let (fit_x, fit_y) = fit_scale(
+        source_width.max(1) as f32 / source_height.max(1) as f32,
+        output.width.max(1) as f32 / output.height.max(1) as f32,
+    );
 
     let scale_x = fit_x * transform.scale.x;
     let scale_y = fit_y * transform.scale.y;

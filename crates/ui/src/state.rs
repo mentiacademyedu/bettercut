@@ -157,6 +157,9 @@ pub struct UiState {
     /// The drag in progress, if any.
     pub drag: Option<DragState>,
 
+    /// A move or scale being dragged out on the preview.
+    pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
+
     /// A rubber-band selection being dragged out (§10 "Multi-select clips").
     pub marquee: Option<Marquee>,
 
@@ -218,6 +221,7 @@ impl Default for UiState {
             playback: None,
             snapping: true,
             drag: None,
+            preview_drag: None,
             marquee: None,
             export_dialog: crate::export_dialog::ExportDialog::default(),
             pending_recovery: None,

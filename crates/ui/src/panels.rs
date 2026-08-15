@@ -381,24 +381,27 @@ fn relink_folder(editor: &mut Editor, state: &mut UiState) {
 /// never allow.
 pub fn preview(
     ui: &mut egui::Ui,
-    editor: &Editor,
-    _state: &UiState,
+    editor: &mut Editor,
+    state: &mut UiState,
     preview: Option<&crate::Preview>,
 ) {
     let available = ui.available_size();
-    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+    // Click-and-drag, not hover: the picture is a control now. Framing a shot
+    // is done by looking at it, so the handles belong on it rather than only in
+    // the Inspector's number fields.
+    let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0, theme::BACKGROUND);
 
     let Some(sequence) = editor.active_sequence() else {
         return;
     };
+    let output_aspect = sequence.resolution.aspect_ratio().max(0.01);
 
     // Letterbox a rect with the sequence's aspect ratio.
-    let aspect = sequence.resolution.aspect_ratio().max(0.01);
-    let mut size = egui::vec2(rect.width() - 24.0, (rect.width() - 24.0) / aspect);
+    let mut size = egui::vec2(rect.width() - 24.0, (rect.width() - 24.0) / output_aspect);
     if size.y > rect.height() - 24.0 {
-        size = egui::vec2((rect.height() - 24.0) * aspect, rect.height() - 24.0);
+        size = egui::vec2((rect.height() - 24.0) * output_aspect, rect.height() - 24.0);
     }
     let canvas = egui::Rect::from_center_size(rect.center(), size);
 
@@ -410,9 +413,11 @@ pub fn preview(
         egui::StrokeKind::Outside,
     );
 
+    let has_content = preview.is_some_and(crate::Preview::has_content);
+
     // The composited frame, painted directly. One line, no copy (§4.1).
     if let Some(preview) = preview
-        && preview.has_content()
+        && has_content
     {
         painter.image(
             preview.texture_id(),
@@ -420,26 +425,145 @@ pub fn preview(
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
-        return;
+    } else {
+        painter.text(
+            canvas.center(),
+            egui::Align2::CENTER_CENTER,
+            format!(
+                "{}×{} · {} fps",
+                sequence.resolution.width, sequence.resolution.height, sequence.frame_rate
+            ),
+            egui::FontId::proportional(14.0),
+            theme::DISABLED,
+        );
+        painter.text(
+            egui::Pos2::new(canvas.center().x, canvas.center().y + 22.0),
+            egui::Align2::CENTER_CENTER,
+            "Move the playhead over a clip to see it here",
+            egui::FontId::proportional(11.0),
+            theme::DISABLED,
+        );
     }
 
-    painter.text(
-        canvas.center(),
-        egui::Align2::CENTER_CENTER,
-        format!(
-            "{}×{} · {} fps",
-            sequence.resolution.width, sequence.resolution.height, sequence.frame_rate
-        ),
-        egui::FontId::proportional(14.0),
-        theme::DISABLED,
+    transform_handles(
+        ui,
+        &painter,
+        editor,
+        state,
+        &response,
+        canvas,
+        output_aspect,
     );
-    painter.text(
-        egui::Pos2::new(canvas.center().x, canvas.center().y + 22.0),
-        egui::Align2::CENTER_CENTER,
-        "Move the playhead over a clip to see it here",
-        egui::FontId::proportional(11.0),
-        theme::DISABLED,
+}
+
+/// The move-and-scale box over the selected clip.
+///
+/// Drawn and driven here, but every decision it makes lives in
+/// [`crate::preview_overlay`], where it can be tested without a window.
+fn transform_handles(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    editor: &mut Editor,
+    state: &mut UiState,
+    response: &egui::Response,
+    canvas: egui::Rect,
+    output_aspect: f32,
+) {
+    use crate::preview_overlay as overlay;
+
+    // Exactly one clip, and a video one: two selected clips have two boxes and
+    // no single answer to a drag.
+    let selected: Vec<_> = state.selected_clips.iter().copied().collect();
+    let Some(clip_id) = (selected.len() == 1).then(|| selected[0]) else {
+        state.preview_drag = None;
+        return;
+    };
+    let Some(clip) = editor.video_clip(clip_id) else {
+        state.preview_drag = None;
+        return;
+    };
+
+    // What is on screen: the animated values, so the handles sit on the picture
+    // at this instant rather than where the sliders happen to read (§24).
+    let playhead = editor.playhead();
+    let look = clip.look_at(clip.source_time_at(playhead));
+    let source_aspect = editor
+        .project()
+        .media_asset(clip.media_id)
+        .filter(|asset| asset.height > 0)
+        .map_or(output_aspect, |asset| {
+            f64::from(asset.width) as f32 / f64::from(asset.height) as f32
+        });
+
+    let box_on_canvas = overlay::to_canvas(
+        overlay::layer_box(source_aspect, output_aspect, look.transform),
+        canvas,
     );
+
+    let pointer = response.interact_pointer_pos().or(response.hover_pos());
+    let on_corner = pointer.and_then(|at| overlay::corner_at(box_on_canvas, at));
+
+    // Start a gesture.
+    if response.drag_started()
+        && let Some(at) = pointer
+    {
+        let gesture = if let Some(corner) = on_corner {
+            overlay::Gesture::Scale {
+                corner,
+                from: look.transform.scale,
+                grab_distance: box_on_canvas.center().distance(at),
+            }
+        } else if box_on_canvas.contains(at) {
+            overlay::Gesture::Move {
+                from: look.transform.position,
+                grab: at,
+            }
+        } else {
+            // Outside the picture: not a transform gesture. Leaving it unhandled
+            // keeps room for a future marquee or a click-to-deselect.
+            state.preview_drag = None;
+            return;
+        };
+        state.preview_drag = Some(overlay::PreviewDrag {
+            clip: clip_id,
+            gesture,
+            started: false,
+        });
+    }
+
+    // The cursor says what the handle under it will do, before it is pressed.
+    if on_corner.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    } else if pointer.is_some_and(|at| box_on_canvas.contains(at)) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    let dragging = state
+        .preview_drag
+        .is_some_and(|drag| drag.clip == clip_id && response.dragged());
+
+    overlay::draw(painter, box_on_canvas, dragging);
+
+    // Continue it.
+    if dragging
+        && let Some(at) = pointer
+        && let Some(drag) = &mut state.preview_drag
+    {
+        let property = overlay::property_for(drag.gesture, canvas, box_on_canvas, at);
+        let continuing = drag.started;
+        drag.started = true;
+        // §11: `continuing` after the first frame, so the whole drag is one
+        // undo step — and §54, so this goes through a command rather than
+        // touching the project.
+        if let Err(err) = editor.set_clip_value(clip_id, property, continuing) {
+            state.error(err.to_string());
+        }
+        state.needs_repaint = true;
+    }
+
+    if response.drag_stopped() {
+        state.preview_drag = None;
+    }
 }
 
 /// Inspector (§58): what is selected, and the track switches.
