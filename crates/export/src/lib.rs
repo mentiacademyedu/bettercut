@@ -40,8 +40,12 @@
 
 use std::path::PathBuf;
 
-use bettercut_foundation::{TICKS_PER_AUDIO_SAMPLE, TimelineTime};
-use bettercut_media::{CancellationToken, ExportFormat, MediaAsset, SeekMode, VideoWriter};
+use bettercut_foundation::{FrameRate, TICKS_PER_AUDIO_SAMPLE, TimelineTime, ticks_per_frame};
+use bettercut_media::{
+    CancellationToken, EncodeTarget, ExportFormat, MediaAsset, SeekMode, VideoWriter, probe_all,
+};
+/// Re-exported so callers choose a codec without depending on the media crate.
+pub use bettercut_media::{RateControl, VideoCodec};
 use bettercut_playback::{AudioSource, FrameSource, PlaybackEngine, layer_requests};
 use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
@@ -60,11 +64,99 @@ pub struct ExportSettings {
     pub path: PathBuf,
     /// Defaults to the sequence's own format; overridable for a smaller file.
     pub resolution: Resolution,
+    /// Defaults to the sequence's rate. A different rate resamples by picking
+    /// the frame visible at each new instant — positions are absolute ticks
+    /// (§9), so there is nothing to convert, only somewhere else to sample.
+    pub frame_rate: FrameRate,
+    pub codec: VideoCodec,
+    /// Video bits per second, or `None` for one derived from the format.
+    pub bitrate: Option<i64>,
+    pub rate_control: RateControl,
     /// The span of the timeline to write. Usually the whole sequence.
     pub range: TimelineRange,
     /// §15.1: FFmpeg never gets every core, not even when it is the only job.
     pub threads: u32,
 }
+
+impl ExportSettings {
+    /// The sequence's own format, which is what most exports want.
+    pub fn for_sequence(path: PathBuf, sequence: &Sequence) -> Self {
+        Self {
+            path,
+            resolution: sequence.resolution,
+            frame_rate: sequence.frame_rate,
+            codec: VideoCodec::default(),
+            bitrate: None,
+            rate_control: RateControl::default(),
+            range: TimelineRange {
+                start: TimelineTime::ZERO,
+                end: sequence.duration(),
+            },
+            threads: 2,
+        }
+    }
+}
+
+/// Whether this machine can write `codec` at this size and rate.
+///
+/// Asked by the interface before offering the choice, because H.265 has no
+/// software fallback — x265 is GPL and §0.1 forbids linking it — so on a
+/// machine without a GPU encoder the option would be a promise we cannot keep.
+/// Opening an encoder is the only honest test; it costs a few milliseconds and
+/// belongs at the moment the dialog opens, not per frame.
+pub fn codec_is_available(
+    codec: VideoCodec,
+    resolution: Resolution,
+    frame_rate: FrameRate,
+) -> bool {
+    // H.264 needs no probing: `libopenh264` is linked into the binary and is
+    // always a candidate, so the answer is yes on every machine. Asking anyway
+    // would spend a slow `LoadLibrary` on the vendor runtimes to learn nothing.
+    if codec == VideoCodec::H264 {
+        return true;
+    }
+
+    let width = resolution.width.max(2) & !1;
+    let height = resolution.height.max(2) & !1;
+    let ratio = frame_rate.as_rational();
+    let key = (codec, width, height, ratio.num(), ratio.den());
+
+    // Cached for the process. The answer is a fact about the hardware and its
+    // drivers, so it cannot change while the program runs — and the asking is
+    // expensive: opening every candidate takes about half a second here,
+    // most of it a failed `amfrt64.dll` load on a machine with no AMD card.
+    // This runs when the export window opens, on the UI thread, and §74 is
+    // explicit that the interface must not stall behind that.
+    static CACHE: std::sync::Mutex<Option<Vec<(ProbeKey, bool)>>> = std::sync::Mutex::new(None);
+
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entries = cache.get_or_insert_with(Vec::new);
+    if let Some((_, usable)) = entries.iter().find(|(cached, _)| *cached == key) {
+        return *usable;
+    }
+
+    let usable = probe_all(EncodeTarget {
+        width,
+        height,
+        frame_rate,
+        codec,
+        bitrate: None,
+        rate_control: RateControl::default(),
+        threads: 1,
+        global_header: true,
+    })
+    .iter()
+    .any(bettercut_media::EncoderProbe::is_usable);
+
+    entries.push((key, usable));
+    usable
+}
+
+/// What a cached availability answer is keyed on: the codec and the exact
+/// format, because an encoder can accept one size and refuse another.
+type ProbeKey = (VideoCodec, u32, u32, i64, i64);
 
 /// How far along an export is, for the interface to show.
 #[derive(Debug, Clone, Copy)]
@@ -108,10 +200,12 @@ pub fn export(
     on_progress: &mut dyn FnMut(ExportProgress),
     cancel: &dyn CancellationToken,
 ) -> Result<ExportSummary, ExportError> {
-    let ticks_per_frame = sequence.ticks_per_frame();
-    if ticks_per_frame <= 0 {
+    // The *output* rate, which need not be the sequence's: a 60 fps timeline
+    // exported at 30 samples every other instant, and positions are absolute
+    // ticks so there is nothing to convert (§9).
+    let Some(ticks_per_frame) = ticks_per_frame(settings.frame_rate).filter(|t| *t > 0) else {
         return Err(ExportError::EmptyRange);
-    }
+    };
     let span = settings.range.end.ticks() - settings.range.start.ticks();
     if span <= 0 {
         return Err(ExportError::EmptyRange);
@@ -137,7 +231,10 @@ pub fn export(
         ExportFormat {
             width: settings.resolution.width,
             height: settings.resolution.height,
-            frame_rate: sequence.frame_rate,
+            frame_rate: settings.frame_rate,
+            codec: settings.codec,
+            bitrate: settings.bitrate,
+            rate_control: settings.rate_control,
             channels,
             threads: settings.threads,
         },

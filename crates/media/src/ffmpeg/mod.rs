@@ -33,7 +33,9 @@ mod raii;
 
 pub use decode::FfmpegDecoder;
 pub use encode::generate_proxy;
-pub use encoders::{EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, probe_all};
+pub use encoders::{
+    EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, RateControl, VideoCodec, probe_all,
+};
 pub use export::{ExportFormat, VideoWriter};
 pub use probe::FfmpegProber;
 

@@ -1,51 +1,163 @@
 //! The Export window (§41, §42, Milestone 6).
 //!
-//! Deliberately short. §41 asks for an interface that explains itself, and the
-//! honest reading of that for export is *fewer decisions*, not more: the
-//! defaults are the sequence's own format, and the only thing a user has to
-//! supply is where to put the file.
+//! A labelled form: name, destination, then the video settings, then a footer
+//! saying what will come out and how big it will be. Defaults are the
+//! sequence's own format, so pressing Export without touching anything gives
+//! back what you were editing.
 //!
-//! What is offered is the one choice with a real trade-off — output size — plus
-//! a plain statement of what will be written and which encoder will do it.
-//! Bitrate, profile, keyframe interval and colour tags are all decided from the
-//! sequence, because a user who wanted to set those would not be using this
-//! program.
+//! ## What is and is not offered
+//!
+//! **H.265 is only offered when the machine can write it.** Its absence is not
+//! a gap to fill later: the software H.265 encoder everyone reaches for is
+//! x265, and §0.1 point 2 with §74 forbid linking anything GPL outright. So the
+//! option is probed by actually opening an encoder, and disabled with the
+//! reason when there is none. Offering a choice that fails after the user has
+//! waited for an export would be worse than not offering it.
+//!
+//! **Frame rate is restricted to §9's nine exact rates.** The timebase divides
+//! all of them exactly; a free-form field would let someone type 29.97 and get
+//! a file that drifts a second an hour against its own audio.
+//!
+//! **Colour space is stated, not chosen.** §21a.1 fixes the working space at
+//! sRGB-encoded 8-bit, and every export is tagged BT.709 limited-range to
+//! match. Showing it as a fact rather than a dropdown is honest: there is no
+//! second option behind it yet, and a disabled dropdown would imply there is.
 
 use bettercut_editor_core::Editor;
+use bettercut_editor_core::foundation::{FrameRate, TimelineTime};
 use bettercut_editor_core::timeline::{Resolution, TimelineRange};
-use bettercut_export::ExportSettings;
+use bettercut_export::{ExportSettings, RateControl, VideoCodec, codec_is_available};
 
 use crate::state::UiState;
 use crate::theme;
+
+/// Width of the label column, so every control lines up.
+const LABEL_WIDTH: f32 = 96.0;
+/// Width of the controls.
+const FIELD_WIDTH: f32 = 240.0;
+
+/// Standard output heights, named the way everyone names them.
+///
+/// The number is the **short** edge, which is what "1080p" has always meant:
+/// 1080 lines. For a landscape 16:9 sequence that is 1920×1080; for a vertical
+/// 9:16 one it is 1080×1920. Naming the long edge instead turns a 4K sequence
+/// into 1080×608, which is what this did before it was fixed.
+const HEIGHTS: [(&str, u32); 5] = [
+    ("2160p (4K)", 2160),
+    ("1440p", 1440),
+    ("1080p", 1080),
+    ("720p", 720),
+    ("480p", 480),
+];
+
+/// Containers offered. Both hold H.264 and H.265.
+const CONTAINERS: [(&str, &str); 2] = [("mp4", "Plays everywhere"), ("mov", "QuickTime; editors")];
 
 /// Whether the window is open, and what it has been set to.
 #[derive(Debug, Default)]
 pub struct ExportDialog {
     pub open: bool,
-    /// `None` until the user picks a file.
-    path: Option<std::path::PathBuf>,
-    /// Index into [`SCALES`].
-    scale: usize,
-    /// Set when the user has been told why they cannot export yet.
+    /// The file name without its extension. Separate from the folder so the
+    /// common edit — renaming the output — does not mean reopening a file
+    /// picker.
+    name: String,
+    /// Where it goes. `None` until defaulted.
+    folder: Option<std::path::PathBuf>,
+    container: usize,
+    codec: VideoCodec,
+    /// Index into [`HEIGHTS`], or `None` for a custom size.
+    height_preset: Option<usize>,
+    /// Only read when `height_preset` is `None`. `Resolution` has no
+    /// `Default` on purpose — there is no neutral frame size — so this holds
+    /// its own placeholder until the window opens and fills it from the
+    /// sequence.
+    custom: Option<Resolution>,
+    frame_rate: Option<FrameRate>,
+    /// Kilobits per second, or `None` for the automatic figure.
+    ///
+    /// Kilobits rather than megabits because that is the unit every delivery
+    /// spec is written in — "8000 kbps" is what a platform's upload guidance
+    /// says, and making the user divide it by a thousand is a small tax on the
+    /// one field most likely to be copied from somewhere else.
+    bitrate_kbps: Option<u32>,
+    rate_control: RateControl,
+    /// Which codecs this machine can write, probed when the window opens.
+    available: Vec<(VideoCodec, bool)>,
     complaint: Option<String>,
 }
 
-/// Output sizes, as fractions of the sequence resolution.
-///
-/// Fractions rather than a list of pixel sizes: a 9:16 sequence and a 16:9 one
-/// want completely different numbers, and "half" means the same useful thing to
-/// both. Halving is also exactly representable, so an even sequence stays even
-/// and H.264's 4:2:0 has nothing to complain about.
-const SCALES: [(&str, u32); 3] = [("Full", 1), ("Half", 2), ("Quarter", 4)];
-
 impl ExportDialog {
-    /// Open the window, suggesting a file name from the project.
+    /// Open the window, defaulting everything to the sequence.
     pub fn open(&mut self, editor: &Editor) {
         self.open = true;
         self.complaint = None;
-        if self.path.is_none() {
-            self.path = Some(suggested_path(editor));
+
+        if self.name.is_empty() {
+            self.name = safe_file_name(&editor.project().name);
         }
+        if self.folder.is_none() {
+            self.folder = Some(default_folder(editor));
+        }
+
+        let Some(sequence) = editor.active_sequence() else {
+            return;
+        };
+        // Reset the format to the sequence every time. Carrying last time's
+        // numbers over would quietly export a different project at the wrong
+        // size; the name and folder are what is worth remembering.
+        self.custom = Some(sequence.resolution);
+        self.height_preset = HEIGHTS
+            .iter()
+            .position(|(_, height)| *height == short_edge(sequence.resolution));
+        self.frame_rate = Some(sequence.frame_rate);
+        self.bitrate_kbps = None;
+
+        // Probed once, here, rather than per frame: each check opens a real
+        // encoder. `codec_is_available` caches, so reopening is free.
+        self.available = VideoCodec::ALL
+            .into_iter()
+            .map(|codec| {
+                (
+                    codec,
+                    codec_is_available(codec, sequence.resolution, sequence.frame_rate),
+                )
+            })
+            .collect();
+
+        if !self.can_write(self.codec) {
+            self.codec = VideoCodec::H264;
+        }
+    }
+
+    fn can_write(&self, codec: VideoCodec) -> bool {
+        self.available
+            .iter()
+            .find(|(candidate, _)| *candidate == codec)
+            .is_none_or(|(_, usable)| *usable)
+    }
+
+    /// The output size: a preset applied to the sequence's shape, or the
+    /// custom numbers.
+    fn resolution(&self, native: Resolution) -> Resolution {
+        match self.height_preset {
+            Some(index) => fit_short_edge(native, HEIGHTS[index].1),
+            // Falls back to the sequence: `custom` is only unset before the
+            // window has ever opened, and the sequence is the honest answer.
+            None => even(self.custom.unwrap_or(native)),
+        }
+    }
+
+    fn path(&self) -> Option<std::path::PathBuf> {
+        let name = if self.name.trim().is_empty() {
+            "video"
+        } else {
+            self.name.trim()
+        };
+        Some(
+            self.folder
+                .as_ref()?
+                .join(format!("{name}.{}", CONTAINERS[self.container].0)),
+        )
     }
 }
 
@@ -67,9 +179,10 @@ pub fn show(
         return None;
     };
 
-    let full = sequence.resolution;
-    let rate = sequence.frame_rate;
+    let native = sequence.resolution;
+    let native_rate = sequence.frame_rate;
     let duration = sequence.duration();
+    let sequence_name = sequence.name.clone();
     let mut start = None;
 
     let mut open = dialog.open;
@@ -79,122 +192,78 @@ pub fn show(
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            ui.set_min_width(360.0);
+            ui.set_min_width(LABEL_WIDTH + FIELD_WIDTH + 60.0);
+            ui.add_space(2.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Save to");
-                let shown = dialog.path.as_ref().map_or_else(
-                    || "(choose a file)".to_owned(),
-                    |p| {
-                        p.file_name().map_or_else(
-                            || p.display().to_string(),
-                            |n| n.to_string_lossy().into_owned(),
-                        )
-                    },
+            row(ui, "Export timeline", |ui| {
+                ui.label(egui::RichText::new(&sequence_name).color(theme::DISABLED));
+            });
+            row(ui, "Name", |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.name)
+                        .desired_width(FIELD_WIDTH)
+                        .hint_text("video"),
                 );
-                if ui
-                    .button(shown)
-                    .on_hover_text(
-                        dialog
-                            .path
-                            .as_ref()
-                            .map_or_else(String::new, |p| p.display().to_string()),
-                    )
-                    .clicked()
-                    && let Some(chosen) = rfd::FileDialog::new()
-                        .add_filter("MP4 video", &["mp4"])
-                        .set_file_name(
-                            dialog
-                                .path
-                                .as_ref()
-                                .and_then(|p| p.file_name())
-                                .map_or_else(
-                                    || "video.mp4".to_owned(),
-                                    |n| n.to_string_lossy().into_owned(),
-                                ),
-                        )
-                        .save_file()
-                {
-                    dialog.path = Some(chosen);
-                    dialog.complaint = None;
-                }
             });
+            destination_row(ui, dialog);
 
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Size");
-                for (index, (label, divisor)) in SCALES.iter().enumerate() {
-                    let size = scaled(full, *divisor);
-                    if ui
-                        .selectable_label(dialog.scale == index, *label)
-                        .on_hover_text(format!("{}×{}", size.width, size.height))
-                        .clicked()
-                    {
-                        dialog.scale = index;
-                    }
-                }
-            });
-
-            let size = scaled(full, SCALES[dialog.scale].1);
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}×{} · {rate} fps · {} · H.264 with AAC audio",
-                    size.width,
-                    size.height,
-                    duration.format_timecode()
-                ))
-                .small()
-                .color(theme::DISABLED),
-            );
-            // §14, and worth saying out loud: people expect an editor that has
-            // been showing them a proxy to export the proxy.
-            ui.label(
-                egui::RichText::new(
-                    "Export always reads your original files, never the proxies \
-                     used for editing.",
-                )
-                .small()
-                .color(theme::DISABLED),
-            );
+            ui.separator();
+            ui.label(egui::RichText::new("Video").strong());
+            ui.add_space(2.0);
+
+            resolution_row(ui, dialog, native);
+            bitrate_rows(ui, dialog, native);
+            codec_row(ui, dialog);
+            container_row(ui, dialog);
+            frame_rate_row(ui, dialog, native_rate);
+
+            row(ui, "Colour space", |ui| {
+                ui.label(egui::RichText::new("Rec. 709 SDR").color(theme::DISABLED))
+                    .on_hover_text(
+                        "§21a fixes the working space and tags every export to \
+                     match, so players do not have to guess.",
+                    );
+            });
 
             if let Some(complaint) = &dialog.complaint {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(complaint).color(theme::ERROR_TEXT));
             }
 
-            ui.add_space(8.0);
+            ui.add_space(6.0);
+            ui.separator();
             ui.horizontal(|ui| {
-                let ready = dialog.path.is_some() && !exporting;
-                let button = egui::Button::new(if exporting { "Exporting…" } else { "Export" });
-                if ui.add_enabled(ready, button).clicked() {
-                    start = Some(());
-                }
-                if ui.button("Cancel").clicked() {
-                    dialog.open = false;
-                }
-                if exporting {
-                    ui.label(
-                        egui::RichText::new("An export is already running.")
-                            .small()
-                            .color(theme::DISABLED),
-                    );
-                }
+                summary(ui, dialog, native, duration);
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        dialog.open = false;
+                    }
+                    let ready = dialog.folder.is_some() && !exporting;
+                    let label = if exporting { "Exporting…" } else { "Export" };
+                    if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                        start = Some(());
+                    }
+                });
             });
+
+            if exporting {
+                ui.label(
+                    egui::RichText::new("An export is already running.")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+            }
         });
     dialog.open &= open;
 
     start?;
-    let path = dialog.path.clone()?;
-    let size = scaled(full, SCALES[dialog.scale].1);
+    let path = dialog.path()?;
 
-    // An empty sequence has nothing to write, and the export crate would refuse
-    // it — but refusing here is the difference between a message beside the
-    // button and a failure in the status bar a minute later.
-    let Ok(range) = TimelineRange::new(
-        bettercut_editor_core::foundation::TimelineTime::ZERO,
-        duration,
-    ) else {
+    // An empty sequence has nothing to write. Refusing here is the difference
+    // between a message beside the button and a failure a minute later.
+    let Ok(range) = TimelineRange::new(TimelineTime::ZERO, duration) else {
         dialog.complaint = Some("This sequence is empty — add a clip first.".to_owned());
         return None;
     };
@@ -202,7 +271,11 @@ pub fn show(
     dialog.open = false;
     Some(ExportSettings {
         path,
-        resolution: size,
+        resolution: dialog.resolution(native),
+        frame_rate: dialog.frame_rate.unwrap_or(native_rate),
+        codec: dialog.codec,
+        bitrate: dialog.bitrate_kbps.map(|kbps| i64::from(kbps) * 1_000),
+        rate_control: dialog.rate_control,
         range,
         // §15.1: FFmpeg never gets every core. The renderer and the decoder are
         // both working during an export, and leaving the machine responsive
@@ -211,40 +284,399 @@ pub fn show(
     })
 }
 
-/// Halve or quarter a resolution, keeping both dimensions even.
-///
-/// H.264 4:2:0 stores chroma at half resolution in each direction, so an odd
-/// dimension has no representation and the writer refuses it. Rounding down to
-/// even here means the choice is always offered rather than sometimes failing.
-fn scaled(full: Resolution, divisor: u32) -> Resolution {
-    let even = |value: u32| (value / divisor).max(2) & !1;
-    Resolution::new(even(full.width), even(full.height))
+/// One labelled line of the form.
+fn row<R>(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::TextStyle::Body.resolve(ui.style()),
+            ui.visuals().text_color(),
+        );
+        control(ui)
+    })
+    .inner
 }
 
-/// A file beside the project, named after it.
-fn suggested_path(editor: &Editor) -> std::path::PathBuf {
-    let name = {
-        let raw = editor.project().name.trim();
-        if raw.is_empty() { "video" } else { raw }
+/// Where the file goes: the folder, and a button that changes it.
+///
+/// The whole path *was* the button, and clicking a file name to change where it
+/// saves reads as nothing at all — a label that happens to be clickable is not
+/// a control. `🗁` is in egui's documented emoji set, and `tests/glyphs.rs`
+/// checks it against the family that draws it.
+fn destination_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
+    row(ui, "Export to", |ui| {
+        let mut shown = dialog.path().map_or_else(
+            || "(no folder chosen)".to_owned(),
+            |p| p.display().to_string(),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut shown)
+                .desired_width(FIELD_WIDTH - 32.0)
+                // Read-only, not disabled: the text stays legible and can be
+                // selected and copied, which is half of what a path is for.
+                .interactive(false),
+        );
+
+        if ui
+            .button("🗁")
+            .on_hover_text("Choose the folder to save into")
+            .clicked()
+            && let Some(chosen) = rfd::FileDialog::new()
+                .add_filter("Video", &["mp4", "mov"])
+                .set_file_name(format!(
+                    "{}.{}",
+                    dialog.name, CONTAINERS[dialog.container].0
+                ))
+                .save_file()
+        {
+            // The picker returns a full path; split it back into the two things
+            // this dialog edits separately.
+            if let Some(parent) = chosen.parent() {
+                dialog.folder = Some(parent.to_path_buf());
+            }
+            if let Some(stem) = chosen.file_stem() {
+                dialog.name = stem.to_string_lossy().into_owned();
+            }
+            if let Some(index) = chosen
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|e| CONTAINERS.iter().position(|(name, _)| *name == e))
+            {
+                dialog.container = index;
+            }
+            dialog.complaint = None;
+        }
+    });
+}
+
+fn resolution_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
+    row(ui, "Resolution", |ui| {
+        let size = dialog.resolution(native);
+        let selected = match dialog.height_preset {
+            Some(index) => HEIGHTS[index].0.to_owned(),
+            None => format!("Custom ({}×{})", size.width, size.height),
+        };
+
+        egui::ComboBox::from_id_salt("export_resolution")
+            .selected_text(selected)
+            .width(FIELD_WIDTH)
+            .show_ui(ui, |ui| {
+                for (index, (label, height)) in HEIGHTS.iter().enumerate() {
+                    let at = fit_short_edge(native, *height);
+                    if ui
+                        .selectable_label(
+                            dialog.height_preset == Some(index),
+                            format!("{label}  —  {}×{}", at.width, at.height),
+                        )
+                        .clicked()
+                    {
+                        dialog.height_preset = Some(index);
+                    }
+                }
+                if ui
+                    .selectable_label(dialog.height_preset.is_none(), "Custom…")
+                    .clicked()
+                {
+                    // Start from whatever the preset was showing, so switching
+                    // to custom does not jump the picture to something else.
+                    dialog.custom = Some(size);
+                    dialog.height_preset = None;
+                }
+            });
+    });
+
+    if dialog.height_preset.is_none() {
+        row(ui, "", |ui| {
+            let current = dialog.custom.unwrap_or(native);
+            let mut width = current.width;
+            let mut height = current.height;
+            let aspect = aspect_of(native);
+
+            let w = ui.add(
+                egui::DragValue::new(&mut width)
+                    .speed(2)
+                    .range(16..=7680)
+                    .prefix("w "),
+            );
+            let h = ui.add(
+                egui::DragValue::new(&mut height)
+                    .speed(2)
+                    .range(16..=4320)
+                    .prefix("h "),
+            );
+            // Both follow the sequence's shape. A squashed export is almost
+            // always a mistake; changing the *sequence* aspect is the Inspector's
+            // job, and doing it there keeps the preview honest about the result.
+            if w.changed() {
+                dialog.custom = Some(even(Resolution::new(
+                    width,
+                    (f64::from(width) / aspect).round() as u32,
+                )));
+            }
+            if h.changed() {
+                dialog.custom = Some(even(Resolution::new(
+                    (f64::from(height) * aspect).round() as u32,
+                    height,
+                )));
+            }
+            ui.label(
+                egui::RichText::new("keeps the sequence's shape")
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        });
+    }
+}
+
+fn bitrate_rows(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
+    let automatic = automatic_kbps(dialog, native);
+
+    row(ui, "Bit rate", |ui| {
+        egui::ComboBox::from_id_salt("export_bitrate_mode")
+            .selected_text(if dialog.bitrate_kbps.is_none() {
+                "Recommended"
+            } else {
+                "Custom"
+            })
+            .width(FIELD_WIDTH)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(dialog.bitrate_kbps.is_none(), "Recommended")
+                    .on_hover_text(format!(
+                        "About {automatic} kb/s for this size, rate and format."
+                    ))
+                    .clicked()
+                {
+                    dialog.bitrate_kbps = None;
+                }
+                if ui
+                    .selectable_label(dialog.bitrate_kbps.is_some(), "Custom")
+                    .clicked()
+                {
+                    dialog.bitrate_kbps = Some(automatic);
+                }
+            });
+    });
+
+    if let Some(kbps) = &mut dialog.bitrate_kbps {
+        row(ui, "", |ui| {
+            ui.add(
+                egui::DragValue::new(kbps)
+                    .speed(100)
+                    .range(200..=200_000)
+                    .suffix(" kb/s"),
+            )
+            .on_hover_text("Higher is better looking and larger. 8000 suits 1080p.");
+        });
+        row(ui, "", |ui| {
+            ui.vertical(|ui| {
+                for mode in [RateControl::Constant, RateControl::Variable] {
+                    if ui
+                        .radio(dialog.rate_control == mode, mode.label())
+                        .on_hover_text(mode.description())
+                        .clicked()
+                    {
+                        dialog.rate_control = mode;
+                    }
+                }
+            });
+        });
+    }
+}
+
+fn codec_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
+    row(ui, "Codec", |ui| {
+        egui::ComboBox::from_id_salt("export_codec")
+            .selected_text(dialog.codec.label())
+            .width(FIELD_WIDTH)
+            .show_ui(ui, |ui| {
+                for codec in VideoCodec::ALL {
+                    let usable = dialog.can_write(codec);
+                    let selected = dialog.codec == codec;
+                    let response = ui
+                        .add_enabled_ui(usable, |ui| ui.selectable_label(selected, codec.label()))
+                        .inner;
+                    let response = if usable {
+                        response.on_hover_text(codec.description())
+                    } else {
+                        // The reason matters. Greyed out with no explanation is
+                        // the thing §41 is against.
+                        response.on_disabled_hover_text(
+                            "This computer has no H.265 encoder. H.265 needs a \
+                             recent graphics card, and there is no software \
+                             alternative we can ship — the usual one is licensed \
+                             in a way that would apply to this whole program.",
+                        )
+                    };
+                    if response.clicked() {
+                        dialog.codec = codec;
+                    }
+                }
+            });
+    });
+}
+
+fn container_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
+    row(ui, "Format", |ui| {
+        egui::ComboBox::from_id_salt("export_container")
+            .selected_text(CONTAINERS[dialog.container].0)
+            .width(FIELD_WIDTH)
+            .show_ui(ui, |ui| {
+                for (index, (name, hint)) in CONTAINERS.iter().enumerate() {
+                    if ui
+                        .selectable_label(dialog.container == index, *name)
+                        .on_hover_text(*hint)
+                        .clicked()
+                    {
+                        dialog.container = index;
+                    }
+                }
+            });
+    });
+}
+
+fn frame_rate_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: FrameRate) {
+    row(ui, "Frame rate", |ui| {
+        let current = dialog.frame_rate.unwrap_or(native);
+        egui::ComboBox::from_id_salt("export_frame_rate")
+            .selected_text(format!("{current} fps"))
+            .width(FIELD_WIDTH)
+            .show_ui(ui, |ui| {
+                for rate in FrameRate::SUPPORTED {
+                    let label = if rate == native {
+                        format!("{rate} fps  (sequence)")
+                    } else {
+                        format!("{rate} fps")
+                    };
+                    if ui
+                        .selectable_label(current == rate, label)
+                        .on_hover_text(
+                            "Only rates the timeline divides exactly are offered, \
+                             so the picture and the sound cannot drift apart (§9).",
+                        )
+                        .clicked()
+                    {
+                        dialog.frame_rate = Some(rate);
+                    }
+                }
+            });
+    });
+}
+
+fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duration: TimelineTime) {
+    let size = dialog.resolution(native);
+    let kbps = dialog
+        .bitrate_kbps
+        .unwrap_or_else(|| automatic_kbps(dialog, native));
+    let seconds =
+        duration.ticks() as f64 / bettercut_editor_core::foundation::TICKS_PER_SECOND as f64;
+    // Video plus 192 kb/s of audio, in megabytes.
+    let megabytes = (f64::from(kbps) + 192.0) * seconds / 8_000.0;
+
+    ui.label(
+        egui::RichText::new(format!(
+            "{} · {}×{} · about {megabytes:.0} MB",
+            duration.format_timecode(),
+            size.width,
+            size.height,
+        ))
+        .small()
+        .color(theme::DISABLED),
+    )
+    .on_hover_text("Export always reads your original files, never the proxies used for editing.");
+}
+
+/// The automatic bitrate, in kilobits, mirroring what the encoder would pick.
+///
+/// Shown rather than left implicit so "Recommended" is a number the user can
+/// judge and then override, instead of a black box. It has to stay in step with
+/// `encoders::bitrate_for`, and a test asserts it does.
+fn automatic_kbps(dialog: &ExportDialog, native: Resolution) -> u32 {
+    let size = dialog.resolution(native);
+    let pixels = f64::from(size.width) * f64::from(size.height);
+    let fps = dialog
+        .frame_rate
+        .map_or(30.0, bettercut_editor_core::foundation::FrameRate::as_f64);
+    let scale = match dialog.codec {
+        VideoCodec::H264 => 1.0,
+        VideoCodec::H265 => 0.55,
     };
-    // Strip what a file name cannot hold, rather than handing the OS something
-    // it will reject: a project called "Trip 6/7" is a perfectly good name.
-    let safe: String = name
+    // The same shape as `encoders::bitrate_for`: 0.2 bits per pixel at 30 fps.
+    let bits = pixels * fps.clamp(1.0, 120.0) / 5.0 * scale;
+    ((bits / 1_000.0) as u32).clamp(1_000, 120_000)
+}
+
+/// The shorter of the two dimensions — what "1080p" names.
+fn short_edge(size: Resolution) -> u32 {
+    size.width.min(size.height)
+}
+
+fn aspect_of(size: Resolution) -> f64 {
+    if size.height == 0 {
+        return 16.0 / 9.0;
+    }
+    f64::from(size.width) / f64::from(size.height)
+}
+
+/// Scale a resolution so its **short** edge is `short`, keeping the shape.
+///
+/// Short, not long. "1080p" means 1080 lines: 1920×1080 landscape, 1080×1920
+/// vertical, 1080×1080 square. Scaling the long edge instead turns a 4K
+/// sequence into 1080×608 — which is exactly what this did before, and what a
+/// test asserted, because the test was written from the same misreading.
+fn fit_short_edge(native: Resolution, short: u32) -> Resolution {
+    let (w, h) = (native.width.max(1), native.height.max(1));
+    let scaled = if w <= h {
+        Resolution::new(
+            short,
+            (u64::from(short) * u64::from(h) / u64::from(w)) as u32,
+        )
+    } else {
+        Resolution::new(
+            (u64::from(short) * u64::from(w) / u64::from(h)) as u32,
+            short,
+        )
+    };
+    even(scaled)
+}
+
+/// Round both dimensions down to even.
+///
+/// H.264 and H.265 both store chroma at half resolution in each direction, so
+/// an odd dimension has no representation and the writer refuses it. Rounding
+/// here means any number the user picks is accepted rather than sometimes
+/// failing at the last moment.
+fn even(size: Resolution) -> Resolution {
+    Resolution::new(size.width.max(2) & !1, size.height.max(2) & !1)
+}
+
+/// Strip what a file name cannot hold, rather than handing the OS something it
+/// will reject: a project called "Trip 6/7" is a perfectly good name.
+fn safe_file_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let source = if trimmed.is_empty() { "video" } else { trimmed };
+    source
         .chars()
         .map(|c| if r#"\/:*?"<>|"#.contains(c) { '-' } else { c })
-        .collect();
-
-    let directory = editor
-        .path()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .or_else(dirs_videos)
-        .unwrap_or_else(std::env::temp_dir);
-
-    directory.join(format!("{safe}.mp4"))
+        .collect()
 }
 
-/// The user's Videos folder, when there is an obvious one.
-fn dirs_videos() -> Option<std::path::PathBuf> {
+/// Beside the project, or the user's Videos folder.
+fn default_folder(editor: &Editor) -> std::path::PathBuf {
+    editor
+        .path()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .or_else(videos_directory)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn videos_directory() -> Option<std::path::PathBuf> {
     // No extra dependency for one path: the home directory plus the
     // conventional name covers Windows and macOS, and is a reasonable guess
     // elsewhere. When it does not exist, the caller falls back again.
@@ -257,36 +689,141 @@ fn dirs_videos() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
+    /// The bug this replaced: "1080p" set the *long* edge, so a 4K sequence
+    /// exported at 1080×608 instead of 1920×1080.
     #[test]
-    fn scaling_keeps_both_dimensions_even() {
-        // 1080 / 4 is 270, which is even; 1079 / 2 is 539, which is not.
-        for (width, height) in [(1920, 1080), (1079, 721), (640, 361), (3840, 2160)] {
-            let full = Resolution::new(width, height);
-            for (_, divisor) in SCALES {
-                let size = scaled(full, divisor);
+    fn a_preset_names_the_short_edge() {
+        let uhd = fit_short_edge(Resolution::new(3840, 2160), 1080);
+        assert_eq!((uhd.width, uhd.height), (1920, 1080));
+
+        let already = fit_short_edge(Resolution::new(1920, 1080), 1080);
+        assert_eq!((already.width, already.height), (1920, 1080));
+
+        // Vertical: 1080p means 1080 across, 1920 tall.
+        let portrait = fit_short_edge(Resolution::new(1080, 1920), 1080);
+        assert_eq!((portrait.width, portrait.height), (1080, 1920));
+
+        let square = fit_short_edge(Resolution::new(1000, 1000), 720);
+        assert_eq!((square.width, square.height), (720, 720));
+
+        // And an unusual shape keeps its shape.
+        let wide = fit_short_edge(Resolution::new(2560, 1080), 720);
+        assert_eq!((wide.width, wide.height), (1706, 720));
+    }
+
+    #[test]
+    fn every_preset_of_every_shape_is_even() {
+        let shapes = [
+            Resolution::new(3840, 2160),
+            Resolution::new(1080, 1920),
+            Resolution::new(1000, 1000),
+            Resolution::new(2560, 1080),
+            Resolution::new(1439, 1079),
+        ];
+        for shape in shapes {
+            for (label, height) in HEIGHTS {
+                let size = fit_short_edge(shape, height);
                 assert!(
                     size.width.is_multiple_of(2) && size.height.is_multiple_of(2),
-                    "{width}x{height} / {divisor} produced {}x{}",
+                    "{label} of {}×{} gave {}×{}",
+                    shape.width,
+                    shape.height,
                     size.width,
                     size.height
                 );
-                assert!(size.width >= 2 && size.height >= 2);
             }
         }
     }
 
-    /// Full size must be exactly the sequence, not the sequence rounded.
-    #[test]
-    fn full_size_is_the_sequence_itself() {
-        let full = Resolution::new(1920, 1080);
-        assert_eq!(scaled(full, 1), full);
+    fn dialog_at(width: u32, height: u32, rate: FrameRate, codec: VideoCodec) -> ExportDialog {
+        ExportDialog {
+            height_preset: None,
+            custom: Some(Resolution::new(width, height)),
+            frame_rate: Some(rate),
+            codec,
+            ..ExportDialog::default()
+        }
     }
 
-    /// A tiny sequence must still produce something encodable rather than a
-    /// zero-pixel frame.
+    /// The number shown next to "Recommended" has to be the number the encoder
+    /// will actually use, or it is worse than showing nothing.
     #[test]
-    fn a_tiny_sequence_does_not_scale_to_nothing() {
-        let size = scaled(Resolution::new(4, 4), 4);
-        assert_eq!((size.width, size.height), (2, 2));
+    fn the_shown_automatic_bitrate_matches_the_encoders_own() {
+        let native = Resolution::new(1920, 1080);
+        let hd = dialog_at(1920, 1080, FrameRate::FPS_30, VideoCodec::H264);
+        let shown = automatic_kbps(&hd, native);
+        // encoders::bitrate_for: 1920*1080*30/5 = 12,441,600 bits.
+        assert!((12_200..=12_600).contains(&shown), "shown {shown} kb/s");
+
+        let hevc = automatic_kbps(
+            &dialog_at(1920, 1080, FrameRate::FPS_30, VideoCodec::H265),
+            native,
+        );
+        assert!(hevc < shown, "H.265 should ask for less: {hevc} vs {shown}");
+        assert!(hevc > shown / 2, "and not so much less that it looks worse");
+    }
+
+    #[test]
+    fn the_automatic_bitrate_follows_the_settings() {
+        let native = Resolution::new(1920, 1080);
+        let full = automatic_kbps(
+            &dialog_at(1920, 1080, FrameRate::FPS_30, VideoCodec::H264),
+            native,
+        );
+        let half = automatic_kbps(
+            &dialog_at(960, 540, FrameRate::FPS_30, VideoCodec::H264),
+            native,
+        );
+        assert!(
+            (full / 5..=full / 3).contains(&half),
+            "half the size should be about a quarter the bitrate: {half} vs {full}"
+        );
+
+        let faster = automatic_kbps(
+            &dialog_at(1920, 1080, FrameRate::FPS_60, VideoCodec::H264),
+            native,
+        );
+        assert!(faster > full * 3 / 2, "60 fps should cost more: {faster}");
+    }
+
+    /// A codec the machine cannot write must not be selectable. `can_write`
+    /// answers optimistically before the probe has run, because the window has
+    /// not opened yet and refusing everything would be worse.
+    #[test]
+    fn an_unavailable_codec_is_not_writable() {
+        let dialog = ExportDialog {
+            available: vec![(VideoCodec::H264, true), (VideoCodec::H265, false)],
+            ..ExportDialog::default()
+        };
+        assert!(dialog.can_write(VideoCodec::H264));
+        assert!(!dialog.can_write(VideoCodec::H265));
+        assert!(ExportDialog::default().can_write(VideoCodec::H265));
+    }
+
+    /// The name and the container are edited separately, and the path is built
+    /// from them — so changing the format must change the extension, not leave
+    /// an `.mp4` holding a QuickTime file.
+    #[test]
+    fn the_path_follows_the_name_and_the_container() {
+        let mut dialog = ExportDialog {
+            name: "holiday".to_owned(),
+            folder: Some(std::path::PathBuf::from("/tmp")),
+            ..ExportDialog::default()
+        };
+        assert!(dialog.path().unwrap().ends_with("holiday.mp4"));
+
+        dialog.container = 1;
+        assert!(dialog.path().unwrap().ends_with("holiday.mov"));
+
+        // An empty name is a slip, not a request for a file called "".
+        dialog.name = "   ".to_owned();
+        assert!(dialog.path().unwrap().ends_with("video.mov"));
+    }
+
+    #[test]
+    fn a_project_name_that_cannot_be_a_file_name_is_cleaned() {
+        assert_eq!(safe_file_name("Trip 6/7"), "Trip 6-7");
+        assert_eq!(safe_file_name("  "), "video");
+        assert_eq!(safe_file_name("a:b*c?"), "a-b-c-");
     }
 }

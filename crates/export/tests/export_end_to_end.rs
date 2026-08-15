@@ -13,8 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-use bettercut_export::{ExportProgress, ExportSettings, export};
-use bettercut_foundation::{MediaTime, TimelineTime};
+use bettercut_export::{ExportProgress, ExportSettings, VideoCodec, codec_is_available, export};
+use bettercut_foundation::{FrameRate, MediaTime, TimelineTime};
 use bettercut_media::{FfmpegDecoder, FfmpegProber, MediaDecoder, MediaProber, NeverCancelled};
 use bettercut_project_format::Project;
 use bettercut_timeline::{
@@ -78,6 +78,12 @@ fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
     ExportSettings {
         path: path.to_path_buf(),
         resolution: Resolution::new(640, 360),
+        // The fixture is 29.97, and exporting at its own rate is the ordinary
+        // case; `a_different_frame_rate_retimes_the_output` covers the other.
+        frame_rate: FrameRate::NTSC_29_97,
+        codec: VideoCodec::H264,
+        bitrate: None,
+        rate_control: bettercut_export::RateControl::Variable,
         range,
         threads: 2,
     }
@@ -364,4 +370,143 @@ fn frame_luma(frame: &bettercut_media::VideoFrame) -> f64 {
         }
     }
     if count == 0.0 { 0.0 } else { total / count }
+}
+
+/// Exporting at a rate other than the sequence's re-times the output: the same
+/// second of timeline becomes a different number of frames.
+#[test]
+fn a_different_frame_rate_retimes_the_output() {
+    gpu_or_skip!();
+    let scratch = Scratch::new("retimed");
+    let project = project_with_fixture();
+
+    let mut settings = settings(scratch.path(), one_second());
+    settings.frame_rate = FrameRate::FPS_60;
+    let summary = run(&project, &settings);
+
+    assert_eq!(summary.frames, 60, "a second at 60 fps is 60 frames");
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let seconds = asset.duration.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    assert!(
+        (0.9..=1.2).contains(&seconds),
+        "re-timing changed the duration: {seconds:.3}"
+    );
+}
+
+/// An explicit bitrate has to reach the encoder.
+///
+/// Deliberately *not* asserting proportionality. The bitrate is a ceiling, not
+/// a quota: a capped-VBR encoder spends what the picture needs and no more, so
+/// a simple fixture at 16 Mb/s does not produce sixteen times the bytes of the
+/// same fixture at 1. Measured here at about 1.7x, which is the shape of the
+/// real behaviour — what matters is that the number reaches the encoder at all,
+/// and a decorative field would show no difference whatsoever.
+#[test]
+fn an_explicit_bitrate_changes_the_file_size() {
+    gpu_or_skip!();
+    let project = project_with_fixture();
+
+    let small = Scratch::new("small-bitrate");
+    let mut low = settings(small.path(), one_second());
+    low.bitrate = Some(1_000_000);
+    run(&project, &low);
+
+    let large = Scratch::new("large-bitrate");
+    let mut high = settings(large.path(), one_second());
+    high.bitrate = Some(16_000_000);
+    run(&project, &high);
+
+    let low_bytes = std::fs::metadata(small.path()).expect("small").len();
+    let high_bytes = std::fs::metadata(large.path()).expect("large").len();
+    assert!(
+        high_bytes > low_bytes * 5 / 4,
+        "the bitrate did not reach the encoder: {low_bytes} vs {high_bytes} bytes"
+    );
+}
+
+/// H.265 when the machine can write it. Skipped rather than failed elsewhere:
+/// there is no software fallback by design (§0.1 forbids x265), so a machine
+/// without a GPU encoder legitimately cannot run this.
+#[test]
+fn h265_exports_when_the_machine_can_write_it() {
+    gpu_or_skip!();
+    let resolution = Resolution::new(640, 360);
+    if !codec_is_available(VideoCodec::H265, resolution, FrameRate::NTSC_29_97) {
+        eprintln!("no H.265 encoder on this machine; skipping");
+        return;
+    }
+
+    let scratch = Scratch::new("h265");
+    let project = project_with_fixture();
+    let mut settings = settings(scratch.path(), one_second());
+    settings.codec = VideoCodec::H265;
+    let summary = run(&project, &settings);
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let codec = asset.video_codec.expect("no video stream");
+    assert!(
+        codec.contains("hevc") || codec.contains("h265"),
+        "asked for H.265 and got {codec}"
+    );
+    assert_eq!(summary.frames, 30);
+}
+
+/// H.264 is always available — `libopenh264` is linked in — and asking must not
+/// cost a driver probe. The export window asks on the UI thread when it opens,
+/// and §74 is explicit that the interface must not stall behind FFmpeg.
+#[test]
+fn asking_about_a_codec_is_cheap_after_the_first_time() {
+    let resolution = Resolution::new(1920, 1080);
+    let rate = FrameRate::FPS_30;
+
+    assert!(
+        codec_is_available(VideoCodec::H264, resolution, rate),
+        "H.264 has a linked software encoder, so it is available everywhere"
+    );
+
+    // Warm whatever the first call costs, then measure the second.
+    let _ = codec_is_available(VideoCodec::H265, resolution, rate);
+    let started = std::time::Instant::now();
+    for _ in 0..50 {
+        let _ = codec_is_available(VideoCodec::H265, resolution, rate);
+        let _ = codec_is_available(VideoCodec::H264, resolution, rate);
+    }
+    let elapsed = started.elapsed();
+
+    // A single uncached probe is around half a second here. A hundred cached
+    // ones must be nowhere near that.
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "100 availability checks took {elapsed:?}; the answer is not being cached"
+    );
+}
+
+/// CBR pads simple footage to hold the rate; VBR spends less. The same clip at
+/// the same bitrate must therefore come out visibly larger under CBR — which is
+/// also the check that `rate_control` reaches the encoder at all.
+#[test]
+fn constant_rate_control_produces_a_larger_file_than_variable() {
+    gpu_or_skip!();
+    let project = project_with_fixture();
+
+    let vbr_file = Scratch::new("vbr");
+    let mut vbr = settings(vbr_file.path(), one_second());
+    vbr.bitrate = Some(8_000_000);
+    vbr.rate_control = bettercut_export::RateControl::Variable;
+    run(&project, &vbr);
+
+    let cbr_file = Scratch::new("cbr");
+    let mut cbr = settings(cbr_file.path(), one_second());
+    cbr.bitrate = Some(8_000_000);
+    cbr.rate_control = bettercut_export::RateControl::Constant;
+    run(&project, &cbr);
+
+    let vbr_bytes = std::fs::metadata(vbr_file.path()).expect("vbr").len();
+    let cbr_bytes = std::fs::metadata(cbr_file.path()).expect("cbr").len();
+    assert!(
+        cbr_bytes > vbr_bytes,
+        "constant rate control did not reach the encoder: \
+         {vbr_bytes} bytes variable, {cbr_bytes} constant"
+    );
 }

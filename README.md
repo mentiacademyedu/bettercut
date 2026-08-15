@@ -255,8 +255,8 @@ clip scrolled past the left edge is still selected when the band covers its
 span. Dragging the ruler still scrubs, dragging a clip still moves it, and a
 press that never moves is still an ordinary click.
 
-**Export** is in the toolbar. Pick a file, pick full/half/quarter size, press
-Export; the job runs on the same scheduler as proxies and thumbnails, the status
+**Export** is in the toolbar: format, size, frame rate, bitrate, and where the
+file goes, all defaulting to the sequence. the job runs on the same scheduler as proxies and thumbnails, the status
 bar shows a bar and a Stop button, and the finished message names the encoder
 that ran. §74 is blunt that FFmpeg must never block the UI, and an export is the
 longest FFmpeg run the program does.

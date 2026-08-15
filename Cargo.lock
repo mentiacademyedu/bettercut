@@ -647,6 +647,7 @@ dependencies = [
 name = "bettercut-ui"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bettercut-audio",
  "bettercut-cache",
  "bettercut-editor-core",

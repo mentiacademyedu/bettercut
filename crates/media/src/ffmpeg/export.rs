@@ -31,7 +31,9 @@ use bettercut_foundation::FrameRate;
 
 use super::INTERNAL_SAMPLE_RATE;
 use super::encode::{Muxer, drain_encoder};
-use super::encoders::{EncodeTarget, EncoderChoice, open_best};
+use super::encoders::{
+    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best,
+};
 use super::raii::{CodecContext, Frame, Scaler};
 
 /// How the output is to be written.
@@ -42,6 +44,10 @@ pub struct ExportFormat {
     /// The exact ratio §9 stores — 30000/1001, not 29.97. Rounding it puts a
     /// long export's audio adrift by the end.
     pub frame_rate: FrameRate,
+    pub codec: VideoCodec,
+    /// Video bits per second, or `None` to derive one from the format.
+    pub bitrate: Option<i64>,
+    pub rate_control: RateControl,
     /// Channels of audio, or zero for a silent file.
     pub channels: usize,
     /// §15.1: FFmpeg never gets every core, not even for the last job running.
@@ -110,7 +116,10 @@ impl VideoWriter {
         let target = EncodeTarget {
             width: format.width,
             height: format.height,
-            frame_rate: av_rational(format.frame_rate),
+            frame_rate: format.frame_rate,
+            codec: format.codec,
+            bitrate: format.bitrate,
+            rate_control: format.rate_control,
             threads: format.threads,
             global_header,
         };
@@ -380,15 +389,6 @@ impl AudioTrack {
         }
         self.samples += count as i64;
         Ok(Some(self.frame.as_ptr()))
-    }
-}
-
-/// A `FrameRate` as FFmpeg's rational, exactly.
-fn av_rational(rate: FrameRate) -> ffi::AVRational {
-    let ratio = rate.as_rational();
-    ffi::AVRational {
-        num: ratio.num() as i32,
-        den: ratio.den() as i32,
     }
 }
 

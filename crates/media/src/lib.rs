@@ -23,6 +23,6 @@ pub use decoder::{
 pub use error::MediaError;
 pub use ffmpeg::{
     EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, ExportFormat, FfmpegDecoder,
-    FfmpegProber, VideoWriter, generate_proxy, probe_all,
+    FfmpegProber, RateControl, VideoCodec, VideoWriter, generate_proxy, probe_all,
 };
 pub use proxy::{ProxyAsset, ProxyResolution, ProxySpec, ProxyStatus};

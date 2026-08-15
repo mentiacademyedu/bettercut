@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use bettercut_media::{
     CancellationToken, ExportFormat, FfmpegDecoder, FfmpegProber, MediaDecoder, MediaProber,
-    NeverCancelled, VideoWriter,
+    NeverCancelled, VideoCodec, VideoWriter,
 };
 
 const WIDTH: u32 = 320;
@@ -49,6 +49,9 @@ fn format(channels: usize) -> ExportFormat {
         width: WIDTH,
         height: HEIGHT,
         frame_rate: bettercut_foundation::FrameRate::FILM_24,
+        codec: VideoCodec::H264,
+        bitrate: None,
+        rate_control: bettercut_media::RateControl::Variable,
         channels,
         threads: 2,
     }

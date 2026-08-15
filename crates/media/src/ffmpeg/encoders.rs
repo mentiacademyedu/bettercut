@@ -35,13 +35,103 @@
 //! milliseconds per candidate, once, and it is the difference between choosing
 //! an encoder and discovering at the end of a long export that it never worked.
 
+use bettercut_foundation::FrameRate;
 use rusty_ffmpeg::ffi;
 
 use crate::error::MediaError;
 
+use super::error_string;
 use super::raii::CodecContext;
 
-/// An H.264 encoder that was found and successfully opened.
+/// The video codec to write (§0.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoCodec {
+    /// Plays everywhere. The safe default, and the one §59 names.
+    #[default]
+    H264,
+    /// Roughly half the bitrate for the same picture, at the cost of decode
+    /// support on older devices — and, for us, of having no software fallback.
+    /// See [`CANDIDATES_H265`].
+    H265,
+}
+
+impl VideoCodec {
+    pub const ALL: [Self; 2] = [Self::H264, Self::H265];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
+        }
+    }
+
+    /// Longer form, for the hover text that has to justify the choice.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::H264 => "Plays on everything. Larger files.",
+            Self::H265 => {
+                "About half the size for the same quality. Needs a recent device \
+                 to play it, and a GPU encoder to write it."
+            }
+        }
+    }
+
+    /// Bitrate multiplier against H.264 for the same picture.
+    ///
+    /// HEVC is roughly twice as efficient, so the automatic bitrate is halved
+    /// rather than left at a number chosen for the older codec — otherwise
+    /// picking H.265 would produce a file the same size for no reason.
+    fn bitrate_scale(self) -> f64 {
+        match self {
+            Self::H264 => 1.0,
+            Self::H265 => 0.55,
+        }
+    }
+
+    fn candidates(self) -> &'static [EncoderChoice] {
+        match self {
+            Self::H264 => CANDIDATES_H264,
+            Self::H265 => CANDIDATES_H265,
+        }
+    }
+}
+
+/// How strictly the encoder must hold the requested bitrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RateControl {
+    /// Spend up to the bitrate where the picture needs it, less where it does
+    /// not. The right default: it puts the bits where they show.
+    #[default]
+    Variable,
+    /// Hold the bitrate whatever the picture is doing, padding if necessary.
+    /// Larger files for the same quality, and what some delivery specs and
+    /// streaming ingests require.
+    Constant,
+}
+
+impl RateControl {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Variable => "VBR (variable)",
+            Self::Constant => "CBR (constant)",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Variable => {
+                "Spends the bitrate where the picture is complicated. Smaller \
+                 files, same quality. Use this unless something requires otherwise."
+            }
+            Self::Constant => {
+                "Holds the same bitrate throughout, padding simple shots. \
+                 Required by some streaming ingests and broadcast specs."
+            }
+        }
+    }
+}
+
+/// An encoder that was found and successfully opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderChoice {
     /// The FFmpeg encoder name, e.g. `h264_nvenc`.
@@ -49,6 +139,7 @@ pub struct EncoderChoice {
     /// What to call it in the interface.
     pub label: &'static str,
     pub kind: EncoderKind,
+    pub codec: VideoCodec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +147,8 @@ pub enum EncoderKind {
     /// Provided by the GPU driver or the OS. Distributed by neither us nor the
     /// user (§0.1).
     Hardware,
-    /// `libopenh264`: BSD, linked into our binary, runs on the CPU.
+    /// Linked into our binary and running on the CPU. Only ever a
+    /// BSD-or-similar encoder; §0.1 point 2 forbids anything GPL.
     Software,
 }
 
@@ -66,54 +158,61 @@ impl EncoderKind {
     }
 }
 
-/// Candidates in preference order.
+/// H.264 candidates in preference order.
 ///
 /// Hardware first, and within hardware the vendor-specific encoders ahead of
 /// the generic Media Foundation wrapper: `h264_mf` reaches the same silicon
 /// through another layer, and exposes fewer controls doing it. The software
 /// encoder is last and is the only entry guaranteed to exist.
-const CANDIDATES: &[EncoderChoice] = &[
+const CANDIDATES_H264: &[EncoderChoice] = &[
     #[cfg(target_os = "windows")]
     EncoderChoice {
         name: "h264_nvenc",
         label: "NVIDIA NVENC",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "windows")]
     EncoderChoice {
         name: "h264_qsv",
         label: "Intel Quick Sync",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "windows")]
     EncoderChoice {
         name: "h264_amf",
         label: "AMD AMF",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "windows")]
     EncoderChoice {
         name: "h264_mf",
         label: "Windows Media Foundation",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "macos")]
     EncoderChoice {
         name: "h264_videotoolbox",
         label: "VideoToolbox",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "linux")]
     EncoderChoice {
         name: "h264_nvenc",
         label: "NVIDIA NVENC",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     #[cfg(target_os = "linux")]
     EncoderChoice {
         name: "h264_vaapi",
         label: "VAAPI",
         kind: EncoderKind::Hardware,
+        codec: VideoCodec::H264,
     },
     // §0.1's fallback, and §13.1's proxy encoder. BSD, so shipping it is
     // settled; ADR 002 records the reasoning.
@@ -121,6 +220,66 @@ const CANDIDATES: &[EncoderChoice] = &[
         name: "libopenh264",
         label: "openh264 (software)",
         kind: EncoderKind::Software,
+        codec: VideoCodec::H264,
+    },
+];
+
+/// H.265 candidates in preference order.
+///
+/// **There is deliberately no software fallback here.** The obvious one is
+/// x265, and §0.1 point 2 plus §74 rule it out absolutely: linking it makes the
+/// whole product GPL. So H.265 is offered exactly when the machine has a GPU
+/// encoder for it, and the interface disables the choice otherwise rather than
+/// accepting it and failing at the last moment.
+const CANDIDATES_H265: &[EncoderChoice] = &[
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "hevc_nvenc",
+        label: "NVIDIA NVENC",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "hevc_qsv",
+        label: "Intel Quick Sync",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "hevc_amf",
+        label: "AMD AMF",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "hevc_mf",
+        label: "Windows Media Foundation",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "macos")]
+    EncoderChoice {
+        name: "hevc_videotoolbox",
+        label: "VideoToolbox",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "linux")]
+    EncoderChoice {
+        name: "hevc_nvenc",
+        label: "NVIDIA NVENC",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
+    },
+    #[cfg(target_os = "linux")]
+    EncoderChoice {
+        name: "hevc_vaapi",
+        label: "VAAPI",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::H265,
     },
 ];
 
@@ -143,7 +302,12 @@ impl EncoderProbe {
 pub struct EncodeTarget {
     pub width: u32,
     pub height: u32,
-    pub frame_rate: ffi::AVRational,
+    /// The exact ratio §9 stores, never a rounded decimal.
+    pub frame_rate: FrameRate,
+    pub codec: VideoCodec,
+    /// Bits per second, or `None` to derive one from the resolution and rate.
+    pub bitrate: Option<i64>,
+    pub rate_control: RateControl,
     /// §15.1: FFmpeg must never be allowed every core.
     pub threads: u32,
     /// MP4 keeps SPS/PPS in the container. Must be known before opening.
@@ -156,7 +320,9 @@ pub struct EncodeTarget {
 /// rather than silently picking — §41: the interface explains itself, and
 /// "why is my export slow" has an answer here.
 pub fn probe_all(target: EncodeTarget) -> Vec<EncoderProbe> {
-    CANDIDATES
+    target
+        .codec
+        .candidates()
         .iter()
         .map(|choice| EncoderProbe {
             choice: *choice,
@@ -178,7 +344,7 @@ pub fn open_best(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), 
     // openh264 — so being able to pin one down and run the export tests
     // against it is what turns "it broke somewhere" into a diagnosis.
     let only = std::env::var("BETTERCUT_FORCE_ENCODER").ok();
-    for choice in CANDIDATES {
+    for choice in target.codec.candidates() {
         if let Some(name) = &only
             && choice.name != name
         {
@@ -203,15 +369,50 @@ pub fn open_best(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), 
     // Every candidate failing means the fallback failed too, which is a broken
     // FFmpeg build rather than a hardware question. Say so with the whole list,
     // because the first refusal alone is misleading.
+    if refusals.is_empty() {
+        // Only reachable for H.265, which has no software fallback by design.
+        return Err(MediaError::DecodeFailed(format!(
+            "this machine has no {} encoder",
+            target.codec.label()
+        )));
+    }
     Err(MediaError::DecodeFailed(format!(
-        "no usable H.264 encoder: {}",
+        "no usable {} encoder: {}",
+        target.codec.label(),
         refusals.join("; ")
     )))
 }
 
+/// Serialises hardware-encoder initialisation.
+///
+/// Opening these is not a pure FFmpeg operation: it initialises a vendor
+/// runtime. `h264_mf` starts Media Foundation, which is process-global; `h264_amf`
+/// loads `amfrt64.dll`, which on a machine without AMD hardware is a failed
+/// `LoadLibrary` every time. None of them document thread-safe initialisation.
+///
+/// Doing several at once wedges the drivers. It showed up as the whole test
+/// suite hanging: the export tests pass in three seconds on their own and stop
+/// dead when the media crate's probe tests run beside them, opening every
+/// candidate for both codecs at the same moment.
+///
+/// The product never needs concurrent opens — one export at a time, one probe
+/// when a dialog opens — so a lock costs nothing real and removes a class of
+/// failure that would otherwise appear as a frozen window on someone's machine.
+static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Open one candidate at the real target format.
 fn open(choice: EncoderChoice, target: EncodeTarget) -> Result<CodecContext, MediaError> {
+    // Held across the whole open: the vendor runtime is initialised inside
+    // `avcodec_open2`, not by the allocation above.
+    let _guard = OPENING.lock().unwrap_or_else(|poisoned| {
+        // A panic in another thread's open says nothing about ours; the lock
+        // exists to order driver calls, not to protect data.
+        poisoned.into_inner()
+    });
+
     let context = CodecContext::encoder(choice.name, target.threads)?;
+
+    let rate = av_rational(target.frame_rate);
 
     // SAFETY: allocated and not yet opened, which is when these may be set.
     unsafe {
@@ -224,15 +425,15 @@ fn open(choice: EncoderChoice, target: EncodeTarget) -> Result<CodecContext, Med
         // export reads it back to system memory today.
         ctx.pix_fmt = ffi::AV_PIX_FMT_YUV420P;
         ctx.time_base = ffi::AVRational {
-            num: target.frame_rate.den,
-            den: target.frame_rate.num,
+            num: rate.den,
+            den: rate.num,
         };
-        ctx.framerate = target.frame_rate;
+        ctx.framerate = rate;
 
         // Two seconds between keyframes: long enough not to cost bitrate,
         // short enough that a player can seek. The opposite of §13.1's
         // all-intra proxies, which exist to be seeked rather than watched.
-        ctx.gop_size = keyframe_interval(target.frame_rate);
+        ctx.gop_size = keyframe_interval(rate);
 
         // No B-frames, and this is load-bearing rather than a quality opinion.
         //
@@ -255,15 +456,104 @@ fn open(choice: EncoderChoice, target: EncodeTarget) -> Result<CodecContext, Med
         ctx.color_trc = ffi::AVCOL_TRC_BT709;
         ctx.colorspace = ffi::AVCOL_SPC_BT709;
 
-        ctx.bit_rate = bitrate_for(target.width, target.height, target.frame_rate);
+        let bits = target
+            .bitrate
+            .filter(|rate| *rate > 0)
+            .unwrap_or_else(|| bitrate_for(target.width, target.height, rate, target.codec));
+        ctx.bit_rate = bits;
+
+        // `bit_rate` alone is advisory, and several encoders treat it that way —
+        // NVENC's default rate control spends a fraction of it on easy footage.
+        // A ceiling and a buffer are what turn the number into something the
+        // encoder honours.
+        ctx.rc_max_rate = bits;
+        ctx.rc_buffer_size = (bits * 2).clamp(1, i64::from(i32::MAX)) as i32;
+        // A floor as well as a ceiling. Necessary but **not sufficient**: the
+        // hardware encoders ignore it and read their own private option
+        // instead, which `set_rate_control` sets below. Measured — two exports
+        // that differed only in this field came out byte-identical on NVENC.
+        ctx.rc_min_rate = match target.rate_control {
+            RateControl::Constant => bits,
+            RateControl::Variable => 0,
+        };
 
         if target.global_header {
             ctx.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
         }
     }
 
+    set_rate_control(&context, choice, target.rate_control);
+
     context.open_encoder()?;
     Ok(context)
+}
+
+/// A `FrameRate` as FFmpeg's rational, exactly.
+pub(crate) fn av_rational(rate: FrameRate) -> ffi::AVRational {
+    let ratio = rate.as_rational();
+    ffi::AVRational {
+        num: ratio.num() as i32,
+        den: ratio.den() as i32,
+    }
+}
+
+/// Tell the encoder how strictly to hold the bitrate.
+///
+/// Each vendor spells this differently in its own private options, and the
+/// generic `rc_min_rate`/`rc_max_rate` fields do not reach them — two exports
+/// differing only in those came out byte-identical on NVENC. So the mode has to
+/// be set as the private option the encoder actually reads, before it opens.
+///
+/// An encoder with no matching option gets nothing and keeps its default, which
+/// is the right outcome: `libopenh264` has no constant-rate mode worth the name,
+/// and pretending otherwise would be a worse answer than leaving it alone.
+fn set_rate_control(context: &CodecContext, choice: EncoderChoice, mode: RateControl) {
+    use RateControl::{Constant, Variable};
+
+    let options: &[(&str, &str)] = match (choice.name, mode) {
+        ("h264_nvenc" | "hevc_nvenc", Constant) => &[("rc", "cbr")],
+        ("h264_nvenc" | "hevc_nvenc", Variable) => &[("rc", "vbr")],
+        ("h264_amf" | "hevc_amf", Constant) => &[("rc", "cbr")],
+        ("h264_amf" | "hevc_amf", Variable) => &[("rc", "vbr_peak")],
+        ("h264_mf" | "hevc_mf", Constant) => &[("rate_control", "cbr")],
+        ("h264_mf" | "hevc_mf", Variable) => &[("rate_control", "u_vbr")],
+        // Quick Sync picks its mode from which rate fields are set, which the
+        // caller has already done; there is no name to set here.
+        _ => &[],
+    };
+
+    for (name, value) in options {
+        let (Ok(name_c), Ok(value_c)) = (
+            std::ffi::CString::new(*name),
+            std::ffi::CString::new(*value),
+        ) else {
+            continue;
+        };
+
+        // SAFETY: the context is allocated and not yet opened, which is when
+        // private options may be set. `priv_data` is null for encoders with no
+        // private options; `av_opt_set` handles that by returning an error.
+        let code = unsafe {
+            let priv_data = (*context.as_ptr()).priv_data;
+            if priv_data.is_null() {
+                continue;
+            }
+            ffi::av_opt_set(priv_data, name_c.as_ptr(), value_c.as_ptr(), 0)
+        };
+
+        if code < 0 {
+            // Not a §74 "silently ignored failure": the export still runs, at
+            // the encoder's default rate control. Worth a line in the log
+            // because it means the user's choice did not take effect.
+            tracing::debug!(
+                encoder = choice.name,
+                option = name,
+                value,
+                reason = %error_string(code),
+                "could not set rate control; using the encoder's default"
+            );
+        }
+    }
 }
 
 /// Frames between keyframes, from a target of two seconds.
@@ -282,7 +572,7 @@ fn keyframe_interval(frame_rate: ffi::AVRational) -> i32 {
 /// without visibly degrading. Deliberately generous rather than clever —
 /// guessing low produces an export the user has to redo, and disk is cheap next
 /// to their time.
-fn bitrate_for(width: u32, height: u32, frame_rate: ffi::AVRational) -> i64 {
+fn bitrate_for(width: u32, height: u32, frame_rate: ffi::AVRational, codec: VideoCodec) -> i64 {
     let pixels = i64::from(width) * i64::from(height);
     let fps = if frame_rate.den > 0 {
         i64::from(frame_rate.num) / i64::from(frame_rate.den.max(1))
@@ -290,7 +580,8 @@ fn bitrate_for(width: u32, height: u32, frame_rate: ffi::AVRational) -> i64 {
         30
     };
     // 0.2 bits per pixel at 30 fps, scaled linearly with rate.
-    (pixels * fps.clamp(1, 120) / 5).clamp(1_000_000, 120_000_000)
+    let h264 = (pixels * fps.clamp(1, 120) / 5) as f64;
+    ((h264 * codec.bitrate_scale()) as i64).clamp(1_000_000, 120_000_000)
 }
 
 #[cfg(test)]
@@ -302,12 +593,34 @@ mod tests {
     }
 
     fn target() -> EncodeTarget {
+        target_for(VideoCodec::H264)
+    }
+
+    fn target_for(codec: VideoCodec) -> EncodeTarget {
         EncodeTarget {
             width: 1920,
             height: 1080,
-            frame_rate: rate(30, 1),
+            frame_rate: FrameRate::FPS_30,
+            codec,
+            bitrate: None,
+            rate_control: RateControl::Variable,
             threads: 2,
             global_header: true,
+        }
+    }
+
+    /// What this machine actually offers, printed rather than asserted: the
+    /// answer differs per machine and the useful thing is to be able to see it.
+    #[test]
+    fn report_what_this_machine_can_encode() {
+        for codec in VideoCodec::ALL {
+            eprintln!("--- {}", codec.label());
+            for probe in probe_all(target_for(codec)) {
+                match &probe.rejected {
+                    None => eprintln!("  OK      {}", probe.choice.name),
+                    Some(why) => eprintln!("  no      {} ({why})", probe.choice.name),
+                }
+            }
         }
     }
 
@@ -316,19 +629,19 @@ mod tests {
     /// quietly export on the CPU.
     #[test]
     fn hardware_encoders_are_all_tried_before_the_software_one() {
-        let software = CANDIDATES
+        let software = CANDIDATES_H264
             .iter()
             .position(|c| c.kind == EncoderKind::Software)
             .expect("there must be a software fallback");
         assert!(
-            CANDIDATES[..software]
+            CANDIDATES_H264[..software]
                 .iter()
                 .all(|c| c.kind == EncoderKind::Hardware),
             "a software encoder is ordered before a hardware one"
         );
         assert_eq!(
             software,
-            CANDIDATES.len() - 1,
+            CANDIDATES_H264.len() - 1,
             "the software fallback must be last"
         );
     }
@@ -338,7 +651,7 @@ mod tests {
     /// they know, so it is asserted rather than left to review.
     #[test]
     fn no_gpl_encoder_is_a_candidate() {
-        for choice in CANDIDATES {
+        for choice in CANDIDATES_H264.iter().chain(CANDIDATES_H265) {
             assert!(
                 !choice.name.contains("x264") && !choice.name.contains("x265"),
                 "{} is GPL and must never be linked (§0.1, §74)",
@@ -347,11 +660,24 @@ mod tests {
         }
     }
 
+    /// H.265 has no software fallback, on purpose: x265 is GPL. This asserts
+    /// the absence, so nobody 'fixes' the gap by reaching for the obvious
+    /// encoder and taking the whole product GPL with it.
+    #[test]
+    fn h265_has_no_software_encoder() {
+        assert!(
+            CANDIDATES_H265
+                .iter()
+                .all(|c| c.kind == EncoderKind::Hardware),
+            "a software H.265 encoder appeared; check its licence against §0.1"
+        );
+    }
+
     /// There must always be something to fall back to, on any platform.
     #[test]
     fn every_platform_has_a_fallback() {
         assert!(
-            CANDIDATES
+            CANDIDATES_H264
                 .iter()
                 .any(|c| c.name == "libopenh264" && c.kind == EncoderKind::Software)
         );
@@ -374,9 +700,9 @@ mod tests {
 
     #[test]
     fn the_bitrate_scales_with_pixels_and_rate() {
-        let hd30 = bitrate_for(1920, 1080, rate(30, 1));
-        let hd60 = bitrate_for(1920, 1080, rate(60, 1));
-        let uhd30 = bitrate_for(3840, 2160, rate(30, 1));
+        let hd30 = bitrate_for(1920, 1080, rate(30, 1), VideoCodec::H264);
+        let hd60 = bitrate_for(1920, 1080, rate(60, 1), VideoCodec::H264);
+        let uhd30 = bitrate_for(3840, 2160, rate(30, 1), VideoCodec::H264);
 
         assert!((10_000_000..=16_000_000).contains(&hd30), "1080p30: {hd30}");
         assert_eq!(hd60, hd30 * 2, "doubling the rate should double the rate");
@@ -386,7 +712,13 @@ mod tests {
             "four times the pixels, four times the bits"
         );
         // Even a tiny sequence must get a usable bitrate.
-        assert!(bitrate_for(64, 64, rate(24, 1)) >= 1_000_000);
+        assert!(bitrate_for(64, 64, rate(24, 1), VideoCodec::H264) >= 1_000_000);
+
+        // H.265 is about twice as efficient, so the automatic rate is lower for
+        // the same picture rather than the same number for a smaller file.
+        let hevc = bitrate_for(1920, 1080, rate(30, 1), VideoCodec::H265);
+        assert!(hevc < hd30, "H.265 should ask for less: {hevc} vs {hd30}");
+        assert!(hevc > hd30 / 2, "and not so much less that it looks worse");
     }
 
     /// The real test: this machine must be able to export.
@@ -406,7 +738,7 @@ mod tests {
     #[test]
     fn probing_reports_on_every_candidate() {
         let probes = probe_all(target());
-        assert_eq!(probes.len(), CANDIDATES.len());
+        assert_eq!(probes.len(), CANDIDATES_H264.len());
         assert!(
             probes.iter().any(EncoderProbe::is_usable),
             "nothing on this machine can encode H.264: {:?}",

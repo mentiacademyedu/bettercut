@@ -21,6 +21,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 bettercut-media.workspace = true
+# Reads egui's own bundled fonts in a test, to prove the glyphs the interface
+# uses actually exist. Same version epaint already pulls in, so no new build.
+ab_glyph = "0.2"
 tempfile = "3"
 
 [lints]

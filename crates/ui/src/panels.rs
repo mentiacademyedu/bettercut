@@ -53,10 +53,14 @@ pub fn toolbar(
 
         ui.separator();
 
-        // Plain words and ASCII, not arrow glyphs: egui's bundled font does not
-        // carry ↶/↷/＋/－, and a missing glyph renders as an empty box. The
-        // brief is controls that are easy to understand — the hover text says
-        // exactly what will be undone.
+        // Plain words and ASCII, not arrow glyphs. ↶ and ↷ *are* bundled — but
+        // only in Hack, the monospace font, and a button draws with the
+        // proportional family, so they arrive as empty boxes. ＋ and － are in
+        // no bundled font at all. egui never falls back to the system's fonts.
+        //
+        // `tests/glyphs.rs` checks this per family for every symbol the
+        // interface uses, rather than leaving it to a comment; it found the
+        // keyframe diamonds failing the same way.
         let undo_label = editor
             .undo_label()
             .map_or_else(|| "Nothing to undo".to_owned(), |l| format!("Undo {l}"));
@@ -1222,8 +1226,12 @@ fn keyed_row<R>(
                 "Animate this. A keyframe is added here, and another wherever \
                  you next change it.",
             ),
-            (true, false) => ("◇", "Add a keyframe at the playhead"),
-            (true, true) => ("◆", "Remove the keyframe at the playhead"),
+            // ◊ and ♦ rather than the geometric diamonds ◇ and ◆:
+            // those two are in Hack only, and a button draws with the
+            // proportional family, so they came out as empty boxes. See
+            // tests/glyphs.rs, which now catches that class of bug.
+            (true, false) => ("◊", "Add a keyframe at the playhead"),
+            (true, true) => ("♦", "Remove the keyframe at the playhead"),
         };
 
         let colour = if state.animated {
@@ -1380,6 +1388,62 @@ fn reset_video_properties(
 ///
 /// Both go through one command, because "make this a 1080p50 project" is one
 /// decision and should be one undo step.
+/// The shapes a project is usually made in (§36).
+const ASPECTS: [(&str, (u32, u32), &str); 5] = [
+    (
+        "16:9",
+        (16, 9),
+        "Landscape — YouTube, television, most cameras",
+    ),
+    ("9:16", (9, 16), "Vertical — Shorts, TikTok, Reels"),
+    ("1:1", (1, 1), "Square — feed posts"),
+    ("4:5", (4, 5), "Portrait — Instagram feed"),
+    ("21:9", (21, 9), "Ultrawide — cinematic"),
+];
+
+/// Whether a size is that shape, to within rounding.
+///
+/// Compared as a ratio rather than by exact dimensions: 1920×1080 and 1280×720
+/// are both 16:9, and someone who typed 1918×1080 has still chosen landscape.
+fn matches_aspect(size: Resolution, ratio: (u32, u32)) -> bool {
+    if size.height == 0 || ratio.1 == 0 {
+        return false;
+    }
+    let actual = f64::from(size.width) / f64::from(size.height);
+    let wanted = f64::from(ratio.0) / f64::from(ratio.1);
+    (actual - wanted).abs() < 0.01
+}
+
+/// Reshape to `ratio`, keeping the short edge.
+fn with_aspect(size: Resolution, ratio: (u32, u32)) -> Resolution {
+    let short = u64::from(size.width.min(size.height).max(2));
+    let (num, den) = (u64::from(ratio.0.max(1)), u64::from(ratio.1.max(1)));
+    let (w, h) = if num >= den {
+        (short * num / den, short)
+    } else {
+        (short, short * den / num)
+    };
+    even_size(Resolution::new(w as u32, h as u32))
+}
+
+/// Scale so the short edge is `short`, keeping the shape.
+fn resize_short_edge(size: Resolution, short: u32) -> Resolution {
+    let (w, h) = (u64::from(size.width.max(1)), u64::from(size.height.max(1)));
+    let short = u64::from(short);
+    let scaled = if w <= h {
+        Resolution::new(short as u32, (short * h / w) as u32)
+    } else {
+        Resolution::new((short * w / h) as u32, short as u32)
+    };
+    even_size(scaled)
+}
+
+/// Both dimensions even: §36 requires it, and 4:2:0 chroma has no
+/// representation for an odd one.
+fn even_size(size: Resolution) -> Resolution {
+    Resolution::new(size.width.max(2) & !1, size.height.max(2) & !1)
+}
+
 fn sequence_format(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -1389,40 +1453,55 @@ fn sequence_format(
 ) {
     let mut wanted = (current, rate);
 
+    // Shape first, then how big. Two different questions: "is this a YouTube
+    // video or a Reel" is decided once and fixes the framing everything gets
+    // composed against, while "how many pixels" is a quality dial that can move
+    // later without recomposing anything.
+    ui.horizontal(|ui| {
+        ui.label("shape");
+        for (name, ratio, hint) in ASPECTS {
+            let selected = matches_aspect(current, ratio);
+            if ui
+                .selectable_label(selected, name)
+                .on_hover_text(hint)
+                .clicked()
+                && !selected
+            {
+                // Keeps the short edge, which is the detail the user has been
+                // working at: reshaping 1920×1080 to 9:16 gives 1080×1920, not
+                // something smaller in both directions.
+                wanted.0 = with_aspect(current, ratio);
+            }
+        }
+    });
+
     ui.horizontal(|ui| {
         ui.label("size");
         egui::ComboBox::from_id_salt("sequence_resolution")
             .selected_text(format!("{}×{}", current.width, current.height))
             .show_ui(ui, |ui| {
-                // §36's preset shapes plus the two common landscape sizes. A
-                // custom size still round-trips through the project file; this
-                // is a shortcut, not a restriction.
-                let presets = [
-                    (Resolution::HD_1080, "1920×1080", "Landscape 16:9"),
-                    (Resolution::HD_720, "1280×720", "Landscape 16:9, smaller"),
-                    (
-                        Resolution::VERTICAL_1080,
-                        "1080×1920",
-                        "Vertical 9:16 — Shorts, TikTok, Reels",
-                    ),
-                    (
-                        Resolution::new(1080, 1080),
-                        "1080×1080",
-                        "Square 1:1 — feed posts",
-                    ),
-                    (
-                        Resolution::new(3840, 2160),
-                        "3840×2160",
-                        "4K UHD. Export size; preview still scales down (§16)",
-                    ),
-                ];
-                for (value, label, hint) in presets {
+                // Sizes for the shape the sequence already has, named by their
+                // short edge — "1080p" is 1080 lines, which is 1920×1080
+                // landscape and 1080×1920 vertical. A custom size still
+                // round-trips through the project file; this is a shortcut,
+                // not a restriction.
+                for (label, short) in [
+                    ("2160p (4K)", 2160_u32),
+                    ("1440p", 1440),
+                    ("1080p", 1080),
+                    ("720p", 720),
+                    ("480p", 480),
+                ] {
+                    let size = resize_short_edge(current, short);
                     if ui
-                        .selectable_value(&mut wanted.0, value, label)
-                        .on_hover_text(hint)
-                        .changed()
+                        .selectable_label(
+                            current == size,
+                            format!("{label}  —  {}×{}", size.width, size.height),
+                        )
+                        .on_hover_text("Export size; the preview still scales down (§16)")
+                        .clicked()
                     {
-                        wanted.0 = value;
+                        wanted.0 = size;
                     }
                 }
             });
@@ -1810,5 +1889,80 @@ fn place_on_timeline(editor: &mut Editor, state: &mut UiState, media_id: MediaId
     match editor.add_clip(track_id, ClipPayload::Video(Box::new(clip))) {
         Ok(()) => state.info("Clip added"),
         Err(err) => state.error(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod sequence_shape_tests {
+    use super::*;
+
+    /// Reshaping keeps the detail the user has been working at, so switching a
+    /// 1080p landscape project to vertical gives 1080×1920 rather than a
+    /// smaller frame in both directions.
+    #[test]
+    fn reshaping_keeps_the_short_edge() {
+        let landscape = Resolution::HD_1080;
+        assert_eq!(with_aspect(landscape, (9, 16)), Resolution::new(1080, 1920));
+        assert_eq!(with_aspect(landscape, (1, 1)), Resolution::new(1080, 1080));
+        assert_eq!(with_aspect(landscape, (16, 9)), Resolution::new(1920, 1080));
+
+        // And back again, without having shrunk on the way.
+        let vertical = with_aspect(landscape, (9, 16));
+        assert_eq!(with_aspect(vertical, (16, 9)), landscape);
+    }
+
+    #[test]
+    fn every_shape_of_every_size_is_even() {
+        for (name, ratio, _) in ASPECTS {
+            for start in [
+                Resolution::HD_1080,
+                Resolution::new(1080, 1920),
+                Resolution::new(3840, 2160),
+                Resolution::new(999, 501),
+            ] {
+                let shaped = with_aspect(start, ratio);
+                assert!(
+                    shaped.width.is_multiple_of(2) && shaped.height.is_multiple_of(2),
+                    "{name} of {}×{} gave {}×{}",
+                    start.width,
+                    start.height,
+                    shaped.width,
+                    shaped.height
+                );
+            }
+        }
+    }
+
+    /// The selected shape has to light up for the size the project is actually
+    /// at, or every project looks like it has no shape chosen.
+    #[test]
+    fn common_sizes_report_their_shape() {
+        assert!(matches_aspect(Resolution::HD_1080, (16, 9)));
+        assert!(matches_aspect(Resolution::HD_720, (16, 9)));
+        assert!(matches_aspect(Resolution::VERTICAL_1080, (9, 16)));
+        assert!(matches_aspect(Resolution::new(1080, 1080), (1, 1)));
+        assert!(matches_aspect(Resolution::new(3840, 2160), (16, 9)));
+
+        assert!(!matches_aspect(Resolution::HD_1080, (9, 16)));
+        assert!(!matches_aspect(Resolution::HD_1080, (1, 1)));
+        // Exactly one shape claims each of the usual sizes.
+        let claims = ASPECTS
+            .iter()
+            .filter(|(_, ratio, _)| matches_aspect(Resolution::HD_1080, *ratio))
+            .count();
+        assert_eq!(claims, 1, "1920×1080 matched {claims} shapes");
+    }
+
+    /// The same rule the export dialog uses, and the bug it had: "1080p" is the
+    /// short edge, so a 4K sequence resizes to 1920×1080, not 1080×608.
+    #[test]
+    fn resizing_names_the_short_edge() {
+        let uhd = Resolution::new(3840, 2160);
+        assert_eq!(resize_short_edge(uhd, 1080), Resolution::HD_1080);
+        assert_eq!(resize_short_edge(uhd, 720), Resolution::HD_720);
+        assert_eq!(
+            resize_short_edge(Resolution::VERTICAL_1080, 720),
+            Resolution::new(720, 1280)
+        );
     }
 }
