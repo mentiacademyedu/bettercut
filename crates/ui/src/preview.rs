@@ -212,6 +212,17 @@ impl Preview {
         self.last_rendered = None;
     }
 
+    /// Re-composite on the next update, even though the playhead has not moved.
+    ///
+    /// The picture is otherwise cached against the playhead position, which is
+    /// right for scrubbing and wrong for every edit that changes how a clip
+    /// looks while standing still — a slider, a drag on the preview, a
+    /// keyframe, a track hidden. Those all reach here through §56's event
+    /// stream rather than by this module watching the project.
+    pub fn invalidate_render(&mut self) {
+        self.last_rendered = None;
+    }
+
     /// One frame of playback work. Returns whether a repaint is needed.
     pub fn update(&mut self, editor: &mut Editor) -> bool {
         self.clock.tick();

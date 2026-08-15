@@ -160,6 +160,15 @@ pub struct UiState {
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
 
+    /// The composited picture no longer matches the project.
+    ///
+    /// The preview re-renders when the playhead moves, which is the common
+    /// case and cheap to detect. It cannot see an edit that changes how a clip
+    /// looks without moving anything — a slider, a drag on the picture, a
+    /// keyframe, a hidden track — so the event stream says so and the shell
+    /// clears it.
+    pub preview_is_stale: bool,
+
     /// A rubber-band selection being dragged out (§10 "Multi-select clips").
     pub marquee: Option<Marquee>,
 
@@ -222,6 +231,7 @@ impl Default for UiState {
             snapping: true,
             drag: None,
             preview_drag: None,
+            preview_is_stale: false,
             marquee: None,
             export_dialog: crate::export_dialog::ExportDialog::default(),
             pending_recovery: None,

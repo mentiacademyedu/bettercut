@@ -105,11 +105,18 @@ pub fn consume_events(events: Vec<Event>, editor: &Editor, state: &mut UiState) 
 
     for event in events {
         match event {
-            Event::ProjectChanged
-            | Event::ProjectLoaded
-            | Event::PlaybackPositionChanged(_)
-            | Event::PlaybackStateChanged { .. }
-            | Event::ActiveSequenceChanged(_) => state.needs_repaint = true,
+            // A repaint alone is not enough for these. The preview only
+            // re-composites when the playhead moves, so an edit that changes
+            // how a clip *looks* — opacity, scale, colour, a keyframe, a track
+            // hidden — would repaint the panels around a stale picture.
+            Event::ProjectChanged | Event::ProjectLoaded | Event::ActiveSequenceChanged(_) => {
+                state.needs_repaint = true;
+                state.preview_is_stale = true;
+            }
+
+            Event::PlaybackPositionChanged(_) | Event::PlaybackStateChanged { .. } => {
+                state.needs_repaint = true;
+            }
 
             Event::ProjectSaved => state.info("Project saved"),
             Event::MediaImported(_) => state.needs_repaint = true,

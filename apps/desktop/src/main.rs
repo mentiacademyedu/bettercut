@@ -183,6 +183,16 @@ impl eframe::App for App {
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
 
+        // An edit that changed how a clip looks without moving the playhead —
+        // a slider, a drag on the picture, a keyframe — leaves the composited
+        // frame stale. The events were drained above; act on them before the
+        // preview decides whether it has work to do.
+        if std::mem::take(&mut self.ui.preview_is_stale)
+            && let Some(preview) = self.preview.as_mut()
+        {
+            preview.invalidate_render();
+        }
+
         // Playback work happens before drawing, so the frame painted this pass
         // is the one the clock is asking for rather than the previous one.
         let playing = match self.preview.as_mut() {
