@@ -69,6 +69,11 @@ const USED: &[(char, FontFamily, &str)] = &[
         "every truncated label, and every button that opens a dialog",
     ),
     (
+        '↺',
+        FontFamily::Proportional,
+        "inspector: reset one control to its default",
+    ),
+    (
         '·',
         FontFamily::Monospace,
         "inspector: the System diagnostics block",

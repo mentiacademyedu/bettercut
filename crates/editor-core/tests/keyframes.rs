@@ -382,3 +382,108 @@ fn a_clip_saved_without_keyframes_loads_as_unanimated() {
     assert!(clip.keyframes.is_empty());
     assert_eq!(clip.look_at(MediaTime::ZERO).opacity, 1.0);
 }
+
+/// Resetting one control puts it back to default and clears *its* keyframes,
+/// leaving every other control alone. Resetting the number while an animation
+/// still drove it would look like the button had done nothing.
+#[test]
+fn resetting_one_control_clears_only_its_own_animation() {
+    let (mut editor, clip) = editor_with_clip();
+    editor.set_playhead(TimelineTime::from_seconds(2));
+
+    // Animate opacity, and set blur to something non-default.
+    editor
+        .toggle_keyframe(clip, ClipProperty::Opacity(1.0))
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(3));
+    editor
+        .set_clip_value(clip, ClipProperty::Opacity(0.0), false)
+        .unwrap();
+    editor
+        .set_clip_value(clip, ClipProperty::Blur(40.0), false)
+        .unwrap();
+
+    assert_eq!(clip_of(&editor, clip).keyframes.len(), 2);
+
+    editor
+        .reset_clip_parameter(clip, ClipProperty::Opacity(0.0))
+        .unwrap();
+
+    let after = clip_of(&editor, clip);
+    assert_eq!(after.opacity, 1.0, "opacity should be back to default");
+    assert!(
+        !after.keyframes.is_animated(AnimatedParameter::Opacity),
+        "its keyframes should be gone"
+    );
+    assert_eq!(after.blur, 40.0, "blur is a different control; leave it");
+}
+
+/// Position owns two parameters, and resetting it must take both — a reset that
+/// left Y where it was would be worse than none.
+#[test]
+fn resetting_position_takes_both_axes() {
+    let (mut editor, clip) = editor_with_clip();
+    editor
+        .set_clip_value(clip, ClipProperty::Position { x: 0.3, y: -0.2 }, false)
+        .unwrap();
+    editor
+        .set_clip_value(clip, ClipProperty::Scale { x: 2.0, y: 2.0 }, false)
+        .unwrap();
+
+    editor
+        .reset_clip_parameter(clip, ClipProperty::Position { x: 0.0, y: 0.0 })
+        .unwrap();
+
+    let after = clip_of(&editor, clip);
+    assert_eq!(after.transform.position.x, 0.0);
+    assert_eq!(after.transform.position.y, 0.0);
+    assert_eq!(after.transform.scale.x, 2.0, "scale is a different control");
+}
+
+/// One undo step, whatever it had to remove.
+#[test]
+fn resetting_a_control_undoes_in_one_step() {
+    let (mut editor, clip) = editor_with_clip();
+    editor.set_playhead(TimelineTime::from_seconds(1));
+    editor
+        .toggle_keyframe(clip, ClipProperty::Blur(20.0))
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(3));
+    editor
+        .set_clip_value(clip, ClipProperty::Blur(80.0), false)
+        .unwrap();
+
+    let before = clip_of(&editor, clip).keyframes.len();
+    assert_eq!(before, 2);
+
+    editor
+        .reset_clip_parameter(clip, ClipProperty::Blur(0.0))
+        .unwrap();
+    assert!(clip_of(&editor, clip).keyframes.is_empty());
+
+    editor.undo().unwrap();
+    assert_eq!(
+        clip_of(&editor, clip).keyframes.len(),
+        before,
+        "one undo should bring the whole reset back"
+    );
+}
+
+/// Whether a control offers its reset button comes from the model's defaults,
+/// so the button cannot appear on an untouched control or hide on a changed one.
+#[test]
+fn a_control_knows_whether_it_is_at_its_default() {
+    assert!(ClipProperty::Opacity(1.0).is_default());
+    assert!(!ClipProperty::Opacity(0.5).is_default());
+
+    assert!(ClipProperty::Scale { x: 1.0, y: 1.0 }.is_default());
+    assert!(!ClipProperty::Scale { x: 1.0, y: 1.5 }.is_default());
+
+    assert!(ClipProperty::Position { x: 0.0, y: 0.0 }.is_default());
+    assert!(!ClipProperty::Position { x: 0.0, y: 0.01 }.is_default());
+
+    assert!(ClipProperty::Blur(0.0).is_default());
+    assert!(ClipProperty::Rotation(0.0).is_default());
+    assert!(ClipProperty::Brightness(1.0).is_default());
+    assert!(!ClipProperty::Brightness(1.2).is_default());
+}

@@ -1242,6 +1242,7 @@ fn clip_video_properties(
     ui.add_space(4.0);
     let mut change: Option<(ClipProperty, bool)> = None;
     let mut toggle: Option<ClipProperty> = None;
+    let mut reset: Option<ClipProperty> = None;
 
     let mut value = opacity;
     let response = keyed_row(
@@ -1249,6 +1250,7 @@ fn clip_video_properties(
         &look,
         ClipProperty::Opacity(opacity),
         &mut toggle,
+        &mut reset,
         |ui| ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("opacity")),
     );
     if response.changed() {
@@ -1267,6 +1269,7 @@ fn clip_video_properties(
             y: transform.scale.y,
         },
         &mut toggle,
+        &mut reset,
         |ui| {
             ui.add(
                 egui::Slider::new(&mut scale, 0.05..=4.0)
@@ -1286,7 +1289,7 @@ fn clip_video_properties(
         x: transform.position.x,
         y: transform.position.y,
     };
-    keyed_row(ui, &look, position, &mut toggle, |ui| {
+    keyed_row(ui, &look, position, &mut toggle, &mut reset, |ui| {
         ui.label("position");
         let mut x = transform.position.x;
         let mut y = transform.position.y;
@@ -1308,6 +1311,7 @@ fn clip_video_properties(
         &look,
         ClipProperty::Rotation(transform.rotation_degrees),
         &mut toggle,
+        &mut reset,
         |ui| ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation")),
     );
     if response.changed() {
@@ -1325,6 +1329,7 @@ fn clip_video_properties(
                 &look,
                 ClipProperty::Brightness(color.brightness),
                 &mut toggle,
+                &mut reset,
                 |ui| ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness")),
             );
             if response.changed() {
@@ -1337,6 +1342,7 @@ fn clip_video_properties(
                 &look,
                 ClipProperty::Contrast(color.contrast),
                 &mut toggle,
+                &mut reset,
                 |ui| ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast")),
             );
             if response.changed() {
@@ -1349,6 +1355,7 @@ fn clip_video_properties(
                 &look,
                 ClipProperty::Saturation(color.saturation),
                 &mut toggle,
+                &mut reset,
                 |ui| ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation")),
             );
             if response.changed() {
@@ -1365,13 +1372,20 @@ fn clip_video_properties(
     // One slider, so no header of its own — but it does not belong with the
     // colour group either: everything in there is free, and this is not.
     let mut amount = blur;
-    let response = keyed_row(ui, &look, ClipProperty::Blur(blur), &mut toggle, |ui| {
-        ui.add(
-            egui::Slider::new(&mut amount, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
-                .text("blur")
-                .suffix("%"),
-        )
-    });
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Blur(blur),
+        &mut toggle,
+        &mut reset,
+        |ui| {
+            ui.add(
+                egui::Slider::new(&mut amount, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
+                    .text("blur")
+                    .suffix("%"),
+            )
+        },
+    );
     if response.changed() {
         change = Some((ClipProperty::Blur(amount), response.dragged()));
     }
@@ -1410,6 +1424,13 @@ fn clip_video_properties(
         }
     }
 
+    if let Some(property) = reset {
+        match editor.reset_clip_parameter(clip, property) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
     if let Some((property, continuing)) = change {
         apply_clip_property(editor, state, clip, property, continuing);
     }
@@ -1424,6 +1445,7 @@ fn keyed_row<R>(
     look: &VideoLook,
     current: bettercut_editor_core::ClipProperty,
     toggle: &mut Option<bettercut_editor_core::ClipProperty>,
+    reset: &mut Option<bettercut_editor_core::ClipProperty>,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     ui.horizontal(|ui| {
@@ -1464,7 +1486,34 @@ fn keyed_row<R>(
             *toggle = Some(current);
         }
 
-        control(ui)
+        let result = control(ui);
+
+        // Reset last, at the far end of the row: it is the least-used control
+        // here and putting it in the reading path would slow every other edit
+        // down. Disabled rather than hidden when there is nothing to undo, so
+        // the row does not change width as values change and the button does
+        // not appear under a cursor that was aiming at the slider.
+        let changed = !current.is_default() || look.row(current).animated;
+        let button = egui::Button::new(egui::RichText::new("↺").color(if changed {
+            theme::CLIP_TEXT
+        } else {
+            theme::DISABLED
+        }))
+        .frame(false)
+        .min_size(egui::vec2(18.0, 18.0));
+
+        let response = ui.add_enabled(changed, button);
+        if response
+            .on_hover_text(format!(
+                "Reset {} to its default, and remove its keyframes",
+                current.kind().to_lowercase()
+            ))
+            .clicked()
+        {
+            *reset = Some(current);
+        }
+
+        result
     })
     .inner
 }

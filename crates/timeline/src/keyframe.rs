@@ -26,6 +26,7 @@
 //! slide and an arc.
 
 use bettercut_foundation::MediaTime;
+
 use serde::{Deserialize, Serialize};
 
 /// A clip parameter that can be animated (§24, §59).
@@ -80,6 +81,33 @@ impl AnimatedParameter {
             Self::Brightness | Self::Contrast | Self::Saturation => Some((0.0, 4.0)),
             Self::Blur => Some((0.0, crate::clip::MAX_BLUR)),
         }
+    }
+
+    /// The value this parameter has on an untouched clip.
+    ///
+    /// Here rather than at the point of resetting, because there are now three
+    /// places that need to know it — the Inspector's per-control reset, the
+    /// whole-clip reset, and the "has this been changed" check that decides
+    /// whether either is worth offering. Three lists of numbers would eventually
+    /// disagree about what untouched means.
+    pub fn default_value(self) -> f32 {
+        match self {
+            // The identity for a multiply is one; for an offset it is zero.
+            Self::Opacity
+            | Self::ScaleX
+            | Self::ScaleY
+            | Self::Brightness
+            | Self::Contrast
+            | Self::Saturation => 1.0,
+            Self::PositionX | Self::PositionY | Self::Rotation | Self::Blur => 0.0,
+        }
+    }
+
+    /// Whether `value` is what an untouched clip would have.
+    pub fn is_default(self, value: f32) -> bool {
+        // Exact: these are set from the same constants, not accumulated, so a
+        // tolerance would only hide a real difference.
+        value == self.default_value()
     }
 
     /// Hold `value` inside [`Self::limits`].
@@ -729,5 +757,72 @@ mod tests {
             .filter_map(|step| track(&[(0, 0.0), (100, 1.0)], overshoot).value_at(at(step)))
             .fold(f32::MIN, f32::max);
         assert!(peak > 1.0, "expected overshoot, peaked at {peak}");
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+    use crate::clip::{ColorAdjust, Transform};
+    use crate::{ClipLook, VideoClip};
+
+    /// The defaults have to be what a freshly created clip actually has, or
+    /// "reset" would move a parameter somewhere the clip never was.
+    #[test]
+    fn the_defaults_match_a_new_clip() {
+        let source = crate::SourceRange::new(
+            bettercut_foundation::MediaTime::ZERO,
+            bettercut_foundation::MediaTime::from_seconds(1),
+        )
+        .expect("range");
+        let clip = VideoClip::new(
+            bettercut_foundation::MediaId::new(),
+            bettercut_foundation::TimelineTime::ZERO,
+            source,
+        )
+        .expect("clip");
+
+        for parameter in AnimatedParameter::ALL {
+            let actual = clip.parameter(parameter);
+            assert_eq!(
+                actual,
+                parameter.default_value(),
+                "{} defaults to {actual} on a new clip but {} here",
+                parameter.label(),
+                parameter.default_value()
+            );
+            assert!(parameter.is_default(actual));
+        }
+    }
+
+    /// Every default has to be a value the parameter is allowed to hold, or
+    /// resetting would immediately be clamped to something else.
+    #[test]
+    fn every_default_is_inside_its_limits() {
+        for parameter in AnimatedParameter::ALL {
+            let value = parameter.default_value();
+            assert_eq!(
+                parameter.clamp(value),
+                value,
+                "{} clamps its own default",
+                parameter.label()
+            );
+        }
+    }
+
+    /// A clip at every default renders as the identity, which is what makes
+    /// "reset" mean "as if untouched" rather than "some other look".
+    #[test]
+    fn the_defaults_are_the_identity_look() {
+        let look = ClipLook {
+            transform: Transform::default(),
+            opacity: AnimatedParameter::Opacity.default_value(),
+            color: ColorAdjust::default(),
+            blur: AnimatedParameter::Blur.default_value(),
+        };
+        assert!(look.transform.is_identity());
+        assert!(look.color.is_identity());
+        assert_eq!(look.opacity, 1.0);
+        assert_eq!(look.blur, 0.0);
     }
 }

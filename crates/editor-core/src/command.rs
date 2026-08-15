@@ -284,6 +284,19 @@ impl ClipProperty {
         }
     }
 
+    /// Whether every parameter this property writes is at its default — that
+    /// is, whether the control has been touched at all.
+    ///
+    /// Used to decide whether a reset button is worth offering. The values come
+    /// from `AnimatedParameter::default_value`, so there is no second list to
+    /// disagree with the one the model keeps.
+    pub fn is_default(self) -> bool {
+        self.animated()
+            .into_iter()
+            .flatten()
+            .all(|(parameter, value)| parameter.is_default(value))
+    }
+
     /// Shown in the undo menu, and used to decide whether two edits are the
     /// same gesture and should collapse into one history entry.
     pub fn kind(&self) -> &'static str {

@@ -549,16 +549,17 @@ impl Editor {
 
         commands.extend(
             [
-                ClipProperty::Opacity(1.0),
-                ClipProperty::Scale { x: 1.0, y: 1.0 },
+                ClipProperty::Opacity(0.0),
+                ClipProperty::Scale { x: 0.0, y: 0.0 },
                 ClipProperty::Position { x: 0.0, y: 0.0 },
                 ClipProperty::Rotation(0.0),
-                ClipProperty::Brightness(1.0),
-                ClipProperty::Contrast(1.0),
-                ClipProperty::Saturation(1.0),
+                ClipProperty::Brightness(0.0),
+                ClipProperty::Contrast(0.0),
+                ClipProperty::Saturation(0.0),
                 ClipProperty::Blur(0.0),
             ]
             .into_iter()
+            .map(Self::reset_values)
             .map(|property| Command::SetClipProperty {
                 sequence,
                 track,
@@ -568,6 +569,89 @@ impl Editor {
         );
 
         self.dispatch_group("Reset Clip", commands)
+    }
+
+    /// Rewrite a property with every value replaced by its default.
+    ///
+    /// Takes the property so the *shape* is the caller's — which control, and
+    /// therefore which parameters — while the values come from the model. That
+    /// keeps "what does reset mean" in one place while leaving "reset what" at
+    /// the call site.
+    fn reset_values(property: crate::command::ClipProperty) -> crate::command::ClipProperty {
+        use crate::command::ClipProperty as P;
+        use bettercut_timeline::AnimatedParameter as A;
+
+        match property {
+            P::Opacity(_) => P::Opacity(A::Opacity.default_value()),
+            P::Gain(_) => P::Gain(1.0),
+            P::Position { .. } => P::Position {
+                x: A::PositionX.default_value(),
+                y: A::PositionY.default_value(),
+            },
+            P::Scale { .. } => P::Scale {
+                x: A::ScaleX.default_value(),
+                y: A::ScaleY.default_value(),
+            },
+            P::Rotation(_) => P::Rotation(A::Rotation.default_value()),
+            P::Brightness(_) => P::Brightness(A::Brightness.default_value()),
+            P::Contrast(_) => P::Contrast(A::Contrast.default_value()),
+            P::Saturation(_) => P::Saturation(A::Saturation.default_value()),
+            P::Blur(_) => P::Blur(A::Blur.default_value()),
+        }
+    }
+
+    /// Put one inspector control back to default, keyframes and all.
+    ///
+    /// Same meaning as the whole-clip reset, applied to one row: as if that
+    /// parameter had never been touched. Clearing its keys is part of it —
+    /// resetting the number while leaving an animation driving it would look
+    /// like the button had done nothing.
+    pub fn reset_clip_parameter(
+        &mut self,
+        clip: ClipId,
+        property: crate::command::ClipProperty,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        // Only this control's own parameters — `Position` owns X and Y, and
+        // resetting it must not disturb scale or anything else.
+        let parameters: Vec<_> = property
+            .animated()
+            .into_iter()
+            .flatten()
+            .map(|(parameter, _)| parameter)
+            .collect();
+
+        let mut commands: Vec<Command> = parameters
+            .iter()
+            .filter_map(|parameter| video.keyframes.track(*parameter))
+            .flat_map(|animation| {
+                let parameter = animation.parameter;
+                animation
+                    .keys()
+                    .iter()
+                    .map(move |key| Command::RemoveKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        time: key.time,
+                    })
+            })
+            .collect();
+
+        commands.push(Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property: Self::reset_values(property),
+        });
+
+        self.dispatch_group(format!("Reset {}", property.kind()), commands)
     }
 
     /// Add a keyframe for every parameter of one inspector control, or delete
