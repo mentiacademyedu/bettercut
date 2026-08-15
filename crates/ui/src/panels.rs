@@ -471,91 +471,117 @@ fn transform_handles(
 ) {
     use crate::preview_overlay as overlay;
 
-    // Exactly one clip, and a video one: two selected clips have two boxes and
-    // no single answer to a drag.
-    let selected: Vec<_> = state.selected_clips.iter().copied().collect();
-    let Some(clip_id) = (selected.len() == 1).then(|| selected[0]) else {
+    // Everything visible right now, topmost first. §22 makes track order the
+    // compositing order with index 0 at the bottom, so reversing puts the clip
+    // a click would actually hit first in the list.
+    let visible = visible_boxes(editor, canvas, output_aspect);
+    if visible.is_empty() {
         state.preview_drag = None;
         return;
-    };
-    let Some(clip) = editor.video_clip(clip_id) else {
-        state.preview_drag = None;
-        return;
-    };
-
-    // What is on screen: the animated values, so the handles sit on the picture
-    // at this instant rather than where the sliders happen to read (§24).
-    let playhead = editor.playhead();
-    let look = clip.look_at(clip.source_time_at(playhead));
-    let source_aspect = editor
-        .project()
-        .media_asset(clip.media_id)
-        .filter(|asset| asset.height > 0)
-        .map_or(output_aspect, |asset| {
-            f64::from(asset.width) as f32 / f64::from(asset.height) as f32
-        });
-
-    let box_on_canvas = overlay::to_canvas(
-        overlay::layer_box(source_aspect, output_aspect, look.transform),
-        canvas,
-    );
-
-    let pointer = response.interact_pointer_pos().or(response.hover_pos());
-    let on_corner = pointer.and_then(|at| overlay::corner_at(box_on_canvas, at));
-
-    // Start a gesture.
-    if response.drag_started()
-        && let Some(at) = pointer
-    {
-        let gesture = if let Some(corner) = on_corner {
-            overlay::Gesture::Scale {
-                corner,
-                from: look.transform.scale,
-                grab_distance: box_on_canvas.center().distance(at),
-            }
-        } else if box_on_canvas.contains(at) {
-            overlay::Gesture::Move {
-                from: look.transform.position,
-                grab: at,
-            }
-        } else {
-            // Outside the picture: not a transform gesture. Leaving it unhandled
-            // keeps room for a future marquee or a click-to-deselect.
-            state.preview_drag = None;
-            return;
-        };
-        state.preview_drag = Some(overlay::PreviewDrag {
-            clip: clip_id,
-            gesture,
-            started: false,
-        });
     }
 
-    // The cursor says what the handle under it will do, before it is pressed.
+    // The handles belong to a single selected clip: two selections give two
+    // boxes and no single answer to a drag.
+    let selected = (state.selected_clips.len() == 1)
+        .then(|| state.selected_clips.iter().copied().next())
+        .flatten()
+        .and_then(|id| visible.iter().find(|shown| shown.clip == id).copied());
+
+    let pointer = response.interact_pointer_pos().or(response.hover_pos());
+    let on_corner = selected
+        .zip(pointer)
+        .and_then(|(shown, at)| overlay::corner_at(shown.box_on_canvas, at));
+
+    // The cursor says what is under it before it is pressed.
     if on_corner.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-    } else if pointer.is_some_and(|at| box_on_canvas.contains(at)) {
+    } else if pointer.is_some_and(|at| visible.iter().any(|s| s.box_on_canvas.contains(at))) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
 
+    // A click picks a clip, so the picture is a place to select from and not
+    // only a place to drag what the timeline already chose. Clicking the empty
+    // canvas around it clears the selection, which is the only other thing that
+    // click could reasonably mean.
+    if response.clicked()
+        && let Some(at) = pointer
+    {
+        match topmost_at(&visible, at) {
+            Some(shown) => state.select_only(shown.clip),
+            None => state.clear_selection(),
+        }
+    }
+
+    // Start a gesture. A press on a clip that is not selected selects it *and*
+    // begins the drag, rather than costing a click to select and a second to
+    // move — the second click is pure ceremony when the intent was obvious.
+    if response.drag_started()
+        && let Some(at) = pointer
+    {
+        let grabbed = match (selected, on_corner) {
+            // A corner only counts for the clip that is already selected;
+            // otherwise the corners of an unselected clip would be invisible
+            // hotspots.
+            (Some(shown), Some(corner)) => Some((
+                shown,
+                overlay::Gesture::Scale {
+                    corner,
+                    from: shown.transform.scale,
+                    grab_distance: shown.box_on_canvas.center().distance(at),
+                },
+            )),
+            _ => topmost_at(&visible, at).map(|shown| {
+                (
+                    shown,
+                    overlay::Gesture::Move {
+                        from: shown.transform.position,
+                        grab: at,
+                    },
+                )
+            }),
+        };
+
+        match grabbed {
+            Some((shown, gesture)) => {
+                state.select_only(shown.clip);
+                state.preview_drag = Some(overlay::PreviewDrag {
+                    clip: shown.clip,
+                    gesture,
+                    started: false,
+                });
+            }
+            // Outside every picture: not a transform gesture.
+            None => state.preview_drag = None,
+        }
+    }
+
+    // Whatever is selected now — possibly picked a moment ago by the press
+    // above — is what gets the box.
+    let Some(shown) = (state.selected_clips.len() == 1)
+        .then(|| state.selected_clips.iter().copied().next())
+        .flatten()
+        .and_then(|id| visible.iter().find(|shown| shown.clip == id).copied())
+    else {
+        return;
+    };
+
     let dragging = state
         .preview_drag
-        .is_some_and(|drag| drag.clip == clip_id && response.dragged());
+        .is_some_and(|drag| drag.clip == shown.clip && response.dragged());
 
-    overlay::draw(painter, box_on_canvas, dragging);
+    overlay::draw(painter, shown.box_on_canvas, dragging);
 
-    // Continue it.
     if dragging
         && let Some(at) = pointer
         && let Some(drag) = &mut state.preview_drag
     {
-        let property = overlay::property_for(drag.gesture, canvas, box_on_canvas, at);
+        let property = overlay::property_for(drag.gesture, canvas, shown.box_on_canvas, at);
         let continuing = drag.started;
         drag.started = true;
         // §11: `continuing` after the first frame, so the whole drag is one
         // undo step — and §54, so this goes through a command rather than
         // touching the project.
-        if let Err(err) = editor.set_clip_value(clip_id, property, continuing) {
+        if let Err(err) = editor.set_clip_value(shown.clip, property, continuing) {
             state.error(err.to_string());
         }
         state.needs_repaint = true;
@@ -564,6 +590,64 @@ fn transform_handles(
     if response.drag_stopped() {
         state.preview_drag = None;
     }
+}
+
+/// A clip on screen right now, and where its picture is.
+#[derive(Clone, Copy)]
+struct ShownClip {
+    clip: bettercut_editor_core::foundation::ClipId,
+    /// The animated transform at this instant, so a keyed clip is grabbed where
+    /// it actually appears rather than where its sliders read (§24).
+    transform: bettercut_editor_core::timeline::Transform,
+    box_on_canvas: egui::Rect,
+}
+
+/// Every visible video clip at the playhead, topmost first.
+fn visible_boxes(editor: &Editor, canvas: egui::Rect, output_aspect: f32) -> Vec<ShownClip> {
+    use crate::preview_overlay as overlay;
+
+    let playhead = editor.playhead();
+    let project = editor.project();
+    let Some(sequence) = editor.active_sequence() else {
+        return Vec::new();
+    };
+
+    let mut shown = Vec::new();
+    // Reversed: §22 puts index 0 at the bottom of the stack, and a click should
+    // find what is drawn over everything else.
+    for track in sequence.video_tracks.iter().rev() {
+        if !track.enabled {
+            continue;
+        }
+        let Some(clip) = track.clip_at(playhead) else {
+            continue;
+        };
+        let transform = clip.look_at(clip.source_time_at(playhead)).transform;
+        let source_aspect = project
+            .media_asset(clip.media_id)
+            .filter(|asset| asset.height > 0)
+            .map_or(output_aspect, |asset| {
+                asset.width as f32 / asset.height as f32
+            });
+
+        shown.push(ShownClip {
+            clip: clip.id,
+            transform,
+            box_on_canvas: overlay::to_canvas(
+                overlay::layer_box(source_aspect, output_aspect, transform),
+                canvas,
+            ),
+        });
+    }
+    shown
+}
+
+/// The frontmost clip whose picture covers `at`.
+fn topmost_at(visible: &[ShownClip], at: egui::Pos2) -> Option<ShownClip> {
+    visible
+        .iter()
+        .find(|shown| shown.box_on_canvas.contains(at))
+        .copied()
 }
 
 /// Inspector (§58): what is selected, and the track switches.
@@ -2088,5 +2172,109 @@ mod sequence_shape_tests {
             resize_short_edge(Resolution::VERTICAL_1080, 720),
             Resolution::new(720, 1280)
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_pick_tests {
+    use super::*;
+    use bettercut_editor_core::media::{MediaAsset, MediaKind};
+    use bettercut_editor_core::timeline::{SourceRange, VideoClip};
+    use bettercut_editor_core::{ClipPayload, Editor};
+
+    /// Two video tracks, each with a clip under the playhead.
+    ///
+    /// Returns the clips in *track* order — bottom first — which is the
+    /// opposite of what a click should find, so the test can tell the two
+    /// orders apart.
+    fn stacked() -> (Editor, [bettercut_editor_core::foundation::ClipId; 2]) {
+        let (mut editor, _rx) = Editor::new_project("Preview picking");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/a.mp4",
+            MediaTime::from_seconds(60),
+        ));
+        let source = SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(4)).expect("range");
+
+        let bottom_track = editor.active_sequence().expect("sequence").video_tracks[0].id;
+        let bottom = VideoClip::new(media, TimelineTime::ZERO, source).expect("clip");
+        let bottom_id = bottom.id;
+        editor
+            .add_clip(bottom_track, ClipPayload::Video(Box::new(bottom)))
+            .expect("add");
+
+        editor.add_video_track("V2".to_owned()).expect("track");
+        let top_track = editor.active_sequence().expect("sequence").video_tracks[1].id;
+        let top = VideoClip::new(media, TimelineTime::ZERO, source).expect("clip");
+        let top_id = top.id;
+        editor
+            .add_clip(top_track, ClipPayload::Video(Box::new(top)))
+            .expect("add");
+
+        (editor, [bottom_id, top_id])
+    }
+
+    fn canvas() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 180.0))
+    }
+
+    /// §22 stacks track 0 at the bottom, so a click has to find the *last*
+    /// track first. Getting this backwards would silently pick whatever is
+    /// hidden behind the picture the user is looking at.
+    #[test]
+    fn the_topmost_clip_is_listed_first() {
+        let (editor, [bottom, top]) = stacked();
+        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].clip, top, "the upper track should come first");
+        assert_eq!(shown[1].clip, bottom);
+    }
+
+    /// And a click in the middle finds the top one, not the one beneath it.
+    #[test]
+    fn a_click_lands_on_the_clip_that_is_drawn_over_the_others() {
+        let (editor, [_, top]) = stacked();
+        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+
+        let hit = topmost_at(&shown, canvas().center()).expect("something under the pointer");
+        assert_eq!(hit.clip, top);
+    }
+
+    /// A hidden track is not on screen, so it must not be clickable either —
+    /// otherwise clicking the picture selects something invisible.
+    #[test]
+    fn a_hidden_track_cannot_be_picked() {
+        let (mut editor, [_, top]) = stacked();
+        let top_track = editor.active_sequence().expect("sequence").video_tracks[1].id;
+        editor
+            .set_track_flag(top_track, bettercut_editor_core::TrackFlag::Enabled, false)
+            .expect("hide");
+
+        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+        assert_eq!(shown.len(), 1, "the hidden track should be gone");
+        assert_ne!(shown[0].clip, top);
+    }
+
+    /// Clicking the canvas outside every picture is not a pick. The caller
+    /// treats that as "clear the selection", which only makes sense if nothing
+    /// is reported.
+    #[test]
+    fn a_click_outside_every_picture_finds_nothing() {
+        let (editor, _) = stacked();
+        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+
+        // Far outside the canvas entirely.
+        assert!(topmost_at(&shown, egui::pos2(-500.0, -500.0)).is_none());
+    }
+
+    /// With the playhead past the clips there is nothing on screen, so there is
+    /// nothing to select and nothing to draw handles around.
+    #[test]
+    fn nothing_is_shown_when_the_playhead_is_past_the_clips() {
+        let (mut editor, _) = stacked();
+        editor.set_playhead(TimelineTime::from_seconds(30));
+
+        assert!(visible_boxes(&editor, canvas(), 16.0 / 9.0).is_empty());
     }
 }
