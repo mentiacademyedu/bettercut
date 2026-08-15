@@ -50,6 +50,76 @@ const HEIGHTS: [(&str, u32); 5] = [
     ("480p", 480),
 ];
 
+/// How the bitrate is decided.
+///
+/// The named tiers are multiples of the recommended figure rather than fixed
+/// numbers, because the right bitrate depends on the size, the rate and the
+/// codec — "8 Mb/s" is generous for 720p30 and thin for 4K60. Scaling the
+/// recommendation keeps every tier meaningful at every setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BitrateChoice {
+    Lower,
+    Medium,
+    #[default]
+    Recommended,
+    High,
+    Custom,
+}
+
+impl BitrateChoice {
+    /// Smallest to largest, so the list reads as a scale. `Recommended` sits in
+    /// its natural place rather than at the top: it is a point on the same
+    /// scale, not a separate kind of thing.
+    const ALL: [Self; 5] = [
+        Self::Lower,
+        Self::Medium,
+        Self::Recommended,
+        Self::High,
+        Self::Custom,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Lower => "Lower",
+            Self::Medium => "Medium",
+            Self::Recommended => "Recommended",
+            Self::High => "High",
+            Self::Custom => "Custom",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Lower => {
+                "Half the recommended rate. Smallest files; soft on fine detail and motion."
+            }
+            Self::Medium => {
+                "Three quarters. Noticeably smaller, and hard to tell apart on most footage."
+            }
+            Self::Recommended => {
+                "Chosen from the size, frame rate and format. Use this unless you have a reason not to."
+            }
+            Self::High => {
+                "Half again as much. For footage with heavy grain, fast motion, or another edit to come."
+            }
+            Self::Custom => "Type an exact rate, and choose how strictly it is held.",
+        }
+    }
+
+    /// What this works out to, given the recommended figure.
+    fn kbps(self, recommended: u32) -> u32 {
+        let scaled = match self {
+            Self::Lower => f64::from(recommended) * 0.5,
+            Self::Medium => f64::from(recommended) * 0.75,
+            Self::Recommended | Self::Custom => f64::from(recommended),
+            Self::High => f64::from(recommended) * 1.5,
+        };
+        // The same floor and ceiling the encoder applies, so what is shown is
+        // what gets used.
+        (scaled as u32).clamp(1_000, 120_000)
+    }
+}
+
 /// Containers offered. Both hold H.264 and H.265.
 const CONTAINERS: [(&str, &str); 2] = [("mp4", "Plays everywhere"), ("mov", "QuickTime; editors")];
 
@@ -73,13 +143,14 @@ pub struct ExportDialog {
     /// sequence.
     custom: Option<Resolution>,
     frame_rate: Option<FrameRate>,
-    /// Kilobits per second, or `None` for the automatic figure.
+    bitrate: BitrateChoice,
+    /// The typed rate, kept across a switch away from Custom and back.
     ///
     /// Kilobits rather than megabits because that is the unit every delivery
     /// spec is written in — "8000 kbps" is what a platform's upload guidance
     /// says, and making the user divide it by a thousand is a small tax on the
     /// one field most likely to be copied from somewhere else.
-    bitrate_kbps: Option<u32>,
+    custom_kbps: Option<u32>,
     rate_control: RateControl,
     /// Which codecs this machine can write, probed when the window opens.
     available: Vec<(VideoCodec, bool)>,
@@ -110,7 +181,8 @@ impl ExportDialog {
             .iter()
             .position(|(_, height)| *height == short_edge(sequence.resolution));
         self.frame_rate = Some(sequence.frame_rate);
-        self.bitrate_kbps = None;
+        self.bitrate = BitrateChoice::default();
+        self.custom_kbps = None;
 
         // Probed once, here, rather than per frame: each check opens a real
         // encoder. `codec_is_available` caches, so reopening is free.
@@ -144,6 +216,18 @@ impl ExportDialog {
             // Falls back to the sequence: `custom` is only unset before the
             // window has ever opened, and the sequence is the honest answer.
             None => even(self.custom.unwrap_or(native)),
+        }
+    }
+
+    /// The bitrate that will actually be used, in kilobits.
+    ///
+    /// One place, so the dropdown, the estimate in the footer and the number
+    /// handed to the encoder cannot disagree.
+    fn effective_kbps(&self, native: Resolution) -> u32 {
+        let recommended = automatic_kbps(self, native);
+        match self.bitrate {
+            BitrateChoice::Custom => self.custom_kbps.unwrap_or(recommended),
+            other => other.kbps(recommended),
         }
     }
 
@@ -274,8 +358,13 @@ pub fn show(
         resolution: dialog.resolution(native),
         frame_rate: dialog.frame_rate.unwrap_or(native_rate),
         codec: dialog.codec,
-        bitrate: dialog.bitrate_kbps.map(|kbps| i64::from(kbps) * 1_000),
-        rate_control: dialog.rate_control,
+        bitrate: Some(i64::from(dialog.effective_kbps(native)) * 1_000),
+        // Only a typed rate carries a rate-control choice; see `bitrate_rows`.
+        rate_control: if dialog.bitrate == BitrateChoice::Custom {
+            dialog.rate_control
+        } else {
+            RateControl::Variable
+        },
         range,
         // §15.1: FFmpeg never gets every core. The renderer and the decoder are
         // both working during an export, and leaving the machine responsive
@@ -435,45 +524,60 @@ fn resolution_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resoluti
 }
 
 fn bitrate_rows(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
-    let automatic = automatic_kbps(dialog, native);
+    let recommended = automatic_kbps(dialog, native);
 
     row(ui, "Bit rate", |ui| {
+        let chosen = dialog.bitrate;
         egui::ComboBox::from_id_salt("export_bitrate_mode")
-            .selected_text(if dialog.bitrate_kbps.is_none() {
-                "Recommended"
-            } else {
-                "Custom"
+            .selected_text(match chosen {
+                BitrateChoice::Custom => "Custom".to_owned(),
+                other => format!("{}  —  {} kb/s", other.label(), other.kbps(recommended)),
             })
             .width(FIELD_WIDTH)
             .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(dialog.bitrate_kbps.is_none(), "Recommended")
-                    .on_hover_text(format!(
-                        "About {automatic} kb/s for this size, rate and format."
-                    ))
-                    .clicked()
-                {
-                    dialog.bitrate_kbps = None;
-                }
-                if ui
-                    .selectable_label(dialog.bitrate_kbps.is_some(), "Custom")
-                    .clicked()
-                {
-                    dialog.bitrate_kbps = Some(automatic);
+                // Listed smallest to largest, with the number each one works
+                // out to, so the names are anchored to something real rather
+                // than being four words the user has to guess between.
+                for choice in BitrateChoice::ALL {
+                    let label = match choice {
+                        BitrateChoice::Custom => "Custom…".to_owned(),
+                        other => {
+                            format!("{}  —  {} kb/s", other.label(), other.kbps(recommended))
+                        }
+                    };
+                    if ui
+                        .selectable_label(chosen == choice, label)
+                        .on_hover_text(choice.description())
+                        .clicked()
+                    {
+                        dialog.bitrate = choice;
+                        if choice == BitrateChoice::Custom && dialog.custom_kbps.is_none() {
+                            // Start from where they were, not from a number
+                            // unrelated to what they had selected.
+                            dialog.custom_kbps = Some(chosen.kbps(recommended));
+                        }
+                    }
                 }
             });
     });
 
-    if let Some(kbps) = &mut dialog.bitrate_kbps {
+    if dialog.bitrate == BitrateChoice::Custom {
+        let mut kbps = dialog.custom_kbps.unwrap_or(recommended);
         row(ui, "", |ui| {
-            ui.add(
-                egui::DragValue::new(kbps)
+            let response = ui.add(
+                egui::DragValue::new(&mut kbps)
                     .speed(100)
                     .range(200..=200_000)
                     .suffix(" kb/s"),
-            )
-            .on_hover_text("Higher is better looking and larger. 8000 suits 1080p.");
+            );
+            response.on_hover_text("Higher is better looking and larger. 8000 suits 1080p.");
         });
+        dialog.custom_kbps = Some(kbps);
+
+        // Rate control is offered only here. The named tiers all mean "spend
+        // about this much", which is variable by definition; someone who needs
+        // a rate held exactly — a broadcast or ingest spec — has an exact
+        // number to type, and types it.
         row(ui, "", |ui| {
             ui.vertical(|ui| {
                 for mode in [RateControl::Constant, RateControl::Variable] {
@@ -571,9 +675,7 @@ fn frame_rate_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: FrameRat
 
 fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duration: TimelineTime) {
     let size = dialog.resolution(native);
-    let kbps = dialog
-        .bitrate_kbps
-        .unwrap_or_else(|| automatic_kbps(dialog, native));
+    let kbps = dialog.effective_kbps(native);
     let seconds =
         duration.ticks() as f64 / bettercut_editor_core::foundation::TICKS_PER_SECOND as f64;
     // Video plus 192 kb/s of audio, in megabytes.
@@ -818,6 +920,88 @@ mod tests {
         // An empty name is a slip, not a request for a file called "".
         dialog.name = "   ".to_owned();
         assert!(dialog.path().unwrap().ends_with("video.mov"));
+    }
+
+    /// The tiers have to be a scale: each one strictly larger than the one
+    /// before, and Recommended sitting where its name says it does.
+    #[test]
+    fn the_bitrate_tiers_are_an_ascending_scale() {
+        let recommended = 12_000;
+        let values: Vec<u32> = BitrateChoice::ALL
+            .iter()
+            .filter(|c| **c != BitrateChoice::Custom)
+            .map(|c| c.kbps(recommended))
+            .collect();
+
+        assert!(
+            values.windows(2).all(|pair| pair[1] > pair[0]),
+            "the tiers are not ascending: {values:?}"
+        );
+        assert_eq!(BitrateChoice::Recommended.kbps(recommended), recommended);
+        assert_eq!(BitrateChoice::Lower.kbps(recommended), 6_000);
+        assert_eq!(BitrateChoice::High.kbps(recommended), 18_000);
+        // Custom starts from the recommendation, so switching to it does not
+        // move the number under the user.
+        assert_eq!(BitrateChoice::Custom.kbps(recommended), recommended);
+    }
+
+    /// Every tier stays inside the range the encoder will accept, even from a
+    /// recommendation already at one end of it.
+    #[test]
+    fn no_tier_escapes_the_encoders_range() {
+        for recommended in [1_000, 12_000, 120_000] {
+            for choice in BitrateChoice::ALL {
+                let kbps = choice.kbps(recommended);
+                assert!(
+                    (1_000..=120_000).contains(&kbps),
+                    "{} of {recommended} gave {kbps}",
+                    choice.label()
+                );
+            }
+        }
+    }
+
+    /// What the footer estimates, what the dropdown shows and what the encoder
+    /// is handed all come from one place, so they cannot disagree.
+    #[test]
+    fn the_effective_rate_follows_the_chosen_tier() {
+        let native = Resolution::new(1920, 1080);
+        let mut dialog = dialog_at(1920, 1080, FrameRate::FPS_30, VideoCodec::H264);
+        let recommended = automatic_kbps(&dialog, native);
+
+        dialog.bitrate = BitrateChoice::Recommended;
+        assert_eq!(dialog.effective_kbps(native), recommended);
+
+        dialog.bitrate = BitrateChoice::Lower;
+        assert_eq!(dialog.effective_kbps(native), recommended / 2);
+
+        dialog.bitrate = BitrateChoice::High;
+        assert!(dialog.effective_kbps(native) > recommended);
+
+        // A typed rate wins over every tier.
+        dialog.bitrate = BitrateChoice::Custom;
+        dialog.custom_kbps = Some(4_321);
+        assert_eq!(dialog.effective_kbps(native), 4_321);
+    }
+
+    /// A tier scales with the format, not just with itself: "Lower" at 4K must
+    /// still be more than "High" at 480p, or the names would mean nothing
+    /// across settings.
+    #[test]
+    fn the_tiers_track_the_output_format() {
+        let native = Resolution::new(3840, 2160);
+        let mut big = dialog_at(3840, 2160, FrameRate::FPS_30, VideoCodec::H264);
+        big.bitrate = BitrateChoice::Lower;
+
+        let mut small = dialog_at(854, 480, FrameRate::FPS_30, VideoCodec::H264);
+        small.bitrate = BitrateChoice::High;
+
+        assert!(
+            big.effective_kbps(native) > small.effective_kbps(native),
+            "Lower at 4K ({}) should exceed High at 480p ({})",
+            big.effective_kbps(native),
+            small.effective_kbps(native)
+        );
     }
 
     #[test]
