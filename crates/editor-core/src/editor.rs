@@ -710,6 +710,36 @@ impl Editor {
         self.dispatch_group(format!("{verb} {} Keyframe", property.kind()), commands)
     }
 
+    /// Adjust the finished picture rather than one clip (§22).
+    ///
+    /// Same controls, different subject. `continuing` behaves as it does for a
+    /// clip: true while a slider is being dragged, so the whole drag is one
+    /// undo step (§11).
+    pub fn set_sequence_value(
+        &mut self,
+        property: crate::command::ClipProperty,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch_gesture(
+            format!("Change {} for the whole video", property.kind()),
+            vec![Command::SetSequenceProperty { sequence, property }],
+            continuing,
+        )
+    }
+
+    /// Put one whole-video control back to its default.
+    pub fn reset_sequence_parameter(
+        &mut self,
+        property: crate::command::ClipProperty,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch(Command::SetSequenceProperty {
+            sequence,
+            property: Self::reset_values(property),
+        })
+    }
+
     /// Take an asset out of the library (§12).
     ///
     /// Fails while any clip uses it. That refusal is the model's, and it is the
@@ -993,6 +1023,11 @@ impl Editor {
             } => Ok(Box::new(ops::RelinkMedia::new(media, path, file_size))),
 
             Command::RemoveMedia { media } => Ok(Box::new(ops::RemoveMedia::new(media))),
+
+            Command::SetSequenceProperty { sequence, property } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetSequenceProperty::new(sequence, property)))
+            }
 
             Command::SetClipProperty {
                 sequence,

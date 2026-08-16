@@ -42,7 +42,6 @@ use std::collections::HashMap;
 
 use eframe::wgpu;
 
-use crate::compositor::Layer;
 use crate::config::QualityTier;
 use crate::error::RenderError;
 
@@ -74,6 +73,26 @@ impl EffectTexture {
             width: self.width,
             height: self.height,
         }
+    }
+}
+
+/// The settings a node needs, without the clip they came from.
+///
+/// A node is given a picture and the parameters for it, not a `Layer`. The
+/// distinction earns its keep the moment something other than a clip needs
+/// effects — the sequence-wide adjustment applies the same chain to the
+/// *composited* image, which has no clip and no decoded frame behind it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EffectParams {
+    /// §45's blur amount, 0–100.
+    pub blur: f32,
+}
+
+impl EffectParams {
+    /// True when no node would do anything, so the caller can skip the chain
+    /// and the intermediate textures it would need.
+    pub fn is_identity(self) -> bool {
+        self.blur <= 0.0
     }
 }
 
@@ -267,7 +286,7 @@ pub trait EffectNode {
         &mut self,
         ctx: &mut EffectContext<'_>,
         encoder: &mut wgpu::CommandEncoder,
-        layer: &Layer<'_>,
+        params: EffectParams,
         input: EffectInput<'_>,
     ) -> Result<Option<EffectTexture>, RenderError>;
 }
@@ -281,14 +300,14 @@ pub fn run_chain(
     nodes: &mut [Box<dyn EffectNode>],
     ctx: &mut EffectContext<'_>,
     encoder: &mut wgpu::CommandEncoder,
-    layer: &Layer<'_>,
+    params: EffectParams,
     source: EffectInput<'_>,
 ) -> Result<Option<EffectTexture>, RenderError> {
     let mut current: Option<EffectTexture> = None;
 
     for node in nodes.iter_mut() {
         let input = current.as_ref().map_or(source, EffectTexture::as_input);
-        if let Some(output) = node.apply(ctx, encoder, layer, input)?
+        if let Some(output) = node.apply(ctx, encoder, params, input)?
             && let Some(spent) = current.replace(output)
         {
             // The node that produced it has been read; it is not needed for the

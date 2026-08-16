@@ -356,7 +356,8 @@ fn render_frame(
         })
         .collect();
 
-    compositor.composite(&layers)?;
+    // §46: the same adjustment the preview shows, on the same finished image.
+    compositor.composite(&layers, sequence.master)?;
     Ok(readback.read(device, queue, compositor.target()))
 }
 

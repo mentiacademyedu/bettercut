@@ -306,6 +306,7 @@ impl Preview {
         let Some(sequence) = editor.active_sequence() else {
             return;
         };
+        let master = sequence.master;
 
         // Keep the preview's aspect matched to the sequence, scaled by §17's
         // quality setting while playing and full while paused.
@@ -369,7 +370,7 @@ impl Preview {
             })
             .collect();
 
-        if let Err(err) = self.compositor.composite(&layers) {
+        if let Err(err) = self.compositor.composite(&layers, master) {
             tracing::warn!(%err, "compositing failed");
             return;
         }

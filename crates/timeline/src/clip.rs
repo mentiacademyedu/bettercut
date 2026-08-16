@@ -182,6 +182,46 @@ pub struct VideoClip {
     pub enabled: bool,
 }
 
+/// Adjustments applied to the finished picture, not to any one clip (§22).
+///
+/// The same four controls a clip has, but a *composite* of them: a blur here
+/// softens the assembled image, where a blur on two stacked clips softens each
+/// before they are combined. Those are different pictures, and "adjust the
+/// whole video" means the first.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MasterLook {
+    #[serde(default)]
+    pub transform: Transform,
+    #[serde(default = "one")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub color: ColorAdjust,
+    #[serde(default)]
+    pub blur: f32,
+}
+
+impl Default for MasterLook {
+    fn default() -> Self {
+        Self {
+            transform: Transform::default(),
+            opacity: 1.0,
+            color: ColorAdjust::default(),
+            blur: 0.0,
+        }
+    }
+}
+
+impl MasterLook {
+    /// True when this changes nothing, so the renderer can skip the extra pass
+    /// and the full-resolution texture it needs. The common case by far.
+    pub fn is_identity(&self) -> bool {
+        self.transform.is_identity()
+            && self.opacity == 1.0
+            && self.color.is_identity()
+            && self.blur == 0.0
+    }
+}
+
 /// A clip's appearance at one instant, with animation already applied.
 ///
 /// The fields above are what the user set with the sliders; this is what the

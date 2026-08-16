@@ -16,13 +16,15 @@
 use std::collections::HashMap;
 
 use bettercut_media::VideoFrame;
-use bettercut_timeline::{Resolution, Transform};
+use bettercut_timeline::{MasterLook, Resolution, Transform};
 use eframe::wgpu;
 
 use crate::blur::BlurPass;
 use crate::config::RenderConfig;
 use crate::error::RenderError;
-use crate::graph::{EffectContext, EffectInput, EffectNode, EffectTexture, TargetPool, run_chain};
+use crate::graph::{
+    EffectContext, EffectInput, EffectNode, EffectParams, EffectTexture, TargetPool, run_chain,
+};
 
 /// Uniform stride. wgpu requires dynamic uniform offsets to be aligned, and
 /// 256 is the limit on every backend we target.
@@ -301,9 +303,15 @@ impl Compositor {
     ///
     /// Track order is compositing order (§22), so the caller passes them in
     /// that order and this does not reorder them.
-    pub fn composite(&mut self, layers: &[Layer<'_>]) -> Result<(), RenderError> {
+    pub fn composite(
+        &mut self,
+        layers: &[Layer<'_>],
+        master: MasterLook,
+    ) -> Result<(), RenderError> {
         self.recycle();
-        self.ensure_uniform_capacity(layers.len() as u64)?;
+        // One extra slot: the master pass draws the composited image as though
+        // it were one more layer, and needs a uniform of its own.
+        self.ensure_uniform_capacity(layers.len() as u64 + 1)?;
 
         // Upload every frame first, so the render pass borrows nothing that is
         // still being written.
@@ -322,6 +330,25 @@ impl Compositor {
                 .write_buffer(&self.uniforms, index as u64 * UNIFORM_STRIDE, &uniform);
             uploaded.push(texture);
         }
+
+        // The master adjustment is a draw of the finished picture, so its
+        // uniform is built exactly like a layer's — with a source the same
+        // shape as the frame, which makes the fit term one and leaves the
+        // transform meaning what it says about the output.
+        let master_slot = layers.len() as u64;
+        let master_uniform = layer_uniform(
+            master.transform,
+            master.opacity,
+            master.color,
+            self.config.resolution.width,
+            self.config.resolution.height,
+            self.config.resolution,
+        );
+        self.queue.write_buffer(
+            &self.uniforms,
+            master_slot * UNIFORM_STRIDE,
+            &master_uniform,
+        );
 
         let mut encoder = self
             .device
@@ -354,8 +381,10 @@ impl Compositor {
                 config.effect_quality,
                 targets,
             );
+            // One extra chain: the master adjustment runs the same nodes over
+            // the composited image.
             for node in effects.iter_mut() {
-                node.begin_frame(ctx.device(), layers.len());
+                node.begin_frame(ctx.device(), layers.len() + 1);
             }
 
             let mut effected = Vec::with_capacity(layers.len());
@@ -365,16 +394,49 @@ impl Compositor {
                     width: uploaded[index].width,
                     height: uploaded[index].height,
                 };
-                effected.push(run_chain(effects, &mut ctx, &mut encoder, layer, source)?);
+                let params = EffectParams { blur: layer.blur };
+                effected.push(run_chain(effects, &mut ctx, &mut encoder, params, source)?);
             }
             effected
+        };
+
+        // A sequence-wide adjustment applies to the *finished* picture, not to
+        // each clip: blurring two stacked clips separately and then compositing
+        // them is a different image from compositing them and blurring the
+        // result, and the second is what "adjust the whole video" means.
+        //
+        // So when there is one, the layers composite into a scratch texture and
+        // a final draw puts that through the master's own transform, opacity
+        // and colour. When there is not — the normal case — nothing changes and
+        // nothing is allocated.
+        let master_scratch = if master.is_identity() {
+            None
+        } else {
+            let Self {
+                targets,
+                device,
+                queue,
+                texture_layout,
+                config,
+                ..
+            } = self;
+            let mut ctx = EffectContext::new(
+                device,
+                queue,
+                texture_layout,
+                config.effect_quality,
+                targets,
+            );
+            Some(ctx.acquire(config.resolution.width, config.resolution.height))
         };
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("composite pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.target_view,
+                    view: master_scratch
+                        .as_ref()
+                        .map_or(&self.target_view, EffectTexture::view),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -408,6 +470,61 @@ impl Compositor {
             }
         }
 
+        // The master's own effect chain, then the draw that puts the adjusted
+        // picture on the target.
+        let mut master_blurred = None;
+        if let Some(scratch) = &master_scratch {
+            let source = {
+                let Self {
+                    effects,
+                    targets,
+                    device,
+                    queue,
+                    texture_layout,
+                    config,
+                    ..
+                } = self;
+                let mut ctx = EffectContext::new(
+                    device,
+                    queue,
+                    texture_layout,
+                    config.effect_quality,
+                    targets,
+                );
+                let params = EffectParams { blur: master.blur };
+                run_chain(effects, &mut ctx, &mut encoder, params, scratch.as_input())?
+            };
+
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("master pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(
+                    0,
+                    &self.layer_bind_group,
+                    &[(master_slot * UNIFORM_STRIDE) as u32],
+                );
+                pass.set_bind_group(1, source.as_ref().map_or(scratch, |t| t).bind_group(), &[]);
+                pass.draw(0..6, 0..1);
+            }
+            master_blurred = source;
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // Hold the textures until the next composite: the GPU may still be
@@ -415,6 +532,9 @@ impl Compositor {
         // frame overwrite pixels that are still being sampled.
         self.in_flight = uploaded;
         for texture in effected.into_iter().flatten() {
+            self.targets.retire(texture);
+        }
+        for texture in master_scratch.into_iter().chain(master_blurred) {
             self.targets.retire(texture);
         }
         Ok(())

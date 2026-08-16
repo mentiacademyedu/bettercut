@@ -22,10 +22,9 @@
 
 use eframe::wgpu;
 
-use crate::compositor::Layer;
 use crate::config::QualityTier;
 use crate::error::RenderError;
-use crate::graph::{EffectContext, EffectInput, EffectNode, EffectTexture};
+use crate::graph::{EffectContext, EffectInput, EffectNode, EffectParams, EffectTexture};
 
 /// Sigma at full strength, as a fraction of frame height.
 ///
@@ -318,12 +317,12 @@ impl EffectNode for BlurPass {
         &mut self,
         ctx: &mut EffectContext<'_>,
         encoder: &mut wgpu::CommandEncoder,
-        layer: &Layer<'_>,
+        params: EffectParams,
         input: EffectInput<'_>,
     ) -> Result<Option<EffectTexture>, RenderError> {
         // Sigma is resolved against the texture actually being sampled, so a
         // proxy and the original produce the same picture (§46).
-        let Some(plan) = BlurPlan::new(layer.blur, input.height, ctx.tier()) else {
+        let Some(plan) = BlurPlan::new(params.blur, input.height, ctx.tier()) else {
             return Ok(None);
         };
 

@@ -55,6 +55,14 @@ pub struct Sequence {
     pub resolution: Resolution,
     pub frame_rate: FrameRate,
 
+    /// Adjustments applied to the finished picture rather than to any one clip.
+    ///
+    /// Lives on the sequence because that is what it adjusts: the assembled
+    /// video, not a clip in it. Defaulted in serde, so projects written before
+    /// it existed load with no adjustment at all.
+    #[serde(default)]
+    pub master: crate::clip::MasterLook,
+
     /// Index 0 is the bottom layer. §22: "Track order determines compositing
     /// order." Later tracks composite over earlier ones.
     pub video_tracks: Vec<VideoTrack>,
@@ -81,6 +89,7 @@ impl Sequence {
             name: name.into(),
             resolution,
             frame_rate,
+            master: crate::clip::MasterLook::default(),
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
         })

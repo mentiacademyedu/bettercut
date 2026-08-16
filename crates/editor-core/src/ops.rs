@@ -48,6 +48,9 @@ pub fn build_for_replay(
             file_size,
         } => Box::new(RelinkMedia::new(media, path, file_size)),
         Command::RemoveMedia { media } => Box::new(RemoveMedia::new(media)),
+        Command::SetSequenceProperty { sequence, property } => {
+            Box::new(SetSequenceProperty::new(sequence, property))
+        }
         Command::SetClipProperty {
             sequence,
             track,
@@ -525,6 +528,99 @@ impl RelinkMedia {
             file_size,
             previous: None,
         }
+    }
+}
+
+/// Adjust the whole sequence's finished picture (§22).
+#[derive(Debug)]
+pub struct SetSequenceProperty {
+    sequence: SequenceId,
+    property: ClipProperty,
+    previous: Option<ClipProperty>,
+}
+
+impl SetSequenceProperty {
+    pub fn new(sequence: SequenceId, property: ClipProperty) -> Self {
+        Self {
+            sequence,
+            property,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        property: ClipProperty,
+    ) -> Result<ClipProperty, EditorError> {
+        use bettercut_timeline::AnimatedParameter as A;
+
+        let master = &mut sequence_mut(project, sequence)?.master;
+        // Clamped through the same limits a clip uses, so the master cannot
+        // reach a value the controls could not express.
+        Ok(match property {
+            ClipProperty::Opacity(value) => {
+                let was = master.opacity;
+                master.opacity = A::Opacity.clamp(value);
+                ClipProperty::Opacity(was)
+            }
+            ClipProperty::Position { x, y } => {
+                let was = master.transform.position;
+                master.transform.position = Vec2::new(A::PositionX.clamp(x), A::PositionY.clamp(y));
+                ClipProperty::Position { x: was.x, y: was.y }
+            }
+            ClipProperty::Scale { x, y } => {
+                let was = master.transform.scale;
+                master.transform.scale = Vec2::new(A::ScaleX.clamp(x), A::ScaleY.clamp(y));
+                ClipProperty::Scale { x: was.x, y: was.y }
+            }
+            ClipProperty::Rotation(value) => {
+                let was = master.transform.rotation_degrees;
+                master.transform.rotation_degrees = A::Rotation.clamp(value);
+                ClipProperty::Rotation(was)
+            }
+            ClipProperty::Brightness(value) => {
+                let was = master.color.brightness;
+                master.color.brightness = A::Brightness.clamp(value);
+                ClipProperty::Brightness(was)
+            }
+            ClipProperty::Contrast(value) => {
+                let was = master.color.contrast;
+                master.color.contrast = A::Contrast.clamp(value);
+                ClipProperty::Contrast(was)
+            }
+            ClipProperty::Saturation(value) => {
+                let was = master.color.saturation;
+                master.color.saturation = A::Saturation.clamp(value);
+                ClipProperty::Saturation(was)
+            }
+            ClipProperty::Blur(value) => {
+                let was = master.blur;
+                master.blur = A::Blur.clamp(value);
+                ClipProperty::Blur(was)
+            }
+            // Master audio is the mixer's master gain, which is a monitoring
+            // level rather than project data (§20a.4) — deliberately not here.
+            ClipProperty::Gain(_) => return Err(EditorError::ClipKindMismatch),
+        })
+    }
+}
+
+impl EditorCommand for SetSequenceProperty {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.property)?;
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        format!("Change {} for the whole video", self.property.kind())
     }
 }
 

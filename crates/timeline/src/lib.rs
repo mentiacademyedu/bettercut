@@ -17,8 +17,8 @@ pub mod snap;
 pub mod track;
 
 pub use clip::{
-    AudioClip, Clip, ClipLook, ColorAdjust, MAX_BLUR, SourceRange, TimelineRange, Transform, Vec2,
-    VideoClip,
+    AudioClip, Clip, ClipLook, ColorAdjust, MAX_BLUR, MasterLook, SourceRange, TimelineRange,
+    Transform, Vec2, VideoClip,
 };
 pub use error::TimelineError;
 pub use keyframe::{AnimatedParameter, Interpolation, Keyframe, KeyframeTrack, Keyframes};

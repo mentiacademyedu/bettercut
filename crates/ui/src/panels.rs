@@ -761,8 +761,29 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     });
 
     match (selected.len(), single) {
+        // Nothing selected is not "nothing to adjust". The same controls now
+        // apply to the finished video, which is the thing on screen when no
+        // clip is picked out — and selecting a clip narrows them to it.
         (0, _) => {
-            ui.label(egui::RichText::new("Nothing selected").color(theme::DISABLED));
+            ui.label(
+                egui::RichText::new("Whole video")
+                    .strong()
+                    .color(theme::KEYFRAME),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "These apply to everything at once. Click a clip — on the \
+                     timeline or in the picture — to adjust just that one.",
+                )
+                .small()
+                .color(theme::DISABLED),
+            );
+
+            ui.add_space(6.0);
+            inspector_tabs(ui, state, true, false);
+            ui.add_space(4.0);
+
+            master_properties(ui, editor, state);
         }
         (1, Some((id, video, audio))) => {
             let media_id = video.map(|v| v.media_id).or_else(|| audio.map(|a| a.2));
@@ -1378,6 +1399,196 @@ fn inspector_tabs(ui: &mut egui::Ui, state: &mut UiState, has_video: bool, has_a
             InspectorTab::Audio
         };
     }
+}
+
+/// The whole-video controls, shown when no clip is selected.
+///
+/// Deliberately the same rows the clip tabs use, minus the keyframe buttons: a
+/// sequence-wide adjustment is one value for the whole video, so there is no
+/// instant for a key to sit at. That is why these are plain sliders rather than
+/// `keyed_row` — the missing diamond is the honest signal.
+fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    use bettercut_editor_core::ClipProperty;
+
+    let Some(sequence) = editor.active_sequence() else {
+        return;
+    };
+    let master = sequence.master;
+    let mut change: Option<(ClipProperty, bool)> = None;
+    let mut reset: Option<ClipProperty> = None;
+
+    match state.inspector_tab {
+        InspectorTab::Video => {
+            let mut opacity = master.opacity;
+            let response = master_row(
+                ui,
+                ClipProperty::Opacity(master.opacity),
+                &mut reset,
+                |ui| ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("opacity")),
+            );
+            if response.changed() {
+                change = Some((ClipProperty::Opacity(opacity), response.dragged()));
+            }
+
+            let mut scale = master.transform.scale.x;
+            let current = ClipProperty::Scale {
+                x: master.transform.scale.x,
+                y: master.transform.scale.y,
+            };
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut scale, 0.05..=4.0)
+                        .logarithmic(true)
+                        .text("scale"),
+                )
+            });
+            if response.changed() {
+                change = Some((
+                    ClipProperty::Scale { x: scale, y: scale },
+                    response.dragged(),
+                ));
+            }
+
+            let current = ClipProperty::Position {
+                x: master.transform.position.x,
+                y: master.transform.position.y,
+            };
+            master_row(ui, current, &mut reset, |ui| {
+                ui.label("position");
+                let mut x = master.transform.position.x;
+                let mut y = master.transform.position.y;
+                let rx = ui.add(egui::DragValue::new(&mut x).speed(0.005).range(-2.0..=2.0));
+                let ry = ui.add(egui::DragValue::new(&mut y).speed(0.005).range(-2.0..=2.0));
+                if rx.changed() || ry.changed() {
+                    change = Some((
+                        ClipProperty::Position { x, y },
+                        rx.dragged() || ry.dragged(),
+                    ));
+                }
+            });
+
+            let mut rotation = master.transform.rotation_degrees;
+            let current = ClipProperty::Rotation(master.transform.rotation_degrees);
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation"))
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Rotation(rotation), response.dragged()));
+            }
+
+            let mut blur = master.blur;
+            let response = master_row(ui, ClipProperty::Blur(master.blur), &mut reset, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut blur, 0.0..=bettercut_editor_core::timeline::MAX_BLUR)
+                        .text("blur")
+                        .suffix("%"),
+                )
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Blur(blur), response.dragged()));
+            }
+            if blur > 0.0 {
+                ui.label(
+                    egui::RichText::new(
+                        "This blurs the assembled picture, not each clip, which costs an extra full-frame pass.",
+                    )
+                    .small()
+                    .color(theme::DISABLED),
+                );
+            }
+        }
+        InspectorTab::Colours => {
+            let mut brightness = master.color.brightness;
+            let current = ClipProperty::Brightness(master.color.brightness);
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness"))
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Brightness(brightness), response.dragged()));
+            }
+
+            let mut contrast = master.color.contrast;
+            let current = ClipProperty::Contrast(master.color.contrast);
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast"))
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Contrast(contrast), response.dragged()));
+            }
+
+            let mut saturation = master.color.saturation;
+            let current = ClipProperty::Saturation(master.color.saturation);
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation"))
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Saturation(saturation), response.dragged()));
+            }
+        }
+        InspectorTab::Audio => unavailable(
+            ui,
+            "The master volume is a monitoring level rather than project data, so it is not saved with the project. Per-clip volume is on the Audio tab of a selected clip.",
+        ),
+        InspectorTab::Speed => unavailable(
+            ui,
+            "Speed changes are not built yet. Clips play at their recorded rate.",
+        ),
+        InspectorTab::Animation => unavailable(
+            ui,
+            "Whole-video adjustments hold one value throughout, so there is no instant to key them at. Select a clip to animate its controls.",
+        ),
+    }
+
+    if let Some(property) = reset
+        && let Err(err) = editor.reset_sequence_parameter(property)
+    {
+        state.error(err.to_string());
+    }
+    if let Some((property, continuing)) = change {
+        match editor.set_sequence_value(property, continuing) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+}
+
+/// One whole-video control: the slider, then its reset.
+///
+/// The keyframe button's place is left empty rather than filled with a disabled
+/// one, so the rows still line up with the clip tabs and the absence reads as
+/// "not applicable" rather than "broken".
+fn master_row<R>(
+    ui: &mut egui::Ui,
+    current: bettercut_editor_core::ClipProperty,
+    reset: &mut Option<bettercut_editor_core::ClipProperty>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let result = control(ui);
+
+        let changed = !current.is_default();
+        let button = egui::Button::new(egui::RichText::new("\u{21ba}").color(if changed {
+            theme::CLIP_TEXT
+        } else {
+            theme::DISABLED
+        }))
+        .frame(false)
+        .min_size(egui::vec2(18.0, 18.0));
+
+        if ui
+            .add_enabled(changed, button)
+            .on_hover_text(format!(
+                "Reset {} for the whole video",
+                current.kind().to_lowercase()
+            ))
+            .clicked()
+        {
+            *reset = Some(current);
+        }
+        result
+    })
+    .inner
 }
 
 /// A tab with nothing in it yet, saying so plainly.

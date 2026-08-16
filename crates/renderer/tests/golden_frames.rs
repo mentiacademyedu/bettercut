@@ -56,7 +56,7 @@ use std::path::PathBuf;
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_timeline::{ColorAdjust, Resolution, Transform, Vec2};
+use bettercut_timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
 
 const SIZE: u32 = 256;
 /// Cells a side in a stored signature.
@@ -238,7 +238,9 @@ fn render(
     let mut compositor =
         Compositor::new(device.clone(), queue.clone(), config).expect("compositor");
     let frame = fixture_frame();
-    compositor.composite(&build(&frame)).expect("composite");
+    compositor
+        .composite(&build(&frame), MasterLook::default())
+        .expect("composite");
     read_back(device, queue, compositor.target())
 }
 

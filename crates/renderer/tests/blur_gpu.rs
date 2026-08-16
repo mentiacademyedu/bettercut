@@ -18,7 +18,7 @@
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, QualityTier, RenderConfig};
-use bettercut_timeline::{ColorAdjust, Resolution, Transform};
+use bettercut_timeline::{ColorAdjust, MasterLook, Resolution, Transform};
 
 /// Square, so the composite's letterboxing maps the source onto the target one
 /// texel to one texel and the readback can be compared with the input.
@@ -95,13 +95,16 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, blur: f32, tier: QualityTi
         Compositor::new(device.clone(), queue.clone(), config).expect("compositor");
     let frame = test_frame();
     compositor
-        .composite(&[Layer {
-            frame: &frame,
-            transform: Transform::default(),
-            opacity: 1.0,
-            color: ColorAdjust::default(),
-            blur,
-        }])
+        .composite(
+            &[Layer {
+                frame: &frame,
+                transform: Transform::default(),
+                opacity: 1.0,
+                color: ColorAdjust::default(),
+                blur,
+            }],
+            MasterLook::default(),
+        )
         .expect("composite");
 
     read_back(device, queue, compositor.target())

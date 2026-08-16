@@ -487,3 +487,122 @@ fn a_control_knows_whether_it_is_at_its_default() {
     assert!(ClipProperty::Brightness(1.0).is_default());
     assert!(!ClipProperty::Brightness(1.2).is_default());
 }
+
+/// Whole-video adjustments live on the sequence and are undoable like any edit.
+#[test]
+fn a_sequence_adjustment_applies_to_the_whole_video() {
+    let (mut editor, _clip) = editor_with_clip();
+    assert!(editor.active_sequence().unwrap().master.is_identity());
+
+    editor
+        .set_sequence_value(ClipProperty::Brightness(1.4), false)
+        .unwrap();
+
+    let master = editor.active_sequence().unwrap().master;
+    assert_eq!(master.color.brightness, 1.4);
+    assert!(!master.is_identity());
+
+    editor.undo().unwrap();
+    assert!(
+        editor.active_sequence().unwrap().master.is_identity(),
+        "undo left the whole-video adjustment in place"
+    );
+}
+
+/// It must not touch the clips: that is the entire distinction between the two.
+#[test]
+fn a_sequence_adjustment_leaves_the_clips_alone() {
+    let (mut editor, clip) = editor_with_clip();
+    editor
+        .set_clip_value(clip, ClipProperty::Brightness(0.8), false)
+        .unwrap();
+
+    editor
+        .set_sequence_value(ClipProperty::Brightness(1.5), false)
+        .unwrap();
+
+    assert_eq!(
+        clip_of(&editor, clip).color.brightness,
+        0.8,
+        "the sequence adjustment changed the clip"
+    );
+    assert_eq!(
+        editor.active_sequence().unwrap().master.color.brightness,
+        1.5
+    );
+}
+
+/// Dragging a whole-video slider is one undo step, as it is for a clip (§11).
+#[test]
+fn dragging_a_sequence_slider_is_one_undo_step() {
+    let (mut editor, _clip) = editor_with_clip();
+
+    editor
+        .set_sequence_value(ClipProperty::Opacity(0.9), false)
+        .unwrap();
+    for step in 1..=20_u8 {
+        let value = 0.9 - f32::from(step) * 0.04;
+        editor
+            .set_sequence_value(ClipProperty::Opacity(value), true)
+            .unwrap();
+    }
+    assert!(editor.active_sequence().unwrap().master.opacity < 0.2);
+
+    editor.undo().unwrap();
+    assert_eq!(
+        editor.active_sequence().unwrap().master.opacity,
+        1.0,
+        "undo should reach back to before the drag"
+    );
+}
+
+/// Resetting one whole-video control leaves the others.
+#[test]
+fn resetting_one_sequence_control_leaves_the_rest() {
+    let (mut editor, _clip) = editor_with_clip();
+    editor
+        .set_sequence_value(ClipProperty::Blur(30.0), false)
+        .unwrap();
+    editor
+        .set_sequence_value(ClipProperty::Saturation(0.2), false)
+        .unwrap();
+
+    editor
+        .reset_sequence_parameter(ClipProperty::Blur(0.0))
+        .unwrap();
+
+    let master = editor.active_sequence().unwrap().master;
+    assert_eq!(master.blur, 0.0);
+    assert_eq!(master.color.saturation, 0.2, "saturation was reset too");
+}
+
+/// The master survives a save and load, because it is project data.
+#[test]
+fn the_sequence_adjustment_survives_a_round_trip() {
+    let (mut editor, _clip) = editor_with_clip();
+    editor
+        .set_sequence_value(ClipProperty::Contrast(1.3), false)
+        .unwrap();
+
+    let json = serde_json::to_string(editor.project()).expect("serialize");
+    let reloaded: bettercut_editor_core::project_format::Project =
+        serde_json::from_str(&json).expect("deserialize");
+
+    assert_eq!(reloaded.active().unwrap().master.color.contrast, 1.3);
+}
+
+/// A project written before whole-video adjustments existed loads with none.
+#[test]
+fn an_older_project_loads_with_no_sequence_adjustment() {
+    let json = r#"{
+        "id": "00000000-0000-0000-0000-000000000009",
+        "name": "Sequence 1",
+        "resolution": {"width": 1920, "height": 1080},
+        "frame_rate": {"num": 30, "den": 1},
+        "video_tracks": [],
+        "audio_tracks": []
+    }"#;
+    let sequence: bettercut_editor_core::timeline::Sequence =
+        serde_json::from_str(json).expect("older sequences must still load");
+    assert!(sequence.master.is_identity());
+}

@@ -130,6 +130,16 @@ pub enum Command {
         parameter: AnimatedParameter,
         time: bettercut_foundation::MediaTime,
     },
+    /// Adjust the finished picture rather than one clip (§22).
+    ///
+    /// Reuses [`ClipProperty`] because the controls are the same ones — the
+    /// difference is what they apply to, and that is this command's identity,
+    /// not the property's. A second parallel enum would double every match in
+    /// the interface for no gain.
+    SetSequenceProperty {
+        sequence: SequenceId,
+        property: ClipProperty,
+    },
     /// Take an asset out of the library (§12).
     ///
     /// Refused by the model while any clip still references it — dropping it

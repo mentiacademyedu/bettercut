@@ -20,7 +20,7 @@
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_timeline::{ColorAdjust, Resolution, Transform, Vec2};
+use bettercut_timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
 
 const SIZE: u32 = 256;
 
@@ -182,7 +182,7 @@ fn a_layer_no_node_touches_allocates_nothing() {
     let frame = split_frame();
 
     compositor
-        .composite(&[layer(&frame, 0.0, 0.0)])
+        .composite(&[layer(&frame, 0.0, 0.0)], MasterLook::default())
         .expect("composite");
 
     assert_eq!(
@@ -202,14 +202,14 @@ fn intermediates_are_reused_between_frames() {
     let frame = split_frame();
 
     compositor
-        .composite(&[layer(&frame, 50.0, 0.0)])
+        .composite(&[layer(&frame, 50.0, 0.0)], MasterLook::default())
         .expect("composite");
     let after_one = compositor.intermediate_count();
     assert!(after_one > 0, "a blurred layer needs intermediates");
 
     for _ in 0..10 {
         compositor
-            .composite(&[layer(&frame, 50.0, 0.0)])
+            .composite(&[layer(&frame, 50.0, 0.0)], MasterLook::default())
             .expect("composite");
     }
 
@@ -241,7 +241,10 @@ fn each_layer_is_blurred_by_its_own_amount() {
     // Half scale, offset a quarter frame each way: the first copy occupies the
     // left half of the output, the second the right half.
     compositor
-        .composite(&[layer(&frame, MILD, -0.25), layer(&frame, HEAVY, 0.25)])
+        .composite(
+            &[layer(&frame, MILD, -0.25), layer(&frame, HEAVY, 0.25)],
+            MasterLook::default(),
+        )
         .expect("composite");
     let pixels = read_back(&device, &queue, compositor.target());
 
@@ -266,7 +269,10 @@ fn layer_order_does_not_change_each_layer_s_blur() {
     let frame = split_frame();
 
     compositor
-        .composite(&[layer(&frame, HEAVY, -0.25), layer(&frame, MILD, 0.25)])
+        .composite(
+            &[layer(&frame, HEAVY, -0.25), layer(&frame, MILD, 0.25)],
+            MasterLook::default(),
+        )
         .expect("composite");
     let pixels = read_back(&device, &queue, compositor.target());
 
@@ -278,5 +284,105 @@ fn layer_order_does_not_change_each_layer_s_blur() {
         heavy > mild * 3,
         "reversing the order did not reverse which layer was blurred: \
          {heavy} texels of edge at {HEAVY}%, {mild} at {MILD}%"
+    );
+}
+
+/// A sequence-wide adjustment applies to the finished picture.
+///
+/// Checked by halving the master opacity over a black canvas: every lit texel
+/// must come out dimmer, and the letterboxed black around the layers must stay
+/// black — which is what tells a *post* pass from a per-layer one, since
+/// dimming each layer before compositing would leave the same black but a
+/// different edge.
+#[test]
+fn a_master_adjustment_dims_the_finished_picture() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let frame = split_frame();
+
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], MasterLook::default())
+        .expect("composite");
+    let plain = read_back(&device, &queue, compositor.target());
+
+    let dimmed_master = MasterLook {
+        opacity: 0.5,
+        ..MasterLook::default()
+    };
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], dimmed_master)
+        .expect("composite");
+    let dimmed = read_back(&device, &queue, compositor.target());
+
+    let bright: f32 = plain.iter().sum();
+    let after: f32 = dimmed.iter().sum();
+    assert!(
+        after < bright * 0.75,
+        "master opacity did not reach the picture: {bright:.1} then {after:.1}"
+    );
+    assert!(after > 0.0, "it went completely black instead");
+}
+
+/// The master's colour adjustment reaches the output too.
+#[test]
+fn a_master_colour_adjustment_reaches_the_output() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let frame = split_frame();
+
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], MasterLook::default())
+        .expect("composite");
+    let plain: f32 = read_back(&device, &queue, compositor.target()).iter().sum();
+
+    // Darkening, not brightening. The fixture is pure white on black, and
+    // white is already at the top of the range — a brightness of 1.6 clamps
+    // straight back to white and the sums come out identical, which looks
+    // exactly like the setting being ignored. Measured that way first.
+    let darker = MasterLook {
+        color: bettercut_timeline::ColorAdjust {
+            brightness: 0.5,
+            ..bettercut_timeline::ColorAdjust::default()
+        },
+        ..MasterLook::default()
+    };
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], darker)
+        .expect("composite");
+    let graded: f32 = read_back(&device, &queue, compositor.target()).iter().sum();
+
+    assert!(
+        graded < plain * 0.75,
+        "master brightness did not reach the output: {plain:.1} then {graded:.1}"
+    );
+    assert!(graded > 0.0, "it went completely black instead");
+}
+
+/// And it costs nothing when it is the identity, which is almost every frame.
+#[test]
+fn an_identity_master_allocates_no_extra_texture() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let frame = split_frame();
+
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], MasterLook::default())
+        .expect("composite");
+    assert_eq!(
+        compositor.intermediate_count(),
+        0,
+        "an untouched master should need no scratch texture"
+    );
+
+    let adjusted = MasterLook {
+        opacity: 0.5,
+        ..MasterLook::default()
+    };
+    compositor
+        .composite(&[layer(&frame, 0.0, 0.0)], adjusted)
+        .expect("composite");
+    assert!(
+        compositor.intermediate_count() > 0,
+        "an adjusted master needs somewhere to composite into first"
     );
 }

@@ -16,7 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use bettercut_editor_core::timeline::{ColorAdjust, Resolution, Transform, Vec2};
+use bettercut_editor_core::timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
@@ -87,13 +87,16 @@ fn rendered_box(
 
     let frame = white(source.0, source.1);
     compositor
-        .composite(&[Layer {
-            frame: &frame,
-            transform,
-            opacity: 1.0,
-            color: ColorAdjust::default(),
-            blur: 0.0,
-        }])
+        .composite(
+            &[Layer {
+                frame: &frame,
+                transform,
+                opacity: 1.0,
+                color: ColorAdjust::default(),
+                blur: 0.0,
+            }],
+            MasterLook::default(),
+        )
         .expect("composite");
 
     let pixels = read_back(device, queue, compositor.target());
