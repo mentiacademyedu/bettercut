@@ -710,6 +710,25 @@ impl Editor {
         self.dispatch_group(format!("{verb} {} Keyframe", property.kind()), commands)
     }
 
+    /// Take an asset out of the library (§12).
+    ///
+    /// Fails while any clip uses it. That refusal is the model's, and it is the
+    /// right one: removing the asset silently would leave those clips pointing
+    /// at nothing, and removing the clips too would throw away an edit the user
+    /// did not ask to lose.
+    pub fn remove_media(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+    ) -> Result<(), EditorError> {
+        self.dispatch(Command::RemoveMedia { media })
+    }
+
+    /// Whether any clip still references this asset, so the interface can say
+    /// why removing is unavailable before the user tries.
+    pub fn media_is_used(&self, media: bettercut_foundation::MediaId) -> bool {
+        self.project.media_is_used(media)
+    }
+
     /// The video clip behind an id, for reading its animation.
     pub fn video_clip(&self, clip: ClipId) -> Option<&bettercut_timeline::VideoClip> {
         self.project
@@ -972,6 +991,8 @@ impl Editor {
                 path,
                 file_size,
             } => Ok(Box::new(ops::RelinkMedia::new(media, path, file_size))),
+
+            Command::RemoveMedia { media } => Ok(Box::new(ops::RemoveMedia::new(media))),
 
             Command::SetClipProperty {
                 sequence,

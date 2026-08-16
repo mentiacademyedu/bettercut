@@ -47,6 +47,7 @@ pub fn build_for_replay(
             path,
             file_size,
         } => Box::new(RelinkMedia::new(media, path, file_size)),
+        Command::RemoveMedia { media } => Box::new(RemoveMedia::new(media)),
         Command::SetClipProperty {
             sequence,
             track,
@@ -524,6 +525,42 @@ impl RelinkMedia {
             file_size,
             previous: None,
         }
+    }
+}
+
+/// Remove an asset from the library, holding it so undo can put it back.
+#[derive(Debug)]
+pub struct RemoveMedia {
+    media: MediaId,
+    /// The asset itself, captured on execute. §11: the undo payload is derived
+    /// at execute time and never written to the journal.
+    removed: Option<Box<bettercut_media::MediaAsset>>,
+}
+
+impl RemoveMedia {
+    pub fn new(media: MediaId) -> Self {
+        Self {
+            media,
+            removed: None,
+        }
+    }
+}
+
+impl EditorCommand for RemoveMedia {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let asset = project.remove_media(self.media)?;
+        self.removed = Some(Box::new(asset));
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let asset = self.removed.take().ok_or(EditorError::NotExecuted)?;
+        project.add_media(*asset);
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Remove Media".to_owned()
     }
 }
 

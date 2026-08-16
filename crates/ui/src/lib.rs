@@ -82,8 +82,12 @@ pub fn draw(
 
     egui::Panel::right("inspector")
         .resizable(true)
-        .default_size(290.0)
-        .min_size(180.0)
+        // Wide enough that a slider and its label, the keyframe button and the
+        // reset button all fit on one line without the slider collapsing to a
+        // stub. At 290 the controls were technically present and practically
+        // unusable.
+        .default_size(420.0)
+        .min_size(300.0)
         .show(ui, |ui| {
             panels::inspector(ui, editor, state);
         });

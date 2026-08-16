@@ -157,6 +157,9 @@ pub struct UiState {
     /// The drag in progress, if any.
     pub drag: Option<DragState>,
 
+    /// Which page of the Inspector's clip section is showing.
+    pub inspector_tab: crate::panels::InspectorTab,
+
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
 
@@ -230,6 +233,7 @@ impl Default for UiState {
             playback: None,
             snapping: true,
             drag: None,
+            inspector_tab: crate::panels::InspectorTab::default(),
             preview_drag: None,
             preview_is_stale: false,
             marquee: None,

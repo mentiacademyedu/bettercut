@@ -130,6 +130,14 @@ pub enum Command {
         parameter: AnimatedParameter,
         time: bettercut_foundation::MediaTime,
     },
+    /// Take an asset out of the library (§12).
+    ///
+    /// Refused by the model while any clip still references it — dropping it
+    /// would leave cuts pointing at nothing. Removing the clips first is the
+    /// user's decision, not something this should do on their behalf.
+    RemoveMedia {
+        media: bettercut_foundation::MediaId,
+    },
     /// Point an asset at a file that has moved (§66).
     ///
     /// Carries the new size rather than re-reading it, because §38.2 replays

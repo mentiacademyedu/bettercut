@@ -214,6 +214,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
     let mut place: Option<MediaId> = None;
     let mut relink: Option<MediaId> = None;
+    let mut remove: Option<MediaId> = None;
 
     // One banner rather than one button per broken asset: media usually moves a
     // folder at a time, so the folder scan is the action that actually fixes
@@ -289,17 +290,40 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     relink = Some(*id);
                 }
 
-                let can_place = !*no_duration && !*missing;
-                if ui
-                    .add_enabled(can_place, egui::Button::new("Add to timeline"))
-                    .on_disabled_hover_text(
-                        "This file has no duration to place — it is a still image, \
-                         or the file is missing from disk.",
-                    )
-                    .clicked()
-                {
-                    place = Some(*id);
-                }
+                ui.horizontal(|ui| {
+                    let can_place = !*no_duration && !*missing;
+                    if ui
+                        .add_enabled(can_place, egui::Button::new("Add to timeline"))
+                        .on_disabled_hover_text(
+                            "This file has no duration to place — it is a still image, \
+                             or the file is missing from disk.",
+                        )
+                        .clicked()
+                    {
+                        place = Some(*id);
+                    }
+
+                    // Removing an asset a clip still uses would leave cuts
+                    // pointing at nothing, so it is refused — and the button
+                    // says why rather than failing after the click. §2 also
+                    // applies, and the hover text says so: this takes the file
+                    // out of the *project*, never off the disk.
+                    let in_use = editor.media_is_used(*id);
+                    if ui
+                        .add_enabled(!in_use, egui::Button::new("Remove"))
+                        .on_hover_text(
+                            "Take this file out of the project. The file itself is \
+                             not deleted.",
+                        )
+                        .on_disabled_hover_text(
+                            "A clip on the timeline uses this file. Delete those \
+                             clips first.",
+                        )
+                        .clicked()
+                    {
+                        remove = Some(*id);
+                    }
+                });
             });
         }
     });
@@ -309,6 +333,19 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     }
     if let Some(id) = relink {
         relink_one(editor, state, id);
+    }
+    if let Some(id) = remove {
+        let name = editor
+            .project()
+            .media_asset(id)
+            .map_or_else(|| "the file".to_owned(), |m| m.file_name.clone());
+        match editor.remove_media(id) {
+            Ok(()) => {
+                state.info(format!("Removed {name} from the project"));
+                state.needs_repaint = true;
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
 }
 
@@ -740,11 +777,43 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 ui.monospace(format!("duration  {}", range.duration().format_timecode()));
             }
 
-            if let Some(look) = video {
-                clip_video_properties(ui, editor, state, id, look);
-            }
-            if let Some((_, gain, _)) = audio {
-                clip_audio_properties(ui, editor, state, id, gain);
+            ui.add_space(6.0);
+            inspector_tabs(ui, state, video.is_some(), audio.is_some());
+            ui.add_space(4.0);
+
+            match state.inspector_tab {
+                InspectorTab::Video => {
+                    if let Some(look) = video {
+                        clip_video_properties(ui, editor, state, id, look);
+                    } else {
+                        unavailable(ui, "This clip has no picture.");
+                    }
+                }
+                InspectorTab::Colours => {
+                    if let Some(look) = video {
+                        clip_colour_properties(ui, editor, state, id, look);
+                    } else {
+                        unavailable(ui, "This clip has no picture to grade.");
+                    }
+                }
+                InspectorTab::Audio => {
+                    if let Some((_, gain, _)) = audio {
+                        clip_audio_properties(ui, editor, state, id, gain);
+                    } else {
+                        unavailable(ui, "This clip has no sound.");
+                    }
+                }
+                InspectorTab::Speed => unavailable(
+                    ui,
+                    "Speed changes are not built yet. Clips play at their                      recorded rate.",
+                ),
+                InspectorTab::Animation => {
+                    if let Some(look) = video {
+                        clip_animation(ui, editor, state, id, &look);
+                    } else {
+                        unavailable(ui, "Only picture can be animated so far.");
+                    }
+                }
             }
         }
         (n, _) => {
@@ -1230,6 +1299,193 @@ impl VideoLook {
 /// and the whole drag collapses into one undo step — `continuing` is true
 /// except on the frame the drag starts (§11: history holds intentions, not
 /// mouse samples).
+/// Which page of the Inspector's clip section is showing.
+///
+/// Tabs rather than a stack of collapsing headers. Stacked, the controls a user
+/// reaches for constantly sat below ones they touch once a project, and the
+/// panel grew a scrollbar as soon as anything was opened. Across the top, every
+/// group is one click away and the panel never changes height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorTab {
+    /// Where the picture is and what it looks like: transform, opacity, blur.
+    #[default]
+    Video,
+    /// Brightness, contrast, saturation.
+    Colours,
+    Audio,
+    Speed,
+    /// The keyframes on this clip, and a way to move between them.
+    Animation,
+}
+
+impl InspectorTab {
+    pub const ALL: [Self; 5] = [
+        Self::Video,
+        Self::Colours,
+        Self::Audio,
+        Self::Speed,
+        Self::Animation,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Video => "Video",
+            Self::Colours => "Colours",
+            Self::Audio => "Audio",
+            Self::Speed => "Speed",
+            Self::Animation => "Animation",
+        }
+    }
+}
+
+/// The tab strip.
+///
+/// Tabs for things the clip does not have stay **visible but disabled** — an
+/// audio clip still shows Video, greyed. A strip that changed shape with the
+/// selection would move the tab under the pointer between one click and the
+/// next.
+fn inspector_tabs(ui: &mut egui::Ui, state: &mut UiState, has_video: bool, has_audio: bool) {
+    ui.horizontal_wrapped(|ui| {
+        for tab in InspectorTab::ALL {
+            let enabled = match tab {
+                InspectorTab::Video | InspectorTab::Colours | InspectorTab::Animation => has_video,
+                InspectorTab::Audio => has_audio,
+                // Nothing to configure yet, but the tab is where it will be.
+                InspectorTab::Speed => true,
+            };
+            let selected = state.inspector_tab == tab;
+            let response = ui
+                .add_enabled_ui(enabled, |ui| ui.selectable_label(selected, tab.label()))
+                .inner;
+            if response.clicked() {
+                state.inspector_tab = tab;
+            }
+        }
+    });
+
+    // A tab that has just become unavailable — the selection changed to an
+    // audio clip while Video was open — would otherwise show an explanation
+    // with no way back that looked like the panel had broken.
+    let available = match state.inspector_tab {
+        InspectorTab::Video | InspectorTab::Colours | InspectorTab::Animation => has_video,
+        InspectorTab::Audio => has_audio,
+        InspectorTab::Speed => true,
+    };
+    if !available {
+        state.inspector_tab = if has_video {
+            InspectorTab::Video
+        } else {
+            InspectorTab::Audio
+        };
+    }
+}
+
+/// A tab with nothing in it yet, saying so plainly.
+fn unavailable(ui: &mut egui::Ui, message: &str) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(message).color(theme::DISABLED));
+}
+
+/// Brightness, contrast and saturation (§45's cheap colour adjustment).
+fn clip_colour_properties(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    look: VideoLook,
+) {
+    use bettercut_editor_core::ClipProperty;
+
+    let color = look.color;
+    ui.add_space(4.0);
+    let mut change: Option<(ClipProperty, bool)> = None;
+    let mut toggle: Option<ClipProperty> = None;
+    let mut reset: Option<ClipProperty> = None;
+
+    let mut brightness = color.brightness;
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Brightness(color.brightness),
+        &mut toggle,
+        &mut reset,
+        |ui| ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness")),
+    );
+    if response.changed() {
+        change = Some((ClipProperty::Brightness(brightness), response.dragged()));
+    }
+
+    let mut contrast = color.contrast;
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Contrast(color.contrast),
+        &mut toggle,
+        &mut reset,
+        |ui| ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast")),
+    );
+    if response.changed() {
+        change = Some((ClipProperty::Contrast(contrast), response.dragged()));
+    }
+
+    let mut saturation = color.saturation;
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Saturation(color.saturation),
+        &mut toggle,
+        &mut reset,
+        |ui| ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation")),
+    );
+    if response.changed() {
+        change = Some((ClipProperty::Saturation(saturation), response.dragged()));
+    }
+
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("0 saturation is black and white; 1.0 is untouched.")
+            .small()
+            .color(theme::DISABLED),
+    );
+
+    apply_row_actions(editor, state, clip, change, toggle, reset);
+}
+
+/// The keyframes on this clip: how many, where, and a way back to the defaults.
+fn clip_animation(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    look: &VideoLook,
+) {
+    ui.add_space(4.0);
+
+    let animated = look.keys.iter().any(|key| key.animated);
+    if !animated {
+        ui.label(
+            egui::RichText::new(
+                "Nothing on this clip is animated yet.
+
+Press the ○ beside any                  control in Video or Colours to pin its value at the playhead.                  Move the playhead, change the value, and it moves between them.",
+            )
+            .color(theme::DISABLED),
+        );
+        return;
+    }
+
+    animation_summary(ui, editor, state, clip, look);
+
+    ui.add_space(6.0);
+    if ui
+        .button("Clear all keyframes")
+        .on_hover_text("Remove every keyframe and put every control back to default")
+        .clicked()
+    {
+        reset_video_properties(editor, state, clip);
+    }
+}
+
 fn clip_video_properties(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -1239,10 +1495,10 @@ fn clip_video_properties(
 ) {
     use bettercut_editor_core::ClipProperty;
 
+    // Colour lives in its own tab now, so it is deliberately not read here.
     let VideoLook {
         opacity,
         transform,
-        color,
         blur,
         ..
     } = look;
@@ -1326,57 +1582,6 @@ fn clip_video_properties(
         change = Some((ClipProperty::Rotation(rotation), response.dragged()));
     }
 
-    // Colour is its own group: transform is where a clip *is*, colour is how it
-    // looks, and mixing the two makes a long undifferentiated list of sliders.
-    egui::CollapsingHeader::new("Colour")
-        .default_open(!color.is_identity())
-        .show(ui, |ui| {
-            let mut brightness = color.brightness;
-            let response = keyed_row(
-                ui,
-                &look,
-                ClipProperty::Brightness(color.brightness),
-                &mut toggle,
-                &mut reset,
-                |ui| ui.add(egui::Slider::new(&mut brightness, 0.0..=2.0).text("brightness")),
-            );
-            if response.changed() {
-                change = Some((ClipProperty::Brightness(brightness), response.dragged()));
-            }
-
-            let mut contrast = color.contrast;
-            let response = keyed_row(
-                ui,
-                &look,
-                ClipProperty::Contrast(color.contrast),
-                &mut toggle,
-                &mut reset,
-                |ui| ui.add(egui::Slider::new(&mut contrast, 0.0..=2.0).text("contrast")),
-            );
-            if response.changed() {
-                change = Some((ClipProperty::Contrast(contrast), response.dragged()));
-            }
-
-            let mut saturation = color.saturation;
-            let response = keyed_row(
-                ui,
-                &look,
-                ClipProperty::Saturation(color.saturation),
-                &mut toggle,
-                &mut reset,
-                |ui| ui.add(egui::Slider::new(&mut saturation, 0.0..=2.0).text("saturation")),
-            );
-            if response.changed() {
-                change = Some((ClipProperty::Saturation(saturation), response.dragged()));
-            }
-
-            ui.label(
-                egui::RichText::new("0 saturation is black and white; 1.0 is untouched.")
-                    .small()
-                    .color(theme::DISABLED),
-            );
-        });
-
     // One slider, so no header of its own — but it does not belong with the
     // colour group either: everything in there is free, and this is not.
     let mut amount = blur;
@@ -1408,23 +1613,23 @@ fn clip_video_properties(
         );
     }
 
-    animation_summary(ui, editor, state, clip, &look);
+    apply_row_actions(editor, state, clip, change, toggle, reset);
+}
 
-    // Also offered while animated even if the values happen to be default at
-    // this frame: the clip is not in its default state, it only looks like it
-    // from here.
-    let animated = look.keys.iter().any(|key| key.animated);
-    if (animated || !transform.is_identity() || opacity < 1.0 || !color.is_identity() || blur > 0.0)
-        && ui
-            .button("Reset")
-            .on_hover_text(
-                "Back to full opacity, no scale, no offset, no rotation — and no keyframes",
-            )
-            .clicked()
-    {
-        reset_video_properties(editor, state, clip);
-    }
-
+/// Dispatch whatever the rows asked for this frame.
+///
+/// Collected during the draw and applied after it, because the controls read
+/// the project immutably while drawing and every one of these borrows it
+/// mutably. Shared by the Video and Colours tabs so the two cannot drift in how
+/// they handle a keyframe toggle or a reset.
+fn apply_row_actions(
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    change: Option<(bettercut_editor_core::ClipProperty, bool)>,
+    toggle: Option<bettercut_editor_core::ClipProperty>,
+    reset: Option<bettercut_editor_core::ClipProperty>,
+) {
     if let Some(property) = toggle {
         match editor.toggle_keyframe(clip, property) {
             Ok(()) => state.needs_repaint = true,

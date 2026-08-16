@@ -132,3 +132,77 @@ fn the_inspector_draws_a_transformed_clip() {
     state.selected_clips.insert(video);
     draw(&mut editor, &mut state);
 }
+
+/// Every tab draws for a video clip without panicking, and the tab actually
+/// changes what is shown.
+#[test]
+fn every_inspector_tab_draws() {
+    use bettercut_ui::panels::InspectorTab;
+
+    // Audio is not among them: video and audio are separate clips on separate
+    // tracks (§8), so a video clip genuinely has no sound and the tab correctly
+    // falls back — which the next test checks.
+    for tab in [
+        InspectorTab::Video,
+        InspectorTab::Colours,
+        InspectorTab::Speed,
+        InspectorTab::Animation,
+    ] {
+        let (mut editor, video, _) = editor_with_clips();
+        let mut state = UiState::default();
+        state.selected_clips.insert(video);
+        state.inspector_tab = tab;
+        draw(&mut editor, &mut state);
+        assert_eq!(
+            state.inspector_tab,
+            tab,
+            "{} switched away from itself for a video clip",
+            tab.label()
+        );
+    }
+
+    // And every tab draws for an audio clip too, whichever one it lands on.
+    for tab in InspectorTab::ALL {
+        let (mut editor, _, audio) = editor_with_clips();
+        let mut state = UiState::default();
+        state.selected_clips.insert(audio);
+        state.inspector_tab = tab;
+        draw(&mut editor, &mut state);
+    }
+}
+
+/// A tab the selection cannot offer must not strand the user on an explanation
+/// with no way back. Selecting an audio clip while Video is open moves to a tab
+/// that exists.
+#[test]
+fn an_impossible_tab_falls_back_to_one_that_works() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, _, audio) = editor_with_clips();
+    let mut state = UiState::default();
+    state.selected_clips.insert(audio);
+    state.inspector_tab = InspectorTab::Video;
+
+    draw(&mut editor, &mut state);
+
+    assert_eq!(
+        state.inspector_tab,
+        InspectorTab::Audio,
+        "an audio clip left the Inspector on the Video tab"
+    );
+}
+
+/// Speed has nothing behind it yet, so it must stay reachable rather than being
+/// bounced away — the tab is a statement that it is coming.
+#[test]
+fn the_speed_tab_stays_selected_even_though_it_is_empty() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, video, _) = editor_with_clips();
+    let mut state = UiState::default();
+    state.selected_clips.insert(video);
+    state.inspector_tab = InspectorTab::Speed;
+
+    draw(&mut editor, &mut state);
+    assert_eq!(state.inspector_tab, InspectorTab::Speed);
+}
