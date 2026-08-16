@@ -512,10 +512,18 @@ fn transform_handles(
         }
     }
 
-    // Start a gesture. A press on a clip that is not selected selects it *and*
-    // begins the drag, rather than costing a click to select and a second to
-    // move — the second click is pure ceremony when the intent was obvious.
-    if response.drag_started()
+    // Decide the gesture on the **press**, not on `drag_started`.
+    //
+    // egui only calls a movement a drag once it has passed a threshold, and by
+    // the time it says so the pointer has already left the handle: `corner_at`
+    // then found nothing and every corner drag silently became a move. That is
+    // the whole of "only one corner resizes".
+    //
+    // `is_pointer_button_down_on` is true from the press until release, so the
+    // frame where it is true and nothing is recorded yet is the press itself —
+    // and on that frame the pointer is exactly where the user put it.
+    if response.is_pointer_button_down_on()
+        && state.preview_drag.is_none()
         && let Some(at) = pointer
     {
         let grabbed = match (selected, on_corner) {

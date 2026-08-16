@@ -387,7 +387,14 @@ fn apply_interaction(
 
     // Dragging outside a clip scrubs; so does the ruler, but only while the
     // button is held. Hovering the ruler must not move the playhead.
-    let holding = ui.input(|i| i.pointer.primary_down());
+    //
+    // **Down *on this widget*, not down anywhere.** `pos` falls back to the
+    // pointer's position anywhere in the window, so a global button check meant
+    // that dragging the picture in the preview scrubbed the timeline the moment
+    // the cursor crossed into the ruler — the playhead jumping to wherever the
+    // mouse happened to be, mid-gesture, for a drag that had nothing to do with
+    // the timeline.
+    let holding = response.is_pointer_button_down_on();
     if dragging || (in_ruler && holding) {
         // Dragging past an edge scrolls the view, so a scrub can reach
         // material that is currently off screen without letting go. Without

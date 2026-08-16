@@ -979,3 +979,53 @@ fn dragging_a_clip_does_not_move_the_playhead() {
         "dragging a clip scrubbed the playhead"
     );
 }
+
+/// A drag that starts *outside* the timeline and wanders into the ruler must
+/// not scrub.
+///
+/// This is the reported bug, and the previous test missed it because it never
+/// crossed the boundary: dragging the picture in the preview and letting the
+/// cursor stray down over the ruler sent the playhead to whatever second the
+/// mouse happened to be over, mid-gesture.
+///
+/// The ruler path was gated on the button being down *anywhere* rather than
+/// down on the timeline, and `pos` falls back to the pointer's position
+/// anywhere in the window — so crossing the boundary was enough.
+#[test]
+fn a_drag_that_began_elsewhere_does_not_scrub_when_it_crosses_the_ruler() {
+    let mut h = Harness::with_panels_above(300.0);
+    h.add_clip(2, 4);
+    h.editor.set_playhead(TimelineTime::from_seconds(3));
+    let before = h.editor.playhead().ticks();
+
+    // Press well above the timeline, as a preview drag would.
+    h.press(Pos2::new(400.0, 120.0));
+    // Then wander down across the ruler and along it.
+    h.drag_to(Pos2::new(500.0, 200.0));
+    h.drag_to(Pos2::new(600.0, 300.0 + RULER_H / 2.0));
+    h.drag_to(Pos2::new(900.0, 300.0 + RULER_H / 2.0));
+    h.release(Pos2::new(900.0, 300.0 + RULER_H / 2.0));
+
+    assert_eq!(
+        h.editor.playhead().ticks(),
+        before,
+        "a drag that started in the preview scrubbed the timeline on the way past"
+    );
+}
+
+/// And the ruler still works for a press that really did land on it — the fix
+/// must not cost the feature it guards.
+#[test]
+fn pressing_the_ruler_still_scrubs_after_the_guard() {
+    let mut h = Harness::with_panels_above(300.0);
+    h.add_clip(2, 4);
+    h.editor.set_playhead(TimelineTime::ZERO);
+
+    let x = HEADER_W + 300.0;
+    h.press(Pos2::new(x, 300.0 + RULER_H / 2.0));
+
+    assert!(
+        h.editor.playhead().ticks() > 0,
+        "pressing the ruler no longer scrubs"
+    );
+}
