@@ -46,7 +46,10 @@ use bettercut_media::{
 };
 /// Re-exported so callers choose a codec without depending on the media crate.
 pub use bettercut_media::{RateControl, VideoCodec};
-use bettercut_playback::{AudioSource, FrameSource, PlaybackEngine, layer_requests};
+use bettercut_playback::{
+    AudioSource, FrameSource, LayerSource, PlaybackEngine, TextFrames, layer_requests,
+    layer_transform,
+};
 use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
 use bettercut_timeline::{Resolution, Sequence, TimelineRange};
@@ -250,6 +253,10 @@ pub fn export(
     // which is the whole of that rule — a proxy here would export the 540p copy
     // the user was editing with.
     let mut frames = FrameSource::new(settings.threads);
+    // §26.1: built here rather than borrowed from the preview, because an
+    // export runs on a job thread while the editor keeps going. Same crate,
+    // same parameters, same bitmap.
+    let mut titles = TextFrames::new();
     let mut audio = AudioMixdown::new(channels);
 
     let mut samples_written: i64 = 0;
@@ -271,6 +278,7 @@ pub fn export(
             sequence,
             position,
             &mut frames,
+            &mut titles,
             &mut compositor,
             &mut readback,
             &device,
@@ -315,6 +323,7 @@ fn render_frame(
     sequence: &Sequence,
     position: TimelineTime,
     frames: &mut FrameSource,
+    titles: &mut TextFrames,
     compositor: &mut Compositor,
     readback: &mut readback::Readback,
     device: &wgpu::Device,
@@ -326,21 +335,36 @@ fn render_frame(
 
     let mut decoded = Vec::with_capacity(requests.len());
     for request in &requests {
-        let Some(asset) = project.media_asset(request.media) else {
-            continue;
-        };
-        // §47a.2's `Playback`: an export is a forward walk, so the next frame
-        // wanted is the next frame in the file.
-        match frames.decode(asset, request.source_time, SeekMode::Playback, cancel) {
-            Ok(frame) => decoded.push((request, frame)),
-            Err(err) => {
-                // §50: one unreadable file must not abort a long export. The
-                // clip is missing from that frame and the rest still renders.
-                tracing::warn!(
-                    file = %asset.file_name,
-                    %err,
-                    "could not decode a frame for export; that layer is absent"
-                );
+        match request.source {
+            LayerSource::Media(media) => {
+                let Some(asset) = project.media_asset(media) else {
+                    continue;
+                };
+                // §47a.2's `Playback`: an export is a forward walk, so the next
+                // frame wanted is the next frame in the file.
+                match frames.decode(asset, request.source_time, SeekMode::Playback, cancel) {
+                    Ok(frame) => decoded.push((request, frame)),
+                    Err(err) => {
+                        // §50: one unreadable file must not abort a long
+                        // export. The clip is missing from that frame and the
+                        // rest still renders.
+                        tracing::warn!(
+                            file = %asset.file_name,
+                            %err,
+                            "could not decode a frame for export; that layer is absent"
+                        );
+                    }
+                }
+            }
+            // §26.1: the same rasterizer the preview uses, so the exported
+            // title is the one the user watched. Cached across frames, because
+            // a three-second title is the same picture ninety times over.
+            LayerSource::Text(clip) => {
+                if let Some(text) = sequence.text_clip(clip)
+                    && let Some(frame) = titles.frame_for(text)
+                {
+                    decoded.push((request, frame));
+                }
             }
         }
     }
@@ -349,7 +373,9 @@ fn render_frame(
         .iter()
         .map(|(request, frame)| Layer {
             frame,
-            transform: request.look.transform,
+            // §26: the same function the preview calls, so the exported title
+            // is the size the user watched.
+            transform: layer_transform(request, frame, sequence.resolution),
             opacity: request.look.opacity,
             color: request.look.color,
             blur: request.look.blur,

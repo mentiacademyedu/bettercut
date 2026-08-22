@@ -16,7 +16,7 @@ pub mod recovery;
 
 pub use command::{
     ClipPayload, ClipProperty, Command, CommandGroup, EditorCommand, ResolutionRepr, SettingChange,
-    TrackFlag, TrackKindRepr, TrackPayload, TrimEdge,
+    TextProperty, TrackFlag, TrackKindRepr, TrackPayload, TrimEdge,
 };
 pub use editor::Editor;
 pub use error::EditorError;
@@ -31,4 +31,5 @@ pub use recovery::{RecoverableSession, recover, scan_unsaved};
 pub use bettercut_foundation as foundation;
 pub use bettercut_media as media;
 pub use bettercut_project_format as project_format;
+pub use bettercut_text as text;
 pub use bettercut_timeline as timeline;

@@ -388,9 +388,51 @@ all: each clip fades within its own range, so it works on any cut, including one
 against the very start or end of a file. The inspector offers whichever kinds
 the cut can support and says why the other is unavailable.
 
-**What does not work yet:** speed changes and text. Text is Phase 2 (§61); speed
-has a tab that says so. Audio does not crossfade — mixing two sources is a
-different mechanism from blending two pictures, and §25 v1 is picture only.
+### Text
+
+§26.1 is a one-line rule with a large consequence:
+
+> Text must be shaped and rasterized by the `text/` crate into a GPU texture,
+> used identically by preview and export.
+
+If the preview drew text with egui and the export drew it with something else,
+the two would never match — different hinting, different subpixel positioning,
+different fallback fonts — and §46 would break in the place users notice first.
+So there is one rasterizer (`crates/text`, built on cosmic-text), it produces a
+plain RGBA bitmap, and both configurations upload that same bitmap. A test
+rasterizes the same title through two independently constructed renderers and
+compares the bytes.
+
+The bitmap is produced from a coverage mask rather than by drawing the glyphs
+three times, which is what lets the outline, the shadow and the fill all derive
+from the *same* shaped glyphs. The outline uses a distance transform: maxing
+over a disc costs O(radius²) per pixel and a 16-pixel outline on a title-sized
+bitmap runs into hundreds of millions of operations, which the preview would pay
+on every keystroke. Two sweeps cost the same whatever the radius, and the
+fractional distance gives the outline a soft edge for free.
+
+A title is an ordinary clip on an ordinary track. `TextClip` implements the same
+`Clip` trait as video and audio, so it lives in the same `Track<C>` and inherits
+the sorted, non-overlapping invariant along with move, trim, split and ripple
+delete — all already written and already tested. What it does not have is media:
+its source range starts at zero and runs as long as the clip does, which is what
+"how far into this clip are we" means for a generated source, and what §24's
+keyframes will anchor to.
+
+One thing was worth getting wrong first. Every layer is *fitted* to the canvas —
+a 640×360 frame fills a 1920×1080 one — which is right for footage and wrong for
+a title: text sizes are in sequence pixels, so a bitmap 400 pixels wide must
+cover 400/1920 of the canvas whatever else it says. Fitted instead, a longer
+sentence comes out *smaller*, which is the opposite of a size control. The fix
+undoes the fit for generated layers rather than adding a mode to the shader, and
+GPU tests composite real titles and count pixels to check it.
+
+**What does not work yet:** speed changes, which have a tab that says so. Text
+uses the machine's fonts rather than bundled ones — §26 wants
+`assets/fonts/` for templates (Milestone 11), and until there is a font picker a
+single bundled family would be the *only* family on offer. Audio does not
+crossfade: mixing two sources is a different mechanism from blending two
+pictures, and §25 v1 is picture only.
 
 Some limits worth knowing before testing with your own footage:
 

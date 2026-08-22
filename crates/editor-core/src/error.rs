@@ -28,6 +28,11 @@ pub enum EditorError {
     #[error("no media {0} in this project")]
     MediaNotFound(bettercut_foundation::MediaId),
 
+    /// §26: every sequence gets a text track, so this only happens to a project
+    /// whose tracks were all deleted.
+    #[error("this sequence has no text track to put a title on")]
+    NoTextTrack,
+
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 

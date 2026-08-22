@@ -202,10 +202,17 @@ impl Harness {
         HEADER_W + ((ticks - self.state.scroll_ticks) / self.state.ticks_per_pixel()) as f32
     }
 
-    /// Vertical centre of the first video lane. With one video and one audio
-    /// track, the video lane is drawn first, just under the ruler.
+    /// Vertical centre of the first video lane.
+    ///
+    /// §26's text lanes are drawn above the video ones — they composite over
+    /// everything, and the lane order on screen is the compositing order upside
+    /// down — so the video lane sits one lane lower for each of them.
     fn video_lane_y(&self) -> f32 {
-        RULER_H + 2.0 + TRACK_H / 2.0
+        let text_lanes = self
+            .editor
+            .active_sequence()
+            .map_or(0, |s| s.text_tracks.len()) as f32;
+        RULER_H + 2.0 + text_lanes * (TRACK_H + 2.0) + TRACK_H / 2.0
     }
 
     fn tpp(&self) -> i64 {

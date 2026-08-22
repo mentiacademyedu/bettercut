@@ -52,8 +52,11 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
 ///
 /// (The flip side is a real constraint: this blur assumes straight, opaque
 /// alpha. Blurring a genuinely translucent layer would need premultiplication
-/// first, or colour bleeds out of the transparent regions. Nothing produces one
-/// today, and text and masks are Phase 2.)
+/// first, or colour bleeds out of the transparent regions. §26's titles *are*
+/// translucent, which is why nothing offers a blur control on one — the layer
+/// they produce carries `blur: 0.0`, and the master blur runs on the composited
+/// picture, which is opaque. Masks, when they arrive, will need the
+/// premultiplied path.)
 fn test_frame() -> VideoFrame {
     let stride = SIZE * 4;
     let mut data = vec![0_u8; (stride * SIZE) as usize];

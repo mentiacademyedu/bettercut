@@ -539,6 +539,14 @@ fn select_within(
                     }
                 }
             }
+            TrackKind::Text => {
+                if let Some(track) = sequence.text_tracks.iter().find(|t| t.id == lane.track) {
+                    for clip in track.clips_in_range(band) {
+                        state.selected_clips.insert(clip.id);
+                        selected += 1;
+                    }
+                }
+            }
         }
     }
 
@@ -783,6 +791,55 @@ fn draw_lanes(
     let visible = viewport.visible_range(lane_width);
     let mut lanes = Vec::with_capacity(sequence.track_count());
     let mut y = rect.top() + theme::RULER_HEIGHT + theme::TRACK_GAP;
+
+    // §26's titles first, because they composite over every video track and the
+    // lane order on screen is the compositing order upside down.
+    for track in &sequence.text_tracks {
+        let lane = Rect::from_min_size(
+            Pos2::new(rect.left(), y),
+            vec2(rect.width(), theme::TRACK_HEIGHT),
+        );
+        draw_lane_background(painter, lane, viewport, 0);
+        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+
+        for clip in track.clips_in_range(visible) {
+            draw_clip(
+                painter,
+                lane,
+                viewport,
+                ClipVisual {
+                    range: clip.timeline,
+                    // The words themselves, so a lane of titles can be read
+                    // without clicking each one.
+                    label: if clip.is_blank() {
+                        "(empty)"
+                    } else {
+                        &clip.text
+                    },
+                    selected: state.selected_clips.contains(&clip.id),
+                    track_enabled: track.enabled,
+                    dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
+                    body: theme::TEXT_CLIP,
+                    top: theme::TEXT_CLIP_TOP,
+                    waveform: None,
+                    filmstrip: None,
+                    duration_of_media: MediaTime::ZERO,
+                    keyframes: None,
+                    transition: None,
+                },
+                clip.id,
+                track.id,
+                interaction,
+            );
+        }
+
+        lanes.push(LaneLayout {
+            track: track.id,
+            kind: TrackKind::Text,
+            rect: lane,
+        });
+        y += theme::TRACK_HEIGHT + theme::TRACK_GAP;
+    }
 
     // Video tracks top-down in reverse index order: index 0 is the bottom
     // compositing layer (§22), and editors conventionally show that layer

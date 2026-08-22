@@ -54,10 +54,33 @@ pub struct ResolvedLayer {
 pub struct LayerRequest {
     pub clip: ClipId,
     pub track: TrackId,
-    pub media: MediaId,
+    pub source: LayerSource,
     pub source_time: MediaTime,
     /// §24: animation applied, so the static fields are already overridden.
     pub look: bettercut_timeline::ClipLook,
+}
+
+/// Where a layer's picture comes from.
+///
+/// Two kinds, and the difference is only *how the picture is obtained*: a
+/// decoded frame is read from a file, a title is drawn from its own text. What
+/// happens afterwards — transform, opacity, colour, blur, compositing order —
+/// is identical, which is why they share [`LayerRequest`] rather than the
+/// renderer growing a second path (§46, §26.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerSource {
+    Media(MediaId),
+    /// §26: rasterized from the text clip with this id.
+    Text(ClipId),
+}
+
+impl LayerSource {
+    pub fn media(self) -> Option<MediaId> {
+        match self {
+            Self::Media(id) => Some(id),
+            Self::Text(_) => None,
+        }
+    }
 }
 
 /// Everything visible at `position`, bottom track first (§22).
@@ -123,7 +146,65 @@ pub fn layer_requests(
         }
     }
 
+    // §26: text composites over every video track. Last in the list, because
+    // §22 draws later layers over earlier ones.
+    for track in &sequence.text_tracks {
+        if !track.enabled {
+            continue;
+        }
+        let Some(clip) = track.clip_at(position) else {
+            continue;
+        };
+        // Nothing typed yet: a title is added before it says anything, and an
+        // empty one is not a failure to report — there is simply no picture.
+        if clip.is_blank() || !clip.enabled {
+            continue;
+        }
+
+        requests.push(LayerRequest {
+            clip: clip.id,
+            track: track.id,
+            source: LayerSource::Text(clip.id),
+            // Zero-based within the clip's own span; see `timeline::text`.
+            source_time: source_time_of(clip.timeline.start, clip.source.start, position),
+            look: bettercut_timeline::ClipLook {
+                transform: clip.transform,
+                opacity: clip.opacity,
+                color: bettercut_timeline::ColorAdjust::default(),
+                blur: 0.0,
+            },
+        });
+    }
+
     requests
+}
+
+/// How a resolved layer should be positioned on the canvas.
+///
+/// Media is *fitted*: a 640×360 frame fills a 1920×1080 canvas, which is what
+/// anyone expects of footage. A title is not — its size is in sequence pixels
+/// (§26), so a bitmap 400 pixels wide must cover 400/1920 of the canvas
+/// whatever else it says. Fitted instead, the same words in a longer sentence
+/// would come out smaller, which is the opposite of a size control.
+///
+/// One function, called by both the preview and the export, for the §46 reason
+/// that runs through this module: the two must not each decide what a title's
+/// size means.
+pub fn layer_transform(
+    request: &LayerRequest,
+    frame: &VideoFrame,
+    output: bettercut_timeline::Resolution,
+) -> Transform {
+    match request.source {
+        LayerSource::Media(_) => request.look.transform,
+        LayerSource::Text(_) => bettercut_timeline::natural_size_transform(
+            request.look.transform,
+            frame.width,
+            frame.height,
+            output.width,
+            output.height,
+        ),
+    }
 }
 
 /// A transition covering some instant, already resolved to its two clips.
@@ -206,7 +287,7 @@ fn push_layer(
     requests.push(LayerRequest {
         clip: clip.id,
         track,
-        media: clip.media_id,
+        source: LayerSource::Media(clip.media_id),
         source_time,
         look,
     });
@@ -305,6 +386,11 @@ pub struct PlaybackEngine {
     /// Frames served from the ring rather than decoded inline — the number
     /// that says whether decode-ahead is doing anything.
     prefetch_hits: u64,
+
+    /// §26.1's rasterizer. The export builds its own; what is shared is the
+    /// *implementation*, which is what makes the title on screen the title in
+    /// the file.
+    text: crate::text_frames::TextFrames,
 }
 
 impl PlaybackEngine {
@@ -320,6 +406,7 @@ impl PlaybackEngine {
             limited_samples: 0,
             prefetcher: None,
             prefetch_hits: 0,
+            text: crate::text_frames::TextFrames::new(),
         }
     }
 
@@ -594,28 +681,47 @@ impl PlaybackEngine {
         let mut layers = Vec::new();
 
         for request in layer_requests(project, sequence, position) {
-            let Some(asset) = project.media_asset(request.media) else {
-                continue;
+            let frame = match request.source {
+                LayerSource::Media(media) => {
+                    let Some(asset) = project.media_asset(media) else {
+                        continue;
+                    };
+                    match self.frame_at(asset, request.source_time) {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            tracing::warn!(
+                                file = %asset.file_name,
+                                %err,
+                                "could not decode a frame; skipping this track"
+                            );
+                            continue;
+                        }
+                    }
+                }
+                // §26.1: the same rasterizer the export uses, so the title on
+                // screen is the title in the file.
+                LayerSource::Text(clip) => {
+                    let Some(text) = sequence.text_clip(clip) else {
+                        continue;
+                    };
+                    match self.text.frame_for(text) {
+                        Some(frame) => frame,
+                        None => continue,
+                    }
+                }
             };
 
-            match self.frame_at(asset, request.source_time) {
-                Ok(frame) => layers.push(ResolvedLayer {
-                    clip: request.clip,
-                    track: request.track,
-                    frame,
-                    transform: request.look.transform,
-                    opacity: request.look.opacity,
-                    color: request.look.color,
-                    blur: request.look.blur,
-                }),
-                Err(err) => {
-                    tracing::warn!(
-                        file = %asset.file_name,
-                        %err,
-                        "could not decode a frame; skipping this track"
-                    );
-                }
-            }
+            let transform = layer_transform(&request, &frame, sequence.resolution);
+
+            layers.push(ResolvedLayer {
+                clip: request.clip,
+                track: request.track,
+                frame,
+                transform,
+                opacity: request.look.opacity,
+                color: request.look.color,
+                blur: request.look.blur,
+            });
         }
 
         layers

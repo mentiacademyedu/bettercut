@@ -13,6 +13,7 @@ members = [
     "crates/project-format",
     "crates/export",
     "crates/editor-core",
+    "crates/text",
     "crates/ui",
 ]
 # Milestone 0 spike (§82) is deliberately excluded — it is throwaway code and
@@ -38,6 +39,7 @@ bettercut-jobs = { path = "crates/jobs" }
 bettercut-cache = { path = "crates/cache" }
 bettercut-project-format = { path = "crates/project-format" }
 bettercut-editor-core = { path = "crates/editor-core" }
+bettercut-text = { path = "crates/text" }
 bettercut-ui = { path = "crates/ui" }
 
 # Kept deliberately short. §74: "Add large dependencies without justification."
@@ -54,6 +56,20 @@ egui = "0.36"
 # the WGSL be parsed and type-checked by `cargo test`, on a machine with no
 # GPU, instead of failing when the first frame is drawn.
 naga = { version = "30", features = ["wgsl-in"] }
+
+# §26.1: text must be shaped and rasterized by *one* implementation, used
+# identically by preview and export — otherwise the two disagree on hinting,
+# subpixel positioning and font fallback, and §46 breaks where users notice it
+# first. This is the crate the guide names for it.
+#
+# §26 also names `swash` for rasterization. It is not listed separately because
+# cosmic-text *is* the swash front end: its `SwashCache` is swash, and adding
+# the crate again would only give us a second way to call the same rasterizer.
+cosmic-text = { version = "0.19", default-features = false, features = [
+    "std",
+    "swash",
+    "fontconfig",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

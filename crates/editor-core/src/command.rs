@@ -25,6 +25,10 @@ pub use crate::ops::TrimEdge;
 pub enum ClipPayload {
     Video(Box<VideoClip>),
     Audio(Box<AudioClip>),
+    /// §26's titles. Here because the operations that hand a whole clip
+    /// around — split's undo, ripple delete's undo — apply to them too, and a
+    /// separate payload type would mean writing those commands twice.
+    Text(Box<bettercut_timeline::TextClip>),
 }
 
 impl ClipPayload {
@@ -32,6 +36,7 @@ impl ClipPayload {
         match self {
             Self::Video(c) => c.id,
             Self::Audio(c) => c.id,
+            Self::Text(c) => c.id,
         }
     }
 
@@ -39,6 +44,7 @@ impl ClipPayload {
         match self {
             Self::Video(_) => TrackKind::Video,
             Self::Audio(_) => TrackKind::Audio,
+            Self::Text(_) => TrackKind::Text,
         }
     }
 
@@ -46,7 +52,30 @@ impl ClipPayload {
         match self {
             Self::Video(c) => c.timeline.start,
             Self::Audio(c) => c.timeline.start,
+            Self::Text(c) => c.timeline.start,
         }
+    }
+}
+
+// So the operations that are generic over a track — split, ripple delete — can
+// wrap whatever kind of clip came out without matching on it. Written out
+// rather than derived: three lines each, and a macro would be harder to read
+// than the thing it replaced.
+impl From<VideoClip> for ClipPayload {
+    fn from(clip: VideoClip) -> Self {
+        Self::Video(Box::new(clip))
+    }
+}
+
+impl From<AudioClip> for ClipPayload {
+    fn from(clip: AudioClip) -> Self {
+        Self::Audio(Box::new(clip))
+    }
+}
+
+impl From<bettercut_timeline::TextClip> for ClipPayload {
+    fn from(clip: bettercut_timeline::TextClip) -> Self {
+        Self::Text(Box::new(clip))
     }
 }
 
@@ -93,6 +122,51 @@ impl SettingChange {
     }
 }
 
+/// One editable thing about a text overlay (§26).
+///
+/// Separate from [`ClipProperty`] rather than folded into it: the two overlap
+/// in the transform controls and nowhere else, and a single enum would mean
+/// every match on a clip property having to say "not for text" for the words
+/// and the font.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "property", rename_all = "snake_case")]
+pub enum TextProperty {
+    /// The words themselves.
+    Content(String),
+    /// Everything about how they are drawn — font, colour, outline, the lot.
+    ///
+    /// One property rather than a dozen because the interface edits a style as
+    /// a whole and the rasterizer consumes it as a whole; splitting it would
+    /// buy a finer undo history for a control nobody adjusts one field at a
+    /// time. Boxed: a `TextStyle` is much larger than the other variants, and
+    /// the enum would be that size everywhere.
+    Style(Box<bettercut_text::TextStyle>),
+    Position {
+        x: f32,
+        y: f32,
+    },
+    Scale {
+        x: f32,
+        y: f32,
+    },
+    Rotation(f32),
+    Opacity(f32),
+}
+
+impl TextProperty {
+    /// What this property is called in the undo history.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Content(_) => "text",
+            Self::Style(_) => "text style",
+            Self::Position { .. } => "text position",
+            Self::Scale { .. } => "text scale",
+            Self::Rotation(_) => "text rotation",
+            Self::Opacity(_) => "text opacity",
+        }
+    }
+}
+
 /// The serializable request form. This is what the UI sends (§55) and what the
 /// autosave journal records (§38.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,6 +203,29 @@ pub enum Command {
         clip: ClipId,
         parameter: AnimatedParameter,
         time: bettercut_foundation::MediaTime,
+    },
+    /// Add a text overlay (§26).
+    ///
+    /// Carries the whole clip rather than just the words, for the same reason
+    /// [`Self::PasteClip`] does: §38.2 replays commands after a crash, and a
+    /// command that invented a fresh id on replay would produce a different
+    /// project than the one that was lost.
+    AddText {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: Box<bettercut_timeline::TextClip>,
+    },
+    RemoveText {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+    },
+    /// Change one thing about a text overlay (§26).
+    SetTextProperty {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        property: TextProperty,
     },
     /// Put a transition on the end of a clip, or take it off (§25).
     ///

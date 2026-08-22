@@ -22,14 +22,15 @@ pub mod prefetch;
 pub mod prefetcher;
 pub mod proxy_job;
 pub mod sync;
+pub mod text_frames;
 pub mod thumbnail_job;
 pub mod waveform_job;
 
 pub use audio_source::AudioSource;
 pub use cache::{FrameCache, FrameKey};
 pub use engine::{
-    AudibleClip, LayerRequest, PlaybackEngine, ProxySource, ResolvedLayer, layer_requests,
-    source_time_of,
+    AudibleClip, LayerRequest, LayerSource, PlaybackEngine, ProxySource, ResolvedLayer,
+    layer_requests, layer_transform, source_time_of,
 };
 pub use error::PlaybackError;
 pub use filmstrip_job::{FilmstripJob, TILE_WIDTH, TILES};
@@ -38,5 +39,6 @@ pub use prefetch::{PrefetchBuffer, PrefetchItem, budget_for};
 pub use prefetcher::{Plan, Prefetcher};
 pub use proxy_job::ProxyJob;
 pub use sync::{FramePlan, SyncDecision, plan_frame};
+pub use text_frames::TextFrames;
 pub use thumbnail_job::ThumbnailJob;
 pub use waveform_job::WaveformJob;

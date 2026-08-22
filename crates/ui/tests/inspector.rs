@@ -44,6 +44,15 @@ fn editor_with_clips() -> (Editor, ClipId, ClipId) {
 /// Draw the inspector once. Returns nothing — the assertion is that it neither
 /// panics nor leaves egui in a broken state.
 fn draw(editor: &mut Editor, state: &mut UiState) {
+    let _ = drawn_text(editor, state);
+}
+
+/// Draw the inspector and return every word it put on screen.
+///
+/// Without this a panel test passes whether or not the panel it names was ever
+/// reached: "did not panic" is true of the empty case too. Reading the galleys
+/// back is the only way from here to assert that the right controls appeared.
+fn drawn_text(editor: &mut Editor, state: &mut UiState) -> String {
     let ctx = egui::Context::default();
     let input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(320.0, 900.0))),
@@ -53,6 +62,29 @@ fn draw(editor: &mut Editor, state: &mut UiState) {
         bettercut_ui::panels::inspector(ui, editor, state);
     });
     output.textures_delta.clear();
+
+    let mut words = String::new();
+    for clipped in &output.shapes {
+        collect_text(&clipped.shape, &mut words);
+    }
+    words
+}
+
+fn collect_text(shape: &egui::Shape, into: &mut String) {
+    match shape {
+        egui::Shape::Text(text) => {
+            into.push_str(text.galley.text());
+            // A separator, so two adjacent labels cannot form a third word that
+            // a `contains` check would match by accident.
+            into.push(' ');
+        }
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_text(shape, into);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]
@@ -244,4 +276,74 @@ fn the_inspector_draws_the_transition_section() {
         &before,
         "drawing the transition section modified the project"
     );
+}
+
+/// §26: a title takes its own panel — words and a font, not a source range and
+/// a grade. Drawing it twice must change nothing, because the text box and the
+/// sliders all dispatch commands when they report a change.
+#[test]
+fn the_inspector_draws_a_text_clip() {
+    let (mut editor, _, _) = editor_with_clips();
+    let title = editor.add_text("Hello").unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.clear();
+    state.selected_clips.insert(title);
+
+    let before = editor.project().clone();
+    let words = drawn_text(&mut editor, &mut state);
+    draw(&mut editor, &mut state);
+    assert_eq!(
+        editor.project(),
+        &before,
+        "drawing the text panel modified the project"
+    );
+
+    assert!(
+        words.contains("Legibility"),
+        "the text panel was never reached; drew: {words}"
+    );
+    assert!(
+        !words.contains("blur"),
+        "the video clip's controls appeared for a title"
+    );
+}
+
+/// Every decoration draws: an outline, a shadow and a background each add
+/// controls of their own, and those are the branches a smoke test misses.
+#[test]
+fn the_inspector_draws_a_fully_decorated_title() {
+    use bettercut_editor_core::TextProperty;
+    use bettercut_editor_core::text::{Background, Shadow, Stroke, TextStyle};
+
+    let (mut editor, _, _) = editor_with_clips();
+    let title = editor.add_text("Hello").unwrap();
+    editor
+        .set_text_property(
+            title,
+            TextProperty::Style(Box::new(TextStyle {
+                stroke: Some(Stroke::default()),
+                shadow: Some(Shadow::default()),
+                background: Some(Background::default()),
+                ..TextStyle::default()
+            })),
+            false,
+        )
+        .unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.clear();
+    state.selected_clips.insert(title);
+
+    let before = editor.project().clone();
+    let words = drawn_text(&mut editor, &mut state);
+    draw(&mut editor, &mut state);
+    assert_eq!(editor.project(), &before);
+
+    for control in ["outline", "shadow", "background", "blur"] {
+        assert!(
+            words.contains(control),
+            "the {control} controls did not draw; drew: {words}"
+        );
+    }
 }

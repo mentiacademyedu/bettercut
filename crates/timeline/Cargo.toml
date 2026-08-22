@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 bettercut-foundation.workspace = true
+# §26's text parameters are part of the project model, so the model has to know
+# them. The shaping and rasterization stay in that crate; only the style data
+# crosses this boundary.
+bettercut-text.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

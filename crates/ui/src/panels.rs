@@ -87,6 +87,29 @@ pub fn toolbar(
 
         ui.separator();
 
+        // §26: next to the transport rather than buried in a menu. Adding a
+        // title is one of the two or three things anyone does in a short-form
+        // editor, and the playhead is already where they want it.
+        if ui
+            .button("Add Text")
+            .on_hover_text("Put a title at the playhead")
+            .clicked()
+        {
+            match editor.add_text("Text") {
+                Ok(clip) => {
+                    // Selected straight away, so the inspector is already
+                    // showing the box to type in — the next thing they want.
+                    state.selected_clips.clear();
+                    state.selected_clips.insert(clip);
+                    state.inspector_tab = InspectorTab::Video;
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+
+        ui.separator();
+
         ui.label("Zoom");
         if ui
             .add_enabled(state.can_zoom_out(), egui::Button::new("-"))
@@ -760,7 +783,13 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         (id, video, audio)
     });
 
+    // §26: a title takes different controls from a media clip — words and a
+    // font, not a source range and a grade — so it gets its own panel rather
+    // than a tab strip full of things it does not have.
+    let text_selected = selected.len() == 1 && sequence.text_clip(selected[0]).is_some();
+
     match (selected.len(), single) {
+        (1, _) if text_selected => text_properties(ui, editor, state, selected[0]),
         // Nothing selected is not "nothing to adjust". The same controls now
         // apply to the finished video, which is the thing on screen when no
         // clip is picked out — and selecting a clip narrows them to it.
@@ -1951,6 +1980,340 @@ fn clip_transition(
         },
         None => {}
     }
+}
+
+/// Everything about one text overlay (§26).
+///
+/// The style is dispatched as a whole rather than field by field, because that
+/// is how the model holds it and how the rasterizer consumes it. A per-field
+/// command would buy a finer undo history for a control nobody adjusts one
+/// field at a time — and would multiply the number of commands by twelve.
+fn text_properties(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::TextProperty;
+    use bettercut_editor_core::text::{
+        Alignment, Background, FontFamily, FontWeight, Shadow, Stroke,
+    };
+
+    let Some(existing) = editor.text_clip(clip) else {
+        return;
+    };
+    let range = existing.timeline;
+    let mut text = existing.text.clone();
+    let mut style = existing.style.clone();
+    let transform = existing.transform;
+    let opacity = existing.opacity;
+
+    ui.monospace(format!("start     {}", range.start.format_timecode()));
+    ui.monospace(format!("duration  {}", range.duration().format_timecode()));
+    ui.add_space(6.0);
+
+    // Collected during the draw and dispatched after it, for the same reason
+    // every other panel here does: the controls read the project while drawing
+    // and each of these borrows it mutably.
+    let mut change: Option<(TextProperty, bool)> = None;
+    let mut remove = false;
+
+    ui.label(egui::RichText::new("Text").strong());
+    let response = ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .desired_rows(2)
+            .desired_width(f32::INFINITY)
+            .hint_text("Type something"),
+    );
+    if response.changed() {
+        // Typing is a gesture like a drag: one undo step for the sentence, not
+        // one per character.
+        change = Some((TextProperty::Content(text.clone()), true));
+    }
+
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Font").strong());
+
+    let mut restyled = false;
+
+    ui.horizontal(|ui| {
+        ui.label("family");
+        let current = match &style.family {
+            FontFamily::SansSerif => "Sans",
+            FontFamily::Serif => "Serif",
+            FontFamily::Monospace => "Mono",
+            FontFamily::Named(name) => name.as_str(),
+        };
+        egui::ComboBox::from_id_salt("text family")
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (family, label) in [
+                    (FontFamily::SansSerif, "Sans"),
+                    (FontFamily::Serif, "Serif"),
+                    (FontFamily::Monospace, "Mono"),
+                ] {
+                    if ui.selectable_label(style.family == family, label).clicked() {
+                        style.family = family;
+                        restyled = true;
+                    }
+                }
+            });
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("weight");
+        for weight in FontWeight::ALL {
+            if ui
+                .add(egui::Button::selectable(
+                    style.weight == weight,
+                    weight.label(),
+                ))
+                .clicked()
+            {
+                style.weight = weight;
+                restyled = true;
+            }
+        }
+    });
+
+    let mut dragging = false;
+    let mut row = |ui: &mut egui::Ui, widget: egui::Slider<'_>| {
+        let response = ui.add(widget);
+        if response.changed() {
+            dragging |= response.dragged();
+            true
+        } else {
+            false
+        }
+    };
+
+    restyled |= row(
+        ui,
+        egui::Slider::new(
+            &mut style.size,
+            bettercut_editor_core::text::MIN_SIZE..=bettercut_editor_core::text::MAX_SIZE,
+        )
+        .logarithmic(true)
+        .text("size"),
+    );
+    restyled |= row(
+        ui,
+        egui::Slider::new(&mut style.line_height, 0.5..=3.0).text("line spacing"),
+    );
+    restyled |= row(
+        ui,
+        egui::Slider::new(&mut style.letter_spacing, -0.2..=1.0).text("letter spacing"),
+    );
+
+    ui.horizontal(|ui| {
+        ui.label("colour");
+        if colour_button(ui, &mut style.color) {
+            restyled = true;
+        }
+        if ui
+            .add(egui::Button::selectable(style.italic, "Italic"))
+            .clicked()
+        {
+            style.italic = !style.italic;
+            restyled = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("align");
+        for align in Alignment::ALL {
+            if ui
+                .add(egui::Button::selectable(
+                    style.align == align,
+                    align.label(),
+                ))
+                .clicked()
+            {
+                style.align = align;
+                restyled = true;
+            }
+        }
+    });
+
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Legibility").strong());
+    ui.label(
+        egui::RichText::new("White text over an unknown shot is unreadable about half the time.")
+            .small()
+            .color(theme::DISABLED),
+    );
+
+    let mut outlined = style.stroke.is_some();
+    if ui.checkbox(&mut outlined, "outline").changed() {
+        style.stroke = outlined.then(Stroke::default);
+        restyled = true;
+    }
+    if let Some(stroke) = &mut style.stroke {
+        ui.horizontal(|ui| {
+            if colour_button(ui, &mut stroke.color) {
+                restyled = true;
+            }
+            let response = ui.add(egui::Slider::new(&mut stroke.width, 0.0..=20.0).text("width"));
+            if response.changed() {
+                dragging |= response.dragged();
+                restyled = true;
+            }
+        });
+    }
+
+    let mut shadowed = style.shadow.is_some();
+    if ui.checkbox(&mut shadowed, "shadow").changed() {
+        style.shadow = shadowed.then(Shadow::default);
+        restyled = true;
+    }
+    if let Some(shadow) = &mut style.shadow {
+        ui.horizontal(|ui| {
+            if colour_button(ui, &mut shadow.color) {
+                restyled = true;
+            }
+            let x = ui.add(
+                egui::DragValue::new(&mut shadow.offset_x)
+                    .speed(0.5)
+                    .prefix("x "),
+            );
+            let y = ui.add(
+                egui::DragValue::new(&mut shadow.offset_y)
+                    .speed(0.5)
+                    .prefix("y "),
+            );
+            if x.changed() || y.changed() {
+                dragging |= x.dragged() || y.dragged();
+                restyled = true;
+            }
+        });
+        let response = ui.add(egui::Slider::new(&mut shadow.blur, 0.0..=60.0).text("blur"));
+        if response.changed() {
+            dragging |= response.dragged();
+            restyled = true;
+        }
+    }
+
+    let mut boxed = style.background.is_some();
+    if ui.checkbox(&mut boxed, "background").changed() {
+        style.background = boxed.then(Background::default);
+        restyled = true;
+    }
+    if let Some(background) = &mut style.background {
+        ui.horizontal(|ui| {
+            if colour_button(ui, &mut background.color) {
+                restyled = true;
+            }
+            let padding = ui.add(
+                egui::DragValue::new(&mut background.padding)
+                    .speed(0.5)
+                    .range(0.0..=200.0)
+                    .prefix("pad "),
+            );
+            let radius = ui.add(
+                egui::DragValue::new(&mut background.corner_radius)
+                    .speed(0.5)
+                    .range(0.0..=200.0)
+                    .prefix("round "),
+            );
+            if padding.changed() || radius.changed() {
+                dragging |= padding.dragged() || radius.dragged();
+                restyled = true;
+            }
+        });
+    }
+
+    if restyled {
+        change = Some((TextProperty::Style(Box::new(style)), dragging));
+    }
+
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Placement").strong());
+
+    // The same controls, the same ranges and the same feel as a video clip's
+    // (§54): a title is a layer, and there is no reason for it to behave
+    // differently from any other one.
+    let mut position = transform.position;
+    ui.horizontal(|ui| {
+        ui.label("position");
+        let x = ui.add(
+            egui::DragValue::new(&mut position.x)
+                .speed(0.005)
+                .range(-2.0..=2.0),
+        );
+        let y = ui.add(
+            egui::DragValue::new(&mut position.y)
+                .speed(0.005)
+                .range(-2.0..=2.0),
+        );
+        if x.changed() || y.changed() {
+            change = Some((
+                TextProperty::Position {
+                    x: position.x,
+                    y: position.y,
+                },
+                x.dragged() || y.dragged(),
+            ));
+        }
+    });
+
+    let mut scale = transform.scale.x;
+    let response = ui.add(
+        egui::Slider::new(&mut scale, 0.05..=4.0)
+            .logarithmic(true)
+            .text("scale"),
+    );
+    if response.changed() {
+        change = Some((
+            TextProperty::Scale { x: scale, y: scale },
+            response.dragged(),
+        ));
+    }
+
+    let mut rotation = transform.rotation_degrees;
+    let response = ui.add(egui::Slider::new(&mut rotation, -180.0..=180.0).text("rotation"));
+    if response.changed() {
+        change = Some((TextProperty::Rotation(rotation), response.dragged()));
+    }
+
+    let mut value = opacity;
+    let response = ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("opacity"));
+    if response.changed() {
+        change = Some((TextProperty::Opacity(value), response.dragged()));
+    }
+
+    ui.add_space(8.0);
+    if ui.button("Remove title").clicked() {
+        remove = true;
+    }
+
+    if let Some((property, continuing)) = change {
+        match editor.set_text_property(clip, property, continuing) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if remove {
+        match editor.remove_text(clip) {
+            Ok(()) => {
+                state.selected_clips.remove(&clip);
+                state.needs_repaint = true;
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+}
+
+/// A colour swatch that opens a picker, in the text crate's own colour type.
+///
+/// Alpha included: a shadow at full opacity is a black slab, and a background
+/// that cannot be made translucent is unusable over footage.
+fn colour_button(ui: &mut egui::Ui, colour: &mut bettercut_editor_core::text::Rgba) -> bool {
+    let mut rgba = egui::Color32::from_rgba_unmultiplied(colour.r, colour.g, colour.b, colour.a);
+    let changed = ui.color_edit_button_srgba(&mut rgba).changed();
+    if changed {
+        *colour = bettercut_editor_core::text::Rgba::new(rgba.r(), rgba.g(), rgba.b(), rgba.a());
+    }
+    changed
 }
 
 /// Dispatch whatever the rows asked for this frame.

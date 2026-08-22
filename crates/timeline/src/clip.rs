@@ -261,10 +261,68 @@ fn one() -> f32 {
     1.0
 }
 
+/// How much of the frame a source fills when fitted inside it, per axis.
+///
+/// A source wider than the frame is limited by width and letterboxed top and
+/// bottom; a narrower one is limited by height and pillarboxed. The result is
+/// the fraction of the frame the picture covers before the clip's own scale is
+/// applied.
+///
+/// **One implementation, because three things have to agree.** The shader
+/// composites with it, the preview draws its drag handles around exactly the
+/// rectangle it produces, and §26's titles undo it to draw at their own size.
+/// If any of those computed it separately the handles would sit somewhere the
+/// picture is not. It lives here rather than in the renderer because the other
+/// two cannot depend on the renderer.
+pub fn fit_scale(source_aspect: f32, output_aspect: f32) -> (f32, f32) {
+    if source_aspect > output_aspect {
+        (1.0, output_aspect / source_aspect)
+    } else {
+        (source_aspect / output_aspect, 1.0)
+    }
+}
+
+/// The transform that draws a generated bitmap at its own size (§26).
+///
+/// Every layer is *fitted* to the canvas — a 640×360 frame fills a 1920×1080
+/// one — which is right for footage and wrong for a title: a bitmap that
+/// happens to be 400 pixels wide would be blown up to fill the frame, and the
+/// same words in a longer sentence would come out smaller. Text sizes are in
+/// sequence pixels, so a title 400 pixels wide must cover 400/1920 of the
+/// canvas whatever else it says.
+///
+/// Undoing the fit rather than adding a mode to the shader keeps the
+/// compositing path single (§46, §74).
+pub fn natural_size_transform(
+    transform: Transform,
+    width: u32,
+    height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> Transform {
+    let (fit_x, _) = fit_scale(
+        width.max(1) as f32 / height.max(1) as f32,
+        output_width.max(1) as f32 / output_height.max(1) as f32,
+    );
+    if fit_x <= 0.0 {
+        return transform;
+    }
+
+    // The fit preserves aspect, so undoing it is one number rather than two:
+    // the x and y corrections are equal by construction, and a test asserts it.
+    let correction = (width as f32 / output_width.max(1) as f32) / fit_x;
+
+    let mut natural = transform;
+    natural.scale = Vec2::new(
+        transform.scale.x * correction,
+        transform.scale.y * correction,
+    );
+    natural
+}
+
 /// Shared behaviour so tracks can be generic over what they hold.
 pub trait Clip {
     fn id(&self) -> ClipId;
-    fn media_id(&self) -> MediaId;
     fn timeline(&self) -> TimelineRange;
     fn source(&self) -> SourceRange;
     fn set_timeline(&mut self, range: TimelineRange);
@@ -296,9 +354,6 @@ macro_rules! impl_clip {
             fn id(&self) -> ClipId {
                 self.id
             }
-            fn media_id(&self) -> MediaId {
-                self.media_id
-            }
             fn timeline(&self) -> TimelineRange {
                 self.timeline
             }
@@ -317,6 +372,10 @@ macro_rules! impl_clip {
         }
     };
 }
+
+// Used by `text.rs` too, so the generated-source clip cannot drift from the
+// media-backed ones in how it reports its own ranges.
+pub(crate) use impl_clip;
 
 impl_clip!(
     VideoClip,
@@ -619,5 +678,63 @@ mod tests {
             clip.source_time_at(TimelineTime::from_ticks(1500)).ticks(),
             2000
         );
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    /// The correction is one number, not two: the fit preserves aspect, so
+    /// undoing it must scale both axes equally or a title would come out
+    /// stretched.
+    #[test]
+    fn the_natural_size_correction_is_uniform() {
+        for (w, h) in [(400, 120), (1920, 1080), (100, 900), (37, 41)] {
+            let natural = natural_size_transform(Transform::default(), w, h, 1920, 1080);
+            assert!(
+                (natural.scale.x - natural.scale.y).abs() < 1e-4,
+                "{w}×{h} came out stretched: {} vs {}",
+                natural.scale.x,
+                natural.scale.y
+            );
+        }
+    }
+
+    /// A bitmap a quarter of the frame's width covers a quarter of it — which
+    /// is the whole point, and is *not* what fitting would do.
+    #[test]
+    fn a_bitmap_covers_its_own_fraction_of_the_frame() {
+        let natural = natural_size_transform(Transform::default(), 480, 270, 1920, 1080);
+        let (fit_x, _) = fit_scale(480.0 / 270.0, 1920.0 / 1080.0);
+
+        // What the shader ends up multiplying by.
+        let covered = fit_x * natural.scale.x;
+        assert!(
+            (covered - 0.25).abs() < 1e-4,
+            "covered {covered} of the frame rather than a quarter"
+        );
+    }
+
+    /// A source the same size as the frame is unchanged: fitting and natural
+    /// size agree there, and a correction that did not know it would be a
+    /// silent zoom.
+    #[test]
+    fn a_full_size_bitmap_is_left_alone() {
+        let natural = natural_size_transform(Transform::default(), 1920, 1080, 1920, 1080);
+        assert!((natural.scale.x - 1.0).abs() < 1e-4);
+    }
+
+    /// The clip's own scale still applies on top: a title set to 200% is twice
+    /// its natural size, not twice the frame.
+    #[test]
+    fn the_clips_own_scale_still_multiplies() {
+        let doubled = Transform {
+            scale: Vec2::new(2.0, 2.0),
+            ..Transform::default()
+        };
+        let plain = natural_size_transform(Transform::default(), 480, 270, 1920, 1080);
+        let scaled = natural_size_transform(doubled, 480, 270, 1920, 1080);
+        assert!((scaled.scale.x - plain.scale.x * 2.0).abs() < 1e-4);
     }
 }

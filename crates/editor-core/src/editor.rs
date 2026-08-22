@@ -697,6 +697,111 @@ impl Editor {
         self.dispatch_group(format!("Reset {}", property.kind()), commands)
     }
 
+    // ---- text overlays (§26) ----
+
+    /// Add a title at the playhead.
+    ///
+    /// Placed on the first text track, at the first instant from the playhead
+    /// onwards where it fits. Not simply *at* the playhead, because that is
+    /// often over an existing title and refusing would be a dead end — the user
+    /// asked for a title, not for a lesson in track occupancy.
+    pub fn add_text(&mut self, text: impl Into<String>) -> Result<ClipId, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_tracks.first().map(|t| t.id))
+            .ok_or(EditorError::NoTextTrack)?;
+
+        let start = self.free_text_slot(track, self.playhead);
+        let clip = bettercut_timeline::TextClip::new(text, start)?;
+        let id = clip.id;
+
+        self.dispatch(Command::AddText {
+            sequence: sequence_id,
+            track,
+            clip: Box::new(clip),
+        })?;
+        Ok(id)
+    }
+
+    /// The first position at or after `from` where a title of the default
+    /// length fits without overlapping.
+    fn free_text_slot(&self, track: TrackId, from: TimelineTime) -> TimelineTime {
+        let Some(sequence) = self.active_sequence() else {
+            return from;
+        };
+        let Some(track) = sequence.text_track(track) else {
+            return from;
+        };
+
+        let mut start = from;
+        // Walk forward past whatever is in the way. The list is sorted, so this
+        // steps over each obstruction once rather than rescanning.
+        loop {
+            let end = start + bettercut_timeline::DEFAULT_TEXT_DURATION;
+            let blocking = track
+                .clips()
+                .iter()
+                .find(|c| c.timeline.start < end && c.timeline.end > start);
+            match blocking {
+                Some(clip) => start = clip.timeline.end,
+                None => return start,
+            }
+        }
+    }
+
+    pub fn remove_text(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::RemoveText {
+            sequence: sequence_id,
+            track,
+            clip,
+        })
+    }
+
+    /// Change one thing about a title.
+    ///
+    /// `continuing` collapses a drag into a single undo step, exactly as
+    /// [`Self::set_clip_property`] does — the two behave the same way because
+    /// they are the same gesture on different kinds of clip (§11).
+    pub fn set_text_property(
+        &mut self,
+        clip: ClipId,
+        property: crate::command::TextProperty,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        let label = format!("Change {}", property.kind());
+        let command = Command::SetTextProperty {
+            sequence,
+            track,
+            clip,
+            property,
+        };
+        self.dispatch_gesture(label, vec![command], continuing)
+    }
+
+    pub fn text_clip(&self, clip: ClipId) -> Option<&bettercut_timeline::TextClip> {
+        self.project.active()?.text_clip(clip)
+    }
+
+    /// Whether this id names a text overlay rather than a video or audio clip.
+    ///
+    /// The interface asks before deciding which inspector to show: a selection
+    /// is a bare id, and the two kinds of clip take different controls.
+    pub fn is_text_clip(&self, clip: ClipId) -> bool {
+        self.text_clip(clip).is_some()
+    }
+
     /// Put a transition on the end of a clip (§25).
     ///
     /// The duration asked for is a request: what gets stored is clamped to what
@@ -1153,6 +1258,36 @@ impl Editor {
                 sequence, track, clip, property,
             ))),
 
+            Command::AddText {
+                sequence,
+                track,
+                clip,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::AddText::new(sequence, track, *clip)))
+            }
+
+            Command::RemoveText {
+                sequence,
+                track,
+                clip,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::RemoveText::new(sequence, track, clip)))
+            }
+
+            Command::SetTextProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetTextProperty::new(
+                    sequence, track, clip, property,
+                )))
+            }
+
             Command::SetTransition {
                 sequence,
                 track,
@@ -1507,6 +1642,13 @@ impl Editor {
                 consider(track.id, clip.id, clip.timeline);
             }
         }
+        // §26: a title splits like anything else, and leaving it out here is
+        // how a feature that works in the model never reaches the shortcut.
+        for track in &sequence.text_tracks {
+            for clip in track.clips() {
+                consider(track.id, clip.id, clip.timeline);
+            }
+        }
 
         if cuts.is_empty() {
             return Ok(0);
@@ -1559,6 +1701,10 @@ impl Editor {
                     .find(|t| t.get(clip).is_some())
                     .map(|t| t.id)
             })
+            // §26: titles are clips on tracks like any other, and the
+            // operations that look a clip up by id — move, trim, split — have
+            // to find them or they silently do nothing.
+            .or_else(|| sequence.text_track_of(clip))
     }
 
     /// Look a clip up as a payload, for copy and duplicate.
@@ -1633,6 +1779,9 @@ impl Editor {
             let track = match payload.kind() {
                 bettercut_timeline::TrackKind::Video => video_track,
                 bettercut_timeline::TrackKind::Audio => audio_track,
+                // The clipboard holds media clips; §26's titles have their own
+                // add and remove, and never reach a `ClipPayload`.
+                bettercut_timeline::TrackKind::Text => None,
             };
             let Some(track) = track else { continue };
 
@@ -1671,6 +1820,7 @@ impl Editor {
         let at = match &payload {
             ClipPayload::Video(c) => c.timeline.end,
             ClipPayload::Audio(c) => c.timeline.end,
+            ClipPayload::Text(c) => c.timeline.end,
         };
 
         self.dispatch(Command::PasteClip {

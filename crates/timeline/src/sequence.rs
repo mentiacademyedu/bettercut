@@ -1,9 +1,10 @@
 //! Sequences: a canvas, a frame rate, and stacks of tracks (§8).
 
-use bettercut_foundation::{FrameRate, SequenceId, TimelineTime, TrackId, ticks_per_frame};
+use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId, ticks_per_frame};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TimelineError;
+use crate::text::TextTrack;
 use crate::track::{AudioTrack, VideoTrack};
 
 /// Output canvas size in pixels.
@@ -40,11 +41,13 @@ impl Resolution {
     }
 }
 
-/// Where a track sits: video tracks composite bottom-up, audio tracks sum.
+/// Where a track sits: video tracks composite bottom-up, audio tracks sum, and
+/// text tracks composite over everything (§22, §26).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
     Audio,
+    Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +70,15 @@ pub struct Sequence {
     /// order." Later tracks composite over earlier ones.
     pub video_tracks: Vec<VideoTrack>,
     pub audio_tracks: Vec<AudioTrack>,
+
+    /// Text overlays (§26), composited over every video track.
+    ///
+    /// A separate list rather than another entry in `video_tracks` because a
+    /// text clip has no media behind it and none of the machinery that goes
+    /// with media — proxies, filmstrips, decode-ahead — applies to it.
+    /// Defaulted in serde, so projects written before §26 load unchanged.
+    #[serde(default)]
+    pub text_tracks: Vec<TextTrack>,
 }
 
 impl Sequence {
@@ -92,6 +104,7 @@ impl Sequence {
             master: crate::clip::MasterLook::default(),
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
+            text_tracks: Vec::new(),
         })
     }
 
@@ -102,6 +115,10 @@ impl Sequence {
             .unwrap_or_else(|_| unreachable!("30 fps divides the timebase"));
         sequence.video_tracks.push(VideoTrack::new("V1"));
         sequence.audio_tracks.push(AudioTrack::new("A1"));
+        // One text lane from the start, for the same reason V1 and A1 are
+        // there: something to drop a title onto without first having to work
+        // out that a track is what is missing.
+        sequence.text_tracks.push(TextTrack::new("T1"));
         sequence
     }
 
@@ -121,9 +138,36 @@ impl Sequence {
     pub fn duration(&self) -> TimelineTime {
         let video = self.video_tracks.iter().map(|t| t.duration());
         let audio = self.audio_tracks.iter().map(|t| t.duration());
+        let text = self.text_tracks.iter().map(|t| t.duration());
         video
             .chain(audio)
+            .chain(text)
             .fold(TimelineTime::ZERO, TimelineTime::max)
+    }
+
+    pub fn text_track(&self, id: TrackId) -> Option<&TextTrack> {
+        self.text_tracks.iter().find(|t| t.id == id)
+    }
+
+    pub fn text_track_mut(&mut self, id: TrackId) -> Option<&mut TextTrack> {
+        self.text_tracks.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The text clip with this id, wherever it is.
+    pub fn text_clip(&self, id: ClipId) -> Option<&crate::text::TextClip> {
+        self.text_tracks.iter().find_map(|t| t.get(id))
+    }
+
+    pub fn text_clip_mut(&mut self, id: ClipId) -> Option<&mut crate::text::TextClip> {
+        self.text_tracks.iter_mut().find_map(|t| t.get_mut(id))
+    }
+
+    /// Which text track a clip is on.
+    pub fn text_track_of(&self, clip: ClipId) -> Option<TrackId> {
+        self.text_tracks
+            .iter()
+            .find(|t| t.get(clip).is_some())
+            .map(|t| t.id)
     }
 
     pub fn video_track(&self, id: TrackId) -> Option<&VideoTrack> {
@@ -147,19 +191,22 @@ impl Sequence {
             Some(TrackKind::Video)
         } else if self.audio_tracks.iter().any(|t| t.id == id) {
             Some(TrackKind::Audio)
+        } else if self.text_tracks.iter().any(|t| t.id == id) {
+            Some(TrackKind::Text)
         } else {
             None
         }
     }
 
     pub fn track_count(&self) -> usize {
-        self.video_tracks.len() + self.audio_tracks.len()
+        self.video_tracks.len() + self.audio_tracks.len() + self.text_tracks.len()
     }
 
     pub fn clip_count(&self) -> usize {
         let video: usize = self.video_tracks.iter().map(|t| t.len()).sum();
         let audio: usize = self.audio_tracks.iter().map(|t| t.len()).sum();
-        video + audio
+        let text: usize = self.text_tracks.iter().map(|t| t.len()).sum();
+        video + audio + text
     }
 }
 

@@ -739,24 +739,11 @@ fn create_target(
 /// Maps the unit quad onto the output, letterboxing the source so it fills the
 /// frame without distorting — a 4:3 clip in a 16:9 sequence gets pillarbox
 /// bars, not stretched faces.
-/// How much of the frame a source fills when fitted inside it, per axis.
-///
-/// A source wider than the frame is limited by width and letterboxed top and
-/// bottom; a narrower one is limited by height and pillarboxed. The result is
-/// the fraction of the frame the picture covers before the clip's own scale is
-/// applied.
-///
-/// **Public because the interface has to agree with the shader.** The preview's
-/// drag handles are drawn around exactly the rectangle this produces, and if the
-/// two ever computed it differently the handles would sit somewhere the picture
-/// is not — so there is one implementation and both call it.
-pub fn fit_scale(source_aspect: f32, output_aspect: f32) -> (f32, f32) {
-    if source_aspect > output_aspect {
-        (1.0, output_aspect / source_aspect)
-    } else {
-        (source_aspect / output_aspect, 1.0)
-    }
-}
+/// Re-exported so this crate's callers keep one obvious place to find it.
+/// The implementation lives in the timeline crate, because the preview
+/// handles and §26's titles both need it and neither can depend on the
+/// renderer — see [`bettercut_timeline::fit_scale`].
+pub use bettercut_timeline::fit_scale;
 
 fn layer_uniform(
     transform: Transform,

@@ -29,6 +29,11 @@ pub const KEYFRAME: Color32 = Color32::from_rgb(126, 200, 255);
 /// §25's transitions, drawn over the cut. Pale and cool so it reads as an
 /// overlay on the clips rather than as a third clip between them.
 pub const TRANSITION: Color32 = Color32::from_rgb(214, 226, 240);
+
+/// §26's text overlays. A different hue from the video and audio clips, because
+/// a title is a different kind of thing and the lane is read at a glance.
+pub const TEXT_CLIP: Color32 = Color32::from_rgb(126, 96, 178);
+pub const TEXT_CLIP_TOP: Color32 = Color32::from_rgb(152, 120, 206);
 pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
 pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
 pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);

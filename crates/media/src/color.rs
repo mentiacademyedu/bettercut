@@ -92,6 +92,21 @@ pub struct ColorMetadata {
 }
 
 impl ColorMetadata {
+    /// A picture that is already in the working space (§21a).
+    ///
+    /// Not every source is decoded from a file. Text is *generated* — the
+    /// rasterizer produces sRGB-encoded, full-range RGBA directly — and saying
+    /// so is what tells the upload boundary there is nothing to convert.
+    pub const fn srgb() -> Self {
+        Self {
+            primaries: ColorPrimaries::Bt709,
+            transfer: TransferFunction::Srgb,
+            matrix: ColorMatrix::Bt709,
+            range: ColorRange::Full,
+            bit_depth: 8,
+        }
+    }
+
     /// §21a.2's stated defaults, for files whose metadata is absent — which is
     /// most screen recordings and a good share of phone video.
     ///
