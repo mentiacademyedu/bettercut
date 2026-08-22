@@ -25,7 +25,9 @@
 
 use bettercut_editor_core::foundation::{ClipId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::project_format::Project;
-use bettercut_editor_core::timeline::{Sequence, TimelineRange, TrackKind, snap};
+use bettercut_editor_core::timeline::{
+    Sequence, TimelineRange, TrackKind, Transition, TransitionKind, snap,
+};
 use bettercut_editor_core::{Editor, TrimEdge};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
@@ -818,6 +820,7 @@ fn draw_lanes(
                         .map_or(MediaTime::ZERO, |m| m.duration),
                     keyframes: (!clip.keyframes.is_empty())
                         .then_some((&clip.keyframes, clip.source.start)),
+                    transition: clip.transition_out,
                 },
                 clip.id,
                 track.id,
@@ -863,6 +866,9 @@ fn draw_lanes(
                     filmstrip: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
+                    // §25 v1 is picture only: an audio crossfade mixes two
+                    // sources rather than blending two images.
+                    transition: None,
                 },
                 clip.id,
                 track.id,
@@ -935,6 +941,59 @@ fn draw_track_header(painter: &egui::Painter, lane: Rect, name: &str, enabled: b
     }
 }
 
+/// A transition straddling the cut at `cut` (§25).
+///
+/// Drawn against the lane rather than the clip, because half of the window sits
+/// over the *next* clip — which is exactly what it means: for that stretch both
+/// clips are on screen.
+fn draw_transition(
+    painter: &egui::Painter,
+    lane: Rect,
+    viewport: Viewport,
+    transition: Transition,
+    cut: TimelineTime,
+) {
+    let window = transition.window(cut);
+    let x0 = viewport.x_of(window.start).max(viewport.origin_x);
+    let x1 = viewport.x_of(window.end).min(lane.right());
+    if x1 - x0 < 2.0 {
+        return; // zoomed out past legibility; the clips still read correctly
+    }
+
+    let rect = Rect::from_min_max(
+        Pos2::new(x0, lane.top() + 3.0),
+        Pos2::new(x1, lane.bottom() - 3.0),
+    );
+    painter.rect_filled(
+        rect,
+        theme::CLIP_CORNER_RADIUS,
+        theme::TRANSITION.gamma_multiply(0.30),
+    );
+
+    // Too narrow for the symbol to be anything but a smudge; the panel alone
+    // still says a transition is there.
+    if rect.width() < 10.0 {
+        return;
+    }
+
+    let stroke = Stroke::new(1.5, theme::TRANSITION);
+    let inner = rect.shrink(3.0);
+    match transition.kind {
+        // Two crossing diagonals: the shape every editor uses for a dissolve,
+        // and it reads as two things overlapping.
+        TransitionKind::Crossfade => {
+            painter.line_segment([inner.left_top(), inner.right_bottom()], stroke);
+            painter.line_segment([inner.left_bottom(), inner.right_top()], stroke);
+        }
+        // A V down to the middle: down to black, back up again.
+        TransitionKind::FadeThroughBlack => {
+            let bottom = Pos2::new(inner.center().x, inner.bottom());
+            painter.line_segment([inner.left_top(), bottom], stroke);
+            painter.line_segment([bottom, inner.right_top()], stroke);
+        }
+    }
+}
+
 struct ClipVisual<'a> {
     range: TimelineRange,
     label: &'a str,
@@ -955,6 +1014,10 @@ struct ClipVisual<'a> {
     /// along the bottom edge (§24). `None` for audio, which Milestone 8 does
     /// not animate.
     keyframes: Option<(&'a bettercut_editor_core::timeline::Keyframes, MediaTime)>,
+    /// §25's transition at this clip's end, drawn straddling the cut. It is not
+    /// clipped to the clip's own rect, because half of it belongs to the next
+    /// clip's side of the boundary.
+    transition: Option<Transition>,
 }
 
 /// The rubber band itself: a translucent fill with a crisp edge.
@@ -1203,6 +1266,10 @@ fn draw_clip(
             visual.range.start,
             source_start,
         );
+    }
+
+    if let Some(transition) = visual.transition {
+        draw_transition(painter, lane, viewport, transition, visual.range.end);
     }
 
     // Only label a clip wide enough to read it; below that the text is noise.

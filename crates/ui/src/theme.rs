@@ -25,6 +25,10 @@ pub const PLAYHEAD: Color32 = Color32::from_rgb(238, 92, 92);
 /// Keyframes, in the inspector and on the clip (§24). Deliberately not the
 /// selection colour: a key and a selected clip are often on screen together.
 pub const KEYFRAME: Color32 = Color32::from_rgb(126, 200, 255);
+
+/// §25's transitions, drawn over the cut. Pale and cool so it reads as an
+/// overlay on the clips rather than as a third clip between them.
+pub const TRANSITION: Color32 = Color32::from_rgb(214, 226, 240);
 pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
 pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
 pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);

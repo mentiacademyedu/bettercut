@@ -417,6 +417,10 @@ impl<C: Clip> Track<C> {
             start: source.start,
             end: source_split,
         });
+        // §25: the transition was on the original clip's *end*, which is now
+        // the right half's end. The left half's new end is the split, and
+        // nobody asked for a dissolve there.
+        left.clear_transition_out();
 
         let mut right = original.clone();
         right.set_id(right_id);

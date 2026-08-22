@@ -15,6 +15,7 @@ pub mod keyframe;
 pub mod sequence;
 pub mod snap;
 pub mod track;
+pub mod transition;
 
 pub use clip::{
     AudioClip, Clip, ClipLook, ColorAdjust, MAX_BLUR, MasterLook, SourceRange, TimelineRange,
@@ -25,3 +26,7 @@ pub use keyframe::{AnimatedParameter, Interpolation, Keyframe, KeyframeTrack, Ke
 pub use sequence::{Resolution, Sequence, TrackKind};
 pub use snap::{SnapKind, SnapTarget};
 pub use track::{AudioTrack, SplitOutcome, Track, VideoTrack};
+pub use transition::{
+    DEFAULT_DURATION as DEFAULT_TRANSITION, MIN_DURATION as MIN_TRANSITION, Transition,
+    TransitionKind,
+};

@@ -765,11 +765,10 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         // apply to the finished video, which is the thing on screen when no
         // clip is picked out — and selecting a clip narrows them to it.
         (0, _) => {
-            ui.label(
-                egui::RichText::new("Whole video")
-                    .strong()
-                    .color(theme::KEYFRAME),
-            );
+            // Plain, not the keyframe blue: that colour means "animated"
+            // everywhere else, and spending it on a heading would dilute the
+            // one signal the Inspector has.
+            ui.label(egui::RichText::new("Whole video").strong());
             ui.label(
                 egui::RichText::new(
                     "These apply to everything at once. Click a clip — on the \
@@ -796,6 +795,23 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             if let Some(range) = range {
                 ui.monospace(format!("start     {}", range.start.format_timecode()));
                 ui.monospace(format!("duration  {}", range.duration().format_timecode()));
+            }
+
+            // Above the tabs, because it acts on the whole clip. Inside one it
+            // would look like it acted on that tab, which is the confusion the
+            // Animation tab's button used to cause.
+            if video.is_some() {
+                ui.add_space(2.0);
+                if ui
+                    .button("Reset clip")
+                    .on_hover_text(
+                        "Put every control on every tab back to its default, and \
+                         remove all keyframes.",
+                    )
+                    .clicked()
+                {
+                    reset_video_properties(editor, state, id);
+                }
             }
 
             ui.add_space(6.0);
@@ -1527,7 +1543,7 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         }
         InspectorTab::Audio => unavailable(
             ui,
-            "The master volume is a monitoring level rather than project data, so it is not saved with the project. Per-clip volume is on the Audio tab of a selected clip.",
+            "There is no whole-video volume yet. Select a clip to set its own.",
         ),
         InspectorTab::Speed => unavailable(
             ui,
@@ -1688,12 +1704,25 @@ Press the ○ beside any                  control in Video or Colours to pin its
     animation_summary(ui, editor, state, clip, look);
 
     ui.add_space(6.0);
+    // Only the keys. This used to call the whole-clip reset, which also put
+    // every value back to default — so a careful colour grade disappeared
+    // behind a button that said nothing about colour. The hover text admitted
+    // it, which is no defence when the label reads unambiguously.
     if ui
-        .button("Clear all keyframes")
-        .on_hover_text("Remove every keyframe and put every control back to default")
+        .button("Remove all keyframes")
+        .on_hover_text(
+            "Stop animating every control. Each one goes back to reading its \
+             own value; nothing else changes.",
+        )
         .clicked()
     {
-        reset_video_properties(editor, state, clip);
+        match editor.clear_clip_keyframes(clip) {
+            Ok(()) => {
+                state.needs_repaint = true;
+                state.info("Keyframes removed");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
 }
 
@@ -1825,6 +1854,103 @@ fn clip_video_properties(
     }
 
     apply_row_actions(editor, state, clip, change, toggle, reset);
+
+    clip_transition(ui, editor, state, clip);
+}
+
+/// The transition on the cut at the end of this clip (§25).
+///
+/// Only shown when there is a cut there. A control that is always visible and
+/// almost always refuses would be worse than one that appears when it applies.
+fn clip_transition(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::{MIN_TRANSITION, TransitionKind};
+
+    let existing = editor.video_clip(clip).and_then(|c| c.transition_out);
+    // Room for *any* kind: a cut with no handles still takes a fade through
+    // black, and hiding the whole section there would hide the one that works.
+    let room: Vec<_> = TransitionKind::ALL
+        .into_iter()
+        .map(|kind| (kind, editor.transition_room(clip, kind)))
+        .collect();
+    if room.iter().all(|(_, r)| r.is_none()) {
+        return; // no clip straight after this one — nothing to fade into
+    }
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Transition out").strong());
+    ui.label(
+        egui::RichText::new("Applies to the cut between this clip and the next.")
+            .small()
+            .color(theme::DISABLED),
+    );
+    ui.add_space(2.0);
+
+    let mut chosen: Option<Option<TransitionKind>> = None;
+    ui.horizontal(|ui| {
+        if ui.selectable_label(existing.is_none(), "None").clicked() {
+            chosen = Some(None);
+        }
+        for (kind, available) in &room {
+            let usable = available.is_some_and(|r| r >= MIN_TRANSITION);
+            let selected = existing.is_some_and(|t| t.kind == *kind);
+            let response = ui
+                .add_enabled(usable, egui::Button::selectable(selected, kind.label()))
+                .on_hover_text(kind.description())
+                .on_disabled_hover_text("Not enough spare footage either side of the cut.");
+            if response.clicked() {
+                chosen = Some(Some(*kind));
+            }
+        }
+    });
+
+    if let Some(transition) = existing {
+        // The slider stops where the media does, so the length shown is always
+        // one that will actually render (§25).
+        let limit = room
+            .iter()
+            .find(|(kind, _)| *kind == transition.kind)
+            .and_then(|(_, r)| *r)
+            .unwrap_or(MIN_TRANSITION);
+        let mut seconds = transition.duration.ticks() as f64 / 960_000.0;
+        let response = ui.add(
+            egui::Slider::new(
+                &mut seconds,
+                MIN_TRANSITION.ticks() as f64 / 960_000.0..=limit.ticks() as f64 / 960_000.0,
+            )
+            .text("seconds")
+            .fixed_decimals(2),
+        );
+        if response.changed() {
+            // Back to ticks immediately: §74 keeps positions integral, and the
+            // slider's float is only how the control reports itself.
+            let ticks = bettercut_editor_core::foundation::TimelineTime::from_ticks(
+                (seconds * 960_000.0).round() as i64,
+            );
+            if let Err(err) = editor.set_transition_duration(clip, ticks) {
+                state.error(err.to_string());
+            } else {
+                state.needs_repaint = true;
+            }
+        }
+    }
+
+    match chosen {
+        Some(Some(kind)) => match editor.set_transition(clip, kind) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        },
+        Some(None) => match editor.remove_transition(clip) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        },
+        None => {}
+    }
 }
 
 /// Dispatch whatever the rows asked for this frame.

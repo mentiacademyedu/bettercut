@@ -9,8 +9,8 @@ use bettercut_foundation::{
 };
 use bettercut_project_format::Project;
 use bettercut_timeline::{
-    AnimatedParameter, AudioTrack, Clip, Keyframe, Resolution, Sequence, SourceRange,
-    TimelineRange, TrackKind, Vec2, VideoTrack,
+    AnimatedParameter, AudioTrack, Clip, Keyframe, MIN_TRANSITION, Resolution, Sequence,
+    SourceRange, TimelineRange, TrackKind, Transition, Vec2, VideoTrack,
 };
 
 use crate::command::{
@@ -57,6 +57,12 @@ pub fn build_for_replay(
             clip,
             property,
         } => Box::new(SetClipProperty::new(sequence, track, clip, property)),
+        Command::SetTransition {
+            sequence,
+            track,
+            clip,
+            transition,
+        } => Box::new(SetTransition::new(sequence, track, clip, transition)),
         Command::SetKeyframe {
             sequence,
             track,
@@ -198,6 +204,157 @@ fn media_limit(project: &Project, sequence: SequenceId, clip: ClipId) -> Option<
                 .find_map(|t| t.get(clip).map(|c| c.media_id))
         })?;
     project.media_asset(media_id).map(|m| m.duration)
+}
+
+/// The longest transition the cut at the end of `clip` can support (§25).
+///
+/// `Ok(None)` when there is no cut there at all — no next clip, or a gap.
+pub(crate) fn transition_room(
+    project: &Project,
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    kind: bettercut_timeline::TransitionKind,
+) -> Option<TimelineTime> {
+    let sequence = project.sequence(sequence)?;
+    let track = sequence.video_tracks.iter().find(|t| t.id == track)?;
+    let clips = track.clips();
+    let index = clips.iter().position(|c| c.id == clip)?;
+    let outgoing = &clips[index];
+    let incoming = clips.get(index + 1)?;
+    // A gap is not a cut: there is nothing on the other side to fade to.
+    if incoming.timeline.start != outgoing.timeline.end {
+        return None;
+    }
+
+    // Handles are whatever the file has outside each clip's own range. Media
+    // that cannot be read reports none, which refuses a crossfade rather than
+    // promising one that would flash black (§66).
+    let handle_after = project
+        .media_asset(outgoing.media_id)
+        .map(|m| MediaTime::from_ticks((m.duration.ticks() - outgoing.source.end.ticks()).max(0)))
+        .unwrap_or(MediaTime::ZERO);
+    let handle_before = incoming.source.start;
+
+    Some(Transition::max_duration(
+        kind,
+        outgoing.timeline.duration(),
+        incoming.timeline.duration(),
+        handle_after,
+        handle_before,
+    ))
+}
+
+/// Put a transition on the end of a clip, or take it off (§25).
+#[derive(Debug)]
+pub struct SetTransition {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    transition: Option<Transition>,
+    previous: Option<Option<Transition>>,
+}
+
+impl SetTransition {
+    pub fn new(
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        transition: Option<Transition>,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            transition,
+            previous: None,
+        }
+    }
+
+    /// Write it, returning what was there.
+    ///
+    /// The clamp happens here rather than in the interface because §38.2
+    /// replays commands after a crash and §54 has the model own its own
+    /// invariants: a duration checked only on the way in would come back
+    /// unchecked on the way out.
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        transition: Option<Transition>,
+        clamp: bool,
+    ) -> Result<Option<Transition>, EditorError> {
+        let transition = match transition {
+            Some(mut wanted) if clamp => {
+                let room = transition_room(project, sequence, track, clip, wanted.kind)
+                    .ok_or(EditorError::NoRoomForTransition)?;
+                if room < MIN_TRANSITION {
+                    return Err(EditorError::NoRoomForTransition);
+                }
+                wanted.duration = TimelineTime::from_ticks(
+                    wanted
+                        .duration
+                        .ticks()
+                        .clamp(MIN_TRANSITION.ticks(), room.ticks()),
+                );
+                Some(wanted)
+            }
+            other => other,
+        };
+
+        with_track(
+            project,
+            sequence,
+            track,
+            |video| {
+                let clip = video.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                Ok(std::mem::replace(&mut clip.transition_out, transition))
+            },
+            // §25 v1 is picture only. An audio crossfade is a different
+            // mechanism — mixing two sources, not blending two images — and
+            // accepting one here would store something nothing reads.
+            |_audio| Err(EditorError::ClipKindMismatch),
+        )
+    }
+}
+
+impl EditorCommand for SetTransition {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            self.transition,
+            true,
+        )?;
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        // Restored as it was, not re-clamped: it was legal when it was stored,
+        // and re-clamping here would let an undo hand back something different
+        // from what the user had.
+        Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            previous,
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        match self.transition {
+            Some(t) => format!("Add {}", t.kind.label().to_lowercase()),
+            None => "Remove transition".to_string(),
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1697,6 +1854,11 @@ impl EditorCommand for PasteClip {
             ClipPayload::Video(c) => {
                 c.set_id(id);
                 c.timeline = range;
+                // §25: a transition describes a *cut*, and this clip is landing
+                // somewhere else. Carried along, it would lie dormant until the
+                // pasted clip happened to abut something and then dissolve into
+                // a neighbour the user never paired it with.
+                c.clear_transition_out();
             }
             ClipPayload::Audio(c) => {
                 c.set_id(id);

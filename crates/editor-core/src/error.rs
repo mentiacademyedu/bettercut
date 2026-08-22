@@ -36,6 +36,11 @@ pub enum EditorError {
     #[error("move the playhead over the clip to add a keyframe")]
     PlayheadOffClip,
 
+    /// §25: a crossfade reads material either side of the cut, and a clip
+    /// trimmed to the edge of its file has none to read.
+    #[error("not enough spare footage either side of the cut for a transition")]
+    NoRoomForTransition,
+
     #[error("nothing to undo")]
     NothingToUndo,
 

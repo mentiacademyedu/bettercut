@@ -130,6 +130,21 @@ pub enum Command {
         parameter: AnimatedParameter,
         time: bettercut_foundation::MediaTime,
     },
+    /// Put a transition on the end of a clip, or take it off (§25).
+    ///
+    /// `None` removes. One command for both, for the same reason
+    /// [`Self::RemoveKeyframe`] is separate but symmetrical: the undo logic is
+    /// identical and splitting it would duplicate the only subtle part.
+    ///
+    /// The duration is a request. What is actually stored is clamped to what
+    /// the two clips can support, because the alternative is a transition that
+    /// looks right in the interface and flashes black on export.
+    SetTransition {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        transition: Option<bettercut_timeline::Transition>,
+    },
     /// Adjust the finished picture rather than one clip (§22).
     ///
     /// Reuses [`ClipProperty`] because the controls are the same ones — the

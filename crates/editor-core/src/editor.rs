@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use bettercut_foundation::{ClipId, FrameRate, MediaTime, SequenceId, TimelineTime, TrackId};
 use bettercut_media::{FfmpegProber, MediaAsset, MediaProber};
 use bettercut_project_format::{PROJECT_EXTENSION, Project};
-use bettercut_timeline::{Interpolation, Keyframe, Resolution, Sequence, TrackKind};
+use bettercut_timeline::{
+    DEFAULT_TRANSITION, Interpolation, Keyframe, Resolution, Sequence, TrackKind, Transition,
+    TransitionKind,
+};
 
 use crate::command::{ClipPayload, Command, CommandGroup, EditorCommand, TrackFlag, TrimEdge};
 use crate::error::EditorError;
@@ -514,6 +517,46 @@ impl Editor {
         )
     }
 
+    /// Remove every keyframe on a clip, leaving its values alone (§24).
+    ///
+    /// Deliberately *not* the same as resetting the clip. Once the keys are
+    /// gone each control goes back to reading its own static value, which is
+    /// what "stop animating this" means — the alternative, baking whatever was
+    /// on screen at the playhead into every control, would silently make one
+    /// frame of a fade permanent across the whole clip.
+    ///
+    /// One undo step however many keys there were (§79).
+    pub fn clear_clip_keyframes(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        let commands: Vec<Command> = video
+            .keyframes
+            .iter()
+            .flat_map(|animation| {
+                let parameter = animation.parameter;
+                animation
+                    .keys()
+                    .iter()
+                    .map(move |key| Command::RemoveKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        time: key.time,
+                    })
+            })
+            .collect();
+
+        if commands.is_empty() {
+            return Ok(());
+        }
+        self.dispatch_group("Remove Keyframes", commands)
+    }
+
     /// Put a clip's look back to default — including its animation — as one
     /// undo step (§79).
     ///
@@ -652,6 +695,78 @@ impl Editor {
         });
 
         self.dispatch_group(format!("Reset {}", property.kind()), commands)
+    }
+
+    /// Put a transition on the end of a clip (§25).
+    ///
+    /// The duration asked for is a request: what gets stored is clamped to what
+    /// the two clips can actually supply. See [`Self::transition_room`] for
+    /// showing that limit before the user runs into it.
+    pub fn set_transition(
+        &mut self,
+        clip: ClipId,
+        kind: TransitionKind,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        // Reuse the length already there when only the kind is changing, so
+        // switching a 2-second dissolve to a fade does not silently shorten it.
+        let duration = self
+            .video_clip(clip)
+            .and_then(|c| c.transition_out)
+            .map(|t| t.duration)
+            .unwrap_or(DEFAULT_TRANSITION);
+        self.dispatch(Command::SetTransition {
+            sequence,
+            track,
+            clip,
+            transition: Some(Transition::new(kind, duration)),
+        })
+    }
+
+    /// Change how long a clip's transition runs, keeping its kind.
+    ///
+    /// A no-op when there is no transition there: setting a length on nothing
+    /// is not a request to create one, and guessing which kind they meant would
+    /// be a worse answer than doing nothing.
+    pub fn set_transition_duration(
+        &mut self,
+        clip: ClipId,
+        duration: TimelineTime,
+    ) -> Result<(), EditorError> {
+        let Some(existing) = self.video_clip(clip).and_then(|c| c.transition_out) else {
+            return Ok(());
+        };
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::SetTransition {
+            sequence,
+            track,
+            clip,
+            transition: Some(Transition::new(existing.kind, duration)),
+        })
+    }
+
+    pub fn remove_transition(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::SetTransition {
+            sequence,
+            track,
+            clip,
+            transition: None,
+        })
+    }
+
+    /// The longest transition of `kind` this cut can support, or `None` when
+    /// there is no cut at the end of this clip at all.
+    ///
+    /// The interface asks this so it can bound the slider and say why a
+    /// crossfade is unavailable, rather than offering one and rejecting it.
+    pub fn transition_room(&self, clip: ClipId, kind: TransitionKind) -> Option<TimelineTime> {
+        let sequence = self.active_sequence_id().ok()?;
+        let track = self.track_of(clip)?;
+        ops::transition_room(&self.project, sequence, track, clip, kind)
     }
 
     /// Add a keyframe for every parameter of one inspector control, or delete
@@ -1037,6 +1152,18 @@ impl Editor {
             } => Ok(Box::new(ops::SetClipProperty::new(
                 sequence, track, clip, property,
             ))),
+
+            Command::SetTransition {
+                sequence,
+                track,
+                clip,
+                transition,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetTransition::new(
+                    sequence, track, clip, transition,
+                )))
+            }
 
             Command::SetKeyframe {
                 sequence,

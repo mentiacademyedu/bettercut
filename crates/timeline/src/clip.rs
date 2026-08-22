@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TimelineError;
 use crate::keyframe::{AnimatedParameter, Keyframes};
+use crate::transition::Transition;
 
 /// A 2D point or size. Spatial, not temporal — floats are fine here (§74 bans
 /// them only in timeline position arithmetic).
@@ -178,6 +179,12 @@ pub struct VideoClip {
     /// Parameters that change over the clip (§24). Empty for most clips.
     #[serde(default)]
     pub keyframes: Keyframes,
+    /// A transition at this clip's *end*, if any (§25).
+    ///
+    /// On the clip rather than on the track so that moving, trimming,
+    /// splitting or pasting carries it along; see [`crate::transition`].
+    #[serde(default)]
+    pub transition_out: Option<Transition>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -269,11 +276,23 @@ pub trait Clip {
     /// from an existing one. Reusing the source clip's `ClipId` would break
     /// selection, undo, and every lookup that assumes IDs are unique.
     fn set_id(&mut self, id: ClipId);
+
+    /// Drop any transition on this clip's end (§25).
+    ///
+    /// Splitting clones the clip, and a transition belongs to the *end* the
+    /// user put it on — which after a split is the right half's. Left alone,
+    /// one dissolve would become two, the spurious one landing on a cut the
+    /// user never asked to soften.
+    ///
+    /// Defaulted, because audio has no transitions to drop.
+    fn clear_transition_out(&mut self) {}
 }
 
+/// The shared half of [`Clip`], plus whatever else a given kind of clip needs.
 macro_rules! impl_clip {
-    ($t:ty) => {
+    ($t:ty $(, $extra:item)*) => {
         impl Clip for $t {
+            $($extra)*
             fn id(&self) -> ClipId {
                 self.id
             }
@@ -299,7 +318,13 @@ macro_rules! impl_clip {
     };
 }
 
-impl_clip!(VideoClip);
+impl_clip!(
+    VideoClip,
+    // The only kind of clip that has a transition to drop; see the trait.
+    fn clear_transition_out(&mut self) {
+        self.transition_out = None;
+    }
+);
 impl_clip!(AudioClip);
 
 impl VideoClip {
@@ -324,6 +349,7 @@ impl VideoClip {
             color: ColorAdjust::default(),
             blur: 0.0,
             keyframes: Keyframes::default(),
+            transition_out: None,
             enabled: true,
         })
     }

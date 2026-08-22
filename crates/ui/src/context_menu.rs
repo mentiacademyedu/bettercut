@@ -11,6 +11,7 @@
 //! one that lists everything and greys most of it out.
 
 use bettercut_editor_core::foundation::{ClipId, TrackId};
+use bettercut_editor_core::timeline::{MIN_TRANSITION, TransitionKind};
 use bettercut_editor_core::{Editor, TrackFlag};
 
 use crate::shortcuts;
@@ -104,6 +105,8 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     }
 
     ui.separator();
+    transition_menu(ui, editor, state, clip);
+    ui.separator();
 
     // Jumping to a clip's edges is what makes trimming to a neighbour precise,
     // and there is no keyboard route to it yet.
@@ -113,6 +116,58 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         editor.set_playhead(payload.start());
         state.needs_repaint = true;
     }
+}
+
+/// Transitions on the cut at the end of this clip (§25).
+///
+/// On the clip rather than on the cut because that is where the model keeps it,
+/// and because a cut is not something you can right-click: it is a boundary one
+/// pixel wide.
+fn transition_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: ClipId) {
+    let existing = editor.video_clip(clip).and_then(|c| c.transition_out);
+
+    ui.menu_button("Transition", |ui| {
+        for kind in TransitionKind::ALL {
+            // Ask what the cut can take before offering it, so an unavailable
+            // crossfade says why instead of failing after the click (§41).
+            let room = editor.transition_room(clip, kind);
+            let available = room.is_some_and(|r| r >= MIN_TRANSITION);
+            let chosen = existing.is_some_and(|t| t.kind == kind);
+
+            let button = egui::Button::new(if chosen {
+                format!("✔  {}", kind.label())
+            } else {
+                format!("     {}", kind.label())
+            });
+            let response = ui
+                .add_enabled(available, button)
+                .on_hover_text(if available {
+                    kind.description()
+                } else if room.is_none() {
+                    "There is no clip straight after this one to fade into."
+                } else {
+                    "Not enough spare footage either side of the cut."
+                });
+
+            if response.clicked() {
+                ui.close();
+                if let Err(err) = editor.set_transition(clip, kind) {
+                    state.error(err.to_string());
+                }
+            }
+        }
+
+        ui.separator();
+        if ui
+            .add_enabled(existing.is_some(), egui::Button::new("     Remove"))
+            .clicked()
+        {
+            ui.close();
+            if let Err(err) = editor.remove_transition(clip) {
+                state.error(err.to_string());
+            }
+        }
+    });
 }
 
 fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track: TrackId) {

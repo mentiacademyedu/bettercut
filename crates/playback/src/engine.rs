@@ -26,7 +26,7 @@ use std::sync::Arc;
 use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_media::{FfmpegDecoder, MediaAsset, NeverCancelled, SeekMode, VideoFrame};
 use bettercut_project_format::Project;
-use bettercut_timeline::{Clip, Sequence, Transform};
+use bettercut_timeline::{Clip, Sequence, Transform, TransitionKind, VideoClip};
 
 use crate::audio_source::AudioSource;
 use crate::cache::{FrameCache, FrameKey};
@@ -79,26 +79,149 @@ pub fn layer_requests(
         if !track.enabled {
             continue; // hidden tracks are skipped by the renderer (§8)
         }
-        let Some(clip) = track.clip_at(position) else {
+        let clips = track.clips();
+        let index = clips.partition_point(|c| c.timeline().end <= position);
+        let Some(clip) = clips.get(index).filter(|c| c.timeline().contains(position)) else {
             continue;
         };
-        if project.media_asset(clip.media_id).is_none() {
-            continue; // §66: missing media leaves a gap, not a failure
-        }
 
-        let source_time = source_time_of(clip.timeline().start, clip.source().start, position);
-        requests.push(LayerRequest {
-            clip: clip.id,
-            track: track.id,
-            media: clip.media_id,
-            source_time,
-            // §24: resolved in the timeline crate, once, so an animated fade
-            // exports as the fade the user watched.
-            look: clip.look_at(source_time),
-        });
+        match transition_at(clips, index, position) {
+            // §25: two clips on screen at once. The outgoing one keeps reading
+            // past its out-point and the incoming one starts before its
+            // in-point, which is what the handles checked by
+            // `Transition::max_duration` are for.
+            Some(Cut {
+                outgoing,
+                incoming,
+                progress,
+                kind: TransitionKind::Crossfade,
+            }) => {
+                // Outgoing first: within a track, later layers draw over
+                // earlier ones, and a crossfade is the incoming picture coming
+                // up *over* the outgoing one (§22).
+                push_layer(&mut requests, project, track.id, outgoing, position, 1.0);
+                push_layer(
+                    &mut requests,
+                    project,
+                    track.id,
+                    incoming,
+                    position,
+                    progress,
+                );
+            }
+            // §25: one clip at a time, dipping to black at the cut. Nothing is
+            // ever read outside a clip's own range, so this works on any cut.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::FadeThroughBlack,
+                ..
+            }) => {
+                let fade = (2.0 * progress - 1.0).abs();
+                push_layer(&mut requests, project, track.id, clip, position, fade);
+            }
+            None => push_layer(&mut requests, project, track.id, clip, position, 1.0),
+        }
     }
 
     requests
+}
+
+/// A transition covering some instant, already resolved to its two clips.
+struct Cut<'a> {
+    outgoing: &'a VideoClip,
+    incoming: &'a VideoClip,
+    kind: TransitionKind,
+    /// 0 at the window's start, 1 at its end.
+    progress: f32,
+}
+
+/// The transition covering `position`, if any.
+///
+/// `index` is the clip containing `position`, which is either side of the cut
+/// depending on which half of the window we are in — so both its own outgoing
+/// transition and its predecessor's have to be considered.
+///
+/// A transition needs a clip on the other side of the cut, touching it exactly.
+/// A gap is not a cut: there is nothing to fade to, and fading to black across
+/// a gap would surprise anyone who put the gap there deliberately.
+fn transition_at<'a>(
+    clips: &'a [VideoClip],
+    index: usize,
+    position: TimelineTime,
+) -> Option<Cut<'a>> {
+    let clip = clips.get(index)?;
+
+    // This clip's own transition, when `position` has reached its window.
+    if let Some(transition) = clip.transition_out {
+        let cut = clip.timeline().end;
+        if position >= transition.window(cut).start
+            && let Some(next) = clips.get(index + 1)
+            && next.timeline().start == cut
+        {
+            return Some(Cut {
+                outgoing: clip,
+                incoming: next,
+                kind: transition.kind,
+                progress: transition.progress(cut, position),
+            });
+        }
+    }
+
+    // Otherwise the previous clip's, still running into this one.
+    let previous = clips.get(index.checked_sub(1)?)?;
+    let transition = previous.transition_out?;
+    let cut = previous.timeline().end;
+    if cut != clip.timeline().start || position >= transition.window(cut).end {
+        return None;
+    }
+    Some(Cut {
+        outgoing: previous,
+        incoming: clip,
+        kind: transition.kind,
+        progress: transition.progress(cut, position),
+    })
+}
+
+/// Add one clip's layer, scaled by `alpha`.
+///
+/// `alpha` multiplies the opacity the clip already has rather than replacing
+/// it: a clip set to 50% that also crossfades should end up half of half, not
+/// back at full.
+fn push_layer(
+    requests: &mut Vec<LayerRequest>,
+    project: &Project,
+    track: TrackId,
+    clip: &VideoClip,
+    position: TimelineTime,
+    alpha: f32,
+) {
+    if project.media_asset(clip.media_id).is_none() {
+        return; // §66: missing media leaves a gap, not a failure
+    }
+    let source_time = handle_time(clip, position);
+    // §24: resolved in the timeline crate, once, so an animated fade exports
+    // as the fade the user watched.
+    let mut look = clip.look_at(source_time);
+    look.opacity *= alpha;
+    requests.push(LayerRequest {
+        clip: clip.id,
+        track,
+        media: clip.media_id,
+        source_time,
+        look,
+    });
+}
+
+/// Where in the source a clip is reading at `position`, *including* outside its
+/// own range.
+///
+/// [`source_time_of`] clamps a position before the clip to its in-point, which
+/// is right for the ordinary case and exactly wrong during a crossfade: reading
+/// the handle is the whole point. Only the start of the file clamps here,
+/// because there is genuinely nothing before it.
+fn handle_time(clip: &VideoClip, position: TimelineTime) -> MediaTime {
+    let into_clip = position.ticks() - clip.timeline().start.ticks();
+    MediaTime::from_ticks((clip.source().start.ticks() + into_clip).max(0))
 }
 
 /// One audio clip audible at a given instant.

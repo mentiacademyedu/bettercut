@@ -206,3 +206,42 @@ fn the_speed_tab_stays_selected_even_though_it_is_empty() {
     draw(&mut editor, &mut state);
     assert_eq!(state.inspector_tab, InspectorTab::Speed);
 }
+
+/// A clip with a cut after it shows §25's transition section, which is a
+/// different code path from the last clip on a track.
+#[test]
+fn the_inspector_draws_the_transition_section() {
+    use bettercut_editor_core::timeline::TransitionKind;
+
+    let (mut editor, video, _) = editor_with_clips();
+    let media = editor.project().media[0].id;
+    let track = editor.active_sequence().unwrap().video_tracks[0].id;
+    let next = VideoClip::new(
+        media,
+        TimelineTime::from_seconds(4),
+        SourceRange::new(MediaTime::from_seconds(10), MediaTime::from_seconds(14)).unwrap(),
+    )
+    .unwrap();
+    editor
+        .add_clip(track, ClipPayload::Video(Box::new(next)))
+        .unwrap();
+    editor
+        .set_transition(video, TransitionKind::Crossfade)
+        .unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.insert(video);
+
+    // Twice, and asserting the project is untouched: the duration slider
+    // dispatches a command when it changes, and a control that reported a
+    // change every frame would rewrite the transition on every repaint —
+    // filling the undo history from an idle window.
+    let before = editor.project().clone();
+    draw(&mut editor, &mut state);
+    draw(&mut editor, &mut state);
+    assert_eq!(
+        editor.project(),
+        &before,
+        "drawing the transition section modified the project"
+    );
+}

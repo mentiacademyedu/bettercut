@@ -74,6 +74,16 @@ still image you are actually looking at and scrubbing through renders at full
 size. Playback still starts at quarter scale and climbs as frames arrive on
 time (§17).
 
+The composited picture is cached against the playhead position, which is the
+right key for scrubbing and the wrong one for everything else. For a long time
+**no property change updated the preview at all** — sliders, colour, blur,
+keyframes, a hidden track — because the cache stayed valid while the playhead
+sat still, and `ProjectChanged` only asked egui to repaint the panels around an
+unchanged frame. It surfaced when the drag handles landed: the box moved and the
+video did not follow. Edits that change how a clip looks now mark the picture
+stale, and playhead events deliberately do not, because the picture is already
+keyed on those.
+
 The sequence has a real format. Resolution and frame rate are set from the
 Inspector — 16:9, 9:16, 1:1 and 4K presets, and the nine frame rates §9's
 timebase divides exactly (23.976 through 120, NTSC rates included). Importing
@@ -112,6 +122,13 @@ picture. They are generated in the background on the same job pool as proxies
 cached as raw RGBA, which costs ~57 KB each and avoids pulling in an image codec
 just to decode back to the bytes we started with.
 
+Media can also be taken back **out** of the project. It is refused while a clip
+still uses the file — the button is disabled with the reason on hover rather
+than failing after the click, because removing it anyway would leave cuts
+pointing at nothing and removing the clips too would throw away an edit nobody
+asked to lose. §2 holds throughout: this removes the file from the *project*,
+never from the disk.
+
 Audio clips show waveforms, analysed once in the background and cached as peaks
 — 200 buckets per second, each holding the minimum and maximum it covers, which
 is what produces the familiar mirrored shape. Storing the mean instead would
@@ -128,16 +145,47 @@ apart, so zooming in repeats a frame across a stretch of timeline. Rendering
 more tiles as you zoom needs the zoom level to drive cache keys; this is the
 version that works everywhere first.
 
-Select a clip and the Inspector edits it: **opacity**, **scale**, **position**,
-**rotation**, **brightness / contrast / saturation** and **blur** on video,
-**volume** on audio — enough for picture-in-picture, a layered composite and a
-colour pass. Colour is three multiplies in the fragment shader (§45 rates it
-*Cheap*), applied in linear light: contrast pivots on 0.18 rather than 0.5,
-because the source is sampled through an sRGB texture and perceptual mid-grey is
-0.18 before the curve. Pivoting at 0.5 would darken the picture every time you
-added contrast. Dragging a slider updates the preview live and lands as **one**
-undo step, not sixty: §11's history holds intentions, not mouse samples, and undo
-returns to the value from before the drag began.
+The Inspector is a set of tabs — **Video**, **Colours**, **Audio**, **Speed**,
+**Animation** — and it is always showing something. With nothing selected the
+controls adjust the **whole video**; click a clip, on the timeline or in the
+picture, and the same controls narrow to that clip. Speed is a tab with nothing
+behind it yet, and says so rather than pretending.
+
+Video holds opacity, scale, position, rotation and blur; Colours holds
+brightness, contrast and saturation; Audio holds volume. Every row has a
+keyframe button and its own reset, and the whole clip has one above the tabs.
+
+A whole-video adjustment is a pass over the **composited** picture, not the same
+setting applied to each clip. Those are different images: blurring two stacked
+clips and then combining them is not blurring the combination. So when there is
+an adjustment the layers composite into a scratch texture and one more draw
+applies the master's transform, opacity, colour and blur. When there is none —
+almost every frame — nothing is allocated and nothing changes, which is asserted
+by test.
+
+Colour is three multiplies in the fragment shader (§45 rates it *Cheap*), applied
+in linear light: contrast pivots on 0.18 rather than 0.5, because the source is
+sampled through an sRGB texture and perceptual mid-grey is 0.18 before the curve.
+Pivoting at 0.5 would darken the picture every time you added contrast.
+
+Dragging a slider lands as **one** undo step, not sixty: §11's history holds
+intentions, not mouse samples, and undo returns to the value from before the drag
+began.
+
+The picture can also be framed directly. A selected clip gets a box with four
+corner circles: drag inside to move it, drag a corner to scale it about its
+centre. The box is derived by inverting the shader's own transform, which is the
+kind of derivation that is plausible and wrong — so a test composites a real
+frame through the real renderer, reads back where the picture actually landed,
+and compares, across square, letterboxed and pillarboxed sources.
+
+Two bugs there are worth recording, because both looked like features that had
+never worked. The corner was captured on egui's `drag_started`, which only fires
+*after* the pointer has passed the drag threshold — by then it has left the
+handle, so every corner drag silently became a move. And the timeline's ruler
+scrubbed whenever the mouse button was down *anywhere*, so a drag in the preview
+moved the playhead as soon as the cursor crossed it. Both are now decided on the
+press, and on whether the press landed on the widget at all.
 
 **Blur** is the first effect that could not ride along in the composite pass —
 it reads a neighbourhood rather than one texel — so it runs as a separable
@@ -193,7 +241,12 @@ Three decisions carry most of the weight:
 Animating a parameter takes its slider away from the static value — the
 renderer stops reading it — so editing one with the playhead off the clip is
 refused with a message rather than silently changing a number nothing reads.
-Reset clears the keys along with the values, in one undo step.
+
+A control's own reset clears its keys along with its value, in one undo step.
+Removing *all* keyframes, from the Animation tab, deliberately does not touch
+values: each control simply goes back to reading its own. That distinction was
+a bug first — one button did both behind a label that mentioned only keyframes,
+so a graded clip lost its grade to something that said nothing about colour.
 
 Behind both of those is the **effect graph** (§20): effects are nodes in a
 per-layer chain, not fixed stages in the compositor. Adding one is writing an
@@ -308,7 +361,36 @@ it by dropping the packet. Disabling B-frames fixes it, costs little at these
 bitrates, and makes all four encoders behave alike. The export tests run against
 each encoder the machine has.
 
-**What does not work yet:** transitions and text (both Phase 2, §61).
+### Transitions
+
+Two of them, crossfade and fade through black (§25), attached to the **outgoing
+clip** rather than to the track. That placement is the whole design: move, trim,
+split, cut and paste all carry the clip, and a transition stored beside the
+timeline would have to be rewritten by every one of those operations. It is the
+same argument §24 makes for anchoring keyframes to the source.
+
+The timeline still does not overlap. §8's non-overlapping, sorted tracks are
+what make the visible-range query a binary search, and a dissolve is not worth
+spending that on. Clips stay where the user put them; the transition is a window
+*centred on the cut* during which `layer_requests` returns **two** layers instead
+of one, the incoming clip at a partial opacity. The compositor needed no changes
+at all — §22's alpha-over already draws one picture over another.
+
+The interesting part is handles. A crossfade shows both clips at once, so before
+the cut the incoming clip must supply frames from *before* its in-point, and
+after it the outgoing clip must keep reading *past* its out-point. A clip
+trimmed to the edge of its file has no such material, and a transition placed
+anyway would render as a black flash. So the model works out what is actually
+there and clamps the length to it — in the command, not in the interface, because
+§38.2 replays commands after a crash and a check that only runs on the way in
+comes back unchecked on the way out. A fade through black needs no handles at
+all: each clip fades within its own range, so it works on any cut, including one
+against the very start or end of a file. The inspector offers whichever kinds
+the cut can support and says why the other is unavailable.
+
+**What does not work yet:** speed changes and text. Text is Phase 2 (§61); speed
+has a tab that says so. Audio does not crossfade — mixing two sources is a
+different mechanism from blending two pictures, and §25 v1 is picture only.
 
 Some limits worth knowing before testing with your own footage:
 

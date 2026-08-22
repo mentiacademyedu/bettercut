@@ -606,3 +606,107 @@ fn an_older_project_loads_with_no_sequence_adjustment() {
         serde_json::from_str(json).expect("older sequences must still load");
     assert!(sequence.master.is_identity());
 }
+
+/// Removing the animation must leave the values alone.
+///
+/// The two operations were one for a while, behind a button labelled "clear all
+/// keyframes" that also reset every colour control — so a graded clip lost its
+/// grade to a button that said nothing about colour.
+#[test]
+fn clearing_keyframes_does_not_reset_the_values() {
+    let (mut editor, clip) = editor_with_clip();
+
+    // A colour grade that is *not* animated, and an animated opacity.
+    editor
+        .set_clip_value(clip, ClipProperty::Saturation(0.3), false)
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(1));
+    editor
+        .toggle_keyframe(clip, ClipProperty::Opacity(1.0))
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(3));
+    editor
+        .set_clip_value(clip, ClipProperty::Opacity(0.0), false)
+        .unwrap();
+
+    assert_eq!(clip_of(&editor, clip).keyframes.len(), 2);
+
+    editor.clear_clip_keyframes(clip).unwrap();
+
+    let after = clip_of(&editor, clip);
+    assert!(after.keyframes.is_empty(), "the keys should be gone");
+    assert_eq!(
+        after.color.saturation, 0.3,
+        "the colour grade was reset by a keyframe operation"
+    );
+}
+
+/// Each control goes back to reading its own value, rather than baking in
+/// whatever happened to be on screen.
+#[test]
+fn clearing_keyframes_returns_controls_to_their_own_value() {
+    let (mut editor, clip) = editor_with_clip();
+    editor.set_playhead(TimelineTime::from_seconds(1));
+    editor
+        .toggle_keyframe(clip, ClipProperty::Opacity(1.0))
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(3));
+    editor
+        .set_clip_value(clip, ClipProperty::Opacity(0.0), false)
+        .unwrap();
+
+    // Mid-fade, the picture is half transparent.
+    editor.set_playhead(TimelineTime::from_seconds(2));
+    let during = opacity_at(&editor, clip, 2);
+    assert!(
+        (during - 0.5).abs() < 1e-6,
+        "expected mid-fade, got {during}"
+    );
+
+    editor.clear_clip_keyframes(clip).unwrap();
+    assert_eq!(
+        opacity_at(&editor, clip, 2),
+        1.0,
+        "the mid-fade value was baked in instead of the control's own"
+    );
+}
+
+/// One undo step, however many keys it removed.
+#[test]
+fn clearing_keyframes_undoes_in_one_step() {
+    let (mut editor, clip) = editor_with_clip();
+    editor.set_playhead(TimelineTime::from_seconds(1));
+    editor
+        .toggle_keyframe(clip, ClipProperty::Position { x: 0.0, y: 0.0 })
+        .unwrap();
+    editor.set_playhead(TimelineTime::from_seconds(3));
+    editor
+        .set_clip_value(clip, ClipProperty::Position { x: 0.4, y: 0.2 }, false)
+        .unwrap();
+
+    let before = clip_of(&editor, clip).keyframes.len();
+    assert_eq!(before, 4, "two axes, two instants");
+
+    editor.clear_clip_keyframes(clip).unwrap();
+    assert!(clip_of(&editor, clip).keyframes.is_empty());
+
+    editor.undo().unwrap();
+    assert_eq!(clip_of(&editor, clip).keyframes.len(), before);
+}
+
+/// Clearing a clip that has no animation is a no-op, not an error and not an
+/// empty entry cluttering the undo history.
+#[test]
+fn clearing_keyframes_on_an_unanimated_clip_does_nothing() {
+    let (mut editor, clip) = editor_with_clip();
+    let before = editor.can_undo();
+
+    editor.clear_clip_keyframes(clip).unwrap();
+
+    assert!(clip_of(&editor, clip).keyframes.is_empty());
+    assert_eq!(
+        editor.can_undo(),
+        before,
+        "an empty clear pushed something onto the undo stack"
+    );
+}
