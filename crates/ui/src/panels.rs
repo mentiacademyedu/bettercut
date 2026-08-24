@@ -526,6 +526,7 @@ pub fn preview(
         &painter,
         editor,
         state,
+        preview,
         &response,
         canvas,
         output_aspect,
@@ -536,11 +537,13 @@ pub fn preview(
 ///
 /// Drawn and driven here, but every decision it makes lives in
 /// [`crate::preview_overlay`], where it can be tested without a window.
+#[allow(clippy::too_many_arguments)]
 fn transform_handles(
     ui: &egui::Ui,
     painter: &egui::Painter,
     editor: &mut Editor,
     state: &mut UiState,
+    preview: Option<&crate::Preview>,
     response: &egui::Response,
     canvas: egui::Rect,
     output_aspect: f32,
@@ -550,7 +553,12 @@ fn transform_handles(
     // Everything visible right now, topmost first. §22 makes track order the
     // compositing order with index 0 at the bottom, so reversing puts the clip
     // a click would actually hit first in the list.
-    let visible = visible_boxes(editor, canvas, output_aspect);
+    let visible = visible_boxes(
+        editor,
+        &|clip| preview.and_then(|p| p.source_size(clip)),
+        canvas,
+        output_aspect,
+    );
     if visible.is_empty() {
         state.preview_drag = None;
         return;
@@ -686,8 +694,19 @@ struct ShownClip {
     box_on_canvas: egui::Rect,
 }
 
-/// Every visible video clip at the playhead, topmost first.
-fn visible_boxes(editor: &Editor, canvas: egui::Rect, output_aspect: f32) -> Vec<ShownClip> {
+/// Every visible layer at the playhead, topmost first.
+///
+/// `source_size` answers how big a layer's picture actually was in the last
+/// composited frame, which only §26's titles need: how wide "Hello" comes out
+/// is not something the model can answer, and the rasterizer is the only thing
+/// that knows. Taken as a function rather than as the preview itself so the
+/// title path can be exercised without a GPU.
+fn visible_boxes(
+    editor: &Editor,
+    source_size: &dyn Fn(bettercut_editor_core::foundation::ClipId) -> Option<(u32, u32)>,
+    canvas: egui::Rect,
+    output_aspect: f32,
+) -> Vec<ShownClip> {
     use crate::preview_overlay as overlay;
 
     let playhead = editor.playhead();
@@ -697,6 +716,48 @@ fn visible_boxes(editor: &Editor, canvas: egui::Rect, output_aspect: f32) -> Vec
     };
 
     let mut shown = Vec::new();
+
+    // §26's titles composite over every video track, so they are first in a
+    // list ordered topmost-first — a click lands on the title, not on the shot
+    // behind it.
+    for track in sequence.text_tracks.iter().rev() {
+        if !track.enabled {
+            continue;
+        }
+        let Some(clip) = track.clip_at(playhead) else {
+            continue;
+        };
+        if clip.is_blank() || !clip.enabled {
+            continue;
+        }
+        // No handles until it has been drawn once. There is nothing to draw
+        // them around before that, and the next frame has the answer.
+        let Some((width, height)) = source_size(clip.id) else {
+            continue;
+        };
+        if height == 0 {
+            continue;
+        }
+
+        // The transform kept on `ShownClip` is the clip's *own*, not the
+        // composited one: it is what a gesture starts from and what the command
+        // writes back. Seeded with the corrected scale instead, the first drag
+        // of a corner would collapse the title to a fraction of itself.
+        shown.push(ShownClip {
+            clip: clip.id,
+            transform: clip.transform,
+            box_on_canvas: overlay::to_canvas(
+                overlay::generated_layer_box(
+                    clip.transform,
+                    width,
+                    height,
+                    sequence.resolution.width,
+                    sequence.resolution.height,
+                ),
+                canvas,
+            ),
+        });
+    }
     // Reversed: §22 puts index 0 at the bottom of the stack, and a click should
     // find what is drawn over everything else.
     for track in sequence.video_tracks.iter().rev() {
@@ -3228,13 +3289,81 @@ mod preview_pick_tests {
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 180.0))
     }
 
+    /// §26: a title is grabbable in the picture like anything else. Without
+    /// this the only way to place one is the Inspector's number fields.
+    #[test]
+    fn a_title_gets_a_box_too() {
+        let (mut editor, [_, _]) = stacked();
+        let title = editor.add_text("Hello").expect("add text");
+        editor.set_playhead(TimelineTime::ZERO);
+
+        // 400×120, as the rasterizer would have reported after drawing it.
+        let shown = visible_boxes(&editor, &|_| Some((400, 120)), canvas(), 16.0 / 9.0);
+
+        let found = shown
+            .iter()
+            .find(|s| s.clip == title)
+            .expect("the title has no box");
+        assert!(found.box_on_canvas.area() > 0.0);
+        assert_eq!(
+            shown.first().map(|s| s.clip),
+            Some(title),
+            "the title is not first: a click would land on the shot behind it"
+        );
+    }
+
+    /// A title that has never been drawn has no size to draw a box around. The
+    /// next frame has the answer, so skipping is right and panicking is not.
+    #[test]
+    fn a_title_with_no_rendered_size_is_skipped() {
+        let (mut editor, [_, _]) = stacked();
+        let title = editor.add_text("Hello").expect("add text");
+
+        let shown = visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0);
+        assert!(shown.iter().all(|s| s.clip != title));
+    }
+
+    /// The box goes around where the picture *is*, and a title is drawn at its
+    /// own size rather than fitted — so a small bitmap gets a small box.
+    #[test]
+    fn a_titles_box_is_its_natural_size_not_the_whole_frame() {
+        let (mut editor, [_, _]) = stacked();
+        let title = editor.add_text("Hello").expect("add text");
+
+        let shown = visible_boxes(&editor, &|_| Some((480, 270)), canvas(), 16.0 / 9.0);
+        let found = shown.iter().find(|s| s.clip == title).expect("box");
+
+        // A 480-wide bitmap in a 1920-wide sequence covers a quarter of it.
+        let fraction = found.box_on_canvas.width() / canvas().width();
+        assert!(
+            (fraction - 0.25).abs() < 0.02,
+            "the box covers {fraction} of the frame rather than a quarter"
+        );
+    }
+
+    /// The transform carried on the box is the clip's *own*, because a gesture
+    /// starts from it and a command writes it back. Seeded with the composited
+    /// one, the first drag of a corner would collapse the title.
+    #[test]
+    fn a_titles_gesture_starts_from_its_own_scale() {
+        let (mut editor, [_, _]) = stacked();
+        let title = editor.add_text("Hello").expect("add text");
+
+        let shown = visible_boxes(&editor, &|_| Some((480, 270)), canvas(), 16.0 / 9.0);
+        let found = shown.iter().find(|s| s.clip == title).expect("box");
+        assert_eq!(
+            found.transform.scale.x, 1.0,
+            "the gesture would start from the corrected scale"
+        );
+    }
+
     /// §22 stacks track 0 at the bottom, so a click has to find the *last*
     /// track first. Getting this backwards would silently pick whatever is
     /// hidden behind the picture the user is looking at.
     #[test]
     fn the_topmost_clip_is_listed_first() {
         let (editor, [bottom, top]) = stacked();
-        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+        let shown = visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0);
 
         assert_eq!(shown.len(), 2);
         assert_eq!(shown[0].clip, top, "the upper track should come first");
@@ -3245,7 +3374,7 @@ mod preview_pick_tests {
     #[test]
     fn a_click_lands_on_the_clip_that_is_drawn_over_the_others() {
         let (editor, [_, top]) = stacked();
-        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+        let shown = visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0);
 
         let hit = topmost_at(&shown, canvas().center()).expect("something under the pointer");
         assert_eq!(hit.clip, top);
@@ -3261,7 +3390,7 @@ mod preview_pick_tests {
             .set_track_flag(top_track, bettercut_editor_core::TrackFlag::Enabled, false)
             .expect("hide");
 
-        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+        let shown = visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0);
         assert_eq!(shown.len(), 1, "the hidden track should be gone");
         assert_ne!(shown[0].clip, top);
     }
@@ -3272,7 +3401,7 @@ mod preview_pick_tests {
     #[test]
     fn a_click_outside_every_picture_finds_nothing() {
         let (editor, _) = stacked();
-        let shown = visible_boxes(&editor, canvas(), 16.0 / 9.0);
+        let shown = visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0);
 
         // Far outside the canvas entirely.
         assert!(topmost_at(&shown, egui::pos2(-500.0, -500.0)).is_none());
@@ -3285,6 +3414,6 @@ mod preview_pick_tests {
         let (mut editor, _) = stacked();
         editor.set_playhead(TimelineTime::from_seconds(30));
 
-        assert!(visible_boxes(&editor, canvas(), 16.0 / 9.0).is_empty());
+        assert!(visible_boxes(&editor, &|_| None, canvas(), 16.0 / 9.0).is_empty());
     }
 }

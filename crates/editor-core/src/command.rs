@@ -157,6 +157,26 @@ pub enum TextProperty {
 }
 
 impl TextProperty {
+    /// The text-clip equivalent of a clip property, where there is one (§26).
+    ///
+    /// The preview's drag handles produce a [`ClipProperty`] — they do not know
+    /// or care what kind of layer they are moving, and should not have to.
+    /// `None` for the properties a title does not have: colour grading, blur
+    /// and gain are about footage.
+    pub fn from_clip_property(property: ClipProperty) -> Option<Self> {
+        match property {
+            ClipProperty::Position { x, y } => Some(Self::Position { x, y }),
+            ClipProperty::Scale { x, y } => Some(Self::Scale { x, y }),
+            ClipProperty::Rotation(degrees) => Some(Self::Rotation(degrees)),
+            ClipProperty::Opacity(value) => Some(Self::Opacity(value)),
+            ClipProperty::Brightness(_)
+            | ClipProperty::Contrast(_)
+            | ClipProperty::Saturation(_)
+            | ClipProperty::Blur(_)
+            | ClipProperty::Gain(_) => None,
+        }
+    }
+
     /// What this property is called in the undo history.
     pub fn kind(&self) -> &'static str {
         match self {

@@ -315,3 +315,82 @@ fn the_background_shows_through_around_the_letters() {
         "the frame's corner was painted over: {corner:?}"
     );
 }
+
+/// The drag handles have to sit on the picture (§41, §54).
+///
+/// `layer_box` inverts the matrix the shader builds, and for a title that
+/// matrix has the natural-size correction folded into it. A sign flip or a
+/// forgotten correction puts the handles somewhere the title is not, and
+/// nothing else in the program would notice — so this composites a real title
+/// and compares where it landed with where the overlay says it is.
+#[test]
+fn the_drag_handles_sit_on_the_title() {
+    use bettercut_editor_core::text::Background;
+    use bettercut_ui::preview_overlay::generated_layer_box;
+
+    let (device, queue) = gpu_or_skip!();
+
+    // An opaque panel behind the words, so the edges of the *bitmap* are
+    // visible in the result. Glyphs alone leave transparent margins, and their
+    // ink bounds are not the layer's bounds.
+    let clip = TextClip {
+        style: TextStyle {
+            size: 48.0,
+            color: Rgba::opaque(255, 0, 0),
+            stroke: None,
+            shadow: None,
+            background: Some(Background {
+                color: Rgba::opaque(255, 0, 0),
+                padding: 10.0,
+                corner_radius: 0.0,
+            }),
+            ..TextStyle::default()
+        },
+        transform: Transform {
+            position: Vec2::new(-0.15, 0.2),
+            scale: Vec2::new(1.4, 1.4),
+            ..Transform::default()
+        },
+        ..TextClip::new("Handles", TimelineTime::ZERO).expect("valid")
+    };
+
+    let mut titles = TextFrames::new();
+    let frame = titles.frame_for(&clip).expect("rasterized to nothing");
+    let pixels = render(&device, &queue, &clip, clip.transform);
+
+    // Where the red panel actually is, in 0..1 frame units.
+    let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for y in 0..OUT_H {
+        for x in 0..OUT_W {
+            let i = ((y * OUT_W + x) * 4) as usize;
+            if pixels[i] > 120 && pixels[i + 2] < 120 {
+                left = left.min(x as f32);
+                top = top.min(y as f32);
+                right = right.max(x as f32 + 1.0);
+                bottom = bottom.max(y as f32 + 1.0);
+            }
+        }
+    }
+    assert!(left <= right, "the title never reached the frame");
+
+    // The exact function the overlay calls, so breaking it here breaks the
+    // handles there.
+    let expected = generated_layer_box(clip.transform, frame.width, frame.height, OUT_W, OUT_H);
+
+    // Three pixels: the bitmap carries a two-pixel margin outside its
+    // background panel, and the composite resamples.
+    let tolerance = 3.0;
+    for (name, drawn, predicted) in [
+        ("left", left / OUT_W as f32, expected.min.x),
+        ("top", top / OUT_H as f32, expected.min.y),
+        ("right", right / OUT_W as f32, expected.max.x),
+        ("bottom", bottom / OUT_H as f32, expected.max.y),
+    ] {
+        let drawn_px = drawn * OUT_W as f32;
+        let predicted_px = predicted * OUT_W as f32;
+        assert!(
+            (drawn_px - predicted_px).abs() <= tolerance + 4.0,
+            "{name}: the handles say {predicted_px:.1} px, the picture is at {drawn_px:.1} px"
+        );
+    }
+}

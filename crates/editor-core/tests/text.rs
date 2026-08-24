@@ -325,3 +325,82 @@ fn strip(value: &mut serde_json::Value, field: &str) {
         _ => {}
     }
 }
+
+/// The preview's drag handles produce a [`ClipProperty`] — they do not know
+/// what kind of layer they are moving. A title has to accept one, or dragging a
+/// title in the picture silently fails while the Inspector's number box works.
+#[test]
+fn a_title_accepts_the_preview_s_drag_properties() {
+    use bettercut_editor_core::ClipProperty;
+
+    let mut editor = editor();
+    let clip = editor.add_text("Hello").unwrap();
+
+    editor
+        .set_clip_value(clip, ClipProperty::Position { x: 0.25, y: -0.1 }, false)
+        .unwrap();
+    assert_eq!(text_of(&editor, clip).transform.position.x, 0.25);
+    assert_eq!(text_of(&editor, clip).transform.position.y, -0.1);
+
+    editor
+        .set_clip_value(clip, ClipProperty::Scale { x: 2.0, y: 2.0 }, false)
+        .unwrap();
+    assert_eq!(text_of(&editor, clip).transform.scale.x, 2.0);
+
+    editor.undo().unwrap();
+    assert_eq!(
+        text_of(&editor, clip).transform.scale.x,
+        1.0,
+        "the drag was not undoable"
+    );
+}
+
+/// And a drag is still one undo step, exactly as it is for a video clip.
+#[test]
+fn dragging_a_title_across_the_picture_is_one_undo_step() {
+    use bettercut_editor_core::ClipProperty;
+
+    let mut editor = editor();
+    let clip = editor.add_text("Hello").unwrap();
+
+    for step in 0..12 {
+        editor
+            .set_clip_value(
+                clip,
+                ClipProperty::Position {
+                    x: step as f32 * 0.02,
+                    y: 0.0,
+                },
+                step > 0,
+            )
+            .unwrap();
+    }
+
+    editor.undo().unwrap();
+    assert_eq!(
+        text_of(&editor, clip).transform.position.x,
+        0.0,
+        "one undo did not take the whole drag back"
+    );
+}
+
+/// The properties a title does not have are refused rather than silently
+/// dropped — a grade on a text layer would be a control that appears to work.
+#[test]
+fn a_title_refuses_the_properties_it_does_not_have() {
+    use bettercut_editor_core::ClipProperty;
+
+    let mut editor = editor();
+    let clip = editor.add_text("Hello").unwrap();
+
+    assert!(
+        editor
+            .set_clip_value(clip, ClipProperty::Brightness(0.5), false)
+            .is_err()
+    );
+    assert!(
+        editor
+            .set_clip_value(clip, ClipProperty::Gain(2.0), false)
+            .is_err()
+    );
+}

@@ -453,6 +453,17 @@ impl Editor {
         property: crate::command::ClipProperty,
         continuing: bool,
     ) -> Result<(), EditorError> {
+        // §26: a title has the same transform controls and a different command
+        // behind them. Routed here rather than at every call site, because the
+        // preview's drag handles produce a `ClipProperty` and have no business
+        // knowing what kind of layer they are moving.
+        if self.is_text_clip(clip) {
+            return match crate::command::TextProperty::from_clip_property(property) {
+                Some(text) => self.set_text_property(clip, text, continuing),
+                None => Err(EditorError::ClipKindMismatch),
+            };
+        }
+
         let Some(video) = self.video_clip(clip) else {
             return self.set_clip_property(clip, property, continuing);
         };

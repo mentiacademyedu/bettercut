@@ -77,6 +77,34 @@ pub enum Gesture {
     },
 }
 
+/// Where a *generated* layer's picture sits, in 0..1 frame units (§26).
+///
+/// A title is drawn at its own size rather than fitted to the canvas, so the
+/// matrix the shader ends up with is not the clip's transform but the
+/// natural-size correction of it. Working that out here rather than at the call
+/// site is what lets it be checked without a window — and against the GPU,
+/// which is where the two ever disagreeing would actually show.
+pub fn generated_layer_box(
+    transform: Transform,
+    source_width: u32,
+    source_height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> egui::Rect {
+    let composited = bettercut_editor_core::timeline::natural_size_transform(
+        transform,
+        source_width,
+        source_height,
+        output_width,
+        output_height,
+    );
+    layer_box(
+        source_width.max(1) as f32 / source_height.max(1) as f32,
+        output_width.max(1) as f32 / output_height.max(1) as f32,
+        composited,
+    )
+}
+
 /// Where a clip's picture sits inside the output frame, in 0..1 frame units.
 ///
 /// The inverse of `layer_uniform`'s matrix at zero rotation. That matrix maps

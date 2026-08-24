@@ -179,6 +179,15 @@ kind of derivation that is plausible and wrong — so a test composites a real
 frame through the real renderer, reads back where the picture actually landed,
 and compares, across square, letterboxed and pillarboxed sources.
 
+§26's titles get the same box, which took one extra step. A title is drawn at
+its *natural* size rather than fitted to the canvas, so the matrix the shader
+ends up with is not the clip's transform but a correction of it — and how wide
+"Hello" comes out is not something the model can answer, only the rasterizer. So
+the render records each layer's source size and the overlay reads it back. The
+box is built from the corrected transform while the *gesture* starts from the
+clip's own: seeded with the corrected scale instead, the first drag of a corner
+would collapse the title to a fraction of itself.
+
 Two bugs there are worth recording, because both looked like features that had
 never worked. The corner was captured on egui's `drag_started`, which only fires
 *after* the pointer has passed the drag threshold — by then it has left the

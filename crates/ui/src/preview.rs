@@ -50,6 +50,15 @@ pub struct Preview {
     /// Playback state last frame, so stopping can trigger a full-quality
     /// redraw of the frame the user is left looking at.
     was_playing: bool,
+
+    /// Source size of each layer in the last composited frame.
+    ///
+    /// The preview's drag handles need to know how big a layer's picture is to
+    /// work out where it landed. For footage that is the media's own size,
+    /// which the project already knows — but §26's titles are rasterized, and
+    /// how wide "Hello" comes out is not something the model can answer. So the
+    /// render records it, and the overlay reads it back.
+    layer_sizes: Vec<(bettercut_editor_core::foundation::ClipId, u32, u32)>,
 }
 
 impl Preview {
@@ -111,6 +120,7 @@ impl Preview {
             dropped_total: 0,
             has_content: false,
             was_playing: false,
+            layer_sizes: Vec::new(),
         })
     }
 
@@ -120,6 +130,22 @@ impl Preview {
 
     pub fn is_playing(&self) -> bool {
         self.clock.is_playing()
+    }
+
+    /// How big the source picture for `clip` was in the last composited frame.
+    ///
+    /// `None` when it was not on screen, or before the first render. §26's
+    /// titles have no size until they have been rasterized, so the overlay
+    /// simply has no handles to draw for one yet — which resolves itself on the
+    /// next frame.
+    pub fn source_size(
+        &self,
+        clip: bettercut_editor_core::foundation::ClipId,
+    ) -> Option<(u32, u32)> {
+        self.layer_sizes
+            .iter()
+            .find(|(id, _, _)| *id == clip)
+            .map(|&(_, width, height)| (width, height))
     }
 
     pub fn has_content(&self) -> bool {
@@ -324,6 +350,13 @@ impl Preview {
             .engine
             .resolve_video(editor.project(), sequence, position);
         self.has_content = !resolved.is_empty();
+
+        self.layer_sizes.clear();
+        self.layer_sizes.extend(
+            resolved
+                .iter()
+                .map(|layer| (layer.clip, layer.frame.width, layer.frame.height)),
+        );
 
         // §20a.5 / §47a.4: decide what to do with what we got. With a single
         // still frame there is nothing to drop, but the accounting is what
