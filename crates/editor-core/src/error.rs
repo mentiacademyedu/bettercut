@@ -16,6 +16,9 @@ pub enum EditorError {
     #[error(transparent)]
     Media(#[from] MediaError),
 
+    #[error(transparent)]
+    Captions(#[from] bettercut_captions::CaptionError),
+
     #[error("no sequence {0} in this project")]
     SequenceNotFound(SequenceId),
 

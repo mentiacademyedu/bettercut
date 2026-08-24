@@ -13,6 +13,8 @@
 //!
 //! The UI layer edits text *parameters*. It never rasterizes text that will
 //! appear in the output (§74).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod error;
 pub mod mask;
 pub mod raster;

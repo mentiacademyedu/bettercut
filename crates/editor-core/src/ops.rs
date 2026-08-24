@@ -1409,6 +1409,11 @@ impl EditorCommand for RemoveTrack {
             self.removed = Some((index, TrackPayload::Audio(Box::new(track))));
             return Ok(());
         }
+        if let Some(index) = sequence.text_tracks.iter().position(|t| t.id == self.track) {
+            let track = sequence.text_tracks.remove(index);
+            self.removed = Some((index, TrackPayload::Text(Box::new(track))));
+            return Ok(());
+        }
         Err(EditorError::TrackNotFound(self.track))
     }
 
@@ -1424,6 +1429,10 @@ impl EditorCommand for RemoveTrack {
             TrackPayload::Audio(track) => {
                 let index = index.min(sequence.audio_tracks.len());
                 sequence.audio_tracks.insert(index, *track);
+            }
+            TrackPayload::Text(track) => {
+                let index = index.min(sequence.text_tracks.len());
+                sequence.text_tracks.insert(index, *track);
             }
         }
         Ok(())

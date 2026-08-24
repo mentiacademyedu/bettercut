@@ -108,6 +108,22 @@ pub fn toolbar(
             }
         }
 
+        // One slot rather than two buttons: importing subtitles is something
+        // done once per project, and the toolbar is already the busiest strip
+        // in the window.
+        ui.menu_button("Captions", |ui| {
+            if ui.button("Import…").clicked() {
+                ui.close();
+                import_captions(editor, state);
+            }
+            if ui.button("Export…").clicked() {
+                ui.close();
+                export_captions(editor, state);
+            }
+        })
+        .response
+        .on_hover_text("Subtitles, as .srt or .vtt");
+
         ui.separator();
 
         ui.label("Zoom");
@@ -2903,6 +2919,38 @@ pub fn new_project(editor: &mut Editor, state: &mut UiState) {
     *editor = fresh;
     *state = UiState::default();
     state.info("New project created");
+}
+
+/// Read a subtitle file onto the timeline (§27, Milestone 10).
+pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("subtitles", &["srt", "vtt"])
+        .pick_file()
+    else {
+        return;
+    };
+
+    match editor.import_captions(&path) {
+        Ok(count) => state.info(format!("Imported {count} captions")),
+        Err(err) => state.error(format!("Could not import captions: {err}")),
+    }
+}
+
+/// Write the caption lane back out.
+pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("SubRip", &["srt"])
+        .add_filter("WebVTT", &["vtt"])
+        .set_file_name("captions.srt")
+        .save_file()
+    else {
+        return;
+    };
+
+    match editor.export_captions(&path) {
+        Ok(count) => state.info(format!("Wrote {count} captions to {}", path.display())),
+        Err(err) => state.error(format!("Could not export captions: {err}")),
+    }
 }
 
 pub fn open_project(editor: &mut Editor, state: &mut UiState) {

@@ -240,6 +240,32 @@ impl Default for TextStyle {
 }
 
 impl TextStyle {
+    /// What an imported subtitle looks like (§27, Milestone 10).
+    ///
+    /// Deliberately different from a title. A title is a design element and
+    /// wants to be large; a caption is there to be read without being looked
+    /// at, so it is smaller, and it carries a background box rather than an
+    /// outline — a solid panel is what makes a line legible over footage that
+    /// changes underneath it every few frames, which is exactly the case a
+    /// subtitle is in and a title usually is not.
+    pub fn caption() -> Self {
+        Self {
+            size: 44.0,
+            weight: FontWeight::Medium,
+            stroke: None,
+            background: Some(Background {
+                color: Rgba::new(0, 0, 0, 165),
+                padding: 14.0,
+                corner_radius: 6.0,
+            }),
+            // Long lines wrap rather than running off the frame. Two thirds of
+            // a 1080-wide canvas, which is about the longest line that stays
+            // comfortable to read on a phone.
+            wrap_width: Some(720.0),
+            ..Self::default()
+        }
+    }
+
     /// A key identifying the picture this style and text would produce.
     ///
     /// Two clips that say the same thing in the same way *are* the same

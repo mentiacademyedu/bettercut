@@ -427,6 +427,44 @@ sentence comes out *smaller*, which is the opposite of a size control. The fix
 undoes the fit for generated layers rather than adding a mode to the shader, and
 GPU tests composite real titles and count pixels to check it.
 
+### Captions
+
+Milestone 10, and cheap because §26 had already been built: a caption *is* a
+text clip, one whose timing came from a file. So there is no caption renderer,
+no caption track type and no second styling system — importing a subtitle file
+produces ordinary `TextClip`s on an ordinary text track, and everything that
+already works on a title works on them.
+
+`crates/captions` owns the formats and nothing else. SubRip and WebVTT, because
+between them they cover what transcription tools emit. The parsing is written
+against what tools actually produce rather than against a grammar: a UTF-8 BOM,
+CRLF, a missing or wrong index, `.` instead of `,` before the milliseconds, a
+missing hours field, WebVTT cue settings trailing the end time. All of those are
+in real files and all of them parse. What does *not* pass silently is a timing
+line that cannot be read at all — that block is counted and reported (§50),
+because losing a third of someone's subtitles with no word said is worse than a
+warning.
+
+Subtitle files also arrive out of order, overlapping, blank and occasionally
+backwards, and §8's tracks are sorted and non-overlapping. Something has to
+reconcile those, so `tidy` does it once, before the model sees anything: an
+overlapping cue **shortens the earlier one** rather than moving the later one,
+because a caption is anchored to the moment the words are said and sliding it
+would put the subtitle after the speech. A cue left as a sub-frame flash by that
+shortening is dropped rather than kept.
+
+Two decisions worth naming. Captions get a lane of their own, because a subtitle
+file is dozens of clips end to end and dropping them among someone's titles
+would either collide or scatter. And a re-import **replaces** the lane rather
+than appending, because importing a corrected file over an old one is the common
+case — with the old captions still one undo away, since the whole import is a
+single undo step.
+
+**What does not work yet:** word-level timing is modelled (§27's `CaptionWord`)
+but not filled in — SubRip has none, and WebVTT's karaoke timestamps are
+stripped rather than read. That is what §27's animated subtitles will need, and
+Phase 3 is where they are. There is no automatic transcription (§28).
+
 **What does not work yet:** speed changes, which have a tab that says so. Text
 uses the machine's fonts rather than bundled ones — §26 wants
 `assets/fonts/` for templates (Milestone 11), and until there is a font picker a

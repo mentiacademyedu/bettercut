@@ -515,6 +515,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bettercut-captions"
+version = "0.1.0"
+dependencies = [
+ "bettercut-foundation",
+ "serde",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "bettercut-desktop"
 version = "0.1.0"
 dependencies = [
@@ -532,6 +542,7 @@ dependencies = [
 name = "bettercut-editor-core"
 version = "0.1.0"
 dependencies = [
+ "bettercut-captions",
  "bettercut-foundation",
  "bettercut-media",
  "bettercut-project-format",

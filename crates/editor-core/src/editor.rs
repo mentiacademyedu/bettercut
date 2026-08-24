@@ -802,6 +802,156 @@ impl Editor {
         self.text_clip(clip).is_some()
     }
 
+    // ---- captions (§27, Milestone 10) ----
+
+    /// What a caption lane is called.
+    ///
+    /// Captions go on a lane of their own rather than onto whatever text track
+    /// happens to exist: a subtitle file is dozens of clips end to end, and
+    /// dropping them among someone's titles would either collide with them or
+    /// scatter them into the gaps.
+    pub const CAPTION_TRACK: &'static str = "Captions";
+
+    /// Read a subtitle file onto the timeline (Milestone 10).
+    ///
+    /// Returns how many captions landed. Everything about the file — the
+    /// format, the tolerated deviations, the sorting and de-overlapping — is
+    /// [`bettercut_captions`]'s business; what happens here is turning
+    /// segments into clips and making the whole import one undo step, because
+    /// "undo the import" is the only thing anyone means after a bad file.
+    pub fn import_captions(&mut self, path: &std::path::Path) -> Result<usize, EditorError> {
+        let parsed = bettercut_captions::read(path)?;
+        if parsed.skipped > 0 {
+            // §50: never silently ignore. A third of someone's subtitles
+            // missing with no word said is worse than a warning.
+            tracing::warn!(
+                skipped = parsed.skipped,
+                file = %path.display(),
+                "some caption blocks could not be read"
+            );
+        }
+        if parsed.segments.is_empty() {
+            return Err(EditorError::Captions(
+                bettercut_captions::CaptionError::NoCaptions,
+            ));
+        }
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.caption_track()?;
+
+        // The lane has to be empty, or the inserts collide with whatever is
+        // already there. Replacing beats appending: importing a corrected file
+        // over an old one is the common case, and the old captions are still
+        // one undo away.
+        let existing: Vec<ClipId> = self
+            .active_sequence()
+            .and_then(|s| s.text_track(track))
+            .map(|t| t.clips().iter().map(|c| c.id).collect())
+            .unwrap_or_default();
+
+        let style = bettercut_text::TextStyle::caption();
+        let mut commands: Vec<Command> = existing
+            .into_iter()
+            .map(|clip| Command::RemoveText {
+                sequence,
+                track,
+                clip,
+            })
+            .collect();
+
+        let count = parsed.segments.len();
+        for segment in parsed.segments {
+            let duration = segment.duration();
+            let mut clip =
+                bettercut_timeline::TextClip::with_duration(segment.text, segment.start, duration)?;
+            clip.style = style.clone();
+            // Low in the frame, where a subtitle belongs — positive y is down.
+            // Not at the very edge: phone players put their own controls there.
+            clip.transform.position = bettercut_timeline::Vec2::new(0.0, 0.35);
+            commands.push(Command::AddText {
+                sequence,
+                track,
+                clip: Box::new(clip),
+            });
+        }
+
+        self.dispatch_group(format!("Import {count} Captions"), commands)?;
+        Ok(count)
+    }
+
+    /// Write the caption lane back out (Milestone 10).
+    ///
+    /// The format comes from the extension. Returns how many were written.
+    pub fn export_captions(&self, path: &std::path::Path) -> Result<usize, EditorError> {
+        let segments = self.caption_segments();
+        if segments.is_empty() {
+            return Err(EditorError::Captions(
+                bettercut_captions::CaptionError::NoCaptions,
+            ));
+        }
+        let format = bettercut_captions::Format::of(path);
+        bettercut_captions::write(path, &segments, format)?;
+        Ok(segments.len())
+    }
+
+    /// The caption lane as segments, in order.
+    ///
+    /// Reads whichever text track is named [`Self::CAPTION_TRACK`], falling
+    /// back to every text track when there is none — someone who typed their
+    /// subtitles as titles still means them as subtitles, and refusing to
+    /// export because the lane has the wrong name would be pedantry.
+    pub fn caption_segments(&self) -> Vec<bettercut_captions::CaptionSegment> {
+        let Some(sequence) = self.project.active() else {
+            return Vec::new();
+        };
+
+        let named = sequence
+            .text_tracks
+            .iter()
+            .find(|t| t.name == Self::CAPTION_TRACK);
+        let tracks: Vec<_> = match named {
+            Some(track) => vec![track],
+            None => sequence.text_tracks.iter().collect(),
+        };
+
+        let mut segments: Vec<_> = tracks
+            .into_iter()
+            .flat_map(|t| t.clips())
+            .filter(|c| !c.is_blank())
+            .map(|c| {
+                bettercut_captions::CaptionSegment::new(
+                    c.timeline.start,
+                    c.timeline.end,
+                    c.text.clone(),
+                )
+            })
+            .collect();
+        segments.sort_by_key(|s| s.start.ticks());
+        segments
+    }
+
+    /// The caption lane, creating it if this project has none.
+    fn caption_track(&mut self) -> Result<TrackId, EditorError> {
+        if let Some(id) = self.active_sequence().and_then(|s| {
+            s.text_tracks
+                .iter()
+                .find(|t| t.name == Self::CAPTION_TRACK)
+                .map(|t| t.id)
+        }) {
+            return Ok(id);
+        }
+
+        let sequence = self.active_sequence_id()?;
+        let id = TrackId::new();
+        self.dispatch(Command::AddTrack {
+            sequence,
+            kind: crate::command::TrackKindRepr::Text,
+            name: Self::CAPTION_TRACK.to_owned(),
+            id,
+        })?;
+        Ok(id)
+    }
+
     /// Put a transition on the end of a clip (§25).
     ///
     /// The duration asked for is a request: what gets stored is clamped to what

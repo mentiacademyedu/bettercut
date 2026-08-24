@@ -84,6 +84,9 @@ impl From<bettercut_timeline::TextClip> for ClipPayload {
 pub enum TrackPayload {
     Video(Box<bettercut_timeline::VideoTrack>),
     Audio(Box<bettercut_timeline::AudioTrack>),
+    /// §26's text lanes, including §27's captions. A lane that can be created
+    /// and not removed is a trap, and the caption import creates one.
+    Text(Box<bettercut_timeline::TextTrack>),
 }
 
 /// Boolean track flags, so one command covers hide/mute/lock (§10).
@@ -477,6 +480,9 @@ impl From<ResolutionRepr> for bettercut_timeline::Resolution {
 pub enum TrackKindRepr {
     Video,
     Audio,
+    /// §26's text overlays and §27's captions, which share a lane kind because
+    /// a caption *is* a text clip — one with its timing read from a file.
+    Text,
 }
 
 impl From<TrackKindRepr> for TrackKind {
@@ -484,6 +490,7 @@ impl From<TrackKindRepr> for TrackKind {
         match value {
             TrackKindRepr::Video => Self::Video,
             TrackKindRepr::Audio => Self::Audio,
+            TrackKindRepr::Text => Self::Text,
         }
     }
 }

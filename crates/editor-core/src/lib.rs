@@ -28,6 +28,7 @@ pub use recovery::{RecoverableSession, recover, scan_unsaved};
 
 // Re-exported so the UI crate needs one dependency for the whole core, and so
 // there is one obvious place to look when the layering question comes up (§86).
+pub use bettercut_captions as captions;
 pub use bettercut_foundation as foundation;
 pub use bettercut_media as media;
 pub use bettercut_project_format as project_format;
