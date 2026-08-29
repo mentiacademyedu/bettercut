@@ -24,7 +24,10 @@ pub use event::{Event, EventReceiver, EventSender, event_channel};
 pub use hardware::HardwareProfile;
 pub use history::{DEFAULT_HISTORY_LIMIT, History};
 pub use journal::{Journal, RecoveryPaths};
-pub use recovery::{RecoverableSession, recover, scan_unsaved};
+pub use recovery::{
+    KEEP_UNSAVED_AT_MOST, KEEP_UNSAVED_FOR, RecoverableSession, prune_unsaved, recover,
+    scan_unsaved, stale_sessions, unsaved_sessions,
+};
 
 // Re-exported so the UI crate needs one dependency for the whole core, and so
 // there is one obvious place to look when the layering question comes up (§86).

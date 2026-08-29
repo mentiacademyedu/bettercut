@@ -125,6 +125,116 @@ pub fn recover(paths: RecoveryPaths) -> Option<RecoverableSession> {
 /// a filename has been chosen. Skipping this case would leave the largest gap
 /// unprotected.
 pub fn scan_unsaved() -> Vec<RecoverableSession> {
+    // Newest first, by the snapshot's own timestamp — the session that was
+    // lost is the one that was open most recently.
+    //
+    // Ordered by a `stat` rather than by replaying: recovering a session means
+    // parsing a project and re-executing its journal, and doing that to every
+    // directory in order to *choose* one costs the whole startup. On this
+    // machine that was nineteen seconds before the window appeared, against a
+    // temp directory holding nine thousand of them.
+    let mut candidates = unsaved_sessions();
+    candidates.truncate(OFFER_AT_MOST);
+
+    candidates
+        .into_iter()
+        .filter_map(|(dir, _)| recover(RecoveryPaths { dir }))
+        .collect()
+}
+
+/// The most sessions to attempt recovery on.
+///
+/// The interface offers one. A handful rather than one exactly, so a snapshot
+/// that turns out to be unreadable falls through to the next instead of leaving
+/// the user with nothing.
+const OFFER_AT_MOST: usize = 5;
+
+/// How long an unsaved session is kept before it is assumed abandoned.
+///
+/// Long enough to cover a weekend away from the machine, which is the case that
+/// matters: an unsaved project is the work §38 exists to protect. Short enough
+/// that the directory does not grow without bound.
+pub const KEEP_UNSAVED_FOR: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How many unsaved sessions are kept regardless of age.
+///
+/// A hard bound as well as the age one, because age alone does not stop a bad
+/// afternoon — or a test suite — from leaving thousands behind inside the
+/// window.
+pub const KEEP_UNSAVED_AT_MOST: usize = 50;
+
+/// Delete abandoned unsaved-session directories. Returns how many went.
+///
+/// These accumulate: one per editor session, and only a clean shutdown removes
+/// its own. Every crash, every kill, and every test that constructs an `Editor`
+/// leaves one behind, and nothing ever collected them.
+///
+/// Deliberately narrow about what it will delete:
+///
+/// * only inside the temp root — a saved project's recovery data sits beside
+///   the project file and is never touched here (§39.5);
+/// * never this process's own directories, which are in use;
+/// * newest first, so what survives is what someone might actually want.
+pub fn prune_unsaved() -> usize {
+    let doomed = stale_sessions(
+        &unsaved_sessions(),
+        std::time::SystemTime::now(),
+        &format!("{}-", std::process::id()),
+    );
+
+    let mut removed = 0;
+    for dir in doomed {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => removed += 1,
+            // Another instance may be using it, or have removed it already.
+            // Neither is worth a word to the user.
+            Err(err) => tracing::debug!(path = %dir.display(), %err, "could not prune"),
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!(removed, "pruned abandoned recovery sessions");
+    }
+    removed
+}
+
+/// Which of `sessions` should go — the rule, with no filesystem in it.
+///
+/// Separated from the deleting so it can be tested against a list rather than
+/// against the machine's real recovery directory. A test that had to plant
+/// files in the actual temp root to check a *deletion* policy would be one
+/// mistake away from removing the developer's unsaved work.
+///
+/// `sessions` must be newest first, as [`unsaved_sessions`] returns them: the
+/// index is then how many newer ones there are, which is what the count bound
+/// is about. `mine` is the current process's directory-name prefix, whose
+/// sessions are in use and never candidates.
+pub fn stale_sessions(
+    sessions: &[(std::path::PathBuf, std::time::SystemTime)],
+    now: std::time::SystemTime,
+    mine: &str,
+) -> Vec<std::path::PathBuf> {
+    let cutoff = now
+        .checked_sub(KEEP_UNSAVED_FOR)
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    sessions
+        .iter()
+        .enumerate()
+        .filter(|(index, (dir, modified))| {
+            let is_mine = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.starts_with(mine));
+            !is_mine && (*index >= KEEP_UNSAVED_AT_MOST || *modified < cutoff)
+        })
+        .map(|(_, (dir, _))| dir.clone())
+        .collect()
+}
+
+/// Every unsaved-session directory and when its snapshot was last written,
+/// newest first. Stat only — nothing is parsed.
+pub fn unsaved_sessions() -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
     let root = std::env::temp_dir()
         .join("bettercut")
         .join(crate::journal::RECOVERY_DIR);
@@ -133,20 +243,23 @@ pub fn scan_unsaved() -> Vec<RecoverableSession> {
         return Vec::new();
     };
 
-    let mut found = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let paths = RecoveryPaths { dir: entry.path() };
-        if let Some(session) = recover(paths) {
-            found.push(session);
-        }
-    }
+    let mut sessions: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| dir.is_dir())
+        .map(|dir| {
+            // A directory with no snapshot has nothing to recover and is still
+            // worth pruning, so it is kept in the list at the epoch — which
+            // sorts it last, and past any cutoff.
+            let modified = std::fs::metadata(dir.join(crate::journal::SNAPSHOT_FILE))
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (dir, modified)
+        })
+        .collect();
 
-    // Most recent first, so the prompt offers the likeliest candidate.
-    found.sort_by_key(|session| std::cmp::Reverse(session.replayed));
-    found
+    sessions.sort_by(|a, b| b.1.cmp(&a.1));
+    sessions
 }
 
 /// Apply journalled commands to a snapshot.

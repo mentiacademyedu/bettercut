@@ -125,6 +125,11 @@ impl App {
             None => tracing::warn!("running without a preview renderer"),
         }
 
+        // Abandoned sessions accumulate — one per editor, and only a clean
+        // shutdown removes its own — and nothing ever collected them. Pruned
+        // before the scan so the scan has less to look at.
+        bettercut_editor_core::prune_unsaved();
+
         // §39: look for work from a session that did not shut down cleanly.
         // Checked after the project is loaded so the prompt can say what it
         // would replace, and never applied without the user's say-so (§39.5).
