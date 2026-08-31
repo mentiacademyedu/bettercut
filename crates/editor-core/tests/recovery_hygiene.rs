@@ -161,11 +161,13 @@ fn prune_in(root: &Path) -> Vec<PathBuf> {
             (dir, modified)
         })
         .collect();
-    sessions.sort_by(|a, b| b.1.cmp(&a.1));
+    // Newest first, so the index is how many newer ones there are.
+    sessions.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
 
     // A prefix nothing here starts with: these sessions belong to no live
     // process, which is the case the rule is for.
-    let doomed = bettercut_editor_core::stale_sessions(&sessions, SystemTime::now(), "no-such-pid-");
+    let doomed =
+        bettercut_editor_core::stale_sessions(&sessions, SystemTime::now(), "no-such-pid-");
     for dir in &doomed {
         std::fs::remove_dir_all(dir).expect("remove");
     }

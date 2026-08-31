@@ -946,10 +946,13 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                         unavailable(ui, "This clip has no sound.");
                     }
                 }
-                InspectorTab::Speed => unavailable(
-                    ui,
-                    "Speed changes are not built yet. Clips play at their                      recorded rate.",
-                ),
+                InspectorTab::Speed => {
+                    if video.is_some() {
+                        clip_speed(ui, editor, state, id);
+                    } else {
+                        unavailable(ui, "Only picture can be re-timed so far.");
+                    }
+                }
                 InspectorTab::Animation => {
                     if let Some(look) = video {
                         clip_animation(ui, editor, state, id, &look);
@@ -1653,7 +1656,7 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         ),
         InspectorTab::Speed => unavailable(
             ui,
-            "Speed changes are not built yet. Clips play at their recorded rate.",
+            "Speed applies to one clip at a time. Select a clip to re-time it.",
         ),
         InspectorTab::Animation => unavailable(
             ui,
@@ -2056,6 +2059,108 @@ fn clip_transition(
             Err(err) => state.error(err.to_string()),
         },
         None => {}
+    }
+}
+
+/// How fast one clip plays (§51).
+///
+/// Presets first and the slider second, because "make it 2×" is the whole of
+/// what most people want and hunting for it on a slider is worse than a button
+/// that says so. The slider is there for the rest.
+fn clip_speed(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::foundation::Rational;
+
+    let Some(existing) = editor.video_clip(clip) else {
+        return;
+    };
+    let speed = existing.speed;
+    let length = existing.timeline.duration();
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Speed").strong());
+        ui.label(
+            egui::RichText::new(format!("{:.2}×", speed.as_f64()))
+                .monospace()
+                .color(theme::KEYFRAME),
+        );
+    });
+    ui.label(
+        egui::RichText::new(format!(
+            "Plays {} of footage in {}",
+            TimelineTime::from_ticks(existing.source.duration().ticks()).format_timecode(),
+            length.format_timecode()
+        ))
+        .small()
+        .color(theme::DISABLED),
+    );
+
+    ui.add_space(6.0);
+    let mut chosen: Option<Rational> = None;
+
+    // Exact ratios, not decimals: 1/3 is a real speed and 0.33 is not the same
+    // number. Everything downstream is integer arithmetic (§74).
+    const PRESETS: [(&str, i64, i64); 6] = [
+        ("0.25×", 1, 4),
+        ("0.5×", 1, 2),
+        ("1×", 1, 1),
+        ("1.5×", 3, 2),
+        ("2×", 2, 1),
+        ("4×", 4, 1),
+    ];
+
+    ui.horizontal_wrapped(|ui| {
+        for (label, num, den) in PRESETS {
+            let preset = Rational::new(num, den).unwrap_or(Rational::ONE);
+            if ui
+                .add(egui::Button::selectable(speed == preset, label))
+                .clicked()
+            {
+                chosen = Some(preset);
+            }
+        }
+    });
+
+    // The slider works in hundredths and is converted to an exact ratio, so a
+    // dragged 1.75 is stored as 7/4 rather than as a float that has to be
+    // multiplied into every position for the life of the project.
+    let mut factor = speed.as_f64();
+    let response = ui.add(
+        egui::Slider::new(
+            &mut factor,
+            bettercut_editor_core::timeline::MIN_SPEED.as_f64()
+                ..=bettercut_editor_core::timeline::MAX_SPEED.as_f64(),
+        )
+        .logarithmic(true)
+        .fixed_decimals(2)
+        .suffix("×")
+        .text("rate"),
+    );
+    let dragging = response.dragged();
+    if response.changed() {
+        chosen = Rational::new((factor * 100.0).round() as i64, 100);
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Clips after this one on the same track move to keep the cut tight. \
+             Other tracks stay where they are.",
+        )
+        .small()
+        .color(theme::DISABLED),
+    );
+
+    if let Some(speed) = chosen {
+        match editor.set_clip_speed(clip, speed, dragging) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
     }
 }
 

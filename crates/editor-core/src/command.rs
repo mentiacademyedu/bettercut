@@ -250,6 +250,17 @@ pub enum Command {
         clip: ClipId,
         property: TextProperty,
     },
+    /// Change how fast a clip plays (§51).
+    ///
+    /// A separate command from [`Self::SetClipProperty`] because it is not a
+    /// property of the picture — it changes how long the clip *is*, which the
+    /// track has to make room for. The others cannot fail for want of space.
+    SetClipSpeed {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        speed: bettercut_foundation::Rational,
+    },
     /// Put a transition on the end of a clip, or take it off (§25).
     ///
     /// `None` removes. One command for both, for the same reason

@@ -5,7 +5,8 @@
 //! every edit."
 
 use bettercut_foundation::{
-    ClipId, FrameRate, MediaId, MediaTime, SequenceId, TimelineTime, TrackId, ticks_per_frame,
+    ClipId, FrameRate, MediaId, MediaTime, Rational, SequenceId, TimelineTime, TrackId,
+    ticks_per_frame,
 };
 use bettercut_project_format::Project;
 use bettercut_timeline::{
@@ -63,6 +64,12 @@ pub fn build_for_replay(
             clip,
             transition,
         } => Box::new(SetTransition::new(sequence, track, clip, transition)),
+        Command::SetClipSpeed {
+            sequence,
+            track,
+            clip,
+            speed,
+        } => Box::new(SetClipSpeed::new(sequence, track, clip, speed)),
         Command::AddText {
             sequence,
             track,
@@ -307,12 +314,20 @@ pub(crate) fn transition_room(
         .unwrap_or(MediaTime::ZERO);
     let handle_before = incoming.source.start;
 
+    // §51: `max_duration` reasons in *timeline* ticks, and a handle is source.
+    // A clip playing at 2× burns two ticks of handle for every tick of
+    // transition, so its handle is worth half as much — measured unscaled, a
+    // fast clip would be offered twice the crossfade its footage can cover.
+    let usable = |handle: MediaTime, speed: bettercut_foundation::Rational| {
+        MediaTime::from_ticks(bettercut_timeline::timeline_ticks_for(handle, speed))
+    };
+
     Some(Transition::max_duration(
         kind,
         outgoing.timeline.duration(),
         incoming.timeline.duration(),
-        handle_after,
-        handle_before,
+        usable(handle_after, outgoing.speed),
+        usable(handle_before, incoming.speed),
     ))
 }
 
@@ -525,6 +540,126 @@ impl EditorCommand for SetTextProperty {
 
     fn label(&self) -> String {
         format!("Change {}", self.property.kind())
+    }
+}
+
+/// Change how fast a clip plays (§51).
+///
+/// Speeding a clip up shortens it and slowing it down lengthens it, because the
+/// source range is what the clip *plays* and the speed decides how long that
+/// takes. The clip keeps its start; the end moves, and the rest of the track
+/// moves with it (see [`bettercut_timeline::VideoTrack::ripple_resize`]).
+#[derive(Debug)]
+pub struct SetClipSpeed {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    speed: Rational,
+    /// The speed *and* the end it had, because restoring one without the other
+    /// leaves a clip whose length does not match the material it plays.
+    previous: Option<(Rational, TimelineTime)>,
+}
+
+impl SetClipSpeed {
+    pub fn new(sequence: SequenceId, track: TrackId, clip: ClipId, speed: Rational) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            speed,
+            previous: None,
+        }
+    }
+
+    /// True when `other` is the same clip's speed being dragged, so a drag
+    /// across the slider collapses into one undo step (§11).
+    pub fn is_same_gesture(&self, other: &Self) -> bool {
+        self.clip == other.clip
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track_id: TrackId,
+        clip_id: ClipId,
+        speed: Rational,
+        end: Option<TimelineTime>,
+    ) -> Result<(Rational, TimelineTime), EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        let track = sequence
+            .video_track_mut(track_id)
+            .ok_or(EditorError::TrackNotFound(track_id))?;
+        let clip = track
+            .get_mut(clip_id)
+            .ok_or(EditorError::ClipNotFound(clip_id))?;
+
+        let was_speed = clip.speed;
+        let speed = bettercut_timeline::clamped_speed(speed);
+
+        // On undo the end comes from what was recorded; on execute it is
+        // derived. Recomputing it on undo instead would round a second time and
+        // could land a tick away from where the clip actually was.
+        let new_end = match end {
+            Some(end) => end,
+            None => {
+                clip.timeline.start
+                    + TimelineTime::from_ticks(bettercut_timeline::timeline_ticks_for(
+                        clip.source.duration(),
+                        speed,
+                    ))
+            }
+        };
+
+        clip.speed = speed;
+        let was_end = match track.ripple_resize(clip_id, new_end) {
+            Ok(end) => end,
+            Err(err) => {
+                // The length did not change, so the speed must not either —
+                // otherwise the clip would play material it has no room for.
+                if let Some(clip) = track.get_mut(clip_id) {
+                    clip.speed = was_speed;
+                }
+                return Err(err.into());
+            }
+        };
+
+        Ok((was_speed, was_end))
+    }
+}
+
+impl EditorCommand for SetClipSpeed {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            self.speed,
+            None,
+        )?;
+        // First execute only: a redo restores the state from before the whole
+        // gesture, not from the previous redo step.
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let (speed, end) = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            speed,
+            Some(end),
+        )?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change speed".to_owned()
     }
 }
 

@@ -474,7 +474,42 @@ but not filled in — SubRip has none, and WebVTT's karaoke timestamps are
 stripped rather than read. That is what §27's animated subtitles will need, and
 Phase 3 is where they are. There is no automatic transcription (§28).
 
-**What does not work yet:** speed changes, which have a tab that says so. Text
+### Speed
+
+Every other feature so far has fitted around an assumption stated in half a
+dozen comments: *a tick on the timeline is a tick in the source*. Speed is the
+one that breaks it, so the mapping had to become explicit everywhere it was
+implicit — `source_time_at`, both trim edges, split, the transition handles,
+the filmstrip.
+
+The rate is a `Rational`, not an `f32`. §9 and §74 forbid floating point in
+position arithmetic, and this is position arithmetic: at 2× the source time for
+a timeline position is scaled by the rate, and doing that through `f64` drifts
+across a long clip in exactly the way the 960,000-tick timebase exists to
+prevent. `Rational::scale` multiplies through `i128` and rounds to nearest, so
+scaling out and back is a round trip rather than a slow march towards zero — a
+test walks an hour of ticks through awkward ratios to check it.
+
+Speed changes how *long* a clip is, which is what makes it different from every
+other control: the source range is what the clip plays, and the rate decides how
+long that takes. So the neighbours have to move. Both alternatives were tried
+and are worse — leaving them opens a gap on every speed-up, which is the
+commonest thing anyone does, and refusing for want of room makes slowing a clip
+down fail on any track that is not the last one. So it ripples, per track,
+exactly as ripple delete already does and for the same reason: a sequence-wide
+ripple would drag music and overlays the user never touched.
+
+One consequence worth stating, because it is not obvious. §25's crossfade
+handles are measured in *source* and a transition window is measured in
+*timeline*, so a clip at 2× burns two ticks of footage for every tick of
+dissolve. Its handle is worth half as much, and the interface now offers half
+the crossfade it used to on the same footage.
+
+**What does not work yet:** audio does not re-time — re-timing sound means
+resampling it, and doing that badly is worse than not offering it. In practice
+nothing is out of sync, because importing a video currently places picture only
+(see below). Speed is not keyframed, so there is no ramp from one rate to
+another. Text
 uses the machine's fonts rather than bundled ones — §26 wants
 `assets/fonts/` for templates (Milestone 11), and until there is a font picker a
 single bundled family would be the *only* family on offer. Audio does not

@@ -347,3 +347,32 @@ fn the_inspector_draws_a_fully_decorated_title() {
         );
     }
 }
+
+/// §51: the Speed tab is a real control now, not a note saying it is not built.
+#[test]
+fn the_inspector_draws_the_speed_controls() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, video, _) = editor_with_clips();
+    let mut state = UiState::default();
+    state.selected_clips.insert(video);
+    state.inspector_tab = InspectorTab::Speed;
+
+    let before = editor.project().clone();
+    let words = drawn_text(&mut editor, &mut state);
+    draw(&mut editor, &mut state);
+
+    assert_eq!(
+        editor.project(),
+        &before,
+        "drawing the speed controls modified the project"
+    );
+    assert!(
+        words.contains("2×") && words.contains("0.5×"),
+        "the presets did not draw; drew: {words}"
+    );
+    assert!(
+        !words.contains("not built yet"),
+        "the placeholder is still there"
+    );
+}

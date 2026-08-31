@@ -49,6 +49,55 @@ impl Rational {
     pub fn as_f64(self) -> f64 {
         self.num as f64 / self.den as f64
     }
+
+    pub const ONE: Self = Self { num: 1, den: 1 };
+
+    /// Build a ratio in a `const`, from parts already in lowest terms.
+    ///
+    /// [`Self::new`] cannot be `const` — it runs a gcd — so the constants that
+    /// bound §51's speed control need this. **Not normalized**: pass it
+    /// something like `2/4` and equality against `1/2` will be false. Every
+    /// caller is a literal a reader can check, which is why this is acceptable
+    /// here and why `new` remains the way to build one from computed values.
+    pub const fn from_parts(num: i64, den: i64) -> Self {
+        Self { num, den }
+    }
+
+    pub fn is_one(self) -> bool {
+        self.num == self.den
+    }
+
+    /// Multiply a tick count by this ratio, exactly.
+    ///
+    /// The one operation §51's speed control needs and §74 forbids doing in
+    /// floating point: at 2× a clip advances two source ticks per timeline
+    /// tick, and doing that through `as_f64` would drift across a long clip in
+    /// exactly the way §9's timebase exists to prevent.
+    ///
+    /// Widened to `i128` for the multiply so the product never has to be
+    /// reasoned about. Realistic values fit in `i64` — an hour is 3.5 billion
+    /// ticks, and even times a numerator of 30,000 that is only 1e14 — but the
+    /// margin depends on the ratio, and a cast that is safe *for the ratios we
+    /// happen to use today* is the kind that breaks quietly later.
+    ///
+    /// Rounds to nearest, away from zero at the half. A tick is a 960,000th of
+    /// a second, so what rounding loses is far below a sample, let alone a
+    /// frame; what it buys is that scaling by a ratio and back lands where it
+    /// started rather than drifting one tick earlier every time.
+    pub fn scale(self, ticks: i64) -> i64 {
+        if self.den == 0 {
+            return ticks;
+        }
+        let numerator = i128::from(ticks) * i128::from(self.num);
+        let denominator = i128::from(self.den);
+        let half = denominator / 2;
+        let rounded = if (numerator < 0) == (denominator < 0) {
+            (numerator + half) / denominator
+        } else {
+            (numerator - half) / denominator
+        };
+        rounded.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+    }
 }
 
 impl std::fmt::Display for Rational {
@@ -166,5 +215,78 @@ mod tests {
         // someone has replaced the representation with a float.
         assert_eq!(FrameRate::NTSC_29_97.as_rational().num(), 30_000);
         assert_eq!(FrameRate::NTSC_29_97.as_rational().den(), 1001);
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    fn ratio(num: i64, den: i64) -> Rational {
+        Rational::new(num, den).expect("non-zero denominator")
+    }
+
+    #[test]
+    fn scaling_by_one_changes_nothing() {
+        for ticks in [0, 1, -1, 960_000, i64::MAX / 2] {
+            assert_eq!(Rational::ONE.scale(ticks), ticks);
+        }
+    }
+
+    #[test]
+    fn scaling_multiplies_and_divides_exactly() {
+        assert_eq!(ratio(2, 1).scale(1000), 2000);
+        assert_eq!(ratio(1, 2).scale(1000), 500);
+        assert_eq!(ratio(3, 2).scale(1000), 1500);
+        assert_eq!(ratio(1, 4).scale(1000), 250);
+    }
+
+    /// The whole reason this is not `as_f64`: an hour of ticks at an awkward
+    /// ratio has to come back exact, and a float has 53 bits of mantissa
+    /// against a tick count that already uses 32.
+    #[test]
+    fn a_long_clip_scales_without_drift() {
+        let hour = 3600 * 960_000;
+        assert_eq!(hour, 3_456_000_000);
+        assert_eq!(ratio(1001, 1000).scale(hour), 3_459_456_000);
+        assert_eq!(ratio(1000, 1001).scale(3_459_456_000), hour);
+    }
+
+    /// An hour of ticks against a frame-rate-sized numerator: the largest
+    /// product this is ever asked for, and the answer is exact.
+    #[test]
+    fn a_large_ratio_stays_exact() {
+        let hour = 3600 * 960_000;
+        let scaled = ratio(30_000, 1001).scale(hour);
+        assert_eq!(scaled, 103_576_423_576);
+    }
+
+    /// Rounding to nearest rather than truncating, so scaling out and back is
+    /// a round trip instead of a slow march towards zero.
+    #[test]
+    fn scaling_out_and_back_returns_to_the_start() {
+        for ticks in [1, 7, 999, 960_001, 12_345_678] {
+            for (num, den) in [(2, 1), (1, 2), (3, 2), (7, 3), (1001, 1000)] {
+                let out = ratio(num, den).scale(ticks);
+                let back = ratio(den, num).scale(out);
+                assert!(
+                    (back - ticks).abs() <= 1,
+                    "{ticks} × {num}/{den} = {out}, back = {back}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn negatives_round_symmetrically() {
+        assert_eq!(ratio(1, 2).scale(5), 3);
+        assert_eq!(ratio(1, 2).scale(-5), -3);
+    }
+
+    #[test]
+    fn one_is_recognised() {
+        assert!(Rational::ONE.is_one());
+        assert!(ratio(4, 4).is_one(), "4/4 normalizes to 1/1");
+        assert!(!ratio(2, 1).is_one());
     }
 }

@@ -302,7 +302,10 @@ fn push_layer(
 /// because there is genuinely nothing before it.
 fn handle_time(clip: &VideoClip, position: TimelineTime) -> MediaTime {
     let into_clip = position.ticks() - clip.timeline().start.ticks();
-    MediaTime::from_ticks((clip.source().start.ticks() + into_clip).max(0))
+    // Scaled by the clip's speed (§51), like every other timeline-to-source
+    // mapping: during a crossfade a 2× clip reads its handle twice as fast as
+    // the window advances.
+    MediaTime::from_ticks((clip.source().start.ticks() + clip.speed.scale(into_clip)).max(0))
 }
 
 /// One audio clip audible at a given instant.

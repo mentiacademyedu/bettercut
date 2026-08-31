@@ -963,6 +963,34 @@ impl Editor {
         Ok(id)
     }
 
+    /// Change how fast a clip plays (§51).
+    ///
+    /// Speeding up shortens the clip and slowing down lengthens it. Slowing
+    /// down can fail for want of room on the track, which is reported rather
+    /// than resolved by moving the neighbours — see [`ops::SetClipSpeed`].
+    ///
+    /// `continuing` collapses a drag across the slider into one undo step, the
+    /// same as every other control (§11).
+    pub fn set_clip_speed(
+        &mut self,
+        clip: ClipId,
+        speed: bettercut_foundation::Rational,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch_gesture(
+            "Change speed".to_owned(),
+            vec![Command::SetClipSpeed {
+                sequence,
+                track,
+                clip,
+                speed,
+            }],
+            continuing,
+        )
+    }
+
     /// Put a transition on the end of a clip (§25).
     ///
     /// The duration asked for is a request: what gets stored is clamped to what
@@ -1446,6 +1474,18 @@ impl Editor {
                 self.require_sequence(sequence)?;
                 Ok(Box::new(ops::SetTextProperty::new(
                     sequence, track, clip, property,
+                )))
+            }
+
+            Command::SetClipSpeed {
+                sequence,
+                track,
+                clip,
+                speed,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetClipSpeed::new(
+                    sequence, track, clip, speed,
                 )))
             }
 

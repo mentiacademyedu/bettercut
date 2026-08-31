@@ -258,7 +258,8 @@ pub fn unsaved_sessions() -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
         })
         .collect();
 
-    sessions.sort_by(|a, b| b.1.cmp(&a.1));
+    // Newest first, so the index is how many newer ones there are.
+    sessions.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
     sessions
 }
 

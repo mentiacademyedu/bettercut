@@ -4,7 +4,7 @@
 //! it sits on the timeline, and which part of the source it shows. That is what
 //! makes editing non-destructive (§2).
 
-use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime};
+use bettercut_foundation::{ClipId, MediaId, MediaTime, Rational, TimelineTime};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TimelineError;
@@ -179,6 +179,19 @@ pub struct VideoClip {
     /// Parameters that change over the clip (§24). Empty for most clips.
     #[serde(default)]
     pub keyframes: Keyframes,
+    /// How fast this clip plays, as an exact ratio: 2/1 is twice speed.
+    ///
+    /// A ratio rather than a float because it is used in *position*
+    /// arithmetic — the source time for a timeline position is scaled by it —
+    /// and §9 and §74 both forbid doing that through `f64`. At 2× on an hour
+    /// of footage the difference between exact and floating point is a
+    /// visible drift by the end.
+    ///
+    /// `serde(default)` gives projects written before speed existed the only
+    /// answer that preserves them: normal.
+    #[serde(default = "normal_speed")]
+    pub speed: Rational,
+
     /// A transition at this clip's *end*, if any (§25).
     ///
     /// On the clip rather than on the track so that moving, trimming,
@@ -261,6 +274,19 @@ fn one() -> f32 {
     1.0
 }
 
+fn normal_speed() -> Rational {
+    Rational::ONE
+}
+
+/// Slowest and fastest a clip may play.
+///
+/// Bounds rather than taste. Below the floor a second of footage becomes half
+/// a minute of timeline, and above the ceiling the decoder is asked to leap so
+/// far between frames that every one of them is a seek — both are still
+/// *correct*, and neither is something anyone wants to discover by accident.
+pub const MIN_SPEED: Rational = Rational::from_parts(1, 10);
+pub const MAX_SPEED: Rational = Rational::from_parts(10, 1);
+
 /// How much of the frame a source fills when fitted inside it, per axis.
 ///
 /// A source wider than the frame is limited by width and letterboxed top and
@@ -335,6 +361,17 @@ pub trait Clip {
     /// selection, undo, and every lookup that assumes IDs are unique.
     fn set_id(&mut self, id: ClipId);
 
+    /// How fast this clip plays.
+    ///
+    /// On the trait because [`crate::track::Track`]'s edits are generic over
+    /// it: trimming an edge by *n* timeline ticks moves the source edge by *n
+    /// × speed*, and splitting cuts the source at the scaled offset. Written
+    /// only in the video clip and defaulted to normal everywhere else, so a
+    /// clip kind with no speed control behaves exactly as it did.
+    fn speed(&self) -> Rational {
+        Rational::ONE
+    }
+
     /// Drop any transition on this clip's end (§25).
     ///
     /// Splitting clones the clip, and a transition belongs to the *end* the
@@ -382,6 +419,10 @@ impl_clip!(
     // The only kind of clip that has a transition to drop; see the trait.
     fn clear_transition_out(&mut self) {
         self.transition_out = None;
+    },
+    // And the only kind with a speed control; see the trait.
+    fn speed(&self) -> Rational {
+        self.speed
     }
 );
 impl_clip!(AudioClip);
@@ -408,6 +449,7 @@ impl VideoClip {
             color: ColorAdjust::default(),
             blur: 0.0,
             keyframes: Keyframes::default(),
+            speed: Rational::ONE,
             transition_out: None,
             enabled: true,
         })
@@ -477,8 +519,49 @@ impl VideoClip {
     /// the source, because the MVP has no speed change (§59).
     pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
         let into_clip = position.ticks() - self.timeline.start.ticks();
-        MediaTime::from_ticks(self.source.start.ticks() + into_clip)
+        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
     }
+
+    /// How long this clip runs on the timeline at its current speed.
+    ///
+    /// The source range is what the clip *plays*; the speed decides how long
+    /// that takes. Twice the speed, half the time.
+    pub fn timeline_duration(&self) -> TimelineTime {
+        TimelineTime::from_ticks(timeline_ticks_for(self.source.duration(), self.speed))
+    }
+}
+
+/// Clamp a speed to what a clip may actually play.
+///
+/// Applied in the model rather than in the interface, for §38.2's reason: the
+/// journal replays commands after a crash, and a limit that only existed in a
+/// slider would come back unapplied.
+pub fn clamped_speed(speed: Rational) -> Rational {
+    if speed.num() <= 0 {
+        // A zero or negative speed is not slow motion, it is a still frame or
+        // a clip that plays backwards — neither is what the control means, and
+        // both divide badly.
+        return MIN_SPEED;
+    }
+    // Compared by cross-multiplication so the comparison is exact, like
+    // everything else here.
+    if speed.num() * MIN_SPEED.den() < MIN_SPEED.num() * speed.den() {
+        return MIN_SPEED;
+    }
+    if speed.num() * MAX_SPEED.den() > MAX_SPEED.num() * speed.den() {
+        return MAX_SPEED;
+    }
+    speed
+}
+
+/// How much timeline a span of source occupies at `speed`.
+///
+/// The inverse of the scaling [`VideoClip::source_time_at`] does, and written
+/// once so the two cannot disagree — a clip whose length did not match the
+/// material it plays would run out of frames before its own end.
+pub fn timeline_ticks_for(source: MediaTime, speed: Rational) -> i64 {
+    let inverse = speed.inverse().unwrap_or(Rational::ONE);
+    inverse.scale(source.ticks()).max(0)
 }
 
 impl AudioClip {
@@ -736,5 +819,126 @@ mod fit_tests {
         let plain = natural_size_transform(Transform::default(), 480, 270, 1920, 1080);
         let scaled = natural_size_transform(doubled, 480, 270, 1920, 1080);
         assert!((scaled.scale.x - plain.scale.x * 2.0).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod speed_tests {
+    use super::*;
+    use bettercut_foundation::MediaId;
+
+    fn ratio(num: i64, den: i64) -> Rational {
+        Rational::new(num, den).expect("non-zero denominator")
+    }
+
+    /// A four-second clip reading from one second in.
+    fn clip() -> VideoClip {
+        let source = SourceRange::new(MediaTime::from_seconds(1), MediaTime::from_seconds(5))
+            .expect("valid");
+        VideoClip::new(MediaId::new(), TimelineTime::from_seconds(10), source).expect("valid")
+    }
+
+    #[test]
+    fn a_new_clip_plays_at_normal_speed() {
+        assert_eq!(clip().speed, Rational::ONE);
+    }
+
+    /// The mapping, which everything else follows from: a second of timeline is
+    /// two seconds of source at 2×.
+    #[test]
+    fn the_source_advances_with_the_speed() {
+        let mut clip = clip();
+        clip.speed = ratio(2, 1);
+
+        // One second into the clip.
+        let at = TimelineTime::from_seconds(11);
+        assert_eq!(clip.source_time_at(at), MediaTime::from_seconds(3));
+
+        clip.speed = ratio(1, 2);
+        assert_eq!(
+            clip.source_time_at(at),
+            MediaTime::from_millis(1500),
+            "half speed reads half as far in"
+        );
+    }
+
+    #[test]
+    fn the_start_of_a_clip_is_its_in_point_at_any_speed() {
+        for (num, den) in [(1, 1), (2, 1), (1, 4), (7, 3)] {
+            let mut clip = clip();
+            clip.speed = ratio(num, den);
+            assert_eq!(
+                clip.source_time_at(clip.timeline.start),
+                clip.source.start,
+                "{num}/{den} did not start at the in-point"
+            );
+        }
+    }
+
+    /// Twice the speed, half the time. This is the length the clip must occupy
+    /// on the timeline, or it runs out of material before its own end.
+    #[test]
+    fn the_timeline_duration_is_the_source_over_the_speed() {
+        let mut clip = clip();
+        assert_eq!(clip.timeline_duration(), TimelineTime::from_seconds(4));
+
+        clip.speed = ratio(2, 1);
+        assert_eq!(clip.timeline_duration(), TimelineTime::from_seconds(2));
+
+        clip.speed = ratio(1, 2);
+        assert_eq!(clip.timeline_duration(), TimelineTime::from_seconds(8));
+    }
+
+    /// The two directions have to agree: reading at the very end of the clip
+    /// must land on the out-point, not past it.
+    #[test]
+    fn the_end_of_a_clip_lands_on_its_out_point() {
+        for (num, den) in [(1, 1), (2, 1), (1, 2), (4, 1), (1, 10), (7, 3), (10, 1)] {
+            let mut clip = clip();
+            clip.speed = ratio(num, den);
+            clip.timeline = TimelineRange::new(
+                clip.timeline.start,
+                clip.timeline.start + clip.timeline_duration(),
+            )
+            .expect("non-empty");
+
+            let at_end = clip.source_time_at(clip.timeline.end);
+            let overshoot = at_end.ticks() - clip.source.end.ticks();
+            assert!(
+                overshoot.abs() <= 1,
+                "{num}/{den}: the last frame is {overshoot} ticks off the out-point"
+            );
+        }
+    }
+
+    #[test]
+    fn speed_is_clamped_to_something_playable() {
+        assert_eq!(clamped_speed(ratio(1, 1)), ratio(1, 1));
+        assert_eq!(clamped_speed(ratio(100, 1)), MAX_SPEED);
+        assert_eq!(clamped_speed(ratio(1, 100)), MIN_SPEED);
+    }
+
+    /// Zero is a still frame and a negative is playing backwards. Neither is
+    /// what the control means, and both divide badly.
+    #[test]
+    fn a_zero_or_backwards_speed_is_refused() {
+        assert_eq!(clamped_speed(ratio(0, 1)), MIN_SPEED);
+        assert_eq!(clamped_speed(ratio(-2, 1)), MIN_SPEED);
+    }
+
+    /// §9's point, in the one place speed could reintroduce drift: an hour at
+    /// an awkward ratio still lands exactly.
+    #[test]
+    fn a_long_clip_does_not_drift() {
+        let source =
+            SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(3600)).expect("valid");
+        let mut clip = VideoClip::new(MediaId::new(), TimelineTime::ZERO, source).expect("valid");
+        clip.speed = ratio(3, 2);
+        clip.timeline =
+            TimelineRange::new(TimelineTime::ZERO, clip.timeline_duration()).expect("non-empty");
+
+        assert_eq!(clip.timeline_duration(), TimelineTime::from_seconds(2400));
+        let at_end = clip.source_time_at(clip.timeline.end);
+        assert_eq!(at_end, MediaTime::from_seconds(3600));
     }
 }

@@ -23,6 +23,7 @@
 //! one gesture; §11's history is meant to hold user intentions, not mouse
 //! samples.
 
+use bettercut_editor_core::foundation::Rational;
 use bettercut_editor_core::foundation::{ClipId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::project_format::Project;
 use bettercut_editor_core::timeline::{
@@ -826,6 +827,7 @@ fn draw_lanes(
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
                     transition: None,
+                    speed: Rational::ONE,
                 },
                 clip.id,
                 track.id,
@@ -878,6 +880,7 @@ fn draw_lanes(
                     keyframes: (!clip.keyframes.is_empty())
                         .then_some((&clip.keyframes, clip.source.start)),
                     transition: clip.transition_out,
+                    speed: clip.speed,
                 },
                 clip.id,
                 track.id,
@@ -926,6 +929,8 @@ fn draw_lanes(
                     // §25 v1 is picture only: an audio crossfade mixes two
                     // sources rather than blending two images.
                     transition: None,
+                    // §51 v1 likewise: re-timing audio means resampling it.
+                    speed: Rational::ONE,
                 },
                 clip.id,
                 track.id,
@@ -1075,6 +1080,12 @@ struct ClipVisual<'a> {
     /// clipped to the clip's own rect, because half of it belongs to the next
     /// clip's side of the boundary.
     transition: Option<Transition>,
+    /// §51's playback rate, shown as a badge when it is not normal.
+    ///
+    /// A re-timed clip looks exactly like any other one, and its length is not
+    /// a clue — a two-second clip is two seconds whatever the reason. Without a
+    /// mark on it, "why is this playing fast" has no answer on screen.
+    speed: Rational,
 }
 
 /// The rubber band itself: a translucent fill with a crisp edge.
@@ -1116,6 +1127,7 @@ fn draw_filmstrip(
     timeline_start: TimelineTime,
     source_start: MediaTime,
     media_duration: MediaTime,
+    speed: Rational,
 ) {
     let media_ticks = media_duration.ticks();
     if tiles == 0 || media_ticks <= 0 || clip_rect.width() < 4.0 {
@@ -1127,8 +1139,15 @@ fn draw_filmstrip(
         return;
     }
 
-    // Tile width on screen: how much timeline one tile of source covers.
-    let tile_px = (per_tile / viewport.ticks_per_pixel.max(1)) as f32;
+    // Tile width on screen: how much timeline one tile of source covers. At 2×
+    // a tile of source covers half as much timeline, so the thumbnails have to
+    // pack in tighter — drawn unscaled they would run off the end of a
+    // shortened clip and mislabel every frame under them (§51).
+    let per_tile_timeline = speed
+        .inverse()
+        .map_or(per_tile, |inverse| inverse.scale(per_tile))
+        .max(1);
+    let tile_px = (per_tile_timeline / viewport.ticks_per_pixel.max(1)) as f32;
     if tile_px < 1.0 {
         // Zoomed out so far that a tile is under a pixel; drawing it would be
         // noise, and thousands of draw calls for it.
@@ -1144,7 +1163,11 @@ fn draw_filmstrip(
     let mut index = first;
     while index < i64::from(tiles) {
         let tile_source = index * per_tile;
-        let into_clip = tile_source - source_start.ticks();
+        let into_clip = speed
+            .inverse()
+            .map_or(tile_source - source_start.ticks(), |inverse| {
+                inverse.scale(tile_source - source_start.ticks())
+            });
         let x = viewport.x_of(TimelineTime::from_ticks(timeline_start.ticks() + into_clip));
         if x > clip_rect.right() {
             break;
@@ -1289,6 +1312,7 @@ fn draw_clip(
             visual.range.start,
             source_start,
             visual.duration_of_media,
+            visual.speed,
         );
     }
 
@@ -1327,6 +1351,25 @@ fn draw_clip(
 
     if let Some(transition) = visual.transition {
         draw_transition(painter, lane, viewport, transition, visual.range.end);
+    }
+
+    // Top-right, where it does not collide with the file name on the left.
+    // Only when it is not normal: a badge on every clip would be noise.
+    if !visual.speed.is_one() && clip_rect.width() > 34.0 {
+        let label = format!("{:.2}×", visual.speed.as_f64());
+        let anchor = Pos2::new(clip_rect.right() - 5.0, clip_rect.top() + 12.0);
+        let font = FontId::proportional(10.0);
+        let galley = painter.layout_no_wrap(label, font, theme::BACKGROUND);
+        let box_rect = Rect::from_min_size(
+            Pos2::new(anchor.x - galley.size().x - 4.0, anchor.y - 7.0),
+            galley.size() + vec2(8.0, 3.0),
+        );
+        painter.rect_filled(box_rect, 3, theme::SELECTION);
+        painter.galley(
+            Pos2::new(box_rect.left() + 4.0, box_rect.top() + 1.0),
+            galley,
+            theme::BACKGROUND,
+        );
     }
 
     // Only label a clip wide enough to read it; below that the text is noise.

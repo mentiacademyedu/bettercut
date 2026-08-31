@@ -247,9 +247,9 @@ impl<C: Clip> Track<C> {
         }
 
         let index = self.index_of(id)?;
-        let (old_timeline, old_source) = {
+        let (old_timeline, old_source, speed) = {
             let clip = &self.clips[index];
-            (clip.timeline(), clip.source())
+            (clip.timeline(), clip.source(), clip.speed())
         };
 
         if new_start >= old_timeline.end {
@@ -260,7 +260,11 @@ impl<C: Clip> Track<C> {
         }
 
         // Positive when trimming inward, negative when extending outward.
-        let delta = new_start.ticks() - old_timeline.start.ticks();
+        //
+        // Scaled by the clip's speed: dragging the edge a second along the
+        // timeline consumes *two* seconds of source at 2×. Unscaled, a trimmed
+        // fast clip would run out of material before its own end (§51).
+        let delta = speed.scale(new_start.ticks() - old_timeline.start.ticks());
         let new_source_start = MediaTime::from_ticks(old_source.start.ticks() + delta);
 
         // Cannot extend past the beginning of the source media.
@@ -312,9 +316,9 @@ impl<C: Clip> Track<C> {
         }
 
         let index = self.index_of(id)?;
-        let (old_timeline, old_source) = {
+        let (old_timeline, old_source, speed) = {
             let clip = &self.clips[index];
-            (clip.timeline(), clip.source())
+            (clip.timeline(), clip.source(), clip.speed())
         };
 
         if new_end <= old_timeline.start {
@@ -324,7 +328,8 @@ impl<C: Clip> Track<C> {
             });
         }
 
-        let delta = new_end.ticks() - old_timeline.end.ticks();
+        // Scaled, for the reason given in `trim_start`.
+        let delta = speed.scale(new_end.ticks() - old_timeline.end.ticks());
         let new_source_end = MediaTime::from_ticks(old_source.end.ticks() + delta);
 
         if let Some(limit) = max_source_end
@@ -403,8 +408,9 @@ impl<C: Clip> Track<C> {
             });
         }
 
-        // No speed change, so a tick on the timeline is a tick in the source.
-        let offset = at.ticks() - timeline.start.ticks();
+        // Where the cut lands in the source, which is not where it lands on
+        // the timeline unless the clip plays at normal speed (§51).
+        let offset = original.speed().scale(at.ticks() - timeline.start.ticks());
         let source_split = MediaTime::from_ticks(source.start.ticks() + offset);
 
         let mut left = original.clone();
@@ -473,6 +479,57 @@ impl<C: Clip> Track<C> {
         }
 
         Ok((removed, shift))
+    }
+
+    /// Move a clip's end to `new_end`, pushing everything after it by the same
+    /// amount (§51).
+    ///
+    /// What re-timing needs. Changing a clip's speed changes how long it is,
+    /// and neither of the two obvious alternatives works: leaving the
+    /// neighbours where they are opens a gap on every speed-up — the commonest
+    /// thing anyone does — and refusing when there is no room makes slowing a
+    /// clip down fail on any track that is not the last one.
+    ///
+    /// So the later clips move, per track, exactly as [`Self::ripple_remove`]
+    /// does and for the same reason: a sequence-wide ripple would drag music
+    /// and overlays the user never touched. Order and non-overlap are preserved
+    /// by construction — every clip after this one moves by the same amount —
+    /// so the sorted invariant needs no re-checking.
+    ///
+    /// Returns the previous end, which is all an undo needs to reverse it.
+    pub fn ripple_resize(
+        &mut self,
+        id: ClipId,
+        new_end: TimelineTime,
+    ) -> Result<TimelineTime, TimelineError> {
+        if self.locked {
+            return Err(TimelineError::TrackLocked(self.id));
+        }
+
+        let index = self.index_of(id)?;
+        let range = self.clips[index].timeline();
+        if new_end <= range.start {
+            return Err(TimelineError::EmptyRange {
+                start: range.start,
+                end: new_end,
+            });
+        }
+
+        let shift = new_end.ticks() - range.end.ticks();
+        self.clips[index].set_timeline(TimelineRange {
+            start: range.start,
+            end: new_end,
+        });
+
+        for clip in &mut self.clips[index + 1..] {
+            let range = clip.timeline();
+            clip.set_timeline(TimelineRange {
+                start: TimelineTime::from_ticks(range.start.ticks() + shift),
+                end: TimelineTime::from_ticks(range.end.ticks() + shift),
+            });
+        }
+
+        Ok(range.end)
     }
 
     /// Undo a ripple: push clips from `index` onward right again, then

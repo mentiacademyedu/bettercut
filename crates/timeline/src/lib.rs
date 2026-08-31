@@ -22,7 +22,9 @@ pub use clip::{
     AudioClip, Clip, ClipLook, ColorAdjust, MAX_BLUR, MasterLook, SourceRange, TimelineRange,
     Transform, Vec2, VideoClip,
 };
-pub use clip::{fit_scale, natural_size_transform};
+pub use clip::{
+    MAX_SPEED, MIN_SPEED, clamped_speed, fit_scale, natural_size_transform, timeline_ticks_for,
+};
 pub use error::TimelineError;
 pub use keyframe::{AnimatedParameter, Interpolation, Keyframe, KeyframeTrack, Keyframes};
 pub use sequence::{Resolution, Sequence, TrackKind};
