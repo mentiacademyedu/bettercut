@@ -449,3 +449,74 @@ fn rasterizing_twice_gives_the_same_picture() {
     let cold = TextRenderer::new().rasterize("Repeatable", &style).unwrap();
     assert_eq!(first, cold, "a warm cache changed the picture");
 }
+
+/// §26 offers three generic names and a real font is a name. Without a list of
+/// what is installed, the only way to reach one is to type it exactly.
+#[test]
+fn the_installed_families_are_listed() {
+    let renderer = renderer();
+    let families = renderer.families();
+
+    assert!(
+        families.len() > 5,
+        "only {} families on a machine with {} faces",
+        families.len(),
+        renderer.font_count()
+    );
+
+    // Sorted, so a picker can show them as they come.
+    let mut sorted = families.clone();
+    sorted.sort_by_key(|n| n.to_lowercase());
+    assert_eq!(families, sorted, "the list is not in order");
+
+    // And no duplicates: a family with four faces must appear once.
+    let mut seen: Vec<String> = families.iter().map(|n| n.to_lowercase()).collect();
+    seen.dedup();
+    assert_eq!(seen.len(), families.len(), "a family is listed twice");
+}
+
+/// Windows ships a vertical writing-mode variant of every CJK font under an `@`
+/// prefix. They are the same font rotated, which is not a choice anyone means
+/// to make from a list.
+#[test]
+fn vertical_writing_variants_are_not_offered() {
+    assert!(
+        !renderer().families().iter().any(|n| n.starts_with('@')),
+        "the list includes vertical writing-mode duplicates"
+    );
+}
+
+/// A listed family has to actually shape. A picker offering names the
+/// rasterizer then falls back from would be a control that appears not to work.
+#[test]
+fn a_listed_family_renders_differently_from_another() {
+    let mut renderer = renderer();
+    let families = renderer.families();
+
+    let style = |family: &str| TextStyle {
+        family: bettercut_text::FontFamily::Named(family.to_owned()),
+        ..plain(48.0)
+    };
+
+    // Two families far enough apart that any real pair differs. Compared
+    // across the whole list rather than against named fonts, because which
+    // fonts exist is a fact about the machine.
+    let mut pictures = Vec::new();
+    for family in families.iter().take(12) {
+        if let Ok(bitmap) = renderer.rasterize("Handgloves", &style(family)) {
+            pictures.push((family.clone(), bitmap));
+        }
+    }
+
+    assert!(
+        pictures.len() >= 2,
+        "fewer than two of the listed families rendered anything"
+    );
+    assert!(
+        pictures
+            .iter()
+            .any(|(_, b)| b.pixels != pictures[0].1.pixels),
+        "every listed family produced an identical picture — the name is \
+         being ignored and everything falls back to one font"
+    );
+}

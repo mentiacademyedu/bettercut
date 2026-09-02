@@ -141,6 +141,21 @@ pub struct UiState {
 
     pub status: Option<StatusMessage>,
 
+    /// Font families offered by §26's family picker.
+    ///
+    /// Read once from the rasterizer, because it is a fact about the machine
+    /// rather than about the project and enumerating font directories is not
+    /// something to do while drawing a frame. Empty until the preview exists,
+    /// which leaves the picker with the three generic names — still usable,
+    /// and it fills in on the next launch.
+    pub font_families: Vec<String>,
+
+    /// What has been typed into the family picker's filter.
+    ///
+    /// A machine can have three hundred families and the one you want is
+    /// rarely near the top.
+    pub font_filter: String,
+
     /// Live playback counters, mirrored each frame while a preview exists.
     ///
     /// §52's benchmarks and §81's targets are numbers, and the first report
@@ -230,6 +245,8 @@ impl Default for UiState {
             selected_clips: HashSet::new(),
             selected_track: None,
             status: None,
+            font_families: Vec::new(),
+            font_filter: String::new(),
             playback: None,
             snapping: true,
             drag: None,

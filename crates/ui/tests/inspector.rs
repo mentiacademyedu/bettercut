@@ -376,3 +376,51 @@ fn the_inspector_draws_the_speed_controls() {
         "the placeholder is still there"
     );
 }
+
+/// §26's family picker offers what is installed, not three generic names. The
+/// list is read once at startup and kept in `UiState`, so a test supplies it
+/// the same way the application does.
+#[test]
+fn the_family_picker_offers_the_installed_fonts() {
+    let (mut editor, _, _) = editor_with_clips();
+    let title = editor.add_text("Hello").unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.clear();
+    state.selected_clips.insert(title);
+    state.font_families = vec![
+        "Bodoni Ornamental".to_owned(),
+        "Caslon Antique".to_owned(),
+        "Zapfino Extra".to_owned(),
+    ];
+
+    // The picker's contents live inside a combo box, which egui only lays out
+    // once opened — so what is asserted here is that the panel draws with a
+    // list present and changes nothing by itself.
+    let before = editor.project().clone();
+    let words = drawn_text(&mut editor, &mut state);
+    draw(&mut editor, &mut state);
+
+    assert_eq!(editor.project(), &before);
+    assert!(
+        words.contains("family"),
+        "the font row did not draw: {words}"
+    );
+}
+
+/// A machine with no font list still gets a usable picker — the three generic
+/// names work anywhere, which is also why they come first.
+#[test]
+fn the_family_picker_works_with_no_list() {
+    let (mut editor, _, _) = editor_with_clips();
+    let title = editor.add_text("Hello").unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.clear();
+    state.selected_clips.insert(title);
+    assert!(state.font_families.is_empty());
+
+    let before = editor.project().clone();
+    draw(&mut editor, &mut state);
+    assert_eq!(editor.project(), &before);
+}

@@ -148,6 +148,11 @@ impl Preview {
             .map(|&(_, width, height)| (width, height))
     }
 
+    /// The font families available for §26's text overlays.
+    pub fn font_families(&self) -> Vec<String> {
+        self.engine.font_families()
+    }
+
     pub fn has_content(&self) -> bool {
         self.has_content
     }

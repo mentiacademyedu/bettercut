@@ -315,6 +315,9 @@ pub struct AudibleClip {
     pub media: MediaId,
     /// Where in the source the audible span starts.
     pub source_start: MediaTime,
+    /// §51's playback rate. The mixer reads this many source frames per output
+    /// frame and resamples them down.
+    pub speed: bettercut_foundation::Rational,
     pub gain: f32,
     /// Offset from the start of the requested block, in timeline ticks.
     pub offset: TimelineTime,
@@ -583,8 +586,24 @@ impl PlaybackEngine {
                     continue;
                 }
 
-                match source.read(audible.source_start, wanted) {
+                // §51: at 2× the block needs twice as many source frames,
+                // resampled back down to the number the device is expecting.
+                // `input_frames_needed` includes the one extra frame the last
+                // interpolation reads.
+                let rate = audible.speed.as_f64();
+                let to_read = if audible.speed.is_one() {
+                    wanted
+                } else {
+                    bettercut_audio::input_frames_needed(wanted, rate)
+                };
+
+                match source.read(audible.source_start, to_read) {
                     Ok(planes) if !planes.is_empty() => {
+                        let planes = if audible.speed.is_one() {
+                            planes
+                        } else {
+                            bettercut_audio::resample(&planes, wanted, rate)
+                        };
                         bettercut_audio::mix_into(
                             &mut interleaved,
                             channels,
@@ -730,6 +749,11 @@ impl PlaybackEngine {
         layers
     }
 
+    /// The font families available for §26's text overlays.
+    pub fn font_families(&self) -> Vec<String> {
+        self.text.families()
+    }
+
     /// Which audio clips are audible in `[position, position + duration)`.
     ///
     /// Returns descriptions rather than samples: the mixer thread owns the
@@ -758,12 +782,18 @@ impl PlaybackEngine {
                     TimelineTime::ZERO
                 };
                 let from = position.max(clip.timeline.start);
-                let source_start = source_time_of(clip.timeline.start, clip.source.start, from);
+                // Scaled by the clip's speed, like every other
+                // timeline-to-source mapping (§51): a clip at 2× is already
+                // twice as far into its material at the same instant.
+                let into_clip = from.ticks() - clip.timeline.start.ticks();
+                let source_start =
+                    MediaTime::from_ticks(clip.source.start.ticks() + clip.speed.scale(into_clip));
 
                 audible.push(AudibleClip {
                     clip: clip.id,
                     media: clip.media_id,
                     source_start,
+                    speed: clip.speed,
                     gain: clip.gain,
                     offset,
                 });

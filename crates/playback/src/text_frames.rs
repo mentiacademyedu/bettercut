@@ -114,6 +114,16 @@ impl TextFrames {
         self.cache.insert(key, frame);
     }
 
+    /// The font families installed on this machine (§26).
+    ///
+    /// Asked of the rasterizer that is already here rather than of a second
+    /// one built for the purpose: a `FontSystem` reads every font directory on
+    /// the machine, and doing that twice costs the startup time twice and the
+    /// memory twice for an identical answer.
+    pub fn families(&self) -> Vec<String> {
+        self.renderer.families()
+    }
+
     /// How many pictures are held, for diagnostics and tests.
     pub fn cached(&self) -> usize {
         self.cache.len()

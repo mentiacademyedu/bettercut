@@ -708,6 +708,94 @@ impl Editor {
         self.dispatch_group(format!("Reset {}", property.kind()), commands)
     }
 
+    /// Put an imported asset on the timeline, picture and sound together (§12).
+    ///
+    /// A video file is *two* clips — a `VideoClip` on a video track and an
+    /// `AudioClip` on an audio track — because §8 keeps picture and sound on
+    /// separate tracks. Placing only the picture is how an editor ends up
+    /// exporting silent video, and placing an audio file as a video clip is how
+    /// a track ends up holding something that cannot be drawn.
+    ///
+    /// Both start at the same instant, which is the point of taking the later
+    /// of the two tracks' ends rather than each track's own: started
+    /// independently on tracks of different lengths, a video's sound would land
+    /// somewhere other than its picture.
+    ///
+    /// One undo step for the pair (§79), because "add this file" is one thing
+    /// the user did.
+    pub fn place_media(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+    ) -> Result<Vec<ClipId>, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let asset = self
+            .project
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?;
+
+        let wants_video = asset.kind.has_video();
+        let wants_audio = asset.audio_codec.is_some();
+        let duration = asset.duration;
+
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let video_track = sequence.video_tracks.first().map(|t| (t.id, t.duration()));
+        let audio_track = sequence.audio_tracks.first().map(|t| (t.id, t.duration()));
+
+        if (!wants_video || video_track.is_none()) && (!wants_audio || audio_track.is_none()) {
+            return Err(EditorError::NoTrackForMedia);
+        }
+
+        // The later of the two, so the pair stays together.
+        let start = [
+            wants_video
+                .then(|| video_track.map(|(_, end)| end))
+                .flatten(),
+            wants_audio
+                .then(|| audio_track.map(|(_, end)| end))
+                .flatten(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(TimelineTime::ZERO, TimelineTime::max);
+
+        let source = bettercut_timeline::SourceRange::new(MediaTime::ZERO, duration)?;
+        let mut commands = Vec::new();
+        let mut placed = Vec::new();
+
+        // Only when both halves are going down: a link to nothing is a lie
+        // that later edits would have to keep checking.
+        let link = (wants_video && wants_audio && video_track.is_some() && audio_track.is_some())
+            .then(bettercut_foundation::LinkId::new);
+
+        if wants_video && let Some((track, _)) = video_track {
+            let mut clip = bettercut_timeline::VideoClip::new(media, start, source)?;
+            clip.link = link;
+            placed.push(clip.id);
+            commands.push(Command::AddClip {
+                sequence: sequence_id,
+                track,
+                clip: ClipPayload::Video(Box::new(clip)),
+            });
+        }
+
+        if wants_audio && let Some((track, _)) = audio_track {
+            let mut clip = bettercut_timeline::AudioClip::new(media, start, source)?;
+            clip.link = link;
+            placed.push(clip.id);
+            commands.push(Command::AddClip {
+                sequence: sequence_id,
+                track,
+                clip: ClipPayload::Audio(Box::new(clip)),
+            });
+        }
+
+        self.dispatch_group("Add Clip".to_owned(), commands)?;
+        Ok(placed)
+    }
+
     // ---- text overlays (§26) ----
 
     /// Add a title at the playhead.
@@ -978,17 +1066,66 @@ impl Editor {
         continuing: bool,
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
-        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
-        self.dispatch_gesture(
-            "Change speed".to_owned(),
-            vec![Command::SetClipSpeed {
-                sequence,
-                track,
-                clip,
-                speed,
-            }],
-            continuing,
-        )
+
+        // §12: a video file is a picture clip and a sound clip. Re-timing one
+        // without the other is how they drift apart, so the link decides what
+        // this applies to — and one command group means one undo (§79).
+        let commands: Vec<Command> = self
+            .linked_with(clip)
+            .into_iter()
+            .filter_map(|clip| {
+                let track = self.track_of(clip)?;
+                Some(Command::SetClipSpeed {
+                    sequence,
+                    track,
+                    clip,
+                    speed,
+                })
+            })
+            .collect();
+
+        if commands.is_empty() {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+        self.dispatch_gesture("Change speed".to_owned(), commands, continuing)
+    }
+
+    /// `clip` together with anything sharing its link (§12).
+    ///
+    /// Just `clip` when it is unlinked, which is every clip that was not
+    /// placed from a file carrying both picture and sound.
+    pub fn linked_with(&self, clip: ClipId) -> Vec<ClipId> {
+        let Some(sequence) = self.project.active() else {
+            return vec![clip];
+        };
+
+        let link = sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).and_then(|c| c.link))
+            .or_else(|| {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).and_then(|c| c.link))
+            });
+        let Some(link) = link else {
+            return vec![clip];
+        };
+
+        let video = sequence
+            .video_tracks
+            .iter()
+            .flat_map(|t| t.clips())
+            .filter(|c| c.link == Some(link))
+            .map(|c| c.id);
+        let audio = sequence
+            .audio_tracks
+            .iter()
+            .flat_map(|t| t.clips())
+            .filter(|c| c.link == Some(link))
+            .map(|c| c.id);
+        video.chain(audio).collect()
     }
 
     /// Put a transition on the end of a clip (§25).

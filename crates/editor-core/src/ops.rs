@@ -585,45 +585,44 @@ impl SetClipSpeed {
         speed: Rational,
         end: Option<TimelineTime>,
     ) -> Result<(Rational, TimelineTime), EditorError> {
-        let sequence = sequence_mut(project, sequence)?;
-        let track = sequence
-            .video_track_mut(track_id)
-            .ok_or(EditorError::TrackNotFound(track_id))?;
-        let clip = track
-            .get_mut(clip_id)
-            .ok_or(EditorError::ClipNotFound(clip_id))?;
+        // Generic over the track kind: §12's video file is a picture clip on a
+        // video track *and* a sound clip on an audio one, and re-timing has to
+        // reach both. The body is identical for either.
+        on_track!(project, sequence, track_id, |track| {
+            let clip = track
+                .get_mut(clip_id)
+                .ok_or(EditorError::ClipNotFound(clip_id))?;
 
-        let was_speed = clip.speed;
-        let speed = bettercut_timeline::clamped_speed(speed);
+            let was_speed = clip.speed();
+            let speed = bettercut_timeline::clamped_speed(speed);
 
-        // On undo the end comes from what was recorded; on execute it is
-        // derived. Recomputing it on undo instead would round a second time and
-        // could land a tick away from where the clip actually was.
-        let new_end = match end {
-            Some(end) => end,
-            None => {
-                clip.timeline.start
-                    + TimelineTime::from_ticks(bettercut_timeline::timeline_ticks_for(
-                        clip.source.duration(),
-                        speed,
-                    ))
-            }
-        };
-
-        clip.speed = speed;
-        let was_end = match track.ripple_resize(clip_id, new_end) {
-            Ok(end) => end,
-            Err(err) => {
-                // The length did not change, so the speed must not either —
-                // otherwise the clip would play material it has no room for.
-                if let Some(clip) = track.get_mut(clip_id) {
-                    clip.speed = was_speed;
+            // On undo the end comes from what was recorded; on execute it is
+            // derived. Recomputing it on undo instead would round a second
+            // time and could land a tick away from where the clip actually was.
+            let new_end = match end {
+                Some(end) => end,
+                None => {
+                    clip.timeline().start
+                        + TimelineTime::from_ticks(bettercut_timeline::timeline_ticks_for(
+                            clip.source().duration(),
+                            speed,
+                        ))
                 }
-                return Err(err.into());
-            }
-        };
+            };
 
-        Ok((was_speed, was_end))
+            clip.set_speed(speed);
+            match track.ripple_resize(clip_id, new_end) {
+                Ok(was_end) => Ok((was_speed, was_end)),
+                Err(err) => {
+                    // The length did not change, so the speed must not either —
+                    // otherwise the clip would play material it has no room for.
+                    if let Some(clip) = track.get_mut(clip_id) {
+                        clip.set_speed(was_speed);
+                    }
+                    Err(err.into())
+                }
+            }
+        })
     }
 }
 

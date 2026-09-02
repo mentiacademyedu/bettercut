@@ -36,6 +36,11 @@ pub enum EditorError {
     #[error("this sequence has no text track to put a title on")]
     NoTextTrack,
 
+    /// A video file needs a video track and an audio file needs an audio one.
+    /// Reachable only from a sequence whose tracks have all been deleted.
+    #[error("this sequence has no track that can hold that media")]
+    NoTrackForMedia,
+
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 

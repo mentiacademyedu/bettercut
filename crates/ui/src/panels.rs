@@ -6,8 +6,8 @@
 use bettercut_editor_core::foundation::{FrameRate, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_editor_core::project_format::PerformanceMode;
-use bettercut_editor_core::timeline::{AnimatedParameter, Resolution, SourceRange, VideoClip};
-use bettercut_editor_core::{ClipPayload, Editor, SettingChange, TrackFlag};
+use bettercut_editor_core::timeline::{AnimatedParameter, Resolution, VideoClip};
+use bettercut_editor_core::{Editor, SettingChange, TrackFlag};
 
 use crate::state::UiState;
 use crate::theme;
@@ -2228,16 +2228,10 @@ fn text_properties(
         };
         egui::ComboBox::from_id_salt("text family")
             .selected_text(current)
+            .width(190.0)
             .show_ui(ui, |ui| {
-                for (family, label) in [
-                    (FontFamily::SansSerif, "Sans"),
-                    (FontFamily::Serif, "Serif"),
-                    (FontFamily::Monospace, "Mono"),
-                ] {
-                    if ui.selectable_label(style.family == family, label).clicked() {
-                        style.family = family;
-                        restyled = true;
-                    }
+                if family_picker(ui, state, &mut style.family) {
+                    restyled = true;
                 }
             });
     });
@@ -2483,6 +2477,83 @@ fn text_properties(
             Err(err) => state.error(err.to_string()),
         }
     }
+}
+
+/// The font list (§26).
+///
+/// The three generic names first, because they are the ones that mean something
+/// on *any* machine: a project using "Sans" opens correctly on a computer that
+/// has never heard of the font this one happens to have. Everything installed
+/// follows, behind a filter — three hundred families is normal, and the one
+/// anyone wants is rarely near the top.
+///
+/// Returns whether the choice changed.
+fn family_picker(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    family: &mut bettercut_editor_core::text::FontFamily,
+) -> bool {
+    use bettercut_editor_core::text::FontFamily;
+
+    let mut changed = false;
+
+    for (generic, label) in [
+        (FontFamily::SansSerif, "Sans"),
+        (FontFamily::Serif, "Serif"),
+        (FontFamily::Monospace, "Mono"),
+    ] {
+        if ui.selectable_label(*family == generic, label).clicked() {
+            *family = generic;
+            changed = true;
+        }
+    }
+
+    if state.font_families.is_empty() {
+        return changed;
+    }
+
+    ui.separator();
+    ui.add(
+        egui::TextEdit::singleline(&mut state.font_filter)
+            .hint_text("Search fonts")
+            .desired_width(f32::INFINITY),
+    );
+
+    let needle = state.font_filter.to_lowercase();
+    let matches: Vec<&String> = state
+        .font_families
+        .iter()
+        .filter(|name| needle.is_empty() || name.to_lowercase().contains(&needle))
+        .collect();
+
+    if matches.is_empty() {
+        ui.label(
+            egui::RichText::new("No font of that name is installed.")
+                .small()
+                .color(theme::DISABLED),
+        );
+        return changed;
+    }
+
+    // Scrolled and height-limited: the list is as long as the machine's font
+    // directory, and a combo that grows past the window cannot be reached.
+    let mut chosen: Option<String> = None;
+    egui::ScrollArea::vertical()
+        .max_height(220.0)
+        .show(ui, |ui| {
+            for name in matches {
+                let selected = matches!(family, FontFamily::Named(current) if current == name);
+                if ui.selectable_label(selected, name).clicked() {
+                    chosen = Some(name.clone());
+                }
+            }
+        });
+
+    if let Some(name) = chosen {
+        *family = FontFamily::Named(name);
+        changed = true;
+    }
+    changed
 }
 
 /// A colour swatch that opens a picker, in the text crate's own colour type.
@@ -3236,42 +3307,17 @@ fn add_placeholder_clip(editor: &mut Editor, state: &mut UiState) {
     place_on_timeline(editor, state, id);
 }
 
-/// Append an asset to the first video track, after everything already there.
+/// Put an imported asset on the timeline (§12).
+///
+/// The assembling is the editor's (§54, §86): a video file is a picture clip
+/// *and* a sound clip, which is a decision about the model rather than about
+/// the interface, and this used to make a `VideoClip` for everything — so an
+/// imported video arrived silent and an imported song arrived as a video clip
+/// on a video track.
 fn place_on_timeline(editor: &mut Editor, state: &mut UiState, media_id: MediaId) {
-    let Some(sequence) = editor.active_sequence() else {
-        state.error("No sequence to add to");
-        return;
-    };
-    let Some(track) = sequence.video_tracks.first() else {
-        state.error("No video track — add one first");
-        return;
-    };
-    let (track_id, start) = (track.id, track.duration());
-
-    let Some(asset) = editor.project().media_asset(media_id) else {
-        state.error("Media is no longer in the project");
-        return;
-    };
-    let duration = asset.duration;
-
-    let source = match SourceRange::new(MediaTime::ZERO, duration) {
-        Ok(range) => range,
-        Err(err) => {
-            state.error(format!("Cannot place media: {err}"));
-            return;
-        }
-    };
-
-    let clip = match VideoClip::new(media_id, start, source) {
-        Ok(clip) => clip,
-        Err(err) => {
-            state.error(format!("Cannot place media: {err}"));
-            return;
-        }
-    };
-
-    match editor.add_clip(track_id, ClipPayload::Video(Box::new(clip))) {
-        Ok(()) => state.info("Clip added"),
+    match editor.place_media(media_id) {
+        Ok(clips) if clips.len() > 1 => state.info("Clip added, with its sound"),
+        Ok(_) => state.info("Clip added"),
         Err(err) => state.error(err.to_string()),
     }
 }

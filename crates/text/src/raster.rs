@@ -86,6 +86,34 @@ impl TextRenderer {
         self.fonts.db().len()
     }
 
+    /// The font families installed on this machine, sorted, without duplicates.
+    ///
+    /// A *family* rather than a face: a face is "Arial Bold Italic", and weight
+    /// and slant are already separate controls (§26). Listing faces would offer
+    /// the same font four times and let the user pick a combination the weight
+    /// buttons then contradict.
+    ///
+    /// Families whose name begins with `@` are skipped. Windows ships vertical
+    /// writing-mode variants of every CJK font under that prefix — `@MS Gothic`
+    /// beside `MS Gothic` — and they are the same font rotated, which is not a
+    /// choice anyone means to make from a list.
+    pub fn families(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .fonts
+            .db()
+            .faces()
+            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .filter(|name| !name.starts_with('@') && !name.trim().is_empty())
+            .collect();
+
+        // Case-insensitively, so "Arial" and "arial" — which some systems
+        // report separately — collapse, and the list reads alphabetically
+        // rather than with every lowercase name exiled to the end.
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup_by_key(|name| name.to_lowercase());
+        names
+    }
+
     /// Shape `text` and draw it (§26.1).
     ///
     /// The bitmap is exactly as large as the result needs, decorations

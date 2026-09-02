@@ -59,6 +59,10 @@ define_id!(
 );
 define_id!(EffectId, "Identifies an effect instance on a clip (§23).");
 define_id!(MarkerId, "Identifies a timeline marker (§35).");
+define_id!(
+    LinkId,
+    "Ties a video clip to the sound that came from the same file (§12, §51). Picture and sound live on separate tracks (§8), so a video file is two clips; what makes them one *thing* is a shared link, so that re-timing the picture re-times the sound with it."
+);
 
 #[cfg(test)]
 mod tests {

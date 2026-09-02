@@ -121,7 +121,14 @@ impl App {
             );
 
         match preview.as_ref() {
-            Some(preview) => ui.gpu = Some(preview.gpu().clone()),
+            Some(preview) => {
+                ui.gpu = Some(preview.gpu().clone());
+                // §26's font list. Read once, here, because enumerating the
+                // machine's font directories is not something to do while
+                // drawing a frame — and the rasterizer has already done it.
+                ui.font_families = preview.font_families();
+                tracing::info!(families = ui.font_families.len(), "fonts available");
+            }
             None => tracing::warn!("running without a preview renderer"),
         }
 

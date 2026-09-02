@@ -19,11 +19,13 @@ pub mod clock;
 pub mod error;
 pub mod mixer;
 pub mod output;
+pub mod resample;
 
 pub use clock::AudioClock;
 pub use error::AudioError;
 pub use mixer::{MixParams, finish, mix_into};
 pub use output::{AudioOutput, AudioSink};
+pub use resample::{input_frames_needed, resample};
 
 use std::sync::Arc;
 

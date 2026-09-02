@@ -4,7 +4,7 @@
 //! it sits on the timeline, and which part of the source it shows. That is what
 //! makes editing non-destructive (§2).
 
-use bettercut_foundation::{ClipId, MediaId, MediaTime, Rational, TimelineTime};
+use bettercut_foundation::{ClipId, LinkId, MediaId, MediaTime, Rational, TimelineTime};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TimelineError;
@@ -179,6 +179,11 @@ pub struct VideoClip {
     /// Parameters that change over the clip (§24). Empty for most clips.
     #[serde(default)]
     pub keyframes: Keyframes,
+    /// The sound that came from the same file, if it is on the timeline too
+    /// (§12). See [`LinkId`].
+    #[serde(default)]
+    pub link: Option<LinkId>,
+
     /// How fast this clip plays, as an exact ratio: 2/1 is twice speed.
     ///
     /// A ratio rather than a float because it is used in *position*
@@ -262,6 +267,20 @@ pub struct AudioClip {
 
     pub timeline: TimelineRange,
     pub source: SourceRange,
+
+    /// The picture that came from the same file, if it is on the timeline too
+    /// (§12). See [`LinkId`].
+    #[serde(default)]
+    pub link: Option<LinkId>,
+
+    /// How fast this clip plays (§51), exactly as on a video clip.
+    ///
+    /// Re-timing sound means resampling it, which changes the pitch — sped-up
+    /// audio is higher, as it is on tape. That is what the effect *is*, and
+    /// preserving pitch is a different feature needing a phase vocoder rather
+    /// than a resampler.
+    #[serde(default = "normal_speed")]
+    pub speed: Rational,
 
     /// Linear gain, not decibels. Applied first in the §20a.4 mix graph.
     #[serde(default = "one")]
@@ -361,6 +380,20 @@ pub trait Clip {
     /// selection, undo, and every lookup that assumes IDs are unique.
     fn set_id(&mut self, id: ClipId);
 
+    /// What this clip is linked to, if anything (§12).
+    fn link(&self) -> Option<LinkId> {
+        None
+    }
+
+    /// Set the playback rate (§51).
+    ///
+    /// Defaulted to doing nothing, for the one clip kind that has no rate: a
+    /// title is drawn, not played, and there is no material to run through
+    /// faster. Nothing dispatches a speed change at one — the control is not
+    /// offered — and this exists so the edit can be written once and applied to
+    /// whichever kind of track holds the clip.
+    fn set_speed(&mut self, _speed: Rational) {}
+
     /// How fast this clip plays.
     ///
     /// On the trait because [`crate::track::Track`]'s edits are generic over
@@ -423,9 +456,26 @@ impl_clip!(
     // And the only kind with a speed control; see the trait.
     fn speed(&self) -> Rational {
         self.speed
+    },
+    fn set_speed(&mut self, speed: Rational) {
+        self.speed = speed;
+    },
+    fn link(&self) -> Option<LinkId> {
+        self.link
     }
 );
-impl_clip!(AudioClip);
+impl_clip!(
+    AudioClip,
+    fn speed(&self) -> Rational {
+        self.speed
+    },
+    fn set_speed(&mut self, speed: Rational) {
+        self.speed = speed;
+    },
+    fn link(&self) -> Option<LinkId> {
+        self.link
+    }
+);
 
 impl VideoClip {
     /// Place `source` at `start` on the timeline, at native speed.
@@ -449,6 +499,7 @@ impl VideoClip {
             color: ColorAdjust::default(),
             blur: 0.0,
             keyframes: Keyframes::default(),
+            link: None,
             speed: Rational::ONE,
             transition_out: None,
             enabled: true,
@@ -577,6 +628,8 @@ impl AudioClip {
             timeline: TimelineRange::new(start, end)?,
             source,
             gain: 1.0,
+            link: None,
+            speed: Rational::ONE,
             enabled: true,
         })
     }

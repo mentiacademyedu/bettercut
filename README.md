@@ -469,6 +469,14 @@ than appending, because importing a corrected file over an old one is the common
 case — with the old captions still one undo away, since the whole import is a
 single undo step.
 
+The font list is whatever is installed on the machine — 130 families here,
+against the three generic names it started with. Read once at startup from the
+rasterizer that has already enumerated them, because doing it again would cost
+the same startup time and the same memory for an identical answer. The three
+generic names still come first in the picker: a project using "Sans" opens
+correctly on a computer that has never heard of the font this one happens to
+have.
+
 **What does not work yet:** word-level timing is modelled (§27's `CaptionWord`)
 but not filled in — SubRip has none, and WebVTT's karaoke timestamps are
 stripped rather than read. That is what §27's animated subtitles will need, and
@@ -505,11 +513,25 @@ handles are measured in *source* and a transition window is measured in
 dissolve. Its handle is worth half as much, and the interface now offers half
 the crossfade it used to on the same footage.
 
-**What does not work yet:** audio does not re-time — re-timing sound means
-resampling it, and doing that badly is worse than not offering it. In practice
-nothing is out of sync, because importing a video currently places picture only
-(see below). Speed is not keyframed, so there is no ramp from one rate to
-another. Text
+Sound re-times with the picture, which needed two things that were missing.
+
+Importing a video used to place the **picture only** — nothing in the product
+ever constructed an `AudioClip`, and every import became a video clip whatever
+the file was, so an imported song arrived as a video clip on a video track. A
+file now places both halves, starting together, as one undo step.
+
+That immediately created the problem it exposed: two clips that must stay in
+step. They share a `LinkId`, set when the file is placed, and re-timing either
+one re-times both — from the sound side as readily as the picture side, because
+selecting the audio clip is just as likely. Audio is resampled by linear
+interpolation, which changes the pitch. That is deliberate: sped-up sound is
+higher, exactly as it is on tape, and preserving pitch needs a phase vocoder
+rather than a resampler. Claiming to do it would be worse than not offering it.
+
+**What does not work yet:** speed is not keyframed, so there is no ramp from one
+rate to another. Linked clips stay in step through the speed control but not yet
+through move, trim or split — dragging the picture leaves the sound behind, and
+"linked selection" is the feature that fixes it. Text
 uses the machine's fonts rather than bundled ones — §26 wants
 `assets/fonts/` for templates (Milestone 11), and until there is a font picker a
 single bundled family would be the *only* family on offer. Audio does not
