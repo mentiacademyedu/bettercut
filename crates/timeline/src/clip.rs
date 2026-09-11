@@ -385,6 +385,10 @@ pub trait Clip {
         None
     }
 
+    /// Replace the link (§12). Defaulted to nothing for a title, which has no
+    /// sound to be tied to.
+    fn set_link(&mut self, _link: Option<LinkId>) {}
+
     /// Set the playback rate (§51).
     ///
     /// Defaulted to doing nothing, for the one clip kind that has no rate: a
@@ -462,6 +466,9 @@ impl_clip!(
     },
     fn link(&self) -> Option<LinkId> {
         self.link
+    },
+    fn set_link(&mut self, link: Option<LinkId>) {
+        self.link = link;
     }
 );
 impl_clip!(
@@ -474,6 +481,9 @@ impl_clip!(
     },
     fn link(&self) -> Option<LinkId> {
         self.link
+    },
+    fn set_link(&mut self, link: Option<LinkId>) {
+        self.link = link;
     }
 );
 

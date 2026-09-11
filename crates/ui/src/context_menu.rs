@@ -106,6 +106,21 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
 
     ui.separator();
     transition_menu(ui, editor, state, clip);
+
+    // §12: only offered when there is something to unlink. A disabled entry
+    // on every title and every silent clip would be noise.
+    if editor.link_of(clip).is_some()
+        && ui
+            .button("Unlink Audio")
+            .on_hover_text("Let the picture and its sound move, trim and re-time independently")
+            .clicked()
+    {
+        ui.close();
+        match editor.unlink(clip) {
+            Ok(()) => state.info("Picture and sound unlinked"),
+            Err(err) => state.error(err.to_string()),
+        }
+    }
     ui.separator();
 
     // Jumping to a clip's edges is what makes trimming to a neighbour precise,

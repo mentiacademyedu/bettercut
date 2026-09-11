@@ -528,10 +528,29 @@ interpolation, which changes the pitch. That is deliberate: sped-up sound is
 higher, exactly as it is on tape, and preserving pitch needs a phase vocoder
 rather than a resampler. Claiming to do it would be worse than not offering it.
 
+Linked clips stay in step through every edit, not just the speed control.
+Moving, trimming, splitting and deleting the picture does the same to its
+sound, from either side — the link is symmetric, because selecting the audio
+clip is as likely as selecting the video one. Each is one undo step and all or
+nothing: if the sound cannot move where the picture is going, neither does,
+because a half-applied move is precisely the out-of-sync state the link exists
+to prevent.
+
+Split was the subtle one. It clones the clip, so both halves of the picture and
+both halves of the sound came out sharing the original link — four clips that
+would all move together where two pairs were meant. The split now hands each
+side a fresh link of its own: left with left, right with right.
+
+The *selection* is deliberately not widened to the partner. That would have
+been simpler — and would have made the Inspector show "2 clips selected", with
+no controls, for every imported video. Only the edits reach the partner, and
+the timeline outlines it so the first a user learns of the link is not the sound
+jumping when they let go of a drag. `Unlink Audio` in the clip menu detaches
+them on purpose.
+
 **What does not work yet:** speed is not keyframed, so there is no ramp from one
-rate to another. Linked clips stay in step through the speed control but not yet
-through move, trim or split — dragging the picture leaves the sound behind, and
-"linked selection" is the feature that fixes it. Text
+rate to another. A dragged clip's partner does not show a ghost while the drag
+is in progress; it moves on release. Text
 uses the machine's fonts rather than bundled ones — §26 wants
 `assets/fonts/` for templates (Milestone 11), and until there is a font picker a
 single bundled family would be the *only* family on offer. Audio does not

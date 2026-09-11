@@ -41,6 +41,10 @@ pub enum EditorError {
     #[error("this sequence has no track that can hold that media")]
     NoTrackForMedia,
 
+    /// §12: an unlink with nothing to unlink.
+    #[error("that clip is not linked to anything")]
+    NothingLinked,
+
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 

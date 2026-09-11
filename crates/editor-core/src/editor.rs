@@ -1614,6 +1614,11 @@ impl Editor {
                 )))
             }
 
+            Command::Unlink { sequence, link } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::Unlink::new(sequence, link)))
+            }
+
             Command::SetClipSpeed {
                 sequence,
                 track,
@@ -1770,18 +1775,22 @@ impl Editor {
                 at,
                 left,
                 right,
+                relink,
             } => {
                 self.require_track(sequence, track)?;
                 // §76: "The split point must be snapped to a frame boundary in
                 // TimelineTime ticks before the command is constructed."
-                Ok(Box::new(ops::SplitClip::new(
-                    sequence,
-                    track,
-                    clip,
-                    self.snap_to_frame(sequence, at),
-                    left,
-                    right,
-                )))
+                Ok(Box::new(
+                    ops::SplitClip::new(
+                        sequence,
+                        track,
+                        clip,
+                        self.snap_to_frame(sequence, at),
+                        left,
+                        right,
+                    )
+                    .relinked(relink),
+                ))
             }
 
             Command::RippleDeleteClip {
@@ -1909,6 +1918,16 @@ impl Editor {
 
 /// Milestone 3 editing (§10, §85).
 impl Editor {
+    /// Move a clip, and whatever it is linked to by the same amount (§12).
+    ///
+    /// A partner stays on its own track and moves in time only: dragging the
+    /// picture from V1 to V2 is a decision about the picture, and the sound has
+    /// no V2 to go to. It moves by the same *delta* rather than to the same
+    /// start, so a pair that has drifted apart — trimmed separately and then
+    /// re-linked — keeps whatever offset it had.
+    ///
+    /// One undo step for the lot (§79), and all or nothing: if the sound cannot
+    /// move where the picture is going, neither does.
     pub fn move_clip(
         &mut self,
         from_track: TrackId,
@@ -1917,15 +1936,101 @@ impl Editor {
         new_start: TimelineTime,
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
-        self.dispatch(Command::MoveClip {
+        let primary = Command::MoveClip {
             sequence,
             from_track,
             to_track,
             clip,
             new_start,
-        })
+        };
+
+        let Some(old_start) = self.clip_start(clip) else {
+            return self.dispatch(primary);
+        };
+        let delta = new_start.ticks() - old_start.ticks();
+
+        let mut commands = vec![primary];
+        for partner in self.linked_with(clip).into_iter().filter(|c| *c != clip) {
+            let (Some(track), Some(start)) = (self.track_of(partner), self.clip_start(partner))
+            else {
+                continue;
+            };
+            commands.push(Command::MoveClip {
+                sequence,
+                from_track: track,
+                to_track: track,
+                clip: partner,
+                new_start: TimelineTime::from_ticks(start.ticks() + delta),
+            });
+        }
+
+        if commands.len() == 1 {
+            return self.dispatch(commands.remove(0));
+        }
+        self.dispatch_group("Move Clip".to_owned(), commands)
     }
 
+    /// Where a video or audio clip starts, for the linked edits above.
+    fn clip_start(&self, clip: ClipId) -> Option<TimelineTime> {
+        let sequence = self.project.active()?;
+        sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).map(|c| c.timeline.start))
+            .or_else(|| {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).map(|c| c.timeline.start))
+            })
+            .or_else(|| sequence.text_clip(clip).map(|c| c.timeline.start))
+    }
+
+    /// The same, for the end.
+    fn clip_end(&self, clip: ClipId) -> Option<TimelineTime> {
+        let sequence = self.project.active()?;
+        sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).map(|c| c.timeline.end))
+            .or_else(|| {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).map(|c| c.timeline.end))
+            })
+            .or_else(|| sequence.text_clip(clip).map(|c| c.timeline.end))
+    }
+
+    /// Detach a clip from whatever it is linked to (§12).
+    pub fn unlink(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let link = self.link_of(clip).ok_or(EditorError::NothingLinked)?;
+        self.dispatch(Command::Unlink { sequence, link })
+    }
+
+    /// The link a clip carries, if any.
+    pub fn link_of(&self, clip: ClipId) -> Option<bettercut_foundation::LinkId> {
+        let sequence = self.project.active()?;
+        sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).and_then(|c| c.link))
+            .or_else(|| {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).and_then(|c| c.link))
+            })
+    }
+
+    /// Trim one edge of a clip, and the same edge of whatever it is linked to
+    /// (§12).
+    ///
+    /// By the same delta, for the reason given on [`Self::move_clip`]. All or
+    /// nothing: a file's sound track is often a few frames shorter than its
+    /// picture, and trimming the picture's end outward past where the sound
+    /// runs out refuses the whole trim rather than leaving the pair uneven.
     pub fn trim_clip(
         &mut self,
         track: TrackId,
@@ -1934,13 +2039,41 @@ impl Editor {
         to: TimelineTime,
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
-        self.dispatch(Command::TrimClip {
+        let primary = Command::TrimClip {
             sequence,
             track,
             clip,
             edge,
             to,
-        })
+        };
+
+        let edge_of = |editor: &Self, clip: ClipId| match edge {
+            TrimEdge::Start => editor.clip_start(clip),
+            TrimEdge::End => editor.clip_end(clip),
+        };
+        let Some(was) = edge_of(self, clip) else {
+            return self.dispatch(primary);
+        };
+        let delta = to.ticks() - was.ticks();
+
+        let mut commands = vec![primary];
+        for partner in self.linked_with(clip).into_iter().filter(|c| *c != clip) {
+            let (Some(track), Some(at)) = (self.track_of(partner), edge_of(self, partner)) else {
+                continue;
+            };
+            commands.push(Command::TrimClip {
+                sequence,
+                track,
+                clip: partner,
+                edge,
+                to: TimelineTime::from_ticks(at.ticks() + delta),
+            });
+        }
+
+        if commands.len() == 1 {
+            return self.dispatch(commands.remove(0));
+        }
+        self.dispatch_group("Trim Clip".to_owned(), commands)
     }
 
     /// Split every selected clip at the playhead, or — when nothing is
@@ -1953,38 +2086,49 @@ impl Editor {
         let sequence_id = self.active_sequence_id()?;
         let at = self.playhead;
 
+        // §12: a selected clip brings its linked partner. Splitting a video's
+        // picture and leaving its sound whole would give two halves of picture
+        // over one unbroken sound — the next move of either half would pull
+        // the pair apart.
+        let selected: Vec<ClipId> = selected
+            .iter()
+            .flat_map(|clip| self.linked_with(*clip))
+            .collect();
+
         let Some(sequence) = self.project.sequence(sequence_id) else {
             return Ok(0);
         };
 
         // Find every clip that the playhead falls strictly inside.
-        let mut cuts: Vec<(TrackId, ClipId)> = Vec::new();
-        let mut consider =
-            |track: TrackId, clip: ClipId, range: bettercut_timeline::TimelineRange| {
-                // Strictly inside: splitting on an edge would make a zero-length clip.
-                if at > range.start
-                    && at < range.end
-                    && (selected.is_empty() || selected.contains(&clip))
-                {
-                    cuts.push((track, clip));
-                }
-            };
+        let mut cuts: Vec<(TrackId, ClipId, Option<bettercut_foundation::LinkId>)> = Vec::new();
+        let mut consider = |track: TrackId,
+                            clip: ClipId,
+                            range: bettercut_timeline::TimelineRange,
+                            link: Option<bettercut_foundation::LinkId>| {
+            // Strictly inside: splitting on an edge would make a zero-length clip.
+            if at > range.start
+                && at < range.end
+                && (selected.is_empty() || selected.contains(&clip))
+            {
+                cuts.push((track, clip, link));
+            }
+        };
 
         for track in &sequence.video_tracks {
             for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline);
+                consider(track.id, clip.id, clip.timeline, clip.link);
             }
         }
         for track in &sequence.audio_tracks {
             for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline);
+                consider(track.id, clip.id, clip.timeline, clip.link);
             }
         }
         // §26: a title splits like anything else, and leaving it out here is
         // how a feature that works in the model never reaches the shortcut.
         for track in &sequence.text_tracks {
             for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline);
+                consider(track.id, clip.id, clip.timeline, None);
             }
         }
 
@@ -1992,16 +2136,36 @@ impl Editor {
             return Ok(0);
         }
 
+        // One pair of fresh links per linked group being cut: every left half
+        // in the group shares the first, every right half the second. A group
+        // only partly under the playhead still gets new links for the halves
+        // that were cut, so nothing ends up tied to a clip it no longer matches.
+        let mut relinks: std::collections::HashMap<
+            bettercut_foundation::LinkId,
+            (bettercut_foundation::LinkId, bettercut_foundation::LinkId),
+        > = std::collections::HashMap::new();
+        for (_, _, link) in &cuts {
+            if let Some(link) = link {
+                relinks.entry(*link).or_insert_with(|| {
+                    (
+                        bettercut_foundation::LinkId::new(),
+                        bettercut_foundation::LinkId::new(),
+                    )
+                });
+            }
+        }
+
         let count = cuts.len();
         let commands = cuts
             .into_iter()
-            .map(|(track, clip)| Command::SplitClip {
+            .map(|(track, clip, link)| Command::SplitClip {
                 sequence: sequence_id,
                 track,
                 clip,
                 at,
                 left: ClipId::new(),
                 right: ClipId::new(),
+                relink: link.and_then(|link| relinks.get(&link).copied()),
             })
             .collect();
 
@@ -2646,6 +2810,7 @@ mod tests {
                 at: ragged,
                 left: ClipId::new(),
                 right: ClipId::new(),
+                relink: None,
             })
             .expect("ok");
 

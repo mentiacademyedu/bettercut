@@ -791,6 +791,28 @@ fn draw_lanes(
 ) -> Vec<LaneLayout> {
     let visible = viewport.visible_range(lane_width);
     let mut lanes = Vec::with_capacity(sequence.track_count());
+
+    // §12: the links the selection carries, so each clip can say whether it
+    // will move with it. Collected once rather than asked per clip, which
+    // would make drawing the timeline quadratic in the clip count.
+    let selected_links: Vec<bettercut_editor_core::foundation::LinkId> = sequence
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .filter(|c| state.selected_clips.contains(&c.id))
+        .filter_map(|c| c.link)
+        .chain(
+            sequence
+                .audio_tracks
+                .iter()
+                .flat_map(|t| t.clips())
+                .filter(|c| state.selected_clips.contains(&c.id))
+                .filter_map(|c| c.link),
+        )
+        .collect();
+    let partner = |link: Option<bettercut_editor_core::foundation::LinkId>, id: ClipId| {
+        !state.selected_clips.contains(&id) && link.is_some_and(|l| selected_links.contains(&l))
+    };
     let mut y = rect.top() + theme::RULER_HEIGHT + theme::TRACK_GAP;
 
     // §26's titles first, because they composite over every video track and the
@@ -828,6 +850,7 @@ fn draw_lanes(
                     keyframes: None,
                     transition: None,
                     speed: Rational::ONE,
+                    linked_to_selection: false,
                 },
                 clip.id,
                 track.id,
@@ -881,6 +904,7 @@ fn draw_lanes(
                         .then_some((&clip.keyframes, clip.source.start)),
                     transition: clip.transition_out,
                     speed: clip.speed,
+                    linked_to_selection: partner(clip.link, clip.id),
                 },
                 clip.id,
                 track.id,
@@ -929,8 +953,8 @@ fn draw_lanes(
                     // §25 v1 is picture only: an audio crossfade mixes two
                     // sources rather than blending two images.
                     transition: None,
-                    // §51 v1 likewise: re-timing audio means resampling it.
-                    speed: Rational::ONE,
+                    speed: clip.speed,
+                    linked_to_selection: partner(clip.link, clip.id),
                 },
                 clip.id,
                 track.id,
@@ -1080,6 +1104,11 @@ struct ClipVisual<'a> {
     /// clipped to the clip's own rect, because half of it belongs to the next
     /// clip's side of the boundary.
     transition: Option<Transition>,
+    /// §12: this clip moves with the selection because it is linked to it.
+    ///
+    /// Shown, because otherwise the first a user learns of the link is the
+    /// sound jumping when they release a drag of the picture.
+    linked_to_selection: bool,
     /// §51's playback rate, shown as a badge when it is not normal.
     ///
     /// A re-timed clip looks exactly like any other one, and its length is not
@@ -1336,6 +1365,16 @@ fn draw_clip(
             StrokeKind::Inside,
         );
         draw_trim_handles(painter, clip_rect);
+    } else if visual.linked_to_selection {
+        // Thinner and paler than the selection itself: "this comes along", not
+        // "this is what you picked". No trim handles — the edit is made on the
+        // clip that is selected, and this one follows.
+        painter.rect_stroke(
+            clip_rect,
+            theme::CLIP_CORNER_RADIUS,
+            Stroke::new(1.0, theme::SELECTION.gamma_multiply(0.6)),
+            StrokeKind::Inside,
+        );
     }
 
     if let Some((keyframes, source_start)) = visual.keyframes {

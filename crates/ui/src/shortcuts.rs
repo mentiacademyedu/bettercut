@@ -209,11 +209,14 @@ pub(crate) fn duplicate_selection(editor: &mut Editor, state: &mut UiState) {
 
 /// Delete and close the gap, one undo step for the whole selection (§10, §79).
 pub(crate) fn ripple_delete_selection(editor: &mut Editor, state: &mut UiState) {
-    let mut selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    let mut selected = with_partners(editor, &state.selected_clips);
     if selected.is_empty() {
         state.info("Nothing selected");
         return;
     }
+    let Some(sequence) = editor.active_sequence().map(|s| s.id) else {
+        return;
+    };
 
     // Delete right-to-left: removing an earlier clip shifts the later ones, so
     // going the other way would move the targets out from under us.
@@ -224,20 +227,34 @@ pub(crate) fn ripple_delete_selection(editor: &mut Editor, state: &mut UiState) 
     });
     selected.reverse();
 
-    let mut deleted = 0;
-    for clip in selected {
-        let Some(track) = editor.track_of(clip) else {
-            continue;
-        };
-        match editor.ripple_delete(track, clip) {
-            Ok(()) => deleted += 1,
-            Err(err) => state.error(err.to_string()),
-        }
+    let commands: Vec<Command> = selected
+        .into_iter()
+        .filter_map(|clip| {
+            let track = editor.track_of(clip)?;
+            Some(Command::RippleDeleteClip {
+                sequence,
+                track,
+                clip,
+            })
+        })
+        .collect();
+
+    if commands.is_empty() {
+        state.error("Selected clips are no longer on the timeline");
+        state.clear_selection();
+        return;
     }
 
-    if deleted > 0 {
-        state.clear_selection();
-        state.info(format!("Ripple deleted {deleted} clip(s)"));
+    // One undo step (§79). This used to be one per clip, which made undoing a
+    // multi-clip ripple a matter of pressing Ctrl+Z as many times as there were
+    // clips — and a linked pair twice.
+    let count = commands.len();
+    match editor.dispatch_group(format!("Ripple Delete {count} Clip(s)"), commands) {
+        Ok(()) => {
+            state.clear_selection();
+            state.info(format!("Ripple deleted {count} clip(s)"));
+        }
+        Err(err) => state.error(err.to_string()),
     }
 }
 
@@ -248,19 +265,33 @@ pub(crate) fn delete_selection(editor: &mut Editor, state: &mut UiState) {
         return;
     }
 
-    let Some(sequence) = editor.active_sequence() else {
+    let Some(sequence_id) = editor.active_sequence().map(|s| s.id) else {
         return;
     };
-    let sequence_id = sequence.id;
 
     let mut commands = Vec::new();
     let mut missing = 0;
-    for clip in &state.selected_clips {
-        match locate(editor, *clip) {
+    for clip in with_partners(editor, &state.selected_clips) {
+        // §26's titles have their own removal, because they are not a
+        // `ClipPayload` a media track holds. Missing this is how pressing
+        // Delete on a selected title used to report it as already gone.
+        if editor.is_text_clip(clip) {
+            match editor.active_sequence().and_then(|s| s.text_track_of(clip)) {
+                Some(track) => commands.push(Command::RemoveText {
+                    sequence: sequence_id,
+                    track,
+                    clip,
+                }),
+                None => missing += 1,
+            }
+            continue;
+        }
+
+        match locate(editor, clip) {
             Some(track) => commands.push(Command::RemoveClip {
                 sequence: sequence_id,
                 track,
-                clip: *clip,
+                clip,
             }),
             None => missing += 1,
         }
@@ -290,6 +321,25 @@ pub(crate) fn delete_selection(editor: &mut Editor, state: &mut UiState) {
         }
         Err(err) => state.error(err.to_string()),
     }
+}
+
+/// The selection plus every clip linked to something in it (§12), without
+/// duplicates.
+///
+/// Deleting a video's picture and leaving its sound would leave audio playing
+/// under whatever came next. The selection itself is not widened — the
+/// Inspector would then show "2 clips selected" for every imported video and
+/// lose its controls — only the edits reach the partners.
+fn with_partners(editor: &Editor, selected: &std::collections::HashSet<ClipId>) -> Vec<ClipId> {
+    let mut out: Vec<ClipId> = Vec::new();
+    for clip in selected {
+        for linked in editor.linked_with(*clip) {
+            if !out.contains(&linked) {
+                out.push(linked);
+            }
+        }
+    }
+    out
 }
 
 /// Which track holds a clip. Linear over tracks, not over clips — there are a

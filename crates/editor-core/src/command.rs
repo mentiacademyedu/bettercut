@@ -250,6 +250,16 @@ pub enum Command {
         clip: ClipId,
         property: TextProperty,
     },
+    /// Detach a video's sound from its picture (§12), so the two can be moved,
+    /// trimmed and re-timed independently.
+    ///
+    /// Clears the link on every clip carrying it rather than on one: a link
+    /// held by one side only would be a clip tied to nothing, and every edit
+    /// afterwards would have to keep checking for that.
+    Unlink {
+        sequence: SequenceId,
+        link: bettercut_foundation::LinkId,
+    },
     /// Change how fast a clip plays (§51).
     ///
     /// A separate command from [`Self::SetClipProperty`] because it is not a
@@ -371,6 +381,16 @@ pub enum Command {
         /// `AddTrack::id`.
         left: ClipId,
         right: ClipId,
+        /// Fresh links for the two halves, when the clip was linked (§12).
+        ///
+        /// A split clones the clip, so without this both halves of the
+        /// picture and both halves of the sound would share the original
+        /// link — four clips re-timing together where two pairs were meant.
+        /// The left halves share the first and the right halves the second.
+        /// Supplied rather than generated so a replay (§38.2) reproduces the
+        /// same pairing.
+        #[serde(default)]
+        relink: Option<(bettercut_foundation::LinkId, bettercut_foundation::LinkId)>,
     },
     RippleDeleteClip {
         sequence: SequenceId,

@@ -70,6 +70,7 @@ pub fn build_for_replay(
             clip,
             speed,
         } => Box::new(SetClipSpeed::new(sequence, track, clip, speed)),
+        Command::Unlink { sequence, link } => Box::new(Unlink::new(sequence, link)),
         Command::AddText {
             sequence,
             track,
@@ -163,7 +164,8 @@ pub fn build_for_replay(
             at,
             left,
             right,
-        } => Box::new(SplitClip::new(sequence, track, clip, at, left, right)),
+            relink,
+        } => Box::new(SplitClip::new(sequence, track, clip, at, left, right).relinked(relink)),
 
         Command::RippleDeleteClip {
             sequence,
@@ -540,6 +542,99 @@ impl EditorCommand for SetTextProperty {
 
     fn label(&self) -> String {
         format!("Change {}", self.property.kind())
+    }
+}
+
+/// Detach linked clips from each other (§12).
+#[derive(Debug)]
+pub struct Unlink {
+    sequence: SequenceId,
+    link: bettercut_foundation::LinkId,
+    /// Which clips carried it, so undo ties the same ones back together.
+    unlinked: Vec<ClipId>,
+}
+
+impl Unlink {
+    pub fn new(sequence: SequenceId, link: bettercut_foundation::LinkId) -> Self {
+        Self {
+            sequence,
+            link,
+            unlinked: Vec::new(),
+        }
+    }
+}
+
+impl EditorCommand for Unlink {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let sequence = sequence_mut(project, self.sequence)?;
+        let unlinked = set_link_where(sequence, |c| c == Some(self.link), None);
+        if unlinked.is_empty() {
+            // Nothing carried it. Succeeding would put an undo entry in the
+            // history that undoes nothing.
+            return Err(EditorError::NothingLinked);
+        }
+        self.unlinked = unlinked;
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let sequence = sequence_mut(project, self.sequence)?;
+        for clip in &self.unlinked {
+            relink_one(sequence, *clip, Some(self.link));
+        }
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Unlink Audio".to_owned()
+    }
+}
+
+/// Set the link on every video and audio clip whose current link matches,
+/// returning which clips changed.
+///
+/// Ids first and mutation second, through `get_mut`: `Track` deliberately has
+/// no mutable view of its whole slice, because that is how a caller would
+/// break its ordering without meaning to.
+fn set_link_where(
+    sequence: &mut Sequence,
+    matches: impl Fn(Option<bettercut_foundation::LinkId>) -> bool,
+    to: Option<bettercut_foundation::LinkId>,
+) -> Vec<ClipId> {
+    let video: Vec<ClipId> = sequence
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .filter(|c| matches(c.link))
+        .map(|c| c.id)
+        .collect();
+    let audio: Vec<ClipId> = sequence
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .filter(|c| matches(c.link))
+        .map(|c| c.id)
+        .collect();
+
+    for clip in video.iter().chain(audio.iter()) {
+        relink_one(sequence, *clip, to);
+    }
+    video.into_iter().chain(audio).collect()
+}
+
+fn relink_one(sequence: &mut Sequence, clip: ClipId, to: Option<bettercut_foundation::LinkId>) {
+    if let Some(found) = sequence
+        .video_tracks
+        .iter_mut()
+        .find_map(|t| t.get_mut(clip))
+    {
+        found.link = to;
+    } else if let Some(found) = sequence
+        .audio_tracks
+        .iter_mut()
+        .find_map(|t| t.get_mut(clip))
+    {
+        found.link = to;
     }
 }
 
@@ -2101,6 +2196,8 @@ pub struct SplitClip {
     /// reconstructing it from the halves would silently lose anything the split
     /// did not carry across.
     original: Option<ClipPayload>,
+    /// New links for the left and right halves; see `Command::SplitClip`.
+    relink: Option<(bettercut_foundation::LinkId, bettercut_foundation::LinkId)>,
 }
 
 impl SplitClip {
@@ -2120,15 +2217,34 @@ impl SplitClip {
             left,
             right,
             original: None,
+            relink: None,
         }
+    }
+
+    pub fn relinked(
+        mut self,
+        relink: Option<(bettercut_foundation::LinkId, bettercut_foundation::LinkId)>,
+    ) -> Self {
+        self.relink = relink;
+        self
     }
 }
 
 impl EditorCommand for SplitClip {
     fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
-        let (at, left, right) = (self.at, self.left, self.right);
+        let (at, left, right, relink) = (self.at, self.left, self.right, self.relink);
         let original = on_track!(project, self.sequence, self.track, |track| {
             let split = track.split(self.clip, at, left, right)?;
+            // Undo reinstates `split.original`, which still carries the old
+            // link, so only the halves need changing here.
+            if let Some((left_link, right_link)) = relink {
+                if let Some(half) = track.get_mut(left) {
+                    half.set_link(Some(left_link));
+                }
+                if let Some(half) = track.get_mut(right) {
+                    half.set_link(Some(right_link));
+                }
+            }
             Ok(ClipPayload::from(split.original))
         })?;
 
