@@ -133,6 +133,75 @@ fn the_titles_opacity_is_carried_through() {
     assert_eq!(text.look.opacity, 0.25);
 }
 
+/// A title's entrance reaches the layer both the preview and the export draw
+/// from (§46): faded at its first instant, whole in its middle.
+#[test]
+fn a_titles_entrance_reaches_the_layer() {
+    use bettercut_timeline::{Motion, MotionKind, TextAnimation};
+
+    let (mut project, title) = project_with_a_title();
+    project
+        .active_mut()
+        .expect("sequence")
+        .text_clip_mut(title)
+        .expect("clip")
+        .animation = TextAnimation {
+        intro: Some(Motion::new(
+            MotionKind::Fade,
+            TimelineTime::from_millis(400),
+        )),
+        outro: Some(Motion::new(
+            MotionKind::Typewriter,
+            TimelineTime::from_millis(400),
+        )),
+    };
+    let sequence = project.active().expect("sequence");
+    let title_at = |ms: i64| {
+        layer_requests(&project, sequence, TimelineTime::from_millis(ms))
+            .into_iter()
+            .find(|l| l.source == LayerSource::Text(title))
+            .expect("title")
+    };
+
+    assert!(title_at(100).look.opacity < 0.5, "not fading in");
+    assert_eq!(title_at(500).look.opacity, 1.0);
+    assert_eq!(title_at(500).reveal, None);
+    assert_eq!(title_at(900).reveal, Some(2), "typing itself away");
+}
+
+/// The typewriter's steps are separate pictures, each the finished title's
+/// size, and the whole title is the ordinary cached one.
+#[test]
+fn a_revealed_title_is_its_own_picture_at_full_size() {
+    let (project, title) = project_with_a_title();
+    let clip = project
+        .active()
+        .expect("sequence")
+        .text_clip(title)
+        .expect("clip")
+        .clone();
+    let mut titles = TextFrames::new();
+
+    let whole = titles.frame_for(&clip, None).expect("whole");
+    let partial = titles.frame_for(&clip, Some(2)).expect("partial");
+    let everything = titles.frame_for(&clip, Some(5)).expect("everything");
+
+    assert_eq!(
+        (partial.width, partial.height),
+        (whole.width, whole.height),
+        "the layout moved as the letters appeared"
+    );
+    assert!(!std::sync::Arc::ptr_eq(&whole, &partial));
+    assert!(
+        std::sync::Arc::ptr_eq(&whole, &everything),
+        "revealing all five letters is the ordinary picture, not a new one"
+    );
+    assert!(
+        titles.frame_for(&clip, Some(0)).is_none(),
+        "nothing typed yet"
+    );
+}
+
 /// The source time is measured within the title's own span, not from the start
 /// of the timeline — which is what §24's keyframes anchor to.
 #[test]
@@ -162,7 +231,7 @@ fn a_title_rasterizes_to_a_frame() {
     let mut titles = TextFrames::new();
     let clip = TextClip::new("Hello", TimelineTime::ZERO).expect("valid");
 
-    let frame = titles.frame_for(&clip).expect("no frame");
+    let frame = titles.frame_for(&clip, None).expect("no frame");
     assert!(frame.width > 0 && frame.height > 0);
 
     let bettercut_media::FrameStorage::System { data, stride } = &frame.storage else {
@@ -179,7 +248,7 @@ fn a_title_rasterizes_to_a_frame() {
 fn a_title_is_tagged_as_already_converted() {
     let mut titles = TextFrames::new();
     let clip = TextClip::new("Hello", TimelineTime::ZERO).expect("valid");
-    let frame = titles.frame_for(&clip).expect("no frame");
+    let frame = titles.frame_for(&clip, None).expect("no frame");
 
     assert_eq!(frame.color, bettercut_media::ColorMetadata::srgb());
     assert!(!frame.color.range.needs_expansion());
@@ -193,8 +262,8 @@ fn the_same_title_is_only_rasterized_once() {
     let mut titles = TextFrames::new();
     let clip = TextClip::new("Hello", TimelineTime::ZERO).expect("valid");
 
-    let first = titles.frame_for(&clip).expect("no frame");
-    let second = titles.frame_for(&clip).expect("no frame");
+    let first = titles.frame_for(&clip, None).expect("no frame");
+    let second = titles.frame_for(&clip, None).expect("no frame");
 
     assert_eq!(titles.cached(), 1, "the same title was shaped twice");
     assert!(
@@ -209,17 +278,17 @@ fn the_same_title_is_only_rasterized_once() {
 fn changing_the_text_or_the_style_reshapes() {
     let mut titles = TextFrames::new();
     let mut clip = TextClip::new("Hello", TimelineTime::ZERO).expect("valid");
-    let original = titles.frame_for(&clip).expect("no frame");
+    let original = titles.frame_for(&clip, None).expect("no frame");
 
     clip.text = "Goodbye".to_string();
-    let retyped = titles.frame_for(&clip).expect("no frame");
+    let retyped = titles.frame_for(&clip, None).expect("no frame");
     assert!(
         !std::sync::Arc::ptr_eq(&original, &retyped),
         "changing the text reused the old picture"
     );
 
     clip.style.color = Rgba::opaque(255, 0, 0);
-    let recoloured = titles.frame_for(&clip).expect("no frame");
+    let recoloured = titles.frame_for(&clip, None).expect("no frame");
     assert!(
         !std::sync::Arc::ptr_eq(&retyped, &recoloured),
         "changing the colour reused the old picture"
@@ -233,7 +302,7 @@ fn the_cache_is_bounded() {
     let mut titles = TextFrames::new();
     for n in 0..40 {
         let clip = TextClip::new(format!("Title {n}"), TimelineTime::ZERO).expect("valid");
-        titles.frame_for(&clip);
+        titles.frame_for(&clip, None);
     }
     assert!(
         titles.cached() <= 16,
@@ -255,8 +324,8 @@ fn preview_and_export_rasterize_the_same_bytes() {
         ..TextClip::new("Same both ways", TimelineTime::ZERO).expect("valid")
     };
 
-    let preview = TextFrames::new().frame_for(&clip).expect("no frame");
-    let export = TextFrames::new().frame_for(&clip).expect("no frame");
+    let preview = TextFrames::new().frame_for(&clip, None).expect("no frame");
+    let export = TextFrames::new().frame_for(&clip, None).expect("no frame");
 
     assert_eq!(
         (preview.width, preview.height),

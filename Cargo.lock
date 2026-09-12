@@ -546,6 +546,7 @@ dependencies = [
  "bettercut-foundation",
  "bettercut-media",
  "bettercut-project-format",
+ "bettercut-templates",
  "bettercut-text",
  "bettercut-timeline",
  "serde",
@@ -644,6 +645,18 @@ dependencies = [
  "pollster 0.4.0",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "bettercut-templates"
+version = "0.1.0"
+dependencies = [
+ "bettercut-foundation",
+ "bettercut-text",
+ "bettercut-timeline",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

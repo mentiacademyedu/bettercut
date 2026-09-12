@@ -22,9 +22,17 @@ pub const CLIP_TEXT: Color32 = Color32::from_rgb(238, 242, 248);
 pub const SELECTION: Color32 = Color32::from_rgb(255, 196, 84);
 
 pub const PLAYHEAD: Color32 = Color32::from_rgb(238, 92, 92);
+/// Markers (`timeline::marker`). Green, so a mark never reads as the playhead
+/// (red), a selection (amber) or a keyframe (blue).
+pub const MARKER: Color32 = Color32::from_rgb(120, 214, 120);
 /// Keyframes, in the inspector and on the clip (§24). Deliberately not the
 /// selection colour: a key and a selected clip are often on screen together.
 pub const KEYFRAME: Color32 = Color32::from_rgb(126, 200, 255);
+
+/// A volume envelope drawn across a sound clip (§24 on §20a.4's clip-gain
+/// stage). Pale yellow: it is drawn over a green clip and a grey waveform, and
+/// the keyframe blue would read as a picture keyframe rather than a level.
+pub const AUTOMATION: Color32 = Color32::from_rgb(250, 226, 138);
 
 /// §25's transitions, drawn over the cut. Pale and cool so it reads as an
 /// overlay on the clips rather than as a third clip between them.

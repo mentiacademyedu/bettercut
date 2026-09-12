@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clip::{Clip, SourceRange, TimelineRange, Transform, impl_clip};
 use crate::error::TimelineError;
+use crate::motion::{TextAnimation, TextLook};
 use crate::track::Track;
 
 /// A piece of text on the timeline (§26).
@@ -50,6 +51,10 @@ pub struct TextClip {
     pub opacity: f32,
     #[serde(default)]
     pub enabled: bool,
+    /// How it arrives and leaves. Absent from older projects, which load with
+    /// none.
+    #[serde(default)]
+    pub animation: TextAnimation,
 }
 
 fn one() -> f32 {
@@ -87,7 +92,20 @@ impl TextClip {
             transform: Transform::default(),
             opacity: 1.0,
             enabled: true,
+            animation: TextAnimation::default(),
         })
+    }
+
+    /// How this title looks at `position`, its entrance and exit applied
+    /// (§26, §46). Both the preview and the export ask this.
+    pub fn look_at(&self, position: TimelineTime) -> TextLook {
+        self.animation.look(
+            self.transform,
+            self.opacity,
+            self.timeline,
+            position,
+            self.text.chars().count(),
+        )
     }
 
     /// Whether this clip would draw anything at all.
@@ -100,7 +118,18 @@ impl TextClip {
     }
 }
 
-impl_clip!(TextClip);
+impl_clip!(
+    TextClip,
+    // A title's exit belongs to its end and its entrance to its start, so a
+    // split keeps each on the half that still has that edge — the same rule
+    // as a transition (§25), for the same reason.
+    fn clear_transition_out(&mut self) {
+        self.animation.outro = None;
+    },
+    fn clear_transition_in(&mut self) {
+        self.animation.intro = None;
+    }
+);
 
 /// A lane of text clips.
 ///
@@ -175,5 +204,32 @@ mod tests {
         assert_eq!(right.timeline().start, seconds(1));
         assert_eq!(left.text, "Hello", "the text did not survive the split");
         assert_eq!(right.text, "Hello");
+    }
+
+    /// The entrance stays on the half that still starts where the title
+    /// started, and the exit on the half that still ends where it ended — a
+    /// split must not add a second entrance in the middle.
+    #[test]
+    fn a_split_title_keeps_its_entrance_left_and_its_exit_right() {
+        use crate::motion::{Motion, MotionKind};
+
+        let mut track = TextTrack::new("T1");
+        let mut clip =
+            TextClip::with_duration("Hello", TimelineTime::ZERO, seconds(4)).expect("ok");
+        clip.animation = TextAnimation {
+            intro: Some(Motion::new(MotionKind::Pop, seconds(1))),
+            outro: Some(Motion::new(MotionKind::Fade, seconds(1))),
+        };
+        let id = clip.id;
+        track.insert(clip).expect("empty track");
+
+        let outcome = track
+            .split(id, seconds(2), ClipId::new(), ClipId::new())
+            .expect("split");
+
+        let left = track.get(outcome.left).expect("left half");
+        let right = track.get(outcome.right).expect("right half");
+        assert!(left.animation.intro.is_some() && left.animation.outro.is_none());
+        assert!(right.animation.intro.is_none() && right.animation.outro.is_some());
     }
 }

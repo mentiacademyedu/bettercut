@@ -203,6 +203,16 @@ pub struct VideoClip {
     /// splitting or pasting carries it along; see [`crate::transition`].
     #[serde(default)]
     pub transition_out: Option<Transition>,
+
+    /// Hold one frame for the clip's whole length: a freeze frame.
+    ///
+    /// The frame is the one at the clip's in-point, so trimming the start
+    /// chooses a different one. Everything else about the clip behaves
+    /// normally — it can be moved, scaled, graded and animated, and because
+    /// every instant of it asks the decoder for the same source time, it costs
+    /// one decode however long it is held (exactly as a photo does).
+    #[serde(default)]
+    pub frozen: bool,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -287,6 +297,24 @@ pub struct AudioClip {
     pub gain: f32,
     #[serde(default)]
     pub enabled: bool,
+
+    /// How long the sound takes to rise from silence at the clip's start, and
+    /// to fall back to it at its end. Timeline durations; zero is none.
+    /// Absent from older projects, which load with none.
+    #[serde(default)]
+    pub fade_in: TimelineTime,
+    #[serde(default)]
+    pub fade_out: TimelineTime,
+
+    /// Volume over the clip (§24), for ducking music under a voice and for
+    /// riding a level by hand.
+    ///
+    /// Only [`AnimatedParameter::Gain`] means anything here; the rest of the
+    /// parameters are about a picture. Empty on most clips, and empty in every
+    /// project written before this existed, which is exactly what
+    /// `serde(default)` gives them.
+    #[serde(default)]
+    pub keyframes: Keyframes,
 }
 
 fn one() -> f32 {
@@ -324,6 +352,23 @@ pub fn fit_scale(source_aspect: f32, output_aspect: f32) -> (f32, f32) {
         (1.0, output_aspect / source_aspect)
     } else {
         (source_aspect / output_aspect, 1.0)
+    }
+}
+
+/// How much a fitted layer has to be scaled to **cover** the frame.
+///
+/// Fitting leaves bars on two sides, which is right for a shot the user wants
+/// to see all of and wrong for footage being reframed — landscape material in
+/// a vertical edit is the everyday case. Beside [`fit_scale`] because it is
+/// the same decision seen the other way round, and the clip's scale control is
+/// what carries it: the renderer needs no second mode (§46).
+pub fn fill_scale(source_aspect: f32, output_aspect: f32) -> f32 {
+    let (x, y) = fit_scale(source_aspect, output_aspect);
+    let smallest = x.min(y);
+    if smallest > f32::MIN_POSITIVE {
+        1.0 / smallest
+    } else {
+        1.0
     }
 }
 
@@ -418,6 +463,13 @@ pub trait Clip {
     ///
     /// Defaulted, because audio has no transitions to drop.
     fn clear_transition_out(&mut self) {}
+
+    /// Drop anything on this clip's *start*: the mirror of
+    /// [`Self::clear_transition_out`], applied to a split's right half.
+    ///
+    /// Only a title has one — its entrance (`crate::motion`). A transition is
+    /// stored on the outgoing clip, so a video clip's start has nothing.
+    fn clear_transition_in(&mut self) {}
 }
 
 /// The shared half of [`Clip`], plus whatever else a given kind of clip needs.
@@ -473,6 +525,14 @@ impl_clip!(
 );
 impl_clip!(
     AudioClip,
+    // A fade belongs to the edge it is on, so a split keeps the fade in on
+    // the left half and the fade out on the right (§25's rule for transitions).
+    fn clear_transition_out(&mut self) {
+        self.fade_out = TimelineTime::ZERO;
+    },
+    fn clear_transition_in(&mut self) {
+        self.fade_in = TimelineTime::ZERO;
+    },
     fn speed(&self) -> Rational {
         self.speed
     },
@@ -513,6 +573,7 @@ impl VideoClip {
             speed: Rational::ONE,
             transition_out: None,
             enabled: true,
+            frozen: false,
         })
     }
 
@@ -567,6 +628,9 @@ impl VideoClip {
             AnimatedParameter::ScaleX => self.transform.scale.x,
             AnimatedParameter::ScaleY => self.transform.scale.y,
             AnimatedParameter::Rotation => self.transform.rotation_degrees,
+            // Sound, not picture: a video clip has no volume of its own, and
+            // its linked audio carries the envelope (§12).
+            AnimatedParameter::Gain => AnimatedParameter::Gain.default_value(),
             AnimatedParameter::Brightness => self.color.brightness,
             AnimatedParameter::Contrast => self.color.contrast,
             AnimatedParameter::Saturation => self.color.saturation,
@@ -574,11 +638,25 @@ impl VideoClip {
         }
     }
 
-    /// Where in the source media the playhead at `position` is reading.
+    /// Where in the source the playhead at `position` is reading.
     ///
-    /// Integer throughout (§74): the offset into the clip is the offset into
-    /// the source, because the MVP has no speed change (§59).
+    /// Integer throughout (§74): the offset into the clip is scaled by the
+    /// clip's speed (§51), and a frozen clip reads its in-point whatever the
+    /// position.
     pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
+        if self.frozen {
+            return self.source.start;
+        }
+        let into_clip = position.ticks() - self.timeline.start.ticks();
+        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
+    }
+
+    /// How far through the clip `position` is, in source terms, *ignoring* a
+    /// freeze.
+    ///
+    /// What keyframes are evaluated against, so a frozen frame can still drift
+    /// or fade: the picture is held, the animation is not.
+    pub fn progress_time_at(&self, position: TimelineTime) -> MediaTime {
         let into_clip = position.ticks() - self.timeline.start.ticks();
         MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
     }
@@ -641,7 +719,151 @@ impl AudioClip {
             link: None,
             speed: Rational::ONE,
             enabled: true,
+            fade_in: TimelineTime::ZERO,
+            fade_out: TimelineTime::ZERO,
+            keyframes: Keyframes::default(),
         })
+    }
+
+    /// Both fades in ticks, shrunk in proportion when together they are longer
+    /// than the clip — a trimmed clip keeps the fades it was given, and they
+    /// share whatever is left rather than overlapping into nonsense.
+    /// Where in the source this clip is reading at a timeline instant.
+    ///
+    /// Scaled by the clip's speed (§51), like every other timeline-to-source
+    /// mapping — and it is source time that keyframes are anchored to (§24), so
+    /// trimming the clip's start does not slide its envelope.
+    pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
+        let into_clip = position.ticks() - self.timeline.start.ticks();
+        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
+    }
+
+    /// The clip's volume at a timeline instant: its envelope where it has one,
+    /// its static gain where it does not (§24).
+    ///
+    /// One function rather than "read the keyframes if animated, else the
+    /// field" at each call site, because the two ways of asking must not be
+    /// able to disagree — the preview and the export both come through here
+    /// (§46).
+    pub fn gain_at(&self, position: TimelineTime) -> f32 {
+        match self
+            .keyframes
+            .value_at(AnimatedParameter::Gain, self.source_time_at(position))
+        {
+            Some(value) => AnimatedParameter::Gain.clamp(value),
+            None => self.gain,
+        }
+    }
+
+    pub fn fitted_fades(&self) -> (i64, i64) {
+        let length = self.timeline.duration().ticks().max(0);
+        let fade_in = self.fade_in.ticks().max(0);
+        let fade_out = self.fade_out.ticks().max(0);
+        let total = fade_in + fade_out;
+        if total <= length || total == 0 {
+            return (fade_in, fade_out);
+        }
+        // i128: a tick count times a tick count is past i64 for long clips.
+        let share =
+            |ticks: i64| (i128::from(ticks) * i128::from(length) / i128::from(total)) as i64;
+        (share(fade_in), share(fade_out))
+    }
+}
+
+/// The longest fade a clip may have. Longer is a volume change, which the
+/// gain control is for.
+pub const MAX_FADE: TimelineTime = TimelineTime::from_seconds(30);
+
+#[cfg(test)]
+mod gain_tests {
+    use super::*;
+    use crate::keyframe::{Interpolation, Keyframe};
+    use bettercut_foundation::MediaId;
+
+    /// A ten-second sound clip starting five seconds along the timeline, ten
+    /// seconds into its file.
+    fn clip() -> AudioClip {
+        AudioClip::new(
+            MediaId::new(),
+            TimelineTime::from_seconds(5),
+            SourceRange::new(MediaTime::from_seconds(10), MediaTime::from_seconds(20)).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn key(seconds: i64, value: f32) -> Keyframe {
+        Keyframe {
+            time: MediaTime::from_seconds(seconds),
+            value,
+            interpolation: Interpolation::Linear,
+        }
+    }
+
+    #[test]
+    fn an_unanimated_clip_reads_its_own_gain() {
+        let mut clip = clip();
+        clip.gain = 0.6;
+        assert_eq!(clip.gain_at(TimelineTime::from_seconds(7)), 0.6);
+    }
+
+    /// The envelope wins where there is one: §24's rule everywhere else.
+    #[test]
+    fn keyframes_override_the_static_gain() {
+        let mut clip = clip();
+        clip.gain = 0.6;
+        clip.keyframes.set(AnimatedParameter::Gain, key(10, 1.0));
+        clip.keyframes.set(AnimatedParameter::Gain, key(20, 0.0));
+
+        assert_eq!(clip.gain_at(TimelineTime::from_seconds(5)), 1.0);
+        assert!((clip.gain_at(TimelineTime::from_seconds(10)) - 0.5).abs() < 1e-5);
+        assert_eq!(clip.gain_at(TimelineTime::from_seconds(15)), 0.0);
+    }
+
+    /// §24: keys are anchored to *source* time, so trimming the clip's start
+    /// slides the clip along the envelope rather than dragging the envelope
+    /// with it. The duck stays over the words it was put on.
+    #[test]
+    fn trimming_the_start_does_not_slide_the_envelope() {
+        let mut clip = clip();
+        clip.keyframes.set(AnimatedParameter::Gain, key(15, 0.2));
+        let before = clip.gain_at(TimelineTime::from_seconds(10));
+
+        // Trim two seconds off the front, as a trim does: the source start
+        // moves and the clip starts later.
+        clip.source.start = MediaTime::from_seconds(12);
+        clip.timeline.start = TimelineTime::from_seconds(7);
+
+        assert_eq!(
+            clip.gain_at(TimelineTime::from_seconds(10)),
+            before,
+            "the envelope moved when the clip was trimmed"
+        );
+    }
+
+    /// §51: at double speed the clip covers its source twice as fast, so the
+    /// envelope arrives twice as fast too.
+    #[test]
+    fn speed_carries_the_envelope_with_it() {
+        let mut clip = clip();
+        clip.speed = Rational::new(2, 1).unwrap();
+        clip.keyframes.set(AnimatedParameter::Gain, key(10, 1.0));
+        clip.keyframes.set(AnimatedParameter::Gain, key(20, 0.0));
+
+        // Five seconds in at 2x is ten seconds of source: the end of the ramp.
+        assert_eq!(clip.gain_at(TimelineTime::from_seconds(10)), 0.0);
+        assert!((clip.gain_at(TimelineTime::from_seconds(7)) - 0.6).abs() < 1e-5);
+    }
+
+    /// A key outside the parameter's limits cannot make the mix louder than a
+    /// slider is allowed to: the two ways of setting a value must agree.
+    #[test]
+    fn the_envelope_is_held_inside_the_limits() {
+        let mut clip = clip();
+        clip.keyframes.set(AnimatedParameter::Gain, key(10, 100.0));
+        assert_eq!(
+            clip.gain_at(TimelineTime::from_seconds(6)),
+            crate::track::MAX_TRACK_GAIN
+        );
     }
 }
 
@@ -1003,5 +1225,84 @@ mod speed_tests {
         assert_eq!(clip.timeline_duration(), TimelineTime::from_seconds(2400));
         let at_end = clip.source_time_at(clip.timeline.end);
         assert_eq!(at_end, MediaTime::from_seconds(3600));
+    }
+
+    fn sound(seconds: i64) -> AudioClip {
+        AudioClip::new(
+            MediaId::new(),
+            TimelineTime::ZERO,
+            SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(seconds)).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fades_that_fit_are_left_alone() {
+        let mut clip = sound(10);
+        clip.fade_in = TimelineTime::from_seconds(1);
+        clip.fade_out = TimelineTime::from_seconds(2);
+        assert_eq!(clip.fitted_fades(), (960_000, 1_920_000));
+    }
+
+    /// Trimmed shorter than its two fades, a clip shares its length between
+    /// them in proportion rather than letting them overlap.
+    #[test]
+    fn fades_longer_than_the_clip_share_it() {
+        let mut clip = sound(3);
+        clip.fade_in = TimelineTime::from_seconds(2);
+        clip.fade_out = TimelineTime::from_seconds(4);
+        let (fade_in, fade_out) = clip.fitted_fades();
+        assert_eq!(fade_in + fade_out, 3 * 960_000);
+        assert_eq!(
+            fade_in, 960_000,
+            "a third of the length, as it asked for a third"
+        );
+    }
+
+    #[test]
+    fn a_split_keeps_each_fade_on_its_own_edge() {
+        let mut track = crate::AudioTrack::new("A1");
+        let mut clip = sound(10);
+        clip.fade_in = TimelineTime::from_seconds(1);
+        clip.fade_out = TimelineTime::from_seconds(1);
+        let id = clip.id;
+        track.insert(clip).unwrap();
+
+        let outcome = track
+            .split(
+                id,
+                TimelineTime::from_seconds(5),
+                ClipId::new(),
+                ClipId::new(),
+            )
+            .unwrap();
+        let left = track.get(outcome.left).unwrap();
+        let right = track.get(outcome.right).unwrap();
+        assert_eq!(
+            (left.fade_in, left.fade_out),
+            (TimelineTime::from_seconds(1), TimelineTime::ZERO)
+        );
+        assert_eq!(
+            (right.fade_in, right.fade_out),
+            (TimelineTime::ZERO, TimelineTime::from_seconds(1))
+        );
+    }
+
+    /// Landscape footage in a vertical edit, and the other way about.
+    #[test]
+    fn filling_the_frame_scales_past_the_fit() {
+        let wide = 16.0 / 9.0;
+        let tall = 9.0 / 16.0;
+
+        // A 16:9 shot in a 9:16 frame is pillarboxed to a third of the height;
+        // covering means scaling by (16/9)/(9/16).
+        assert!((fill_scale(wide, tall) - wide / tall).abs() < 1e-4);
+        assert!((fill_scale(tall, wide) - wide / tall).abs() < 1e-4);
+        // A square shot in a 16:9 frame fills it at 16/9.
+        assert!((fill_scale(1.0, wide) - wide).abs() < 1e-4);
+        // Same shape: already filling.
+        assert!((fill_scale(wide, wide) - 1.0).abs() < 1e-6);
+        // Nonsense in, no panic and no infinity out.
+        assert_eq!(fill_scale(0.0, wide), 1.0);
     }
 }

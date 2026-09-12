@@ -15,6 +15,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod beats;
 pub mod clock;
 pub mod error;
 pub mod mixer;
@@ -23,7 +24,7 @@ pub mod resample;
 
 pub use clock::AudioClock;
 pub use error::AudioError;
-pub use mixer::{MixParams, finish, mix_into};
+pub use mixer::{Fades, GainRamp, MixParams, finish, mix_into, peaks};
 pub use output::{AudioOutput, AudioSink};
 pub use resample::{input_frames_needed, resample};
 

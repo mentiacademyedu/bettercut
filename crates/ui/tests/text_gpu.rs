@@ -94,7 +94,7 @@ fn render(
 ) -> Vec<u8> {
     let mut titles = TextFrames::new();
     let text_frame = titles
-        .frame_for(clip)
+        .frame_for(clip, None)
         .expect("the title rasterized to nothing");
     let back = background();
 
@@ -355,7 +355,9 @@ fn the_drag_handles_sit_on_the_title() {
     };
 
     let mut titles = TextFrames::new();
-    let frame = titles.frame_for(&clip).expect("rasterized to nothing");
+    let frame = titles
+        .frame_for(&clip, None)
+        .expect("rasterized to nothing");
     let pixels = render(&device, &queue, &clip, clip.transform);
 
     // Where the red panel actually is, in 0..1 frame units.

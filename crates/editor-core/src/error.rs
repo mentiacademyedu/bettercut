@@ -48,6 +48,13 @@ pub enum EditorError {
     #[error("clip kind does not match track kind")]
     ClipKindMismatch,
 
+    /// §51 re-times *footage*. A held frame and a photo are one picture, so
+    /// there is nothing to play faster — and deriving their length from their
+    /// source range, as a speed change does, would collapse a hold to a single
+    /// frame.
+    #[error("a held frame and a photo have no motion to re-time")]
+    NoMotionToRetime,
+
     /// A keyframe is always placed at the frame the user is looking at, so
     /// there is nowhere to put one while the playhead is elsewhere (§24).
     #[error("move the playhead over the clip to add a keyframe")]
@@ -57,6 +64,14 @@ pub enum EditorError {
     /// trimmed to the edge of its file has none to read.
     #[error("not enough spare footage either side of the cut for a transition")]
     NoRoomForTransition,
+
+    /// §31: what the user put in a slot does not fit it.
+    #[error("{slot}: {reason}")]
+    TemplateFill { slot: String, reason: &'static str },
+
+    /// A template's tracks are occupied where it wants to go.
+    #[error("there are clips in the way where the template would go")]
+    NoRoomForTemplate,
 
     #[error("nothing to undo")]
     NothingToUndo,

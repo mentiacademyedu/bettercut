@@ -42,13 +42,12 @@ use std::path::PathBuf;
 
 use bettercut_foundation::{FrameRate, TICKS_PER_AUDIO_SAMPLE, TimelineTime, ticks_per_frame};
 use bettercut_media::{
-    CancellationToken, EncodeTarget, ExportFormat, MediaAsset, SeekMode, VideoWriter, probe_all,
+    CancellationToken, EncodeTarget, ExportFormat, SeekMode, VideoWriter, probe_all,
 };
 /// Re-exported so callers choose a codec without depending on the media crate.
 pub use bettercut_media::{RateControl, VideoCodec};
 use bettercut_playback::{
-    AudioSource, FrameSource, LayerSource, PlaybackEngine, TextFrames, layer_requests,
-    layer_transform,
+    AudioMixer, AudioPlan, FrameSource, LayerSource, TextFrames, layer_requests, layer_transform,
 };
 use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
@@ -257,7 +256,7 @@ pub fn export(
     // export runs on a job thread while the editor keeps going. Same crate,
     // same parameters, same bitmap.
     let mut titles = TextFrames::new();
-    let mut audio = AudioMixdown::new(channels);
+    let mut audio = AudioMixdown::new(project, sequence, channels);
 
     let mut samples_written: i64 = 0;
 
@@ -293,7 +292,7 @@ pub fn export(
         let target = (frame_end - settings.range.start.ticks()) / TICKS_PER_AUDIO_SAMPLE;
         let wanted = (target - samples_written).max(0) as usize;
         if wanted > 0 && channels > 0 {
-            let block = audio.read(project, sequence, position, wanted);
+            let block = audio.read(position, wanted);
             writer.push_audio(&block)?;
             samples_written = target;
         }
@@ -342,7 +341,8 @@ fn render_frame(
                 };
                 // §47a.2's `Playback`: an export is a forward walk, so the next
                 // frame wanted is the next frame in the file.
-                match frames.decode(asset, request.source_time, SeekMode::Playback, cancel) {
+                let at = asset.frame_time(request.source_time);
+                match frames.decode(asset, at, SeekMode::Playback, cancel) {
                     Ok(frame) => decoded.push((request, frame)),
                     Err(err) => {
                         // §50: one unreadable file must not abort a long
@@ -361,7 +361,7 @@ fn render_frame(
             // a three-second title is the same picture ninety times over.
             LayerSource::Text(clip) => {
                 if let Some(text) = sequence.text_clip(clip)
-                    && let Some(frame) = titles.frame_for(text)
+                    && let Some(frame) = titles.frame_for(text, request.reveal)
                 {
                     decoded.push((request, frame));
                 }
@@ -401,18 +401,27 @@ fn audio_channels(sequence: &Sequence) -> usize {
 
 /// Mixing the timeline's audio, one video frame at a time.
 ///
-/// Uses the same `mix_into` and `finish` the live mixer does (§20a.4), so the
-/// exported audio is the audio that was played — the audio half of §51.1's
-/// golden comparison.
+/// Through the same [`AudioMixer::mix_block`] the preview's mixer thread calls
+/// (§46), so the exported audio is the audio that was played — the audio half
+/// of §51.1's golden comparison. This used to be a copy of the preview's loop,
+/// and the copy had already fallen behind: it did not resample a sped-up clip
+/// (§51), so a 2× clip exported with its sound at normal speed, cut off half
+/// way through.
 struct AudioMixdown {
-    sources: std::collections::HashMap<bettercut_foundation::MediaId, AudioSource>,
+    mixer: AudioMixer,
+    /// Taken once, at the start: an export renders a snapshot of the project,
+    /// and the plan is that snapshot's audio half.
+    plan: AudioPlan,
     channels: usize,
 }
 
 impl AudioMixdown {
-    fn new(channels: usize) -> Self {
+    fn new(project: &Project, sequence: &Sequence, channels: usize) -> Self {
         Self {
-            sources: std::collections::HashMap::new(),
+            // One decoder thread: §15.1 keeps an export from taking every
+            // core, and audio decode is not where an export spends its time.
+            mixer: AudioMixer::new(1),
+            plan: AudioPlan::of(project, sequence),
             channels,
         }
     }
@@ -424,69 +433,21 @@ impl AudioMixdown {
     /// difference, so this needs no position of its own beyond the timeline
     /// one — which is what keeps the audio locked to §9's ticks rather than to
     /// a count that could drift from them.
-    fn read(
-        &mut self,
-        project: &Project,
-        sequence: &Sequence,
-        position: TimelineTime,
-        frames: usize,
-    ) -> Vec<Vec<f32>> {
+    fn read(&mut self, position: TimelineTime, frames: usize) -> Vec<Vec<f32>> {
         let mut interleaved = vec![0.0_f32; frames * self.channels];
-        let duration = TimelineTime::from_ticks(frames as i64 * TICKS_PER_AUDIO_SAMPLE);
+        self.mixer.mix_block(
+            &self.plan,
+            position,
+            frames,
+            self.channels,
+            &mut interleaved,
+        );
 
-        for audible in PlaybackEngine::resolve_audio(sequence, position, duration) {
-            let Some(asset) = project.media_asset(audible.media) else {
-                continue;
-            };
-            let Some(source) = self.source_for(asset) else {
-                continue;
-            };
-
-            let offset = (audible.offset.ticks() / TICKS_PER_AUDIO_SAMPLE) as usize;
-            let wanted = frames.saturating_sub(offset);
-            if wanted == 0 {
-                continue;
-            }
-
-            match source.read(audible.source_start, wanted) {
-                Ok(planes) if !planes.is_empty() => {
-                    bettercut_audio::mix_into(
-                        &mut interleaved,
-                        self.channels,
-                        &planes,
-                        offset,
-                        bettercut_audio::MixParams {
-                            clip_gain: audible.gain,
-                            ..Default::default()
-                        },
-                    );
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    // §50 again: a clip that will not decode is silent, not
-                    // fatal to the export.
-                    tracing::warn!(%err, "audio read failed during export");
-                }
-            }
-        }
-
-        // §20a.4's final stage, exactly as playback applies it. Master gain is
-        // unity here: the mixer UI's master control is a monitoring level, not
-        // something that should bake into the deliverable.
-        bettercut_audio::finish(&mut interleaved, 1.0);
+        // §20a.4's final stage, exactly as playback applies it — the same
+        // master volume, from the same plan (§46).
+        bettercut_audio::finish(&mut interleaved, self.plan.master_volume);
 
         deinterleave(&interleaved, self.channels)
-    }
-
-    fn source_for(&mut self, asset: &MediaAsset) -> Option<&mut AudioSource> {
-        match self.sources.entry(asset.id) {
-            std::collections::hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let decoder = bettercut_media::FfmpegDecoder::new(1).ok()?;
-                let source = AudioSource::open(asset, Box::new(decoder)).ok()?;
-                Some(entry.insert(source))
-            }
-        }
     }
 }
 

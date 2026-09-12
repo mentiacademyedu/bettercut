@@ -28,6 +28,50 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Write a short video whose picture changes a great deal frame to frame.
+///
+/// The committed fixture is a near-static test pattern: its content signature
+/// moves by 0.7% across two seconds, so "did the picture stop?" cannot be
+/// asked of it — a freeze that did nothing would pass. This writes two seconds
+/// of a white bar sweeping across black instead, where consecutive frames
+/// differ enormously and a held frame is unmistakable.
+fn moving_source(path: &Path) {
+    use bettercut_media::{ExportFormat, VideoWriter};
+
+    let (width, height) = (320_u32, 180_u32);
+    let mut writer = VideoWriter::create(
+        path,
+        ExportFormat {
+            width,
+            height,
+            frame_rate: FrameRate::FPS_30,
+            codec: VideoCodec::H264,
+            bitrate: Some(2_000_000),
+            rate_control: bettercut_export::RateControl::Variable,
+            channels: 0,
+            threads: 2,
+        },
+    )
+    .expect("open the generated source");
+
+    let frames = 60;
+    let mut rgba = vec![0_u8; (width * height * 4) as usize];
+    for frame in 0..frames {
+        rgba.fill(0);
+        // A bar a fifth of the width, sweeping left to right.
+        let bar = width / 5;
+        let left = (frame * (width - bar)) / (frames - 1);
+        for y in 0..height {
+            for x in left..left + bar {
+                let at = ((y * width + x) * 4) as usize;
+                rgba[at..at + 4].copy_from_slice(&[235, 235, 235, 255]);
+            }
+        }
+        writer.push_frame(&rgba).expect("write a frame");
+    }
+    writer.finish().expect("finish the generated source");
+}
+
 /// A scratch output that removes itself.
 struct Scratch(PathBuf);
 
@@ -542,4 +586,241 @@ fn constant_rate_control_produces_a_larger_file_than_variable() {
         "constant rate control did not reach the encoder: \
          {vbr_bytes} bytes variable, {cbr_bytes} constant"
     );
+}
+
+/// Root-mean-square level of every audio sample in a file.
+fn audio_rms(path: &Path) -> f64 {
+    let asset = FfmpegProber.probe(path).expect("probe the export");
+    let mut decoder = FfmpegDecoder::new(1).expect("decoder");
+    decoder.open(&asset).expect("open the export");
+
+    let (mut sum, mut count) = (0.0_f64, 0_u64);
+    while let Some(buffer) = decoder.decode_audio(&NeverCancelled).expect("decode audio") {
+        for plane in &buffer.planes {
+            for sample in plane {
+                sum += f64::from(*sample) * f64::from(*sample);
+                count += 1;
+            }
+        }
+    }
+    assert!(count > 0, "the export has no audio at all");
+    (sum / count as f64).sqrt()
+}
+
+/// §20a.4's master gain reaches the file, not only the speakers.
+///
+/// The whole-video volume sits in the Inspector beside the whole-video picture
+/// controls, which all export — a volume that changed what played and not what
+/// was exported would be the one control there that silently did not, and a
+/// preview/export mismatch §46 forbids outright.
+#[test]
+fn the_whole_video_volume_reaches_the_export() {
+    gpu_or_skip!();
+    let _guard = encoder_guard();
+
+    let level_at = |volume: f32, name: &str| {
+        let mut project = project_with_fixture();
+        project.active_mut().expect("sequence").master_volume = volume;
+        let out = Scratch::new(name);
+        run(&project, &settings(out.path(), one_second()));
+        audio_rms(out.path())
+    };
+
+    let full = level_at(1.0, "volume-full");
+    let quarter = level_at(0.25, "volume-quarter");
+
+    assert!(
+        full > 0.01,
+        "the full-volume export is silent (rms {full:.4})"
+    );
+    let ratio = quarter / full;
+    assert!(
+        (0.18..=0.32).contains(&ratio),
+        "at 25% volume the export's level was {ratio:.2} of full; the master volume \
+         is not reaching the file"
+    );
+}
+
+/// §46 for the features added since the MVP: a held frame, a fade on the
+/// sound, a title with an entrance, and a track's own volume, all in one
+/// export — with both the hold and the fade measured in the finished file.
+///
+/// The picture comes from a generated source (see `moving_source`) because the
+/// committed fixture barely changes: an earlier version of this test asserted
+/// the hold against that fixture and passed with the freeze removed from the
+/// engine, which is no test at all. The sound still comes from the fixture,
+/// since the generated file is silent.
+#[test]
+fn a_hold_a_fade_and_an_animated_title_export() {
+    use bettercut_timeline::{Motion, MotionKind, TextAnimation, TextClip};
+
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let source = Scratch::new("moving-source");
+    moving_source(source.path());
+    let scratch = Scratch::new("everything");
+
+    // The generated picture on V1, the fixture's sound on A1.
+    let mut project = project_with_fixture();
+    let moving = FfmpegProber
+        .probe(source.path())
+        .expect("probe the generated source");
+    let moving = project.add_media(moving);
+    let sequence = project.active_mut().expect("sequence");
+
+    let existing = sequence.video_tracks[0].clips()[0].id;
+    sequence.video_tracks[0].remove(existing).expect("remove");
+
+    let half = TimelineTime::from_millis(500);
+    sequence.video_tracks[0]
+        .insert(
+            VideoClip::new(
+                moving,
+                TimelineTime::ZERO,
+                SourceRange::new(MediaTime::ZERO, MediaTime::from_millis(500)).expect("valid"),
+            )
+            .expect("valid"),
+        )
+        .expect("empty track");
+
+    let mut held = VideoClip::new(
+        moving,
+        half,
+        SourceRange::new(MediaTime::from_millis(500), MediaTime::from_millis(540)).expect("valid"),
+    )
+    .expect("valid");
+    held.frozen = true;
+    held.timeline = TimelineRange::new(half, TimelineTime::from_seconds(1)).expect("valid");
+    sequence.video_tracks[0].insert(held).expect("no overlap");
+
+    // Sound: trimmed to the exported second — a fade sits at the clip's own
+    // end, so a two-second clip would fade outside the range and prove
+    // nothing — then faded out under the hold, on a track turned down.
+    let sound = sequence.audio_tracks[0].clips()[0].id;
+    sequence.audio_tracks[0]
+        .trim_end(sound, TimelineTime::from_seconds(1), None)
+        .expect("trim");
+    sequence.audio_tracks[0]
+        .get_mut(sound)
+        .expect("clip")
+        .fade_out = TimelineTime::from_millis(400);
+    sequence.audio_tracks[0].gain = 0.7;
+
+    // A title that fades in over the first 300 ms, so it is steady by the time
+    // the compared frames are taken.
+    let mut title =
+        TextClip::with_duration("Held", TimelineTime::ZERO, TimelineTime::from_seconds(1))
+            .expect("valid");
+    title.animation = TextAnimation {
+        intro: Some(Motion::new(
+            MotionKind::Fade,
+            TimelineTime::from_millis(300),
+        )),
+        outro: None,
+    };
+    sequence.text_tracks[0].insert(title).expect("empty track");
+
+    let summary = run(&project, &settings(scratch.path(), one_second()));
+    assert_eq!(summary.frames, 30);
+
+    let asset = FfmpegProber
+        .probe(scratch.path())
+        .expect("probe the export");
+    assert!(asset.audio_codec.is_some(), "the sound was lost");
+
+    // The hold: 300 ms inside it against 300 ms of the sweep before it.
+    let mut decoder = FfmpegDecoder::new(2).expect("decoder");
+    decoder.open(&asset).expect("open");
+    let mut frames = Vec::new();
+    while let Some(frame) = decoder.decode_frame(&NeverCancelled).expect("decode") {
+        frames.push((frame.timestamp, sample(&frame)));
+    }
+    let at = |ms: i64| {
+        let want = MediaTime::from_millis(ms);
+        frames
+            .iter()
+            .min_by_key(|(t, _)| (t.ticks() - want.ticks()).abs())
+            .map(|(_, pixels)| pixels.clone())
+            .expect("a frame")
+    };
+    let holding = difference(&at(650), &at(950));
+    let sweeping = difference(&at(100), &at(400));
+    assert!(
+        sweeping > 20.0,
+        "the generated source did not move ({sweeping:.1}), so this proves nothing"
+    );
+    assert!(
+        holding * 5.0 < sweeping,
+        "the hold moved: {holding:.1} across 300 ms of hold, against {sweeping:.1} \
+         across 300 ms of the sweep"
+    );
+
+    // The fade: the last quarter-second is deep inside it, so it is a fraction
+    // of the first.
+    let (first, last) = audio_rms_ends(scratch.path(), TimelineTime::from_millis(250));
+    assert!(
+        last * 4.0 < first,
+        "the fade did not reach the file: {first:.4} then {last:.4}"
+    );
+}
+
+/// A thin sample of a frame's pixels, in order, for comparing one picture
+/// against another.
+///
+/// Position matters: an earlier version of this summed the sampled bytes, and
+/// a bar sweeping across the picture summed to the same number wherever it was,
+/// so a moving picture read as a still one.
+fn sample(frame: &bettercut_media::VideoFrame) -> Vec<u8> {
+    let bettercut_media::FrameStorage::System { data, .. } = &frame.storage else {
+        panic!("expected a system-memory frame");
+    };
+    data.iter().step_by(101).copied().collect()
+}
+
+/// How different two sampled frames are, 0 to 255. Compressed frames of the
+/// same picture land near zero rather than exactly on it.
+fn difference(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len(), "frames of different sizes");
+    let total: u32 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| u32::from(x.abs_diff(*y)))
+        .sum();
+    f64::from(total) / a.len() as f64
+}
+
+/// The level of the first and last `edge` of a file's audio/// The level of the first and last `edge` of a file's audio, for judging a
+/// fade rather than an overall volume.
+fn audio_rms_ends(path: &Path, edge: TimelineTime) -> (f64, f64) {
+    let asset = FfmpegProber.probe(path).expect("probe the export");
+    let mut decoder = FfmpegDecoder::new(1).expect("decoder");
+    decoder.open(&asset).expect("open the export");
+
+    let ends_after = asset.duration.ticks() - edge.ticks();
+    let (mut early, mut late) = ((0.0_f64, 0_u64), (0.0_f64, 0_u64));
+    while let Some(buffer) = decoder.decode_audio(&NeverCancelled).expect("decode audio") {
+        let at = buffer.timestamp.ticks();
+        let part = if at < edge.ticks() {
+            &mut early
+        } else if at >= ends_after {
+            &mut late
+        } else {
+            continue;
+        };
+        for plane in &buffer.planes {
+            for sample in plane {
+                part.0 += f64::from(*sample) * f64::from(*sample);
+                part.1 += 1;
+            }
+        }
+    }
+    let rms = |(sum, count): (f64, u64)| {
+        if count == 0 {
+            0.0
+        } else {
+            (sum / count as f64).sqrt()
+        }
+    };
+    assert!(early.1 > 0 && late.1 > 0, "the export has no audio at all");
+    (rms(early), rms(late))
 }

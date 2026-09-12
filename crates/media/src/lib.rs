@@ -14,7 +14,7 @@ pub mod error;
 pub mod ffmpeg;
 pub mod proxy;
 
-pub use asset::{MediaAsset, MediaKind};
+pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, fit_within};
 pub use color::{ColorMatrix, ColorMetadata, ColorPrimaries, ColorRange, TransferFunction};
 pub use decoder::{
     AudioBuffer, CancellationToken, FrameStorage, MediaDecoder, MediaProber, NeverCancelled,

@@ -291,8 +291,12 @@ impl Drop for CodecContext {
 /// A `SwsContext` — pixel format and colour conversion.
 pub(crate) struct Scaler {
     inner: *mut ffi::SwsContext,
+    /// Output size.
     pub(crate) width: i32,
     pub(crate) height: i32,
+    /// The size of picture it reads.
+    src_width: i32,
+    src_height: i32,
 }
 
 impl Scaler {
@@ -309,17 +313,43 @@ impl Scaler {
         full_range: bool,
         colorspace: i32,
     ) -> Result<Self, MediaError> {
+        Self::to_rgba_sized(
+            (width, height),
+            (width, height),
+            src_format,
+            full_range,
+            colorspace,
+        )
+    }
+
+    /// [`Self::to_rgba`], scaling to `output` on the way — how a still larger
+    /// than [`crate::MAX_STILL_EDGE`] is brought down to size.
+    pub(crate) fn to_rgba_sized(
+        (src_width, src_height): (i32, i32),
+        (width, height): (i32, i32),
+        src_format: i32,
+        full_range: bool,
+        colorspace: i32,
+    ) -> Result<Self, MediaError> {
+        // Bicubic when shrinking, for the proxy path's reason: bilinear drops
+        // detail on a large downscale. Same-size conversion stays bilinear,
+        // where the two are identical and bilinear is cheaper.
+        let flags = if (width, height) == (src_width, src_height) {
+            ffi::SWS_BILINEAR
+        } else {
+            ffi::SWS_BICUBIC
+        };
         // SAFETY: sws_getContext validates its own arguments and returns null
         // when the conversion is unsupported.
         let inner = unsafe {
             ffi::sws_getContext(
-                width,
-                height,
+                src_width,
+                src_height,
                 src_format,
                 width,
                 height,
                 ffi::AV_PIX_FMT_RGBA,
-                ffi::SWS_BILINEAR as i32,
+                flags as i32,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
@@ -335,6 +365,8 @@ impl Scaler {
             inner,
             width,
             height,
+            src_width,
+            src_height,
         };
 
         // Tell swscale the source's colour space and range explicitly.
@@ -425,6 +457,8 @@ impl Scaler {
             inner,
             width: dst_width,
             height: dst_height,
+            src_width,
+            src_height,
         })
     }
 
@@ -478,9 +512,23 @@ impl Scaler {
         ];
         let dst_stride = [stride, 0, 0, 0];
 
-        // SAFETY: `frame` holds a decoded picture of exactly the dimensions
-        // this scaler was built for, and `out` is large enough for one tightly
-        // packed RGBA image, checked above.
+        let (src_width, src_height) = {
+            let src = frame.as_ref();
+            (src.width, src.height)
+        };
+        // swscale reads as many source rows as it is told and trusts the frame
+        // to have them. A stream that changes size mid-file would otherwise
+        // hand it a smaller picture than it was built for.
+        if (src_width, src_height) != (self.src_width, self.src_height) {
+            return Err(MediaError::DecodeFailed(format!(
+                "frame is {src_width}x{src_height}; the converter was built for {}x{}",
+                self.src_width, self.src_height
+            )));
+        }
+
+        // SAFETY: `frame` holds a picture of exactly the source dimensions this
+        // scaler was built for, checked above, and `out` is large enough for
+        // one tightly packed RGBA image of the output size, also checked.
         let produced = unsafe {
             let src = frame.as_ref();
             ffi::sws_scale(
@@ -488,7 +536,7 @@ impl Scaler {
                 src.data.as_ptr() as *const *const u8,
                 src.linesize.as_ptr(),
                 0,
-                self.height,
+                src_height,
                 dst_slice.as_ptr(),
                 dst_stride.as_ptr(),
             )

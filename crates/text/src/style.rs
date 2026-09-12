@@ -178,6 +178,34 @@ impl Default for Background {
 pub const MAX_SIZE: f32 = 400.0;
 pub const MIN_SIZE: f32 = 4.0;
 
+/// A named caption look, for styling a whole lane at once (§27).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptionLook {
+    /// White on a dark box: readable over anything, at the cost of covering it.
+    Boxed,
+    /// Heavy white letters with a black rim, no box.
+    Outlined,
+    /// Black on yellow — the loudest, for watching with the sound off.
+    Highlight,
+    /// Smaller and lighter, with a soft shadow: a documentary lower third.
+    Soft,
+}
+
+impl CaptionLook {
+    /// Every look, in the order the interface offers them.
+    pub const ALL: [Self; 4] = [Self::Boxed, Self::Outlined, Self::Highlight, Self::Soft];
+
+    /// What to call it in the interface.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Boxed => "Boxed",
+            Self::Outlined => "Outlined",
+            Self::Highlight => "Highlight",
+            Self::Soft => "Soft",
+        }
+    }
+}
+
 /// Everything about how a piece of text is drawn (§26).
 ///
 /// Sizes are in **sequence pixels**, not preview pixels: the bitmap is
@@ -266,6 +294,61 @@ impl TextStyle {
         }
     }
 
+    /// The named looks a caption lane can wear (§27).
+    ///
+    /// Captions are read at a glance over footage nobody controls, so every
+    /// look here carries its own contrast — a box, an outline or a shadow.
+    /// Plain white text is not among them: over a bright shot it disappears,
+    /// and a caption that cannot be read is worse than none, because the
+    /// viewer knows they are missing something.
+    pub fn look(look: CaptionLook) -> Self {
+        let caption = Self::caption();
+        match look {
+            CaptionLook::Boxed => caption,
+            // What most social editors default to: heavy letters with a black
+            // rim, no box, so the picture is not cut into.
+            CaptionLook::Outlined => Self {
+                size: 52.0,
+                weight: FontWeight::Bold,
+                stroke: Some(Stroke {
+                    width: 5.0,
+                    color: Rgba::BLACK,
+                }),
+                background: None,
+                ..caption
+            },
+            // Black on yellow: the loudest of the lot, for a phone held at
+            // arm's length with the sound off.
+            CaptionLook::Highlight => Self {
+                size: 54.0,
+                weight: FontWeight::Bold,
+                color: Rgba::BLACK,
+                stroke: None,
+                background: Some(Background {
+                    color: Rgba::new(255, 214, 0, 255),
+                    padding: 12.0,
+                    corner_radius: 4.0,
+                }),
+                ..caption
+            },
+            // A documentary lower third: smaller, lighter, a soft shadow
+            // rather than a rim.
+            CaptionLook::Soft => Self {
+                size: 40.0,
+                weight: FontWeight::Medium,
+                stroke: None,
+                background: None,
+                shadow: Some(Shadow {
+                    offset_x: 0.0,
+                    offset_y: 3.0,
+                    blur: 10.0,
+                    color: Rgba::new(0, 0, 0, 200),
+                }),
+                ..caption
+            },
+        }
+    }
+
     /// A key identifying the picture this style and text would produce.
     ///
     /// Two clips that say the same thing in the same way *are* the same
@@ -349,5 +432,65 @@ impl TextStyle {
         }
         style.wrap_width = style.wrap_width.map(|w| w.clamp(style.size, 16_384.0));
         style
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    /// Every look carries its own contrast.
+    ///
+    /// A caption is read at a glance over footage nobody controls. Plain
+    /// letters with no box, no rim and no shadow vanish over a bright shot,
+    /// and a caption that cannot be read is worse than none — the viewer knows
+    /// they are missing something.
+    #[test]
+    fn every_look_can_be_read_over_anything() {
+        for look in CaptionLook::ALL {
+            let style = TextStyle::look(look);
+            assert!(
+                style.background.is_some() || style.stroke.is_some() || style.shadow.is_some(),
+                "{} is bare letters over the footage",
+                look.label()
+            );
+        }
+    }
+
+    /// Four looks that are actually four looks: a picker whose options produce
+    /// the same picture is a picker that wastes the user's time.
+    #[test]
+    fn the_looks_differ_from_each_other() {
+        for (index, look) in CaptionLook::ALL.into_iter().enumerate() {
+            for other in CaptionLook::ALL.into_iter().skip(index + 1) {
+                assert_ne!(
+                    TextStyle::look(look),
+                    TextStyle::look(other),
+                    "{} and {} are the same style",
+                    look.label(),
+                    other.label()
+                );
+            }
+        }
+    }
+
+    /// The lane's own default is one of the offered looks, so the picker can
+    /// show what a fresh import is already wearing.
+    #[test]
+    fn the_caption_default_is_one_of_the_looks() {
+        assert_eq!(TextStyle::look(CaptionLook::Boxed), TextStyle::caption());
+    }
+
+    /// Wrapping survives every look: a caption that runs off the side of the
+    /// frame is unreadable however it is dressed.
+    #[test]
+    fn every_look_still_wraps() {
+        for look in CaptionLook::ALL {
+            assert!(
+                TextStyle::look(look).wrap_width.is_some(),
+                "{} runs off the frame",
+                look.label()
+            );
+        }
     }
 }

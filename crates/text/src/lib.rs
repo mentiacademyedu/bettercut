@@ -23,6 +23,6 @@ pub mod style;
 pub use error::TextError;
 pub use raster::{TextBitmap, TextRenderer};
 pub use style::{
-    Alignment, Background, FontFamily, FontWeight, MAX_SIZE, MIN_SIZE, Rgba, Shadow, Stroke,
-    TextStyle,
+    Alignment, Background, CaptionLook, FontFamily, FontWeight, MAX_SIZE, MIN_SIZE, Rgba, Shadow,
+    Stroke, TextStyle,
 };

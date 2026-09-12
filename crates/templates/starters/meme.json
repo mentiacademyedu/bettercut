@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "meme",
+  "name": "Top & Bottom Meme",
+  "category": "Meme",
+  "duration": 6.0,
+  "description": "The classic: a line above the clip and a punchline below it.",
+  "slots": [
+    { "id": "clip", "type": "video", "label": "Your clip" },
+    { "id": "top", "type": "text", "label": "Top line", "default_text": "WHEN THE CODE COMPILES" },
+    { "id": "bottom", "type": "text", "label": "Bottom line", "default_text": "ON THE FIRST TRY" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "clip", "start": 0, "duration": 6 },
+    { "type": "text", "slot": "top", "start": 0, "duration": 6,
+      "transform": { "position": [0.0, -0.4] },
+      "style": { "size": 84, "weight": "bold", "wrap_width": 960,
+                 "stroke": { "width": 6, "color": { "r": 0, "g": 0, "b": 0, "a": 255 } } },
+      "animation": { "in": { "kind": "pop", "duration": 0.3 } } },
+    { "type": "text", "slot": "bottom", "start": 0, "duration": 6,
+      "transform": { "position": [0.0, 0.4] },
+      "style": { "size": 84, "weight": "bold", "wrap_width": 960,
+                 "stroke": { "width": 6, "color": { "r": 0, "g": 0, "b": 0, "a": 255 } } },
+      "animation": { "in": { "kind": "typewriter", "duration": 0.8 } } }
+  ]
+}

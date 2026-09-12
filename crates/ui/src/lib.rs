@@ -4,14 +4,19 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod caption_list;
 pub mod context_menu;
 pub mod export_dialog;
+pub mod file_drop;
 pub mod media_jobs;
 pub mod panels;
 pub mod preview;
 pub mod preview_overlay;
+pub mod scene_dialog;
 pub mod shortcuts;
+pub mod silence_dialog;
 pub mod state;
+pub mod template_dialog;
 pub mod theme;
 pub mod thumbnails;
 pub mod timeline;
@@ -62,7 +67,7 @@ pub fn draw(
             panels::status_bar(ui, editor, state);
         });
 
-    egui::Panel::bottom("timeline")
+    let timeline_rect = egui::Panel::bottom("timeline")
         .resizable(true)
         .default_size(320.0)
         .min_size(140.0)
@@ -70,7 +75,9 @@ pub fn draw(
             panels::transport(ui, editor, state, preview.as_deref_mut());
             ui.separator();
             timeline::draw(ui, editor, state);
-        });
+        })
+        .response
+        .rect;
 
     egui::Panel::left("media")
         .resizable(true)
@@ -95,6 +102,13 @@ pub fn draw(
     egui::CentralPanel::default().show(ui, |ui| {
         panels::preview(ui, editor, state, preview.as_deref());
     });
+
+    template_dialog::show(ui.ctx(), editor, state);
+    shortcuts::help_window(ui.ctx(), state);
+    silence_dialog::show(ui.ctx(), editor, state);
+    scene_dialog::show(ui.ctx(), editor, state);
+    caption_list::show(ui.ctx(), editor, state);
+    file_drop::handle(ui.ctx(), editor, state, timeline_rect);
 }
 
 /// Fold the frame's events into view state (§56).

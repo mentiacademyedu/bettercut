@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "picture-in-picture",
+  "name": "Picture in Picture",
+  "category": "Layout",
+  "duration": 8.0,
+  "description": "A main shot with a second one inset in the corner, and a label.",
+  "slots": [
+    { "id": "main", "type": "video", "label": "Main shot" },
+    { "id": "inset", "type": "video", "label": "Corner shot" },
+    { "id": "label", "type": "text", "label": "Label", "default_text": "Live reaction" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "main", "start": 0, "duration": 8 },
+    { "type": "clip", "slot": "inset", "start": 0, "duration": 8, "track": 1,
+      "transform": { "position": [0.3, 0.28], "scale": 0.33 } },
+    { "type": "text", "slot": "label", "start": 0, "duration": 8,
+      "transform": { "position": [-0.3, -0.4] },
+      "style": {
+        "size": 44, "weight": "medium", "stroke": null,
+        "background": { "color": { "r": 0, "g": 0, "b": 0, "a": 170 },
+                        "padding": 14, "corner_radius": 8 }
+      },
+      "animation": { "in": { "kind": "slide_down", "duration": 0.4 },
+                     "out": { "kind": "fade", "duration": 0.4 } } }
+  ]
+}

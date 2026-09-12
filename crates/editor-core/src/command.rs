@@ -154,6 +154,9 @@ pub enum TextProperty {
     },
     Rotation(f32),
     Opacity(f32),
+    /// How the title arrives and leaves (§26). Both ends in one property: the
+    /// panel edits them side by side, and each change is one undo step.
+    Animation(bettercut_timeline::TextAnimation),
 }
 
 impl TextProperty {
@@ -186,6 +189,7 @@ impl TextProperty {
             Self::Scale { .. } => "text scale",
             Self::Rotation(_) => "text rotation",
             Self::Opacity(_) => "text opacity",
+            Self::Animation(_) => "text animation",
         }
     }
 }
@@ -219,6 +223,19 @@ pub enum Command {
         clip: ClipId,
         parameter: AnimatedParameter,
         key: Keyframe,
+    },
+    /// Replace a sound clip's whole volume envelope (§24 on §20a.4's
+    /// clip-gain stage).
+    ///
+    /// One command rather than a key at a time, because an envelope is one
+    /// shape: ducking writes it, dragging a point moves one within it, and a
+    /// drag has to collapse into a single undo step the way every other
+    /// gesture does (§11).
+    SetGainEnvelope {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        keys: Vec<Keyframe>,
     },
     RemoveKeyframe {
         sequence: SequenceId,
@@ -270,6 +287,33 @@ pub enum Command {
         track: TrackId,
         clip: ClipId,
         speed: bettercut_foundation::Rational,
+    },
+    /// Replace a sequence's markers.
+    ///
+    /// The whole list rather than one at a time: beat detection adds hundreds
+    /// in one go, and one command is one undo step. Normalized on the way in
+    /// (sorted, one per instant), so the journal cannot replay a bad list.
+    SetMarkers {
+        sequence: SequenceId,
+        markers: Vec<bettercut_timeline::Marker>,
+    },
+    /// An audio track's volume and pan (§20a.4's track stage).
+    SetTrackMix {
+        sequence: SequenceId,
+        track: TrackId,
+        gain: f32,
+        pan: f32,
+    },
+    /// Set how a sound clip fades in and out. Audio clips only.
+    ///
+    /// Both ends in one command, because the panel shows them side by side and
+    /// a change to either is one thing the user did.
+    SetClipFades {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        fade_in: bettercut_foundation::TimelineTime,
+        fade_out: bettercut_foundation::TimelineTime,
     },
     /// Put a transition on the end of a clip, or take it off (§25).
     ///
@@ -475,6 +519,13 @@ impl ClipProperty {
     /// from `AnimatedParameter::default_value`, so there is no second list to
     /// disagree with the one the model keeps.
     pub fn is_default(self) -> bool {
+        // Gain is not an animated parameter (§24 animates picture only), so it
+        // has no entry to compare against — and `all` over nothing is true.
+        // Asked here directly, or every volume reset button is permanently
+        // greyed out whatever the volume is.
+        if let Self::Gain(value) = self {
+            return (value - 1.0).abs() < 1e-6;
+        }
         self.animated()
             .into_iter()
             .flatten()

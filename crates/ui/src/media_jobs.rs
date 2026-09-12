@@ -270,6 +270,13 @@ impl MediaJobs {
         id
     }
 
+    /// Queue a scene detection (§45). Its answer arrives in the `SceneReport`
+    /// the caller kept, not through `poll`: nothing else in the interface needs
+    /// to know a detection happened.
+    pub fn submit_scene(&mut self, job: bettercut_playback::SceneJob) -> JobId {
+        self.scheduler.submit(Box::new(job))
+    }
+
     /// Whether an export is running, so the interface can offer to stop it
     /// rather than start a second one.
     pub fn export_in_flight(&self) -> Option<JobId> {

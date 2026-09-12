@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "quick-intro",
+  "name": "Quick Intro",
+  "category": "Intro",
+  "duration": 4.0,
+  "description": "One shot, a big title over it, and music underneath.",
+  "slots": [
+    { "id": "main", "type": "video", "label": "Your clip" },
+    { "id": "title", "type": "text", "label": "Title", "default_text": "Your Title Here" },
+    { "id": "music", "type": "audio", "label": "Music" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "main", "start": 0, "duration": 4 },
+    { "type": "text", "slot": "title", "start": 0.5, "duration": 3,
+      "style": { "size": 110, "weight": "bold" },
+      "animation": { "in": { "kind": "pop", "duration": 0.5 },
+                     "out": { "kind": "fade", "duration": 0.4 } } },
+    { "type": "audio", "slot": "music", "start": 0, "duration": 4, "volume": 0.8,
+      "fade_out": 1.0 }
+  ]
+}

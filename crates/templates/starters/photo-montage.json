@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "photo-montage",
+  "name": "Photo Montage",
+  "category": "Montage",
+  "duration": 12.0,
+  "description": "Four photos, each drifting slowly, dissolving one into the next.",
+  "slots": [
+    { "id": "photo_1", "type": "image", "label": "First photo" },
+    { "id": "photo_2", "type": "image", "label": "Second photo" },
+    { "id": "photo_3", "type": "image", "label": "Third photo" },
+    { "id": "photo_4", "type": "image", "label": "Fourth photo" },
+    { "id": "caption", "type": "text", "label": "Caption", "default_text": "Our week" },
+    { "id": "music", "type": "audio", "label": "Music" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "photo_1", "start": 0, "duration": 3, "movement": "zoom_in",
+      "transition_out": { "kind": "crossfade", "duration": 0.6 } },
+    { "type": "clip", "slot": "photo_2", "start": 3, "duration": 3, "movement": "zoom_out",
+      "transition_out": { "kind": "crossfade", "duration": 0.6 } },
+    { "type": "clip", "slot": "photo_3", "start": 6, "duration": 3, "movement": "zoom_in",
+      "transition_out": { "kind": "crossfade", "duration": 0.6 } },
+    { "type": "clip", "slot": "photo_4", "start": 9, "duration": 3, "movement": "zoom_out" },
+    { "type": "text", "slot": "caption", "start": 0.4, "duration": 2.6,
+      "transform": { "position": [0.0, 0.34] },
+      "style": { "size": 64, "weight": "bold" },
+      "animation": { "in": { "kind": "slide_up", "duration": 0.5 },
+                     "out": { "kind": "fade", "duration": 0.4 } } },
+    { "type": "audio", "slot": "music", "start": 0, "duration": 12, "volume": 0.8,
+      "fade_out": 1.5 }
+  ]
+}

@@ -13,6 +13,7 @@ bettercut-text.workspace = true
 bettercut-timeline.workspace = true
 bettercut-media.workspace = true
 bettercut-project-format.workspace = true
+bettercut-templates.workspace = true
 serde.workspace = true
 # The §38.2 journal stores one serialized command per line.
 serde_json.workspace = true

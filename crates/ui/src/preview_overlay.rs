@@ -29,6 +29,14 @@ use bettercut_editor_core::timeline::{Transform, Vec2};
 
 /// How close to a corner counts as grabbing it, in canvas pixels.
 const HANDLE_RADIUS: f32 = 7.0;
+/// How far above the top edge the rotate handle sits, in canvas pixels. Far
+/// enough that it is not mistaken for a corner, near enough to read as part of
+/// the box.
+const ROTATE_OFFSET: f32 = 24.0;
+/// Within this many degrees of a right angle, a rotate drag lands exactly on it.
+/// Level and upright are what a turn is usually aiming for, and a hand cannot
+/// hit 0.0° on its own.
+const ROTATE_SNAP: f32 = 3.0;
 /// Drawn radius of the corner circles.
 const HANDLE_DRAW: f32 = 5.5;
 /// Scale may not go below this, matching the model's own floor: zero renders
@@ -69,6 +77,15 @@ pub enum Gesture {
     /// Moving the whole clip. Holds where it started so the drag is absolute
     /// rather than an accumulation of per-frame deltas, which would drift.
     Move { from: Vec2, grab: egui::Pos2 },
+    /// Turning the clip about its centre, from the handle above the box.
+    Rotate {
+        /// The rotation the clip had when the drag began, in degrees.
+        from: f32,
+        /// The pointer's angle around the centre at that moment. The drag
+        /// adds how far it has turned since, so grabbing the handle does not
+        /// snap the clip to wherever the pointer happens to be.
+        grab_angle: f32,
+    },
     Scale {
         corner: Corner,
         from: Vec2,
@@ -120,10 +137,9 @@ pub fn generated_layer_box(
 /// `0.5 + position` with half-extents `fit · scale / 2`, which is what this
 /// returns.
 ///
-/// Rotation is deliberately ignored: the handles are axis-aligned, so a rotated
-/// clip gets a box around where it would be unrotated. Rotating from the canvas
-/// needs its own handle and its own gesture; until then the Inspector's slider
-/// is the honest way to do it.
+/// Unrotated. Rotation is applied on top by the drawing and hit-testing below,
+/// about the box's centre — the clip's anchor, which the interface never moves
+/// off the centre.
 pub fn layer_box(source_aspect: f32, output_aspect: f32, transform: Transform) -> egui::Rect {
     let (fit_x, fit_y) = bettercut_renderer::fit_scale(source_aspect, output_aspect);
     let half = egui::vec2(
@@ -134,23 +150,89 @@ pub fn layer_box(source_aspect: f32, output_aspect: f32, transform: Transform) -
     egui::Rect::from_center_size(centre, half * 2.0)
 }
 
-/// The four corners of a box, in [`Corner::ALL`] order.
-pub fn corners(box_: egui::Rect) -> [egui::Pos2; 4] {
+/// Turn `point` about `centre` by `degrees`, clockwise on screen.
+///
+/// Clockwise because that is what a positive rotation does in the renderer
+/// (`rotation_turns_clockwise_on_screen`), and the handles have to agree with
+/// the picture. In screen pixels, which are square — rotating in frame units
+/// on a 16:9 canvas would shear, which is the bug the renderer itself had.
+pub fn rotate_about(point: egui::Pos2, centre: egui::Pos2, degrees: f32) -> egui::Pos2 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let dx = point.x - centre.x;
+    let dy = point.y - centre.y;
+    egui::pos2(
+        centre.x + dx * cos - dy * sin,
+        centre.y + dx * sin + dy * cos,
+    )
+}
+
+/// The four corners of a box turned by `degrees`, in [`Corner::ALL`] order.
+pub fn corners(box_: egui::Rect, degrees: f32) -> [egui::Pos2; 4] {
+    let centre = box_.center();
     [
         box_.left_top(),
         box_.right_top(),
         box_.right_bottom(),
         box_.left_bottom(),
     ]
+    .map(|corner| rotate_about(corner, centre, degrees))
 }
 
 /// Which corner the pointer is on, if any.
-pub fn corner_at(box_on_canvas: egui::Rect, pointer: egui::Pos2) -> Option<Corner> {
-    corners(box_on_canvas)
+pub fn corner_at(box_on_canvas: egui::Rect, degrees: f32, pointer: egui::Pos2) -> Option<Corner> {
+    corners(box_on_canvas, degrees)
         .iter()
         .zip(Corner::ALL)
         .find(|(at, _)| at.distance(pointer) <= HANDLE_RADIUS)
         .map(|(_, corner)| corner)
+}
+
+/// Whether the pointer is over the picture of a box turned by `degrees`.
+///
+/// The pointer is turned back into the box's own frame, where the question is
+/// an ordinary rectangle test. Testing against the unrotated rectangle instead
+/// would let a click on the empty corner of a turned clip grab it, and a click
+/// on its actual tip miss.
+pub fn contains(box_on_canvas: egui::Rect, degrees: f32, pointer: egui::Pos2) -> bool {
+    box_on_canvas.contains(rotate_about(pointer, box_on_canvas.center(), -degrees))
+}
+
+/// Where the rotate handle is: above the middle of the top edge, turned with
+/// the box so it stays "above" the picture however far it has rotated.
+pub fn rotate_handle(box_on_canvas: egui::Rect, degrees: f32) -> egui::Pos2 {
+    let above = egui::pos2(
+        box_on_canvas.center().x,
+        box_on_canvas.top() - ROTATE_OFFSET,
+    );
+    rotate_about(above, box_on_canvas.center(), degrees)
+}
+
+pub fn on_rotate_handle(box_on_canvas: egui::Rect, degrees: f32, pointer: egui::Pos2) -> bool {
+    rotate_handle(box_on_canvas, degrees).distance(pointer) <= HANDLE_RADIUS
+}
+
+/// The pointer's angle around `centre`, in degrees, clockwise from the right.
+pub fn angle_of(centre: egui::Pos2, pointer: egui::Pos2) -> f32 {
+    (pointer.y - centre.y)
+        .atan2(pointer.x - centre.x)
+        .to_degrees()
+}
+
+/// The rotation a rotate drag has reached.
+///
+/// Relative: how far the pointer has turned since the grab, added to where the
+/// clip started. Wrapped into -180..180, which is the Inspector's range, and
+/// snapped to the nearest right angle when within a few degrees of one.
+pub fn rotated(from: f32, grab_angle: f32, centre: egui::Pos2, now: egui::Pos2) -> f32 {
+    let turned = from + (angle_of(centre, now) - grab_angle);
+    let wrapped = (turned + 180.0).rem_euclid(360.0) - 180.0;
+    let nearest = (wrapped / 90.0).round() * 90.0;
+    if (wrapped - nearest).abs() <= ROTATE_SNAP {
+        // -180 and 180 are the same orientation; keep the one in range.
+        if nearest <= -180.0 { 180.0 } else { nearest }
+    } else {
+        wrapped
+    }
 }
 
 /// Map a box in 0..1 frame units onto the canvas rectangle on screen.
@@ -197,22 +279,38 @@ pub fn scaled(from: Vec2, grab_distance: f32, centre: egui::Pos2, now: egui::Pos
     )
 }
 
-/// Draw the box and its four corner circles.
-pub fn draw(painter: &egui::Painter, box_on_canvas: egui::Rect, active: bool) {
+/// Draw the box, its four corner circles and the rotate handle.
+pub fn draw(painter: &egui::Painter, box_on_canvas: egui::Rect, degrees: f32, active: bool) {
     let colour = if active {
         crate::theme::SELECTION
     } else {
         crate::theme::CLIP_TEXT
     };
+    let stroke = egui::Stroke::new(1.5, colour);
 
-    painter.rect_stroke(
-        box_on_canvas,
-        0,
-        egui::Stroke::new(1.5, colour),
-        egui::StrokeKind::Middle,
+    // Four segments rather than `rect_stroke`, which only draws upright.
+    let points = corners(box_on_canvas, degrees);
+    for index in 0..4 {
+        painter.line_segment([points[index], points[(index + 1) % 4]], stroke);
+    }
+
+    // The rotate handle on a short stalk from the top edge, so it reads as
+    // attached to the picture rather than floating near it.
+    let top_middle = rotate_about(
+        egui::pos2(box_on_canvas.center().x, box_on_canvas.top()),
+        box_on_canvas.center(),
+        degrees,
     );
+    let handle = rotate_handle(box_on_canvas, degrees);
+    painter.line_segment([top_middle, handle], stroke);
+    painter.circle_filled(
+        handle,
+        HANDLE_DRAW + 1.0,
+        egui::Color32::from_black_alpha(160),
+    );
+    painter.circle_stroke(handle, HANDLE_DRAW, egui::Stroke::new(2.0, colour));
 
-    for at in corners(box_on_canvas) {
+    for at in points {
         // Filled, with a dark ring: on bright footage a plain light circle
         // disappears, and on dark footage a plain dark one does.
         painter.circle_filled(at, HANDLE_DRAW + 1.0, egui::Color32::from_black_alpha(160));
@@ -231,6 +329,9 @@ pub fn property_for(
         Gesture::Move { from, grab } => {
             let at = moved_position(from, grab, now, canvas);
             ClipProperty::Position { x: at.x, y: at.y }
+        }
+        Gesture::Rotate { from, grab_angle } => {
+            ClipProperty::Rotation(rotated(from, grab_angle, box_on_canvas.center(), now))
         }
         Gesture::Scale {
             from,
@@ -373,20 +474,20 @@ mod tests {
         let box_ = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 150.0));
 
         assert_eq!(
-            corner_at(box_, egui::pos2(100.0, 100.0)),
+            corner_at(box_, 0.0, egui::pos2(100.0, 100.0)),
             Some(Corner::TopLeft)
         );
         assert_eq!(
-            corner_at(box_, egui::pos2(300.0, 250.0)),
+            corner_at(box_, 0.0, egui::pos2(300.0, 250.0)),
             Some(Corner::BottomRight)
         );
         // Just inside the radius.
         assert_eq!(
-            corner_at(box_, egui::pos2(104.0, 103.0)),
+            corner_at(box_, 0.0, egui::pos2(104.0, 103.0)),
             Some(Corner::TopLeft)
         );
         // Well inside the box, but not on a corner: that is a move, not a scale.
-        assert_eq!(corner_at(box_, egui::pos2(200.0, 175.0)), None);
+        assert_eq!(corner_at(box_, 0.0, egui::pos2(200.0, 175.0)), None);
     }
 
     /// The canvas mapping has to survive a letterboxed preview, where the
@@ -408,5 +509,105 @@ mod tests {
         );
         assert!((middle.left() - 200.0).abs() < 1e-4);
         assert!((middle.top() - 192.0).abs() < 1e-4);
+    }
+
+    /// Positive rotation turns clockwise on screen, as it does in the renderer.
+    /// A handle that turned the other way would sit on the opposite side of
+    /// the picture from the corner it belongs to.
+    #[test]
+    fn rotation_is_clockwise_on_screen() {
+        let centre = egui::pos2(100.0, 100.0);
+        // The point to the right of centre swings down (screen y grows).
+        let turned = rotate_about(egui::pos2(150.0, 100.0), centre, 90.0);
+        assert!((turned.x - 100.0).abs() < 1e-3 && (turned.y - 150.0).abs() < 1e-3);
+    }
+
+    /// The corners turn with the box, and a turned corner is what gets grabbed.
+    #[test]
+    fn a_turned_boxs_corner_is_where_it_is_drawn() {
+        let box_ = egui::Rect::from_min_max(egui::pos2(100.0, 150.0), egui::pos2(300.0, 250.0));
+        let turned = corners(box_, 90.0);
+
+        // Top-left of a 200×100 box turned 90° about (200, 200) is at (250, 100).
+        assert!(
+            turned[0].distance(egui::pos2(250.0, 100.0)) < 1e-3,
+            "{:?}",
+            turned[0]
+        );
+        assert_eq!(corner_at(box_, 90.0, turned[0]), Some(Corner::TopLeft));
+        // And the unrotated spot is empty now.
+        assert_eq!(corner_at(box_, 90.0, egui::pos2(100.0, 150.0)), None);
+    }
+
+    /// Hit-testing follows the turned picture: its tip is inside, the empty
+    /// corner of its upright box is not.
+    #[test]
+    fn a_turned_box_is_grabbed_by_its_picture_not_its_upright_box() {
+        let box_ = egui::Rect::from_center_size(egui::pos2(200.0, 200.0), egui::vec2(200.0, 20.0));
+        // Turned 90°, a wide thin bar becomes a tall thin one.
+        assert!(
+            contains(box_, 90.0, egui::pos2(200.0, 290.0)),
+            "the tip was missed"
+        );
+        assert!(
+            !contains(box_, 90.0, egui::pos2(290.0, 200.0)),
+            "the empty end of the upright box still grabbed it"
+        );
+    }
+
+    /// The rotate handle stays "above" the picture as it turns.
+    #[test]
+    fn the_rotate_handle_turns_with_the_box() {
+        let box_ = egui::Rect::from_center_size(egui::pos2(200.0, 200.0), egui::vec2(100.0, 100.0));
+        let upright = rotate_handle(box_, 0.0);
+        assert!(upright.y < box_.top(), "the handle is not above the box");
+
+        // Turned 90° clockwise, "above" is to the right.
+        let turned = rotate_handle(box_, 90.0);
+        assert!(
+            turned.x > box_.right(),
+            "the handle did not turn with the box"
+        );
+        assert!(on_rotate_handle(box_, 90.0, turned));
+    }
+
+    /// The drag is relative: grabbing the handle does not snap the clip to the
+    /// pointer's angle, and a quarter turn of the pointer is a quarter turn of
+    /// the clip.
+    #[test]
+    fn a_rotate_drag_adds_how_far_the_pointer_turned() {
+        let centre = egui::pos2(0.0, 0.0);
+        let grab = angle_of(centre, egui::pos2(0.0, -10.0)); // straight up
+        let now = egui::pos2(10.0, 0.0); // a quarter turn clockwise
+        assert!((rotated(10.0, grab, centre, now) - 100.0).abs() < 1e-3);
+    }
+
+    /// Wrapped into the Inspector's -180..180, so a full turn does not run the
+    /// number off to 400°.
+    #[test]
+    fn a_rotate_drag_wraps_into_range() {
+        let centre = egui::pos2(0.0, 0.0);
+        let grab = angle_of(centre, egui::pos2(10.0, 0.0));
+        let now = egui::pos2(0.0, -10.0); // three quarters of a turn the long way
+        let result = rotated(170.0, grab, centre, now);
+        assert!((-180.0..=180.0).contains(&result), "{result}");
+        assert!((result - 80.0).abs() < 1e-3, "{result}");
+    }
+
+    /// Within a few degrees of a right angle the drag lands on it exactly —
+    /// level and upright are what a turn is usually aiming for.
+    #[test]
+    fn a_rotate_drag_snaps_to_right_angles() {
+        let centre = egui::pos2(0.0, 0.0);
+        let grab = 0.0;
+        // Two degrees off level.
+        let near_level = rotate_about(egui::pos2(10.0, 0.0), centre, 2.0);
+        assert_eq!(rotated(0.0, grab, centre, near_level), 0.0);
+        // Eighty-eight: snaps to ninety.
+        let near_upright = rotate_about(egui::pos2(10.0, 0.0), centre, 88.0);
+        assert_eq!(rotated(0.0, grab, centre, near_upright), 90.0);
+        // Twenty: left alone.
+        let free = rotate_about(egui::pos2(10.0, 0.0), centre, 20.0);
+        assert!((rotated(0.0, grab, centre, free) - 20.0).abs() < 1e-3);
     }
 }

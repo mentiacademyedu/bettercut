@@ -35,6 +35,81 @@ fn music(name: &str) -> MediaAsset {
     asset
 }
 
+fn photo(name: &str) -> MediaAsset {
+    // As `probe` reports one: a picture with no duration.
+    MediaAsset::new(MediaKind::Image, name, MediaTime::ZERO)
+}
+
+#[test]
+fn a_photo_places_for_five_seconds_on_the_picture_track() {
+    let mut editor = editor();
+    let media = editor.import_media(photo("C:/media/p.jpg"));
+
+    let clips = editor.place_media(media).unwrap();
+    assert_eq!(clips.len(), 1, "a photo has no sound to place");
+
+    let sequence = editor.active_sequence().unwrap();
+    let clip = &sequence.video_tracks[0].clips()[0];
+    assert_eq!(
+        clip.timeline.end,
+        TimelineTime::from_ticks(bettercut_editor_core::media::STILL_DURATION.ticks())
+    );
+    assert_eq!(sequence.audio_tracks[0].len(), 0);
+}
+
+/// A photo has no end to run out of.
+#[test]
+fn a_photo_can_be_dragged_out_as_long_as_wanted() {
+    let mut editor = editor();
+    let media = editor.import_media(photo("C:/media/p.jpg"));
+    let clip = editor.place_media(media).unwrap()[0];
+    let track = editor.track_of(clip).unwrap();
+
+    editor
+        .trim_clip(
+            track,
+            clip,
+            bettercut_editor_core::TrimEdge::End,
+            TimelineTime::from_seconds(60),
+        )
+        .unwrap();
+
+    let sequence = editor.active_sequence().unwrap();
+    assert_eq!(
+        sequence.video_tracks[0].clips()[0].timeline.end,
+        TimelineTime::from_seconds(60)
+    );
+}
+
+/// A crossfade reads past both clips' edges, which a video trimmed to its
+/// file's start cannot supply — but a photo shows the same picture there too.
+#[test]
+fn photos_crossfade_without_spare_footage() {
+    let mut editor = editor();
+    let first = editor.import_media(photo("C:/media/a.jpg"));
+    let second = editor.import_media(photo("C:/media/b.jpg"));
+    let a = editor.place_media(first).unwrap()[0];
+    editor.place_media(second).unwrap();
+
+    let room = editor
+        .transition_room(
+            a,
+            bettercut_editor_core::timeline::TransitionKind::Crossfade,
+        )
+        .expect("there is a cut");
+    assert_eq!(
+        room,
+        TimelineTime::from_ticks(bettercut_editor_core::media::STILL_DURATION.ticks()),
+        "as long as the shots themselves"
+    );
+    editor
+        .set_transition(
+            a,
+            bettercut_editor_core::timeline::TransitionKind::Crossfade,
+        )
+        .expect("a crossfade between photos");
+}
+
 #[test]
 fn a_video_with_sound_places_both_halves() {
     let mut editor = editor();

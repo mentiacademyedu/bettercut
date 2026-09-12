@@ -424,3 +424,195 @@ fn the_family_picker_works_with_no_list() {
     draw(&mut editor, &mut state);
     assert_eq!(editor.project(), &before);
 }
+
+/// With nothing selected the Audio tab is the whole video's volume — not a
+/// greyed-out tab and not a note saying it does not exist yet.
+#[test]
+fn the_whole_video_audio_tab_offers_a_volume() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, _, _) = editor_with_clips();
+    let mut state = UiState::default();
+    state.inspector_tab = InspectorTab::Audio;
+
+    let before = editor.project().clone();
+    let words = drawn_text(&mut editor, &mut state);
+    assert_eq!(editor.project(), &before, "drawing changed the project");
+
+    assert_eq!(
+        state.inspector_tab,
+        InspectorTab::Audio,
+        "the Audio tab was not available for the whole video"
+    );
+    assert!(words.contains("volume"), "no volume control drawn: {words}");
+    assert!(
+        !words.contains("no whole-video volume yet"),
+        "the old placeholder is still there"
+    );
+}
+
+/// A picture placed with its sound: the Audio tab, with the picture selected,
+/// adjusts the sound linked to it rather than saying there is none (§12).
+#[test]
+fn a_pictures_audio_tab_adjusts_its_linked_sound() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, _rx) = Editor::new_project("Inspector");
+    let mut asset = MediaAsset::new(
+        MediaKind::Video,
+        "C:/media/a.mp4",
+        MediaTime::from_seconds(10),
+    );
+    asset.audio_codec = Some("aac".to_owned());
+    let media = editor.import_media(asset);
+    let placed = editor.place_media(media).unwrap();
+
+    let mut state = UiState::default();
+    state.selected_clips.insert(placed[0]);
+    state.inspector_tab = InspectorTab::Audio;
+
+    let words = drawn_text(&mut editor, &mut state);
+    assert_eq!(state.inspector_tab, InspectorTab::Audio);
+    assert!(
+        words.contains("The sound that came with this clip."),
+        "the linked sound was not offered: {words}"
+    );
+    assert!(
+        words.contains("fade in") && words.contains("fade out"),
+        "{words}"
+    );
+    assert!(!words.contains("This clip has no sound."), "{words}");
+}
+
+/// The Colours tab offers the one-click looks, on a clip and on the whole
+/// video.
+#[test]
+fn the_colours_tab_offers_looks() {
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, video, _) = editor_with_clips();
+    let mut state = UiState::default();
+    state.inspector_tab = InspectorTab::Colours;
+    state.selected_clips.insert(video);
+
+    let words = drawn_text(&mut editor, &mut state);
+    assert!(words.contains("Looks"), "{words}");
+    for (name, _) in bettercut_ui::panels::LOOKS {
+        assert!(words.contains(name), "{name} missing: {words}");
+    }
+
+    state.clear_selection();
+    let whole = drawn_text(&mut editor, &mut state);
+    assert!(
+        whole.contains("Faded"),
+        "the whole video has no looks: {whole}"
+    );
+}
+
+/// Landscape footage in a vertical sequence: the Video tab offers Fill, and it
+/// is not offered when the clip already matches the frame.
+#[test]
+fn the_video_tab_offers_fit_and_fill() {
+    use bettercut_editor_core::timeline::Resolution;
+    use bettercut_ui::panels::InspectorTab;
+
+    let (mut editor, _rx) = Editor::new_project("Reframe");
+    let media = editor.import_media(
+        MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/wide.mp4",
+            MediaTime::from_seconds(10),
+        )
+        .with_video(
+            1920,
+            1080,
+            bettercut_editor_core::foundation::FrameRate::FPS_30,
+        ),
+    );
+    let clip = editor.place_media(media).unwrap()[0];
+    editor
+        .set_sequence_format(
+            Resolution::new(1080, 1920),
+            bettercut_editor_core::foundation::FrameRate::FPS_30,
+        )
+        .unwrap();
+
+    let mut state = UiState::default();
+    state.inspector_tab = InspectorTab::Video;
+    state.selected_clips.insert(clip);
+
+    let words = drawn_text(&mut editor, &mut state);
+    assert!(words.contains("Fill"), "no fill button: {words}");
+    assert!(words.contains("Fit"), "no fit button: {words}");
+    assert!(words.contains("movement"), "no movement row: {words}");
+    assert!(
+        words.contains("Zoom in") && words.contains("Zoom out"),
+        "{words}"
+    );
+}
+
+/// The meter's scale (§20a).
+///
+/// A meter is only useful if the range it shows matches the range the ear
+/// hears. These pin the decibel scale: half a bar is around -30 dB, not around
+/// half amplitude.
+mod meter {
+    use bettercut_ui::panels::meter_fraction;
+
+    #[test]
+    fn silence_is_empty_and_full_scale_is_full() {
+        assert_eq!(meter_fraction(0.0), 0.0);
+        assert_eq!(meter_fraction(1.0), 1.0);
+        // Past full scale the bar cannot say more than "everything".
+        assert_eq!(meter_fraction(4.0), 1.0);
+    }
+
+    /// Linearly, -6 dB (half the amplitude) would draw a half-empty bar and
+    /// every ordinary mix would look quiet. On a decibel scale it is nearly
+    /// full, which is what it sounds like.
+    #[test]
+    fn half_amplitude_is_near_the_top() {
+        let half = meter_fraction(0.5);
+        assert!(half > 0.85, "-6 dB drew at {half:.2} of the bar");
+    }
+
+    /// And a quiet passage still has somewhere to go: -40 dB is a third of the
+    /// way up rather than pinned to nothing.
+    #[test]
+    fn a_quiet_passage_still_moves_the_bar() {
+        let quiet = meter_fraction(0.01); // -40 dB
+        assert!(
+            (0.25..0.45).contains(&quiet),
+            "-40 dB drew at {quiet:.2} of the bar"
+        );
+    }
+
+    /// Below the floor there is nothing to show: -60 dB is the bottom of the
+    /// scale, and a bar that never quite empties would suggest sound in a
+    /// silent passage.
+    #[test]
+    fn the_floor_is_the_floor() {
+        assert_eq!(meter_fraction(0.001), 0.0, "-60 dB is the bottom");
+        assert_eq!(meter_fraction(0.0001), 0.0, "-80 dB is below it");
+    }
+
+    #[test]
+    fn the_bar_rises_with_the_level() {
+        let mut previous = 0.0;
+        for peak in [0.002_f32, 0.01, 0.1, 0.4, 0.9, 1.0] {
+            let fraction = meter_fraction(peak);
+            assert!(
+                fraction > previous,
+                "{peak} drew no higher than the one below"
+            );
+            previous = fraction;
+        }
+    }
+
+    #[test]
+    fn a_broken_level_draws_nothing() {
+        assert_eq!(meter_fraction(f32::NAN), 0.0);
+        assert_eq!(meter_fraction(f32::INFINITY), 0.0);
+        assert_eq!(meter_fraction(-1.0), 0.0);
+    }
+}

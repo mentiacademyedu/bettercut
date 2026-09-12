@@ -21,6 +21,10 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **6 — Export** | ✅ Export… in the toolbar, on the job pool, with progress and a stop button |
 | **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes, and the effect graph |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
+| **9 — Text and transitions** | ✅ Titles with entrances and exits; crossfade, fade through black, slide, push and zoom |
+| **10 — Captions** | ✅ SRT and VTT in and out, on a lane of their own |
+| **11 — Templates** | ✅ Format, validator, browser, slots, and adding your own |
+| **12 — Automation** | 🟡 Silence removal, beat markers, scene detection and reframing done; automatic captions open |
 
 **What works today:** new/open/save projects as versioned JSON with atomic
 writes; importing real video, audio, and image files with full metadata
@@ -32,6 +36,7 @@ add · move (within and across tracks) · trim both edges · split at playhead
 delete · ripple delete · duplicate · copy / paste · snapping
 track add/remove/hide/mute/lock · zoom · scrub · undo / redo
 multi-select: Ctrl+click and rubber-band box select
+nudge by frame · trim to playhead · markers · jump between cuts
 ```
 
 Clips are dragged and trimmed directly on the canvas, with snapping to clip
@@ -178,6 +183,24 @@ centre. The box is derived by inverting the shader's own transform, which is the
 kind of derivation that is plausible and wrong — so a test composites a real
 frame through the real renderer, reads back where the picture actually landed,
 and compares, across square, letterboxed and pillarboxed sources.
+
+A handle above the box turns the clip, snapping to the nearest right angle
+within three degrees, because level and upright are what a turn is usually
+aiming for and a hand cannot hit 0.0° on its own.
+
+Building that handle found a bug that had been in the renderer since the first
+transform: **rotation did not work**. The matrix rotated in clip space, which
+runs -1..1 on both axes whatever the frame's shape, and one of its terms had the
+wrong sign — so the picture's two axes turned in opposite directions. That is a
+shear, not a rotation. A clip lost area as it turned, half of it at 30°, and at
+45° it vanished altogether: the matrix's determinant is `-cos 2θ`, which is zero
+there. Preview and export share the compositor, so exports had it too. The one
+test checked a single point at 90° on a square frame, which depends only on the
+two terms that happened to be right. The new tests render a solid square and
+measure it — area preserved at every angle, still square on a 16:9 frame — and
+put the old matrix back to confirm they fail on it. The two golden frames that
+include a rotation had recorded the sheared picture and were re-recorded; the
+four without one were unchanged.
 
 §26's titles get the same box, which took one extra step. A title is drawn at
 its *natural* size rather than fitted to the canvas, so the matrix the shader
@@ -372,8 +395,8 @@ each encoder the machine has.
 
 ### Transitions
 
-Two of them, crossfade and fade through black (§25), attached to the **outgoing
-clip** rather than to the track. That placement is the whole design: move, trim,
+Five of §25's seven — crossfade, fade through black, slide, push and zoom —
+attached to the **outgoing clip** rather than to the track. That placement is the whole design: move, trim,
 split, cut and paste all carry the clip, and a transition stored beside the
 timeline would have to be rewritten by every one of those operations. It is the
 same argument §24 makes for anchoring keyframes to the source.
@@ -385,6 +408,21 @@ spending that on. Clips stay where the user put them; the transition is a window
 of one, the incoming clip at a partial opacity. The compositor needed no changes
 at all — §22's alpha-over already draws one picture over another.
 
+The moving kinds needed none either, which is the point of adding them this
+way. A slide, a push and a zoom differ from a crossfade and from each other
+only in *where the two layers are drawn*, and the compositor already applies a
+transform per layer — so all three are a handful of numbers in one function
+beside the fade, not a shader each. The placement is applied over whatever the
+clip already has, so a transition on a clip the user has moved shifts it from
+where they put it. The two kinds left out, flash and blur, are the two that
+would need something new: a generated white layer, and a blur across a *pair*
+of layers rather than one clip. What holds all three together is one
+number — that an offset of 1.0 is one whole frame width — so that number is
+measured on a real device rather than assumed: a solid layer is rendered at a
+known offset and its edge is found. Every other transition test would still
+pass if the compositor meant something else by position, and every slide would
+be wrong.
+
 The interesting part is handles. A crossfade shows both clips at once, so before
 the cut the incoming clip must supply frames from *before* its in-point, and
 after it the outgoing clip must keep reading *past* its out-point. A clip
@@ -392,9 +430,10 @@ trimmed to the edge of its file has no such material, and a transition placed
 anyway would render as a black flash. So the model works out what is actually
 there and clamps the length to it — in the command, not in the interface, because
 §38.2 replays commands after a crash and a check that only runs on the way in
-comes back unchecked on the way out. A fade through black needs no handles at
-all: each clip fades within its own range, so it works on any cut, including one
-against the very start or end of a file. The inspector offers whichever kinds
+comes back unchecked on the way out. Everything that shows two clips at once
+needs them; a fade through black is the only kind that does not, because each
+clip fades within its own range, so it works on any cut — including one against
+the very start or end of a file. The inspector offers whichever kinds
 the cut can support and says why the other is unavailable.
 
 ### Text
@@ -548,14 +587,369 @@ the timeline outlines it so the first a user learns of the link is not the sound
 jumping when they let go of a drag. `Unlink Audio` in the clip menu detaches
 them on purpose.
 
+While a drag is in progress the partner shows as a pale ghost on its own lane,
+at exactly the place the editor will put it — computed by the same delta the
+editor applies, so the ghost cannot be somewhere the clip does not end up.
+
 **What does not work yet:** speed is not keyframed, so there is no ramp from one
-rate to another. A dragged clip's partner does not show a ghost while the drag
-is in progress; it moves on release. Text
+rate to another. Text
 uses the machine's fonts rather than bundled ones — §26 wants
 `assets/fonts/` for templates (Milestone 11), and until there is a font picker a
 single bundled family would be the *only* family on offer. Audio does not
 crossfade: mixing two sources is a different mechanism from blending two
 pictures, and §25 v1 is picture only.
+
+### Audio off the UI thread
+
+Mixing used to run on the UI thread, once per frame, feeding a device ring
+buffer that holds 150 ms. That holds up until the UI thread stops — and on
+Windows it stops whenever the window is dragged or resized, because the message
+loop blocks for as long as the mouse is held. The sound cut out 150 ms later.
+Audio decoding ran there too, so a slow decode also cost a video frame.
+
+It now has §20a.2's dedicated mixer thread. The thread cannot read the project —
+§54 makes the editor core its only owner — so it is sent an `AudioPlan`: a
+snapshot of the audio tracks and the assets they read, re-sent only when it
+changes, since a slider drag on a video clip is a project change sixty times a
+second and none of them concern the mixer. There is no lock anywhere between the
+UI and the sound; the two talk only through a channel.
+
+The refactor also removed a bug. Export carried its own copy of the mixing loop,
+and the copies had already diverged: the preview resampled a sped-up clip and
+the export did not, so a 2× clip exported with its sound at normal speed and cut
+off half way. Both now call one `AudioMixer::mix_block`. A test mixes the
+fixture's 440 Hz tone at 1× and 2× and counts zero crossings — with resampling
+removed, the ratio comes back 0.99 instead of 2, which is exactly what the
+export was producing.
+
+### Whole-video volume
+
+With nothing selected, the Inspector's Audio tab sets the whole video's volume —
+§20a.4's master gain. It is project data rather than a monitoring level, which
+reverses an earlier call of mine: §20a.4 puts master gain inside the mix graph
+whose order "must be defined, because preview and export must match", so a
+volume that changed what played and not what exported would be exactly the
+mismatch §46 forbids, and the only whole-video control that silently did not
+reach the file. A test exports at 100% and at 25% and measures the audio in each
+file; with the old hard-coded unity gain the quieter one came back at 1.00 of
+the louder.
+
+Found on the way: the reset button beside any volume control could never be
+enabled. Gain is not an animated parameter, so "is this the default?" was asked
+of an empty list of parameters — and `all` over nothing is true.
+
+### Templates
+
+§31's flow, in one window: pick a template, drop media into its slots, replace
+its text, and it lands on the timeline as **one undo step** (§77). Six ship
+with the editor — Quick Intro, Two-Shot Promo, Picture in Picture, Outro, Top &
+Bottom Meme and Photo Montage — and your own `.json` files can be added from
+the same window, kept in a folder beside the editor's other per-user data.
+
+A template is data, never code (§64), and nothing reaches the engine that has
+not been through the validator. Three decisions there:
+
+- **Every problem is reported, not just the first.** Whoever wrote the file
+  fixes it in one pass instead of one error per attempt.
+- **Out-of-range numbers are rejected, not clamped.** Clamping is right for a
+  slider, where the user is watching the result; in a template it would quietly
+  render something other than what its author wrote, and they would hear about
+  it from someone else.
+- **Nothing panics on any input.** A template picker that crashes on one bad
+  file in a folder takes the rest of the folder down with it, so the tests feed
+  it every truncation of a valid file, a few thousand single-byte corruptions,
+  and every JSON type in every field. That found a real one: an authored speed
+  of `1e308` saturated to `i64::MAX` on the way to a ratio and overflowed.
+
+A template's slots are filled from the project's own media, an empty slot is
+skipped rather than filled with something nobody chose, and the report says
+which — "left empty: Music" beats wondering why the edit is silent.
+
+### Photos
+
+Stills can be placed, which is what makes montages and logos possible. A photo
+has no length of its own, so it gets five seconds and can be dragged out to
+anything; it never runs out of footage, so it crossfades against anything and
+trims without limit.
+
+Two things stop a photo being expensive. Every instant of it maps to the same
+picture, so it is **decoded once** rather than once per frame — the frame cache
+is keyed by time, and without that mapping a 12-megapixel JPEG would be decoded
+sixty times a second. And a decoded still is capped at 4096 pixels on its long
+edge: a phone photo at full size is 60–250 MB for one frame, past what many GPUs
+accept as a single texture, and nothing is exported larger than 4K anyway.
+Stills get no proxies — a proxy is a lighter *video* to decode each frame, and
+there is only one frame.
+
+### Titles that arrive and leave
+
+A title can fade, slide up or down, pop, or type itself in — at either end, with
+its own length. They are presets rather than curves: one choice and one number,
+with the keyframe editor already there for anything else.
+
+The typewriter is the one with a trap in it. Laying out only the typed part
+would re-centre the line with every letter, so the words would crawl sideways as
+they appeared. Instead the whole title is laid out and the letters not yet
+reached are simply not drawn — same bitmap, same line breaks, every letter
+already where it will finish.
+
+Both the preview and the export ask one function what a title looks like at an
+instant, so an animated title exports as the one that was watched (§46).
+
+### Fades, track volume and pan
+
+Sound clips fade in and out, drawn as ramps on the clip. The envelope is
+quadratic rather than linear: a linear ramp of amplitude sounds like it holds
+loud and then drops away at the last moment, because loudness is heard roughly
+logarithmically.
+
+The fade is a function of **where in the clip** each frame falls, not of where
+the block boundaries are — so the preview's 480-frame blocks and the export's
+frame-sized ones produce the same samples, which a test checks by mixing the
+same span whole and in halves.
+
+Tracks have the volume and pan §20a.4's mix graph always had a stage for, set
+from the track header's menu and shown as a badge on the header, so a quiet lane
+is never a mystery.
+
+### Markers, and finding the beat
+
+`M` drops a marker at the playhead. Clips and titles snap to them, and ↑ ↓ stop
+at them as well as at cuts — which is what makes cutting to music a matter of
+dropping clips onto marks.
+
+**Mark Beats** puts one on every beat of a clip's music. It reads the waveform
+the timeline already draws, so it costs no decoding at all: onset strength on a
+log scale, the tempo by autocorrelation weighted toward usual tempos, then beat
+by beat so a live recording that drifts is followed rather than left behind by a
+rigid grid. Each of those three is held by a test that fails without it — a
+softer snare being heard as half-speed, a tempo between buckets sliding off by
+the end of a minute, and a drifting band.
+
+### Removing silences
+
+§78's flow, in order: analyse the clip's sound, **show** the suggested cuts, and
+only then cut. The pauses are shaded on the timeline while the window is open,
+and the three sliders — how quiet, for how long, how much breath to keep —
+change the suggestion live, so "that took out a breath" is fixed by moving a
+slider rather than by undoing and guessing again.
+
+Confirming splits each stretch out at both ends and ripple-deletes it, picture
+and linked sound together, from the last stretch backwards so an earlier cut
+never moves a later one out from under the edit — all as one undo step.
+
+### Normalising a level
+
+"This one is too quiet" is the most ordinary problem in an edit, and the answer
+is already in the waveform. **Normalise Volume**, on a clip with sound, sets its
+gain so the loudest moment it *plays* — its own trimmed range, not the whole
+recording — lands a dB under full scale.
+
+A dB of headroom rather than none, because a peak sitting exactly at full scale
+clips the moment anything is mixed with it. It works in both directions: a clip
+peaking at full scale is brought down as readily as a quiet one is brought up.
+A clip already there is left alone rather than given an undo step nobody can
+hear, and one below the waveform's own floor is refused — multiplying a noise
+floor by a thousand is not what normalising means.
+
+It is the **peak**, not the loudness. Two clips normalised to the same peak can
+still sound very different, because loudness is closer to an average than a
+maximum, and measuring it properly needs the samples and a K-weighting filter
+rather than an 8-bit peak envelope. The README would rather say that than have
+the feature quietly claim more than it does.
+
+### The output meter
+
+Two bars beside the transport, showing the peak of each side of what is going
+to the device right now. Amber past -3 dB, red when the limiter has had to
+clamp — the one thing a meter must never be quiet about.
+
+On a decibel scale, not a linear one: linearly everything from a whisper to a
+shout crowds into the top fifth of the bar and the meter is decoration. -60 dB
+to zero spreads the range the way the ear hears it, so half amplitude sits near
+the top (which is what it sounds like) and a quiet passage still has somewhere
+to move. Peak rather than average, because the question a meter answers is "is
+this about to clip?" and an average says no right up until it does.
+
+The mixer thread publishes the level through atomics — it must never wait on
+the interface (§20a.2, §54) — and clears it when playback stops, because a
+meter holding the last level of a stopped mix looks like sound that is not
+there.
+
+### Ducking music under a voice
+
+The most common mix note in the world: *the music is too loud under the
+talking*. By hand it is a keyframe either side of every sentence. **Duck Under
+Voice**, on a clip with sound, dips it wherever anything else is speaking over
+it — every other clip that overlaps it, on any track, using the speech detection
+the captions use.
+
+Four keys per duck: full level an attack before the words, down as they start,
+held to the end, back up over the release. Speech separated by less than 1.5 s
+stays one duck, because music surging back for half a second between two
+sentences pumps, and pumping is worse than leaving it down. The whole shape is
+one undo step, and **Clear Ducking** puts the clip back.
+
+The dip is drawn on the clip: a pale line across the waveform, high where the
+music is up and falling where it is ducked, with a dot at each key — **and the
+dots can be dragged**, in both axes, because a duck is adjusted as much by
+moving *when* it happens as by how deep it is. A point is held between its
+neighbours: keys that crossed would be reordered as the envelope is written,
+and the point under the pointer would become a different key. The whole drag is
+one undo step (§11). Double-click the line to put a point in, at the level the
+line already has so the shape does not jump, and double-click a point to take
+it out — down to the last two, because an envelope of one point is a level
+rather than a shape, and emptying it is what Clear Ducking is for. It is
+sampled from the same `gain_at` the mixer asks, so it draws what is *heard*
+rather than what the keys mean — an envelope that never reached the mixer would
+draw flat.
+
+Underneath it is ordinary volume automation (§24 on §20a.4's clip-gain stage),
+so the same envelope is available for riding a level by hand. The audio thread
+never walks a data structure or allocates (§54): the engine evaluates the
+envelope at both ends of each block and hands the mixer the line between them,
+which is also why a duck ramps smoothly instead of stepping at block
+boundaries. Export mixes through the same `AudioMixer::mix_block`, so what is
+heard is what is written (§46).
+
+### Timing captions from speech
+
+§28's automatic captions want a transcription engine — a model and a download
+away. But transcription answers two questions, *when* and *what*, and only one
+of them needs a model. **Time Captions**, on a clip's right-click menu, answers
+the *when* from the waveform the timeline already keeps and puts an empty
+caption on each phrase, ready to type into.
+
+That is the tedious half. Typing a sentence takes a moment; finding the instant
+it starts takes a scrub, a nudge and another scrub, thirty times over.
+
+Three rules make the result readable rather than merely accurate: a gap shorter
+than 350 ms is inside a phrase rather than between two, a burst shorter than
+300 ms is a cough rather than a phrase, and a stretch longer than five seconds
+is divided evenly — two captions of four seconds read better than one of five
+and one of three. Each is held by a test that fails without it.
+
+Captions with no words draw nothing and export as nothing, so a half-typed lane
+is a half-finished job rather than a file full of blanks. When a real provider
+lands it answers in the same shape with the words filled in, and everything
+downstream of that point is already built (§46).
+
+### The Captions window
+
+Timing thirty captions takes a second; typing into them by clicking each one on
+the timeline and crossing to the Inspector is thirty selections and thirty trips
+across the window, which would make the timing feature a way of *creating* work.
+
+So there is a list — **Captions** in the toolbar, and it opens by itself after
+timing. One row per caption, in order: the timecode plays from there, the field
+takes the words, and Enter moves to the next row. The row the playhead is inside
+is picked out, and the gaps between captions belong to no row, which is the
+honest answer.
+
+Four looks sit across the top — **Boxed**, **Outlined**, **Highlight**,
+**Soft** — and dress the whole lane in one undo step. The look belongs to the
+lane rather than to a caption, because subtitles that change style halfway
+through read as a mistake, and titles are deliberately left out: they are
+placed and dressed one at a time, which is the difference between a title and a
+caption. Every look carries its own contrast — a box, a rim or a shadow —
+because plain letters vanish over a bright shot, and a caption that cannot be
+read is worse than none.
+
+The list is a view, not a copy. Every row reads its clip each frame and every
+keystroke goes through the editor, so the timeline and the list cannot disagree,
+and typing a sentence is one undo step — with the caption *being typed into*
+tracked, because every caption edit shares a history label and a keystroke
+marked as continuing would otherwise fold into the caption typed before it,
+where one undo wipes both.
+
+### Changing shape for another platform
+
+§36's resize is about the canvas: the **shape** row in the Inspector switches
+between 16:9, 9:16, 1:1, 4:5 and 21:9, keeping the short edge — reshaping
+1920×1080 to vertical gives 1080×1920, not something smaller in both directions
+— and the source media is never touched.
+
+What §36 leaves out is that every clip is then a different shape from the frame.
+An edit cut in landscape and switched to Shorts is a sequence of pillarboxed
+clips, and saying "Fill" to each one by hand is the work an editor should
+absorb. **clips: Fill frame / Fit frame** says it once for all of them, as one
+undo step.
+
+Clips with a movement of their own are deliberately left alone and counted
+separately in the message. A Ken Burns push is framing the user wrote by hand;
+flattening it to one number would throw away work that cannot be guessed back.
+
+### Finding the cuts in footage
+
+A file that came off a camera is one shot. A file that came from anywhere else —
+a download, a screen recording, last year's export — is usually many, and
+re-cutting it by hand means scrubbing for every join. **Find Cuts**, on a clip's
+right-click menu, reads the footage and offers them.
+
+Each frame is reduced to the average brightness of a 16×9 grid, and a cut is
+where the picture changes far more than it has been changing. Both halves of
+that matter: a fixed threshold alone marks a cut every few frames of a whip pan,
+and a relative one alone marks the noise in a locked-off shot of a wall. Tests
+hold both — a sweeping bar that must *not* be cut into pieces, a camera flash
+that must not become a one-frame shot.
+
+The reading happens on a worker (§48: cancelling closes the window and stops the
+decode), over only the part of the file the clip actually plays. The cuts are
+drawn on the timeline as dashed lines while the window is open, nothing is cut
+until you say so, and confirming makes every split as **one undo step** — §11's
+rule that the history holds intentions, and "cut this at its scene changes" is
+one intention.
+
+### Looks, framing and movement
+
+Three small things that remove arithmetic from common jobs:
+
+- **Looks** — Punchy, Soft, Faded, Moody, Black & white — are three colour
+  values that only mean something as a set, so they go on and come off in one
+  step. Offered on a clip or on the whole video, and hidden where keyframes
+  would override them.
+- **Fit and Fill** sit beside the scale slider. Fitting leaves bars at the
+  sides; filling covers the frame — the everyday need when landscape footage
+  lands in a vertical edit. `fill_scale` lives beside `fit_scale`, because it is
+  the same decision seen the other way round.
+- **Movement** writes a slow zoom as ordinary scale keyframes, eased at both
+  ends and relative to the clip's own framing, so a shot set to fill keeps
+  filling while it moves. A template can ask for the same move by name, and both
+  routes write the same keys from one place.
+
+### Making room, and holding a frame
+
+**Insert Gap** opens time at a point across every track — clips and markers
+from there on move right by the same amount, and a clip the gap opens inside is
+split there first, its halves keeping their own sound. It is the inverse of
+removing a silence, and the thing a freeze frame needs.
+
+**Freeze Frame** holds the frame under the playhead. It opens a gap and drops
+in a clip that holds that one frame, so the shot's sound is cut and moved with
+it and nothing after drifts: holding the picture *without* making room would
+leave the sound running underneath and the two out of step from there on.
+
+No image is written to disk for it. A hold is an ordinary clip with a flag, and
+every instant of it asks the decoder for the same source time — so it costs one
+decode however long it is held, the same trick photos use, and it saves and
+recovers as plain project data. Two details follow from being a clip rather
+than a mode: keyframes are evaluated against the clip's *progress* rather than
+the frame it reads, so a held frame can still drift or fade; and its trim has no
+end of footage to hit, because it is one frame, so it can be stretched as far as
+wanted. The timeline badges it **hold** and draws no filmstrip on it — tiles
+marching across a picture that never moves would be the clearest possible lie.
+
+### Getting media in, and the keyboard
+
+Files dragged from the desktop are imported; dropped on the timeline they are
+added to its end as well, and an overlay says which will happen before the
+mouse is let go.
+
+The keyboard covers the edits a mouse is bad at: `,` and `.` nudge by a frame
+(Shift: ten), `[` and `]` trim an edge to the playhead, ↑ ↓ jump between cuts
+and markers, `M` marks. Every key is listed in one table that the **Shortcuts**
+window (`?` or F1) reads, so the list a user sees and the keys that work are
+edited side by side.
 
 Some limits worth knowing before testing with your own footage:
 
@@ -565,12 +959,13 @@ Some limits worth knowing before testing with your own footage:
   calculation, not measured on §52.1 hardware.
 * **Software decode only.** §5's hardware-decode-to-texture path is still open;
   this is the RAM fallback §5 requires to exist.
-* **HDR is tone-mapped in the proxy, not at upload.** PQ and HLG sources are
-  probed, tagged, and converted into the SDR working space (§21a.1) by the proxy
-  encoder — a real conversion, not a retag, asserted by a test that measures mean
-  luma. But the direct-decode path has no equivalent, so an HDR file looks dark
-  and flat for as long as it takes its proxy to build. SDR is pixel-exact
-  throughout.
+* **HDR is tone-mapped by one chain, used twice.** PQ and HLG sources are
+  converted into the SDR working space (§21a.1) by a `zscale` + `tonemap` chain
+  that both the proxy encoder and the decoder run. It used to be the proxy
+  alone — so an HDR clip looked right while editing, and the **export**, which
+  reads originals (§14), came out at about half the brightness. A test decodes
+  the HLG fixture's original directly and measures mean luma: 227 now, 122 with
+  the chain switched off. SDR sources never touch it.
 * **No custom sequence sizes in the UI.** The Inspector offers 16:9, 9:16, 1:1
   and 4K presets; an arbitrary size round-trips through the project file but
   cannot be typed in yet.

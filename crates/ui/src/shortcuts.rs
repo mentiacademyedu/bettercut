@@ -1,20 +1,10 @@
 //! Keyboard shortcuts (§57).
 //!
-//! ```text
-//! Space              Play/Pause
-//! Ctrl/Cmd + Z       Undo
-//! Ctrl/Cmd + Shift+Z Redo
-//! Ctrl/Cmd + S       Save
-//! Ctrl/Cmd + X/C/V   Cut / Copy / Paste
-//! Ctrl/Cmd + D       Duplicate
-//! Delete             Delete clip
-//! Shift + Delete     Ripple delete
-//! S                  Split at playhead
-//! N                  Toggle snapping
-//! Left / Right       Frame step
-//! ```
+//! The keys are listed once, in [`SHORTCUTS`], which is also what the
+//! Shortcuts window (`?` or F1) shows — so the list a user reads and the keys
+//! that work are edited side by side.
 //!
-//! Every one of these is also reachable by right-clicking the timeline
+//! The clip actions are also on the timeline's right-click menu
 //! (`context_menu`), and both routes call the same functions below — a menu
 //! item that quietly did something slightly different from its shortcut is a
 //! bug waiting to happen.
@@ -23,10 +13,37 @@
 //! the status bar instead of doing nothing — silence reads as a broken key.
 
 use bettercut_editor_core::foundation::{ClipId, TrackId};
-use bettercut_editor_core::{Command, Editor};
+use bettercut_editor_core::{Command, Editor, TrimEdge};
 
 use crate::panels;
 use crate::state::UiState;
+
+/// Every shortcut, as the Shortcuts window lists it: keys, then what they do.
+///
+/// One table, next to the handler, so the list a user reads and the keys that
+/// actually work are edited in the same place.
+pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("Space", "Play / pause"),
+    ("Left / Right", "Step one frame (Shift: ten)"),
+    ("Up / Down", "Jump to the previous / next cut or marker"),
+    ("Home / End", "Jump to the start / end"),
+    ("S", "Split at the playhead"),
+    ("M", "Add / remove a marker at the playhead"),
+    (", and .", "Nudge the selection a frame (Shift: ten)"),
+    (
+        "[ and ]",
+        "Trim the selection's start / end to the playhead",
+    ),
+    ("Delete", "Delete the selection"),
+    ("Shift + Delete", "Delete and close the gap"),
+    ("Ctrl + X / C / V", "Cut / copy / paste"),
+    ("Ctrl + D", "Duplicate"),
+    ("Ctrl + Z", "Undo"),
+    ("Ctrl + Shift + Z", "Redo"),
+    ("Ctrl + S", "Save"),
+    ("N", "Snapping on / off"),
+    ("? or F1", "This list"),
+];
 
 pub fn handle(
     ctx: &egui::Context,
@@ -49,12 +66,21 @@ pub fn handle(
             egui::Key::X,
             egui::Key::D,
             egui::Key::N,
+            egui::Key::M,
+            egui::Key::Comma,
+            egui::Key::Period,
+            egui::Key::OpenBracket,
+            egui::Key::CloseBracket,
             egui::Key::Delete,
             egui::Key::Backspace,
             egui::Key::ArrowLeft,
             egui::Key::ArrowRight,
             egui::Key::Home,
             egui::Key::End,
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+            egui::Key::F1,
+            egui::Key::Questionmark,
         ]
         .into_iter()
         .filter(|k| i.key_pressed(*k))
@@ -129,9 +155,158 @@ pub fn handle(
                 }
             }
 
+            // The cut before or after the playhead, on any track: how a trim is
+            // lined up with a neighbour without zooming in to find the edge.
+            egui::Key::ArrowUp | egui::Key::ArrowDown => {
+                let forward = key == egui::Key::ArrowDown;
+                if let Some(at) = next_cut(editor, forward) {
+                    editor.set_playhead(at);
+                    state.needs_repaint = true;
+                }
+            }
+
+            egui::Key::M if !modifiers.command => match editor.toggle_marker(editor.playhead()) {
+                Ok(added) => {
+                    state.info(if added {
+                        "Marker added"
+                    } else {
+                        "Marker removed"
+                    });
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            },
+
+            // Nudging: the keyboard equivalent of dragging, and the only way
+            // to move a clip by exactly one frame.
+            egui::Key::Comma | egui::Key::Period => {
+                let frames = if modifiers.shift { 10 } else { 1 };
+                let frames = if key == egui::Key::Comma {
+                    -frames
+                } else {
+                    frames
+                };
+                nudge_selection(editor, state, frames);
+            }
+
+            // Trimming to the playhead: how an edit is tightened without
+            // aiming at a clip edge with the mouse.
+            egui::Key::OpenBracket => trim_selection(editor, state, TrimEdge::Start),
+            egui::Key::CloseBracket => trim_selection(editor, state, TrimEdge::End),
+
+            egui::Key::F1 | egui::Key::Questionmark => {
+                state.shortcuts_open = !state.shortcuts_open;
+                state.needs_repaint = true;
+            }
+
             _ => {}
         }
     }
+}
+
+/// Move everything selected by `frames`, negative for earlier (§57).
+pub fn nudge_selection(editor: &mut Editor, state: &mut UiState, frames: i64) {
+    if state.selected_clips.is_empty() {
+        state.info("Nothing selected");
+        return;
+    }
+    let selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    match editor.nudge_clips(&selected, frames) {
+        Ok(0) => state.info("Nothing to nudge"),
+        Ok(_) => state.needs_repaint = true,
+        // A nudge into a neighbour is refused by the track, and saying so
+        // beats a key that silently does nothing.
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Trim the selection's start or end to the playhead (§57).
+pub fn trim_selection(editor: &mut Editor, state: &mut UiState, edge: TrimEdge) {
+    if state.selected_clips.is_empty() {
+        state.info("Nothing selected");
+        return;
+    }
+    let selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    match editor.trim_to_playhead(&selected, edge) {
+        Ok(0) => state.info("Put the playhead inside the clip to trim it there"),
+        Ok(n) => {
+            state.needs_repaint = true;
+            state.info(format!("Trimmed {n} clip(s)"));
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// The nearest clip edge after the playhead (`forward`) or before it, on any
+/// track. `None` when there is nothing further that way.
+pub fn next_cut(
+    editor: &Editor,
+    forward: bool,
+) -> Option<bettercut_editor_core::foundation::TimelineTime> {
+    use bettercut_editor_core::timeline::Clip;
+
+    let sequence = editor.active_sequence()?;
+    let playhead = editor.playhead();
+    let edges = sequence
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips().iter().map(Clip::timeline))
+        .chain(
+            sequence
+                .audio_tracks
+                .iter()
+                .flat_map(|t| t.clips().iter().map(Clip::timeline)),
+        )
+        .chain(
+            sequence
+                .text_tracks
+                .iter()
+                .flat_map(|t| t.clips().iter().map(Clip::timeline)),
+        )
+        .flat_map(|range| [range.start, range.end])
+        // Markers are stops too: they are the places someone chose to mark.
+        .chain(sequence.markers.iter().map(|m| m.time));
+
+    if forward {
+        edges.filter(|&t| t > playhead).min()
+    } else {
+        edges.filter(|&t| t < playhead).max()
+    }
+}
+
+/// The Shortcuts window: every key in [`SHORTCUTS`], in one place.
+pub fn help_window(ctx: &egui::Context, state: &mut UiState) {
+    if !state.shortcuts_open {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Keyboard shortcuts")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            egui::Grid::new("shortcuts")
+                .num_columns(2)
+                .spacing([24.0, 6.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for (keys, action) in SHORTCUTS {
+                        ui.label(egui::RichText::new(*keys).monospace().strong());
+                        ui.label(*action);
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "The clip actions are also on the timeline's right-click menu.",
+                )
+                .small()
+                .color(crate::theme::DISABLED),
+            );
+        });
+    state.shortcuts_open = open && state.shortcuts_open;
 }
 
 /// Cut: copy to the clipboard, then delete (§10).

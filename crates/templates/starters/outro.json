@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "outro",
+  "name": "Outro",
+  "category": "Outro",
+  "duration": 5.0,
+  "description": "A dimmed closing shot with a thank-you and your handle.",
+  "slots": [
+    { "id": "background", "type": "video", "label": "Closing shot" },
+    { "id": "thanks", "type": "text", "label": "Message", "default_text": "Thanks for watching!" },
+    { "id": "handle", "type": "text", "label": "Your handle", "default_text": "@yourchannel" },
+    { "id": "music", "type": "audio", "label": "Music" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "background", "start": 0, "duration": 5, "opacity": 0.55 },
+    { "type": "text", "slot": "thanks", "start": 0.5, "duration": 4.5,
+      "transform": { "position": [0.0, -0.06] },
+      "style": { "size": 100, "weight": "bold" },
+      "animation": { "in": { "kind": "fade", "duration": 0.6 } } },
+    { "type": "text", "slot": "handle", "start": 1.2, "duration": 3.8,
+      "transform": { "position": [0.0, 0.12] },
+      "style": { "size": 56, "weight": "regular", "stroke": null },
+      "animation": { "in": { "kind": "typewriter", "duration": 1.0 } } },
+    { "type": "audio", "slot": "music", "start": 0, "duration": 5, "volume": 0.8,
+      "fade_out": 1.5 }
+  ]
+}

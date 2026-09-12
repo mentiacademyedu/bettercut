@@ -770,10 +770,24 @@ fn layer_uniform(
     let anchor_x = transform.anchor.x;
     let anchor_y = transform.anchor.y;
 
+    // The rotation has to happen in *pixels*, not in clip space. Clip space
+    // runs -1..1 on both axes whatever the frame's shape, so on a 16:9 frame a
+    // clip-space unit is 1.8× wider than it is tall, and rotating there is a
+    // shear. The off-diagonal terms carry the frame's aspect to undo that.
+    //
+    // Derived in y-down screen pixels, where "clockwise" is the ordinary
+    // matrix, then converted to y-up clip space. This used to have `b` with
+    // the wrong sign and neither aspect factor: the two axes then turned in
+    // opposite directions, which is a shear rather than a rotation — a clip
+    // lost area as it turned (half of it at 30°) and vanished entirely at
+    // 45°, where the matrix's determinant, -cos 2θ, is zero. The only test
+    // checked one point at 90°, which depends on `c` and `d` alone.
+    let aspect = output.width.max(1) as f32 / output.height.max(1) as f32;
+
     // Column-major mat3x3, each column padded to 16 bytes for WGSL layout.
     let a = 2.0 * scale_x * cos;
-    let b = 2.0 * scale_x * sin;
-    let c = -2.0 * scale_y * sin;
+    let b = -2.0 * scale_x * aspect * sin;
+    let c = -2.0 * scale_y * sin / aspect;
     let d = -2.0 * scale_y * cos;
 
     // Translation so the anchor lands at the requested position.

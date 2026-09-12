@@ -97,12 +97,26 @@ struct ClipHit {
     range: TimelineRange,
 }
 
+/// A volume point the pointer is over, found by the draw pass.
+#[derive(Clone, Copy)]
+struct EnvelopeHit {
+    clip: ClipId,
+    index: usize,
+    rect: Rect,
+}
+
 /// Pointer state for this frame, plus what the draw pass hit-tested.
 struct Interaction {
     pointer: Option<Pos2>,
     clicked: bool,
     additive: bool,
     hit: Option<ClipHit>,
+    /// Takes precedence over `hit`: a press on a volume point moves the point,
+    /// not the clip under it.
+    envelope: Option<EnvelopeHit>,
+    /// The pointer is on a clip's volume *line* but not on one of its points,
+    /// which is where a new point can be put.
+    envelope_line: Option<(ClipId, Rect)>,
 }
 
 pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
@@ -123,12 +137,21 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         return;
     }
 
+    let lane_width = (rect.width() - theme::TRACK_HEADER_WIDTH).max(1.0);
+
+    // While playing, the view keeps up with the playhead (§53). Not while the
+    // user is dragging a clip or a band: the ground moving under a drag is the
+    // one thing worse than losing sight of the playhead.
+    if state.playback.is_some_and(|p| p.playing) && state.drag.is_none() && state.marquee.is_none()
+    {
+        state.follow_playhead(editor.playhead(), lane_width);
+    }
+
     let viewport = Viewport {
         origin_x: rect.left() + theme::TRACK_HEADER_WIDTH,
         scroll_ticks: state.scroll_ticks,
         ticks_per_pixel: state.ticks_per_pixel(),
     };
-    let lane_width = (rect.width() - theme::TRACK_HEADER_WIDTH).max(1.0);
 
     handle_scroll_and_zoom(ui, &response, state);
 
@@ -189,6 +212,8 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         clicked: response.clicked(),
         additive: ui.input(|i| i.modifiers.command),
         hit: None,
+        envelope: None,
+        envelope_line: None,
     };
 
     // The draw pass borrows the project immutably.
@@ -212,6 +237,13 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             &waveforms,
             &strips,
         );
+        draw_markers(&painter, rect, viewport, &sequence.markers);
+        if let Some(dialog) = &state.silence {
+            draw_suggested_cuts(&painter, rect, viewport, dialog.ranges());
+        }
+        if let Some(dialog) = &state.scenes {
+            draw_suggested_splits(&painter, rect, viewport, dialog.cuts());
+        }
         draw_drag_preview(&painter, viewport, state, &lanes);
         draw_marquee(&painter, state);
         draw_playhead(&painter, rect, viewport, playhead);
@@ -223,7 +255,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     rect.top() + theme::RULER_HEIGHT + 36.0,
                 ),
                 Align2::CENTER_CENTER,
-                "Import media, then press “Add to timeline” to place a clip here",
+                "Drag files here, press “Add to timeline” in Media, or start from Templates",
                 FontId::proportional(13.0),
                 theme::DISABLED,
             );
@@ -305,6 +337,52 @@ fn apply_interaction(
     // Capture the grab on *press*, while the pointer is still over the clip.
     // Waiting for egui's `drag_started` loses the clip whenever the pointer
     // travels far enough in one frame to leave it.
+    // A double-click on a point takes it out; on the line between points, puts
+    // one in. Checked before the drag, because the press that begins the second
+    // click of a double-click would otherwise start one.
+    if ui.input(|i| {
+        i.pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+    }) {
+        if let Some(hit) = interaction.envelope {
+            state.envelope_drag = None;
+            remove_envelope_point(hit, editor, state);
+            return;
+        }
+        if let Some((clip, _)) = interaction.envelope_line {
+            state.envelope_drag = None;
+            add_envelope_point(clip, pos, viewport, editor, state);
+            return;
+        }
+    }
+
+    // A press on a volume point moves the point, not the clip under it (§24).
+    if state.drag.is_none()
+        && state.envelope_drag.is_none()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(hit) = interaction.envelope
+        && let Some(clip) = editor.audio_clip(hit.clip)
+    {
+        state.envelope_drag = Some(crate::state::EnvelopeDrag {
+            clip: hit.clip,
+            index: hit.index,
+            points: envelope_points_of(clip),
+            rect: hit.rect,
+            moved: false,
+        });
+        return;
+    }
+
+    if state.envelope_drag.is_some() {
+        if response.dragged() {
+            drag_envelope_point(pos, viewport, editor, state);
+        }
+        if ui.input(|i| i.pointer.primary_released()) {
+            state.envelope_drag = None;
+        }
+        return;
+    }
+
     if state.drag.is_none()
         && ui.input(|i| i.pointer.primary_pressed())
         && pos.x >= viewport.origin_x
@@ -312,6 +390,9 @@ fn apply_interaction(
         && let Some(hit) = interaction.hit
     {
         begin_drag(hit, pos, interaction.additive, viewport, state);
+        if let Some(drag) = state.drag.as_mut() {
+            drag.partners = linked_partners(editor, hit.clip);
+        }
         return;
     }
 
@@ -557,6 +638,166 @@ fn select_within(
     }
 }
 
+/// `clip`'s linked partners and where each of them is now (§12).
+fn linked_partners(editor: &Editor, clip: ClipId) -> Vec<(TrackId, TimelineRange)> {
+    let Some(sequence) = editor.active_sequence() else {
+        return Vec::new();
+    };
+    editor
+        .linked_with(clip)
+        .into_iter()
+        .filter(|partner| *partner != clip)
+        .filter_map(|partner| {
+            let track = editor.track_of(partner)?;
+            let range = sequence
+                .video_tracks
+                .iter()
+                .find_map(|t| t.get(partner).map(|c| c.timeline))
+                .or_else(|| {
+                    sequence
+                        .audio_tracks
+                        .iter()
+                        .find_map(|t| t.get(partner).map(|c| c.timeline))
+                })?;
+            Some((track, range))
+        })
+        .collect()
+}
+
+/// A clip's envelope as timeline instants and levels, which is the form the
+/// editor takes and the form a drag edits.
+fn envelope_points_of(
+    clip: &bettercut_editor_core::timeline::AudioClip,
+) -> Vec<(TimelineTime, f32)> {
+    clip.keyframes
+        .track(bettercut_editor_core::timeline::AnimatedParameter::Gain)
+        .map(|track| {
+            track
+                .keys()
+                .iter()
+                .map(|key| {
+                    let into_source = (key.time.ticks() - clip.source.start.ticks()).max(0);
+                    let at = clip.timeline.start
+                        + TimelineTime::from_ticks(
+                            bettercut_editor_core::timeline::timeline_ticks_for(
+                                bettercut_editor_core::foundation::MediaTime::from_ticks(
+                                    into_source,
+                                ),
+                                clip.speed,
+                            ),
+                        );
+                    (at, key.value)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Take one point out of an envelope (§24).
+///
+/// The last two are kept: an envelope of one point is a level, not a shape, and
+/// clearing the whole thing is what the clip menu's Clear Ducking is for —
+/// having it happen as the side effect of a double-click would be a surprise.
+fn remove_envelope_point(hit: EnvelopeHit, editor: &mut Editor, state: &mut UiState) {
+    let Some(clip) = editor.audio_clip(hit.clip) else {
+        return;
+    };
+    let mut points = envelope_points_of(clip);
+    if points.len() <= 2 || hit.index >= points.len() {
+        state.info("An envelope needs at least two points — use Clear Ducking to remove it");
+        state.needs_repaint = true;
+        return;
+    }
+    points.remove(hit.index);
+    if let Err(err) = editor.set_gain_envelope(hit.clip, &points, false) {
+        state.error(err.to_string());
+    }
+    state.needs_repaint = true;
+}
+
+/// Put a new point on the line where the pointer is (§24).
+///
+/// At the level the line already has there, so the shape does not jump: a new
+/// point is somewhere to *take hold of*, and moving it is a separate decision.
+fn add_envelope_point(
+    clip: ClipId,
+    pos: Pos2,
+    viewport: Viewport,
+    editor: &mut Editor,
+    state: &mut UiState,
+) {
+    let Some(audio) = editor.audio_clip(clip) else {
+        return;
+    };
+    let at = TimelineTime::from_ticks(viewport.raw_tick_of(pos.x))
+        .clamp(audio.timeline.start, audio.timeline.end);
+    let level = audio.gain_at(at);
+
+    let mut points = envelope_points_of(audio);
+    // Right on top of an existing point is not a new point.
+    if points
+        .iter()
+        .any(|(existing, _)| (*existing - at).ticks().abs() < TimelineTime::from_millis(20).ticks())
+    {
+        return;
+    }
+    // Appended rather than inserted in order: the envelope is sorted where it
+    // is written (`Keyframes::replace`), and a second place that sorts is a
+    // second place that can disagree about how.
+    points.push((at, level));
+
+    if let Err(err) = editor.set_gain_envelope(clip, &points, false) {
+        state.error(err.to_string());
+    }
+    state.needs_repaint = true;
+}
+
+/// Move the grabbed point to the pointer and write the whole envelope.
+///
+/// Both axes: a duck is adjusted as much by moving *when* it happens as by how
+/// deep it is. The point is held between its neighbours, because an envelope
+/// whose keys crossed would be reordered underneath the drag and the point
+/// would appear to jump to somewhere the pointer is not.
+fn drag_envelope_point(pos: Pos2, viewport: Viewport, editor: &mut Editor, state: &mut UiState) {
+    let Some(drag) = state.envelope_drag.as_mut() else {
+        return;
+    };
+    let Some(clip) = editor.audio_clip(drag.clip) else {
+        state.envelope_drag = None;
+        return;
+    };
+    let span = clip.timeline;
+    let rect = drag.rect;
+
+    if drag.points.get(drag.index).is_none() {
+        state.envelope_drag = None;
+        return;
+    }
+
+    let wanted = TimelineTime::from_ticks(viewport.raw_tick_of(pos.x)).clamp(span.start, span.end);
+    let low = drag
+        .index
+        .checked_sub(1)
+        .and_then(|before| drag.points.get(before))
+        .map_or(span.start, |(at, _)| *at + TimelineTime::from_millis(1));
+    let high = drag
+        .points
+        .get(drag.index + 1)
+        .map_or(span.end, |(at, _)| *at - TimelineTime::from_millis(1));
+
+    drag.points[drag.index] = (wanted.clamp(low, high.max(low)), envelope_gain(rect, pos.y));
+
+    let points = drag.points.clone();
+    let continuing = drag.moved;
+    drag.moved = true;
+    let clip = drag.clip;
+    if let Err(err) = editor.set_gain_envelope(clip, &points, continuing) {
+        state.error(err.to_string());
+        state.envelope_drag = None;
+    }
+    state.needs_repaint = true;
+}
+
 fn begin_drag(hit: ClipHit, pos: Pos2, additive: bool, viewport: Viewport, state: &mut UiState) {
     // Near an edge means trim; anywhere else means move. The handle is a fixed
     // pixel width so it stays grabbable at every zoom level.
@@ -579,6 +820,7 @@ fn begin_drag(hit: ClipHit, pos: Pos2, additive: bool, viewport: Viewport, state
         target_track: hit.track,
         target_invalid: false,
         snapped_to: None,
+        partners: Vec::new(),
     });
 
     // Dragging an unselected clip selects it, so the inspector follows.
@@ -823,7 +1065,14 @@ fn draw_lanes(
             vec2(rect.width(), theme::TRACK_HEIGHT),
         );
         draw_lane_background(painter, lane, viewport, 0);
-        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+        draw_track_header(
+            painter,
+            lane,
+            &track.name,
+            track.enabled,
+            track.locked,
+            None,
+        );
 
         for clip in track.clips_in_range(visible) {
             draw_clip(
@@ -845,12 +1094,18 @@ fn draw_lanes(
                     body: theme::TEXT_CLIP,
                     top: theme::TEXT_CLIP_TOP,
                     waveform: None,
+                    volume: None,
                     filmstrip: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
                     transition: None,
+                    frozen: false,
                     speed: Rational::ONE,
                     linked_to_selection: false,
+                    ramps: (
+                        clip.animation.intro.map_or(0, |m| m.duration.ticks()),
+                        clip.animation.outro.map_or(0, |m| m.duration.ticks()),
+                    ),
                 },
                 clip.id,
                 track.id,
@@ -875,7 +1130,14 @@ fn draw_lanes(
             vec2(rect.width(), theme::TRACK_HEIGHT),
         );
         draw_lane_background(painter, lane, viewport, row);
-        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+        draw_track_header(
+            painter,
+            lane,
+            &track.name,
+            track.enabled,
+            track.locked,
+            None,
+        );
 
         for clip in track.clips_in_range(visible) {
             let label = project
@@ -894,8 +1156,13 @@ fn draw_lanes(
                     body: theme::VIDEO_CLIP,
                     top: theme::VIDEO_CLIP_TOP,
                     waveform: None,
-                    filmstrip: strips
-                        .get(&clip.media_id)
+                    volume: None,
+                    frozen: clip.frozen,
+                    // No filmstrip on a hold: the picture does not move, so
+                    // tiles marching across it would say otherwise.
+                    filmstrip: (!clip.frozen)
+                        .then(|| strips.get(&clip.media_id))
+                        .flatten()
                         .map(|(handle, tiles)| (handle, *tiles, clip.source.start)),
                     duration_of_media: project
                         .media_asset(clip.media_id)
@@ -905,6 +1172,7 @@ fn draw_lanes(
                     transition: clip.transition_out,
                     speed: clip.speed,
                     linked_to_selection: partner(clip.link, clip.id),
+                    ramps: (0, 0),
                 },
                 clip.id,
                 track.id,
@@ -926,7 +1194,14 @@ fn draw_lanes(
             vec2(rect.width(), theme::TRACK_HEIGHT),
         );
         draw_lane_background(painter, lane, viewport, row + 1);
-        draw_track_header(painter, lane, &track.name, track.enabled, track.locked);
+        draw_track_header(
+            painter,
+            lane,
+            &track.name,
+            track.enabled,
+            track.locked,
+            Some((track.gain, track.pan)),
+        );
 
         for clip in track.clips_in_range(visible) {
             let label = project
@@ -944,17 +1219,23 @@ fn draw_lanes(
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
                     body: theme::AUDIO_CLIP,
                     top: theme::AUDIO_CLIP_TOP,
+                    frozen: false,
                     waveform: waveforms
                         .get(&clip.media_id)
                         .map(|w| (w.as_ref(), clip.source.start)),
                     filmstrip: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
+                    volume: clip
+                        .keyframes
+                        .is_animated(bettercut_editor_core::timeline::AnimatedParameter::Gain)
+                        .then_some(clip),
                     // §25 v1 is picture only: an audio crossfade mixes two
                     // sources rather than blending two images.
                     transition: None,
                     speed: clip.speed,
                     linked_to_selection: partner(clip.link, clip.id),
+                    ramps: clip.fitted_fades(),
                 },
                 clip.id,
                 track.id,
@@ -989,7 +1270,14 @@ fn draw_lane_background(painter: &egui::Painter, lane: Rect, viewport: Viewport,
     );
 }
 
-fn draw_track_header(painter: &egui::Painter, lane: Rect, name: &str, enabled: bool, locked: bool) {
+fn draw_track_header(
+    painter: &egui::Painter,
+    lane: Rect,
+    name: &str,
+    enabled: bool,
+    locked: bool,
+    mix: Option<(f32, f32)>,
+) {
     let header = Rect::from_min_size(lane.min, vec2(theme::TRACK_HEADER_WIDTH, lane.height()));
     painter.rect_filled(header, 0, theme::TRACK_HEADER);
     painter.line_segment(
@@ -1009,12 +1297,24 @@ fn draw_track_header(painter: &egui::Painter, lane: Rect, name: &str, enabled: b
         },
     );
 
-    let mut badges: Vec<&str> = Vec::new();
+    let mut badges: Vec<String> = Vec::new();
     if !enabled {
-        badges.push("hidden");
+        // An audio track is muted, not hidden: the same flag, the word the
+        // user would look for.
+        badges.push(if mix.is_some() { "muted" } else { "hidden" }.to_owned());
     }
     if locked {
-        badges.push("locked");
+        badges.push("locked".to_owned());
+    }
+    // A lane at anything but unity and centre says so, or a quiet track is a
+    // mystery until someone opens its menu.
+    if let Some((gain, pan)) = mix {
+        if (gain - 1.0).abs() > 0.005 {
+            badges.push(format!("{:.0}%", gain * 100.0));
+        }
+        if pan.abs() > 0.005 {
+            badges.push(crate::context_menu::pan_label(pan));
+        }
     }
     if !badges.is_empty() {
         painter.text(
@@ -1077,6 +1377,35 @@ fn draw_transition(
             painter.line_segment([inner.left_top(), bottom], stroke);
             painter.line_segment([bottom, inner.right_top()], stroke);
         }
+        // An arrow to the right: something arriving from that side.
+        TransitionKind::Slide => {
+            let tip = Pos2::new(inner.right(), inner.center().y);
+            painter.line_segment([Pos2::new(inner.left(), inner.center().y), tip], stroke);
+            painter.line_segment([Pos2::new(inner.right() - 4.0, inner.top()), tip], stroke);
+            painter.line_segment(
+                [Pos2::new(inner.right() - 4.0, inner.bottom()), tip],
+                stroke,
+            );
+        }
+        // Two arrows, one behind the other: both shots on the move.
+        TransitionKind::Push => {
+            for offset in [-3.0_f32, 3.0] {
+                let y = inner.center().y + offset;
+                let tip = Pos2::new(inner.right(), y);
+                painter.line_segment([Pos2::new(inner.left(), y), tip], stroke);
+                painter.line_segment([Pos2::new(inner.right() - 3.0, y - 3.0), tip], stroke);
+            }
+        }
+        // A box growing out of a box.
+        TransitionKind::Zoom => {
+            painter.rect_stroke(
+                inner.shrink(inner.width().min(inner.height()) * 0.3),
+                0.0,
+                stroke,
+                StrokeKind::Inside,
+            );
+            painter.rect_stroke(inner, 0.0, stroke, StrokeKind::Inside);
+        }
     }
 }
 
@@ -1109,6 +1438,23 @@ struct ClipVisual<'a> {
     /// Shown, because otherwise the first a user learns of the link is the
     /// sound jumping when they release a drag of the picture.
     linked_to_selection: bool,
+    /// Ticks of fade in and fade out on sound, or of entrance and exit on a
+    /// title, drawn as ramps at the clip's ends. `(0, 0)` for none.
+    ramps: (i64, i64),
+    /// A sound clip's volume envelope (§24), drawn as a line over its
+    /// waveform. `None` for picture, and for sound whose volume does not move.
+    ///
+    /// The clip itself rather than its keys, because the line is
+    /// `gain_at` sampled across the width — the same function the mixer asks,
+    /// so what is drawn is what is heard (§46).
+    volume: Option<&'a bettercut_editor_core::timeline::AudioClip>,
+
+    /// A held frame (§10's freeze), shown as a badge and without a filmstrip.
+    ///
+    /// A hold looks exactly like an ordinary clip otherwise, and its filmstrip
+    /// would be the clearest possible lie: tiles marching across a clip whose
+    /// picture never moves.
+    frozen: bool,
     /// §51's playback rate, shown as a badge when it is not normal.
     ///
     /// A re-timed clip looks exactly like any other one, and its length is not
@@ -1219,6 +1565,117 @@ fn draw_filmstrip(
     }
 }
 
+/// The band a volume envelope is drawn in, inside a clip's rect.
+///
+/// Full volume runs near the top and silence along the bottom, which is the way
+/// every editor draws a level: the line falling is the sound getting quieter.
+/// Above 1.0 the line would leave the clip, so a boost is pinned at the top —
+/// the envelope is read for its *shape*, and the exact number belongs in the
+/// Inspector.
+fn envelope_band(clip_rect: Rect) -> (f32, f32) {
+    (clip_rect.top() + 6.0, clip_rect.bottom() - 6.0)
+}
+
+fn envelope_y(clip_rect: Rect, gain: f32) -> f32 {
+    let (top, bottom) = envelope_band(clip_rect);
+    bottom - gain.clamp(0.0, 1.0) * (bottom - top)
+}
+
+/// The level a y position means, the inverse of [`envelope_y`].
+fn envelope_gain(clip_rect: Rect, y: f32) -> f32 {
+    let (top, bottom) = envelope_band(clip_rect);
+    ((bottom - y) / (bottom - top)).clamp(0.0, 1.0)
+}
+
+/// Where each key of a clip's envelope sits on screen, with its index.
+///
+/// Shared by the painter and the hit test so a dot is always grabbable exactly
+/// where it is drawn — two copies of this arithmetic would drift apart by a
+/// pixel and the dots would become mysteriously hard to hit (§46's habit,
+/// applied to a much smaller thing).
+fn envelope_dots(
+    clip: &bettercut_editor_core::timeline::AudioClip,
+    clip_rect: Rect,
+    viewport: Viewport,
+) -> Vec<(usize, Pos2)> {
+    let Some(track) = clip
+        .keyframes
+        .track(bettercut_editor_core::timeline::AnimatedParameter::Gain)
+    else {
+        return Vec::new();
+    };
+    track
+        .keys()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, key)| {
+            // Back from source time to the timeline, through the speed (§51).
+            let into_source = key.time.ticks() - clip.source.start.ticks();
+            if into_source < 0 {
+                return None;
+            }
+            let at = clip.timeline.start
+                + TimelineTime::from_ticks(bettercut_editor_core::timeline::timeline_ticks_for(
+                    bettercut_editor_core::foundation::MediaTime::from_ticks(into_source),
+                    clip.speed,
+                ));
+            if at < clip.timeline.start || at > clip.timeline.end {
+                return None;
+            }
+            Some((
+                index,
+                Pos2::new(viewport.x_of(at), envelope_y(clip_rect, key.value)),
+            ))
+        })
+        .collect()
+}
+
+/// A sound clip's volume envelope (§24), as a line across its waveform.
+///
+/// Sampled from [`AudioClip::gain_at`] — the same function the mixer asks — so
+/// the line is not a drawing of what the keys *mean*, it is a drawing of what
+/// is heard (§46). A duck that did not reach the mixer would show as a flat
+/// line here.
+///
+/// Full volume runs near the top of the clip and silence along the bottom,
+/// which is the way every editor draws a level: the line falling is the sound
+/// getting quieter.
+fn draw_volume_envelope(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    viewport: Viewport,
+    clip: &bettercut_editor_core::timeline::AudioClip,
+) {
+    if clip_rect.width() < 4.0 {
+        return;
+    }
+    let painter = painter.with_clip_rect(clip_rect);
+
+    // One point every three pixels: finer than the eye resolves at timeline
+    // scale, and a fraction of the shapes a point per pixel would emit.
+    let mut points = Vec::new();
+    let mut x = clip_rect.left();
+    while x <= clip_rect.right() {
+        let at = TimelineTime::from_ticks(viewport.raw_tick_of(x));
+        points.push(Pos2::new(x, envelope_y(clip_rect, clip.gain_at(at))));
+        x += 3.0;
+    }
+    if points.len() < 2 {
+        return;
+    }
+
+    painter.add(egui::Shape::line(
+        points,
+        Stroke::new(1.5, theme::AUTOMATION),
+    ));
+
+    // A dot at each key, so it is clear the shape is made of points that can be
+    // moved rather than being a picture of the sound.
+    for (_, at) in envelope_dots(clip, clip_rect, viewport) {
+        painter.circle_filled(at, 3.0, theme::AUTOMATION);
+    }
+}
+
 /// Paint the peaks a clip covers, mirrored around its centre line.
 ///
 /// One vertical segment per pixel column, each showing the loudest sample in
@@ -1274,6 +1731,51 @@ fn draw_waveform(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A clip's fades or a title's entrance and exit, as ramps at its ends.
+///
+/// Shaded above a line from silence to full, the way every editor draws a
+/// fade: the shape says "quiet here, rising" without a legend. Positioned from
+/// the clip's true start, not its on-screen one, so a clip scrolled half out
+/// of view still shows its ramp where it really is.
+fn draw_ramps(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    viewport: Viewport,
+    range: TimelineRange,
+    (rise, fall): (i64, i64),
+) {
+    if rise <= 0 && fall <= 0 {
+        return;
+    }
+    let painter = painter.with_clip_rect(clip_rect);
+    let shade = Color32::from_black_alpha(90);
+    let line = Stroke::new(1.0, Color32::from_white_alpha(170));
+    let (top, bottom) = (clip_rect.top() + 4.0, clip_rect.bottom());
+
+    if rise > 0 {
+        let x0 = viewport.x_of(range.start);
+        let x1 = viewport.x_of(range.start + TimelineTime::from_ticks(rise));
+        let points = vec![
+            Pos2::new(x0, top),
+            Pos2::new(x1, top),
+            Pos2::new(x0, bottom),
+        ];
+        painter.add(egui::Shape::convex_polygon(points, shade, Stroke::NONE));
+        painter.line_segment([Pos2::new(x0, bottom), Pos2::new(x1, top)], line);
+    }
+    if fall > 0 {
+        let x1 = viewport.x_of(range.end);
+        let x0 = viewport.x_of(range.end - TimelineTime::from_ticks(fall));
+        let points = vec![
+            Pos2::new(x0, top),
+            Pos2::new(x1, top),
+            Pos2::new(x1, bottom),
+        ];
+        painter.add(egui::Shape::convex_polygon(points, shade, Stroke::NONE));
+        painter.line_segment([Pos2::new(x0, top), Pos2::new(x1, bottom)], line);
+    }
+}
+
 fn draw_clip(
     painter: &egui::Painter,
     lane: Rect,
@@ -1305,6 +1807,29 @@ fn draw_clip(
             rect: clip_rect,
             range: visual.range,
         });
+
+        // A volume point under the pointer, checked here for the same reason:
+        // this is where the clip's rect is known. Generous by a few pixels,
+        // because a 3 px dot is not a 3 px target.
+        if let Some(clip) = visual.volume {
+            for (index, dot) in envelope_dots(clip, clip_rect, viewport) {
+                if dot.distance(pos) <= 7.0 {
+                    interaction.envelope = Some(EnvelopeHit {
+                        clip: id,
+                        index,
+                        rect: clip_rect,
+                    });
+                    break;
+                }
+            }
+            // On the line between the points: where a new point can be put.
+            let at = TimelineTime::from_ticks(viewport.raw_tick_of(pos.x));
+            if interaction.envelope.is_none()
+                && (envelope_y(clip_rect, clip.gain_at(at)) - pos.y).abs() <= 7.0
+            {
+                interaction.envelope_line = Some((id, clip_rect));
+            }
+        }
     }
 
     let (body, top) = if visual.track_enabled {
@@ -1357,6 +1882,14 @@ fn draw_clip(
         );
     }
 
+    // Over the waveform: the envelope is what is being *done* to those peaks,
+    // so it has to sit on top of them to be read against them.
+    if let Some(clip) = visual.volume {
+        draw_volume_envelope(painter, clip_rect, viewport, clip);
+    }
+
+    draw_ramps(painter, clip_rect, viewport, visual.range, visual.ramps);
+
     if visual.selected {
         painter.rect_stroke(
             clip_rect,
@@ -1394,6 +1927,25 @@ fn draw_clip(
 
     // Top-right, where it does not collide with the file name on the left.
     // Only when it is not normal: a badge on every clip would be noise.
+    if visual.frozen && clip_rect.width() > 34.0 {
+        let anchor = Pos2::new(clip_rect.right() - 5.0, clip_rect.top() + 12.0);
+        let galley = painter.layout_no_wrap(
+            "hold".to_owned(),
+            FontId::proportional(10.0),
+            theme::BACKGROUND,
+        );
+        let box_rect = Rect::from_min_size(
+            Pos2::new(anchor.x - galley.size().x - 4.0, anchor.y - 7.0),
+            galley.size() + vec2(8.0, 3.0),
+        );
+        painter.rect_filled(box_rect, 3, theme::MARKER);
+        painter.galley(
+            Pos2::new(box_rect.left() + 4.0, box_rect.top() + 1.0),
+            galley,
+            theme::BACKGROUND,
+        );
+    }
+
     if !visual.speed.is_one() && clip_rect.width() > 34.0 {
         let label = format!("{:.2}×", visual.speed.as_f64());
         let anchor = Pos2::new(clip_rect.right() - 5.0, clip_rect.top() + 12.0);
@@ -1523,6 +2075,39 @@ fn draw_drag_preview(
         );
     }
 
+    // §12: the linked partners, on their own lanes, where the editor will put
+    // them on release. Paler than the dragged clip's ghost — "this comes
+    // along", not "this is what you are holding" — and never red: a partner
+    // only follows in time, so it cannot land on the wrong kind of track.
+    if drag.moved {
+        for (track, range) in &drag.partners {
+            let Some(partner_lane) = lanes.iter().find(|l| l.track == *track) else {
+                continue;
+            };
+            let landing = drag.partner_preview(*range);
+            let x0 = viewport.x_of(landing.start).max(viewport.origin_x);
+            let x1 = viewport.x_of(landing.end).min(partner_lane.rect.right());
+            if x1 <= x0 {
+                continue;
+            }
+            let ghost = Rect::from_min_max(
+                Pos2::new(x0, partner_lane.rect.top() + 3.0),
+                Pos2::new(x1, partner_lane.rect.bottom() - 3.0),
+            );
+            painter.rect_filled(
+                ghost,
+                theme::CLIP_CORNER_RADIUS,
+                theme::SELECTION.gamma_multiply(0.12),
+            );
+            painter.rect_stroke(
+                ghost,
+                theme::CLIP_CORNER_RADIUS,
+                Stroke::new(1.0, theme::SELECTION.gamma_multiply(0.7)),
+                StrokeKind::Inside,
+            );
+        }
+    }
+
     // A snap the user cannot see reads as the drag being buggy.
     if let Some(target) = drag.snapped_to {
         let x = viewport.x_of(target.time);
@@ -1533,6 +2118,111 @@ fn draw_drag_preview(
                     Pos2::new(x, lane.rect.bottom() + 40.0),
                 ],
                 Stroke::new(1.0, theme::SELECTION),
+            );
+        }
+    }
+}
+
+/// §78's suggested cuts, shaded where they would come out.
+///
+/// Over the lanes rather than on one clip: the cut takes the picture and its
+/// sound together, and showing it on both is what makes that obvious before
+/// the button is pressed.
+fn draw_suggested_cuts(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    ranges: &[TimelineRange],
+) {
+    for range in ranges {
+        let x0 = viewport.x_of(range.start).max(viewport.origin_x);
+        let x1 = viewport.x_of(range.end).min(rect.right());
+        if x1 <= x0 {
+            continue;
+        }
+        let band = Rect::from_min_max(
+            Pos2::new(x0, rect.top() + theme::RULER_HEIGHT),
+            Pos2::new(x1, rect.bottom()),
+        );
+        painter.rect_filled(band, 0, theme::PLAYHEAD.gamma_multiply(0.28));
+        painter.rect_stroke(
+            band,
+            0,
+            Stroke::new(1.0, theme::PLAYHEAD.gamma_multiply(0.8)),
+            StrokeKind::Inside,
+        );
+    }
+}
+
+/// Suggested splits: a dashed line down the lanes at each cut detection found.
+///
+/// A line rather than a band, because a split has no width — shading either
+/// side of it, the way a silence is shaded, would suggest something is being
+/// taken out when nothing is.
+fn draw_suggested_splits(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    cuts: &[TimelineTime],
+) {
+    for cut in cuts {
+        let x = viewport.x_of(*cut);
+        if x < viewport.origin_x || x > rect.right() {
+            continue;
+        }
+        let top = rect.top() + theme::RULER_HEIGHT;
+        // Dashes, so it reads as a proposal rather than as an edge that is
+        // already there.
+        let mut y = top;
+        while y < rect.bottom() {
+            let to = (y + 5.0).min(rect.bottom());
+            painter.line_segment(
+                [Pos2::new(x, y), Pos2::new(x, to)],
+                Stroke::new(1.5, theme::PLAYHEAD.gamma_multiply(0.9)),
+            );
+            y = to + 4.0;
+        }
+    }
+}
+
+/// Markers: a flag on the ruler, and a faint line down through the lanes so a
+/// clip can be lined up with one by eye before snapping takes over.
+fn draw_markers(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    markers: &[bettercut_editor_core::timeline::Marker],
+) {
+    let visible = viewport.origin_x..=rect.right();
+    for marker in markers {
+        let x = viewport.x_of(marker.time);
+        if !visible.contains(&x) {
+            continue;
+        }
+        painter.line_segment(
+            [
+                Pos2::new(x, rect.top() + theme::RULER_HEIGHT),
+                Pos2::new(x, rect.bottom()),
+            ],
+            Stroke::new(1.0, theme::MARKER.gamma_multiply(0.35)),
+        );
+        let tip = Pos2::new(x, rect.top() + theme::RULER_HEIGHT - 2.0);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(x - 5.0, tip.y - 8.0),
+                Pos2::new(x + 5.0, tip.y - 8.0),
+                tip,
+            ],
+            theme::MARKER,
+            Stroke::NONE,
+        ));
+        if !marker.label.is_empty() {
+            painter.text(
+                Pos2::new(x + 7.0, tip.y - 9.0),
+                Align2::LEFT_CENTER,
+                &marker.label,
+                FontId::proportional(10.0),
+                theme::MARKER,
             );
         }
     }

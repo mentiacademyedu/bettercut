@@ -24,6 +24,10 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
+            // Files dragged in from the desktop are imported (see
+            // `bettercut_ui::file_drop`). Said explicitly rather than left to
+            // the default, because it is a feature people rely on.
+            .with_drag_and_drop(true)
             .with_title("bettercut"),
         ..Default::default()
     };
@@ -290,6 +294,24 @@ impl eframe::App for App {
                 }
                 None => self.ui.error("There is no sequence to export"),
             }
+        }
+
+        // §45: scene detection, started here for the same reason as export —
+        // it needs the scheduler, and the scheduler belongs to the shell.
+        if let Some(clip) = self.ui.scene_request.take() {
+            let threads = self
+                .editor
+                .hardware()
+                .ffmpeg_threads_per_job(self.editor.project().settings.performance_mode);
+            match bettercut_ui::scene_dialog::start(&self.editor, &mut self.proxies, clip, threads)
+            {
+                Ok(dialog) => self.ui.scenes = Some(dialog),
+                Err(message) => self.ui.error(message),
+            }
+            self.ui.needs_repaint = true;
+        }
+        if let Some(job) = self.ui.scene_cancel.take() {
+            self.proxies.cancel(job);
         }
 
         // After drawing, because both the import button and the quality setting

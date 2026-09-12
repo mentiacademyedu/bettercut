@@ -270,3 +270,126 @@ fn the_available_handle_bounds_the_length() {
     );
     assert_eq!(with_room, ms(600), "twice the smaller handle");
 }
+
+/// §25's moving kinds, through `layer_requests`: the placement reaches the
+/// layers the compositor is handed, not just the rule that computes it.
+#[test]
+fn a_slide_places_the_incoming_clip_off_to_the_right() {
+    let (mut project, a, b) = cut_project();
+    set_transition(&mut project, a, TransitionKind::Slide);
+    let sequence = project.active().expect("sequence");
+
+    // A quarter of the way through the 600-1000 ms window.
+    let requests = layer_requests(&project, sequence, ms(700));
+    assert_eq!(requests.len(), 2, "both clips should be on screen");
+
+    let outgoing = requests
+        .iter()
+        .find(|r| r.clip == a)
+        .expect("the outgoing clip");
+    let incoming = requests
+        .iter()
+        .find(|r| r.clip == b)
+        .expect("the incoming clip");
+
+    assert_eq!(
+        outgoing.look.transform.position.x, 0.0,
+        "the outgoing clip moved"
+    );
+    assert!(
+        (incoming.look.transform.position.x - 0.75).abs() < 1e-5,
+        "the incoming clip is at {}, not three quarters of a frame right",
+        incoming.look.transform.position.x
+    );
+    assert_eq!(incoming.look.opacity, 1.0, "a slide is not a fade");
+}
+
+/// The placement is applied *over* the clip's own transform, so a transition on
+/// a clip the user has already moved shifts it from where they put it rather
+/// than from the centre.
+#[test]
+fn a_moving_transition_respects_the_clips_own_transform() {
+    let (mut project, a, b) = cut_project();
+    set_transition(&mut project, a, TransitionKind::Slide);
+    project.active_mut().expect("sequence").video_tracks[0]
+        .get_mut(b)
+        .expect("clip")
+        .transform
+        .position
+        .x = 0.2;
+
+    let sequence = project.active().expect("sequence");
+    let requests = layer_requests(&project, sequence, ms(700));
+    let incoming = requests
+        .iter()
+        .find(|r| r.clip == b)
+        .expect("the incoming clip");
+
+    assert!(
+        (incoming.look.transform.position.x - 0.95).abs() < 1e-5,
+        "expected 0.2 + 0.75, got {}",
+        incoming.look.transform.position.x
+    );
+}
+
+/// A push moves both, and the outgoing clip is the one that leaves.
+#[test]
+fn a_push_moves_the_outgoing_clip_off_to_the_left() {
+    let (mut project, a, b) = cut_project();
+    set_transition(&mut project, a, TransitionKind::Push);
+    let sequence = project.active().expect("sequence");
+
+    let requests = layer_requests(&project, sequence, ms(900)); // three quarters through
+    let outgoing = requests
+        .iter()
+        .find(|r| r.clip == a)
+        .expect("the outgoing clip");
+    let incoming = requests
+        .iter()
+        .find(|r| r.clip == b)
+        .expect("the incoming clip");
+
+    assert!(
+        outgoing.look.transform.position.x < -0.5,
+        "the outgoing clip has not left: {}",
+        outgoing.look.transform.position.x
+    );
+    assert!(
+        (incoming.look.transform.position.x - outgoing.look.transform.position.x - 1.0).abs()
+            < 1e-5,
+        "the two are not one frame apart"
+    );
+}
+
+/// A zoom swells the outgoing clip and fades it over the next one.
+#[test]
+fn a_zoom_scales_and_fades_the_outgoing_clip() {
+    let (mut project, a, b) = cut_project();
+    set_transition(&mut project, a, TransitionKind::Zoom);
+    let sequence = project.active().expect("sequence");
+
+    let requests = layer_requests(&project, sequence, ms(900));
+    let outgoing = requests
+        .iter()
+        .find(|r| r.clip == a)
+        .expect("the outgoing clip");
+    let incoming = requests
+        .iter()
+        .find(|r| r.clip == b)
+        .expect("the incoming clip");
+
+    assert!(
+        outgoing.look.transform.scale.x > 1.1,
+        "the outgoing clip did not swell: {}",
+        outgoing.look.transform.scale.x
+    );
+    assert_eq!(
+        outgoing.look.transform.scale.x, outgoing.look.transform.scale.y,
+        "the picture was stretched rather than scaled"
+    );
+    assert!(outgoing.look.opacity < 0.5, "it did not fade");
+    assert_eq!(
+        incoming.look.transform.scale.x, 1.0,
+        "the next shot was scaled"
+    );
+}

@@ -64,8 +64,23 @@ impl TextFrames {
     /// `None` when there is nothing to draw — empty text, or a string with no
     /// glyphs in any available font. That is not an error the user needs
     /// telling about; the layer is simply absent.
-    pub fn frame_for(&mut self, clip: &TextClip) -> Option<Arc<VideoFrame>> {
-        let key = clip.style.key(&clip.text);
+    ///
+    /// `reveal` is how many characters to draw, for a title typing itself in
+    /// (`timeline::motion`); `None`, or at least as many as there are, draws
+    /// them all.
+    pub fn frame_for(&mut self, clip: &TextClip, reveal: Option<usize>) -> Option<Arc<VideoFrame>> {
+        // A reveal of everything is the ordinary picture, and shares its entry.
+        let reveal = reveal.filter(|&n| n < clip.text.chars().count());
+        let key = match reveal {
+            None => clip.style.key(&clip.text),
+            Some(chars) => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                clip.style.key(&clip.text).hash(&mut hasher);
+                chars.hash(&mut hasher);
+                hasher.finish()
+            }
+        };
         if let Some(frame) = self.cache.get(&key) {
             return Some(Arc::clone(frame));
         }
@@ -73,7 +88,10 @@ impl TextFrames {
             return None;
         }
 
-        match self.renderer.rasterize(&clip.text, &clip.style) {
+        match self
+            .renderer
+            .rasterize_revealed(&clip.text, &clip.style, reveal)
+        {
             Ok(bitmap) => {
                 let frame = Arc::new(VideoFrame {
                     timestamp: MediaTime::ZERO,

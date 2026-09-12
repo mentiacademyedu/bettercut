@@ -66,6 +66,20 @@ pub struct Sequence {
     #[serde(default)]
     pub master: crate::clip::MasterLook,
 
+    /// §20a.4's master gain: the whole video's volume, as a linear gain.
+    ///
+    /// Project data rather than a monitoring level, because §20a.4 puts it
+    /// inside the mix graph whose order "must be defined, because preview and
+    /// export must match" (§46). A volume that changed what the editor played
+    /// and not what it exported would be exactly that mismatch. How loud the
+    /// speakers are is the operating system's business.
+    ///
+    /// Beside `master` rather than inside it, because `MasterLook` decides
+    /// whether the compositor runs a whole-picture pass at all, and turning the
+    /// sound down is no reason to re-render the picture.
+    #[serde(default = "unity")]
+    pub master_volume: f32,
+
     /// Index 0 is the bottom layer. §22: "Track order determines compositing
     /// order." Later tracks composite over earlier ones.
     pub video_tracks: Vec<VideoTrack>,
@@ -79,7 +93,21 @@ pub struct Sequence {
     /// Defaulted in serde, so projects written before §26 load unchanged.
     #[serde(default)]
     pub text_tracks: Vec<TextTrack>,
+
+    /// Named instants, sorted by time, one per instant (`crate::marker`).
+    /// Defaulted, so projects written before markers load with none.
+    #[serde(default)]
+    pub markers: Vec<crate::marker::Marker>,
 }
+
+fn unity() -> f32 {
+    1.0
+}
+
+/// The loudest the whole video may be made: four times, about +12 dB. Past
+/// that the limiter is doing all the work and the control has stopped meaning
+/// anything.
+pub const MAX_MASTER_VOLUME: f32 = 4.0;
 
 impl Sequence {
     /// Create a sequence, rejecting a frame rate the timebase cannot represent.
@@ -102,9 +130,11 @@ impl Sequence {
             resolution,
             frame_rate,
             master: crate::clip::MasterLook::default(),
+            master_volume: 1.0,
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
             text_tracks: Vec::new(),
+            markers: Vec::new(),
         })
     }
 

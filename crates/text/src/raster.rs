@@ -120,6 +120,22 @@ impl TextRenderer {
     /// included, so the caller positions it by its own size rather than having
     /// to know how far a shadow reached.
     pub fn rasterize(&mut self, text: &str, style: &TextStyle) -> Result<TextBitmap, TextError> {
+        self.rasterize_revealed(text, style, None)
+    }
+
+    /// [`Self::rasterize`], drawing only the first `visible` characters.
+    ///
+    /// The typewriter entrance (`timeline::motion`). The layout is the whole
+    /// text's — same size of bitmap, same line breaks, every letter where it
+    /// will finally be — and the characters not yet reached are simply not
+    /// drawn. Laying out only the typed part instead would re-centre the line
+    /// with every letter, and the words would crawl sideways as they appeared.
+    pub fn rasterize_revealed(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        visible: Option<usize>,
+    ) -> Result<TextBitmap, TextError> {
         let style = style.sanitized();
         if text.trim().is_empty() {
             return Err(TextError::Empty);
@@ -167,7 +183,8 @@ impl TextRenderer {
             return Err(TextError::TooLarge { width, height });
         }
 
-        let glyphs = self.glyph_mask(&mut buffer, width as usize, height as usize, margin);
+        let cutoff = visible.map(|chars| Cutoff::after(text, chars));
+        let glyphs = self.glyph_mask(&mut buffer, width as usize, height as usize, margin, cutoff);
         if glyphs.is_empty() {
             // Shaping succeeded but nothing was drawn: every character is
             // missing from every font available. Saying "empty" is honest —
@@ -197,34 +214,80 @@ impl TextRenderer {
         width: usize,
         height: usize,
         margin: f32,
+        cutoff: Option<Cutoff>,
     ) -> Mask {
         let mut mask = Mask::new(width, height);
         let offset = margin.round() as i32;
         let white = cosmic_text::Color::rgba(255, 255, 255, 255);
 
-        buffer.draw(
-            &mut self.fonts,
-            &mut self.glyphs,
-            white,
-            |x, y, w, h, color| {
-                let alpha = color.a();
-                if alpha == 0 {
-                    return;
+        // What `Buffer::draw` does, written out so each glyph can be asked
+        // whether it has been reached yet. Same positions, same colour, same
+        // cache: with no cutoff the result is identical.
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs {
+                if cutoff.is_some_and(|c| !c.shows(run.line_i, glyph.start)) {
+                    continue;
                 }
-                for dy in 0..h as i32 {
-                    for dx in 0..w as i32 {
-                        let px = x + dx + offset;
-                        let py = y + dy + offset;
-                        if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
-                            continue;
+                let physical = glyph.physical((0.0, run.line_y), 1.0);
+                let color = glyph.color_opt.unwrap_or(white);
+                self.glyphs.with_pixels(
+                    &mut self.fonts,
+                    physical.cache_key,
+                    color,
+                    |x, y, pixel| {
+                        let alpha = pixel.a();
+                        let px = physical.x + x + offset;
+                        let py = physical.y + y + offset;
+                        if alpha == 0
+                            || px < 0
+                            || py < 0
+                            || px >= width as i32
+                            || py >= height as i32
+                        {
+                            return;
                         }
                         mask.cover(px as usize, py as usize, alpha);
-                    }
-                }
-            },
-        );
+                    },
+                );
+            }
+        }
 
         mask
+    }
+}
+
+/// Where a partial reveal stops, in the terms the layout reports glyphs in:
+/// which line of the text (split at newlines), and a byte offset into it.
+#[derive(Debug, Clone, Copy)]
+struct Cutoff {
+    line: usize,
+    byte: usize,
+}
+
+impl Cutoff {
+    /// Just after the first `chars` characters of `text`.
+    fn after(text: &str, chars: usize) -> Self {
+        let mut remaining = chars;
+        for (line, content) in text.split('\n').enumerate() {
+            let count = content.chars().count();
+            if remaining <= count {
+                let byte = content
+                    .char_indices()
+                    .nth(remaining)
+                    .map_or(content.len(), |(i, _)| i);
+                return Self { line, byte };
+            }
+            // The newline itself counts as a character typed.
+            remaining -= count + 1;
+        }
+        Self {
+            line: usize::MAX,
+            byte: 0,
+        }
+    }
+
+    fn shows(self, line: usize, byte: usize) -> bool {
+        line < self.line || (line == self.line && byte < self.byte)
     }
 }
 

@@ -37,6 +37,8 @@ struct Harness {
     /// Empty space left above the timeline, standing in for the toolbar and
     /// preview panel. Zero means the canvas fills the screen.
     top_offset: f32,
+    /// Where [`Harness::drawn_text`] collects, while it is collecting.
+    words: Option<std::rc::Rc<std::cell::RefCell<String>>>,
 }
 
 impl Harness {
@@ -47,6 +49,7 @@ impl Harness {
             editor,
             state: UiState::default(),
             top_offset: 0.0,
+            words: None,
         }
     }
 
@@ -92,6 +95,20 @@ impl Harness {
         id
     }
 
+    /// Draw one frame and hand back every word it put on screen.
+    ///
+    /// Most tests assert on the editor's state rather than on pixels; this is
+    /// for the few marks that exist only as drawing — a badge has no other
+    /// evidence that it was shown.
+    fn drawn_text(&mut self) -> String {
+        let text = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        self.words = Some(std::rc::Rc::clone(&text));
+        self.frame(vec![]);
+        self.words = None;
+        let borrowed = text.borrow();
+        borrowed.clone()
+    }
+
     fn frame(&mut self, events: Vec<egui::Event>) {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
@@ -116,6 +133,13 @@ impl Harness {
         // egui hands back font atlas updates that a real backend would upload.
         // There is no backend here, and dropping them unhandled panics.
         output.textures_delta.clear();
+
+        if let Some(words) = &self.words {
+            let mut words = words.borrow_mut();
+            for clipped in &output.shapes {
+                collect_text(&clipped.shape, &mut words);
+            }
+        }
     }
 
     fn press(&mut self, pos: Pos2) {
@@ -1035,4 +1059,128 @@ fn pressing_the_ruler_still_scrubs_after_the_guard() {
         h.editor.playhead().ticks() > 0,
         "pressing the ruler no longer scrubs"
     );
+}
+
+/// §12: pressing on a linked clip captures its partner, so the drag can show
+/// where the sound is going instead of letting it jump on release.
+#[test]
+fn pressing_a_linked_clip_captures_its_partner_for_the_drag() {
+    let mut h = Harness::new();
+    let mut asset = MediaAsset::new(
+        MediaKind::Video,
+        "C:/media/linked.mp4",
+        MediaTime::from_seconds(600),
+    );
+    asset.audio_codec = Some("aac".to_owned());
+    let media = h.editor.import_media(asset);
+    let placed = h.editor.place_media(media).expect("placed");
+    assert_eq!(placed.len(), 2, "setup: picture and sound");
+
+    // Somewhere in the body of the picture, away from the trim handles.
+    let pos = Pos2::new(h.x_of(secs(30)), h.video_lane_y());
+    h.press(pos);
+
+    let drag = h
+        .state
+        .drag
+        .as_ref()
+        .expect("the press did not start a drag");
+    assert_eq!(drag.clip, placed[0], "the drag grabbed the wrong clip");
+    assert_eq!(
+        drag.partners.len(),
+        1,
+        "the sound was not captured, so the drag cannot show it moving"
+    );
+    h.release(pos);
+}
+
+/// An unlinked clip drags alone, with no ghost of anything else.
+#[test]
+fn pressing_an_unlinked_clip_captures_no_partner() {
+    let mut h = Harness::new();
+    h.add_clip(0, 10);
+    let pos = Pos2::new(h.x_of(secs(5)), h.video_lane_y());
+    h.press(pos);
+
+    let drag = h
+        .state
+        .drag
+        .as_ref()
+        .expect("the press did not start a drag");
+    assert!(drag.partners.is_empty());
+    h.release(pos);
+}
+
+/// While playing, the view keeps up with the playhead — and only while
+/// playing, so a paused editor stays where the user scrolled it.
+#[test]
+fn the_view_follows_the_playhead_while_playing() {
+    use bettercut_ui::state::PlaybackStats;
+
+    let mut h = Harness::new();
+    h.add_clip(0, 600);
+
+    // Paused, with the playhead far off to the right: nothing moves.
+    h.editor.set_playhead(TimelineTime::from_seconds(120));
+    h.frame(vec![]);
+    assert_eq!(h.state.scroll_ticks, 0, "a paused view scrolled by itself");
+
+    h.state.playback = Some(PlaybackStats {
+        playing: true,
+        dropped_frames: 0,
+        underruns: 0,
+        limited_samples: 0,
+        peaks: (0.0, 0.0),
+        prefetch_hits: 0,
+        ring_frames: 0,
+        quality: "full",
+    });
+    h.frame(vec![]);
+
+    let scrolled = h.state.scroll_ticks;
+    assert!(scrolled > 0, "the view did not follow the playhead");
+    let span = (SCREEN.x - HEADER_W) as i64 * h.state.ticks_per_pixel();
+    let playhead = secs(120);
+    assert!(
+        playhead >= scrolled && playhead < scrolled + span,
+        "the playhead is off screen at {playhead}, view {scrolled}..{}",
+        scrolled + span
+    );
+}
+
+/// A held frame says so, and does not draw a filmstrip pretending to move.
+#[test]
+fn a_held_clip_is_badged() {
+    let mut h = Harness::new();
+    let clip = h.add_clip(0, 20);
+    h.editor.set_playhead(TimelineTime::from_seconds(5));
+    let held = h
+        .editor
+        .freeze_frame(clip, TimelineTime::from_seconds(3))
+        .unwrap();
+
+    h.frame(vec![]);
+
+    let words = h.drawn_text();
+    assert!(words.contains("hold"), "no hold badge: {words}");
+    assert!(
+        h.editor.video_clip(held).unwrap().frozen,
+        "the clip under the badge is not a hold"
+    );
+}
+
+/// Every string in a shape tree, for [`Harness::drawn_text`].
+fn collect_text(shape: &egui::Shape, into: &mut String) {
+    match shape {
+        egui::Shape::Text(text) => {
+            into.push_str(text.galley.text());
+            into.push(' ');
+        }
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_text(shape, into);
+            }
+        }
+        _ => {}
+    }
 }

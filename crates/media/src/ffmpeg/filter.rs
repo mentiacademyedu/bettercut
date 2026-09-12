@@ -19,6 +19,67 @@ use super::raii::Frame;
 use super::{error_string, path_to_cstring};
 use crate::error::MediaError;
 
+/// Whether a stream's transfer function is HDR (§21a.1).
+pub(crate) fn is_hdr_transfer(trc: ffi::AVColorTransferCharacteristic) -> bool {
+    matches!(trc, ffi::AVCOL_TRC_SMPTE2084 | ffi::AVCOL_TRC_ARIB_STD_B67)
+}
+
+/// The chain that turns an HDR stream into BT.709 SDR, limited-range yuv420p,
+/// at `width`×`height` (§21a.1).
+///
+/// **One description, two users.** The proxy encoder runs it to build a proxy,
+/// and the decoder runs it on originals — which is the path export takes, since
+/// §14 exports from the original media. They used to disagree: only the proxy
+/// was tone-mapped, so an HDR clip looked right while editing and came out
+/// around half as bright in the export. Built in one place, the two cannot
+/// drift, and an original decodes to the same picture its proxy does.
+///
+/// The input side is stated explicitly rather than left to the frame's own
+/// tags. `zscale` reads those tags when they are there and silently assumes
+/// SDR when they are not — which produces exactly the untone-mapped picture
+/// this exists to prevent. The stream was probed, so its colour is known.
+///
+/// `tonemap` is left on its default `desat`. Setting `desat=0` looks harmless —
+/// "do not desaturate highlights" — and roughly halves the result: measured 116
+/// against 227 on the fixture. The default is what every reference chain uses.
+pub(crate) fn hdr_to_sdr_spec(
+    trc: ffi::AVColorTransferCharacteristic,
+    primaries: ffi::AVColorPrimaries,
+    space: ffi::AVColorSpace,
+    range: ffi::AVColorRange,
+    width: i32,
+    height: i32,
+) -> Option<String> {
+    if !is_hdr_transfer(trc) {
+        return None;
+    }
+    let tin = match trc {
+        ffi::AVCOL_TRC_SMPTE2084 => "smpte2084",
+        _ => "arib-std-b67",
+    };
+    let pin = match primaries {
+        ffi::AVCOL_PRI_BT2020 => "bt2020",
+        ffi::AVCOL_PRI_BT709 => "bt709",
+        _ => "bt2020", // HDR is overwhelmingly BT.2020
+    };
+    let min = match space {
+        ffi::AVCOL_SPC_BT2020_NCL => "bt2020nc",
+        ffi::AVCOL_SPC_BT709 => "bt709",
+        _ => "bt2020nc",
+    };
+    let rin = if range == ffi::AVCOL_RANGE_JPEG {
+        "full"
+    } else {
+        "limited"
+    };
+    Some(format!(
+        "zscale=tin={tin}:pin={pin}:min={min}:rin={rin}:t=linear:npl=100,\
+         tonemap=hable,\
+         zscale=w={width}:h={height}:p=bt709:t=bt709:m=bt709:r=tv,\
+         format=yuv420p"
+    ))
+}
+
 /// An owned filter graph with a `buffer` source and a `buffersink`.
 pub(crate) struct FilterGraph {
     graph: *mut ffi::AVFilterGraph,

@@ -307,3 +307,145 @@ fn the_check_notices_a_wrong_box() {
          comparison proves nothing"
     );
 }
+
+/// §54's rotate handle: the turned box has to sit on the turned picture.
+///
+/// On a 16:9 frame, because that is where rotation used to go wrong — the
+/// renderer rotated in clip space, which is not square, and sheared the picture
+/// (it vanished entirely at 45°). The overlay rotates in screen pixels; this
+/// checks the two now agree, corner by corner, against what the GPU drew.
+#[test]
+fn a_rotated_clips_corners_sit_on_its_picture() {
+    use bettercut_ui::preview_overlay::{corners, to_canvas};
+
+    let (device, queue) = gpu_or_skip!();
+    let (width, height) = (480_u32, 270_u32);
+    let output = Resolution::new(width, height);
+
+    let transform = Transform {
+        position: Vec2::new(0.08, -0.04),
+        scale: Vec2::new(0.45, 0.45),
+        rotation_degrees: 30.0,
+        ..Transform::default()
+    };
+    // A 2:1 source, so a mix-up between its axes shows as well.
+    let frame = white(200, 100);
+
+    let mut compositor = Compositor::new(
+        device.clone(),
+        queue.clone(),
+        RenderConfig::export_to_texture(output),
+    )
+    .expect("compositor");
+    compositor
+        .composite(
+            &[Layer {
+                frame: &frame,
+                transform,
+                opacity: 1.0,
+                color: ColorAdjust::default(),
+                blur: 0.0,
+            }],
+            MasterLook::default(),
+        )
+        .expect("composite");
+
+    // Read back at this size rather than the file's shared constants.
+    let texture = compositor.target();
+    let padded = (width * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("rotated readback"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("rotated readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("poll");
+    let mapped = slice.get_mapped_range().expect("mapped");
+
+    // The four extremes of the white region — for a turned rectangle, those
+    // are its four corners.
+    let mut white_pixels = Vec::new();
+    for y in 0..height {
+        let row = (y * padded) as usize;
+        for x in 0..width {
+            if mapped[row + (x * 4) as usize] > 128 {
+                white_pixels.push(egui::pos2(x as f32 + 0.5, y as f32 + 0.5));
+            }
+        }
+    }
+    drop(mapped);
+    buffer.unmap();
+    assert!(white_pixels.len() > 100, "the rotated clip was not drawn");
+
+    let extreme = |key: fn(&egui::Pos2) -> f32, smallest: bool| {
+        white_pixels
+            .iter()
+            .copied()
+            .reduce(|a, b| {
+                let pick_b = if smallest {
+                    key(&b) < key(&a)
+                } else {
+                    key(&b) > key(&a)
+                };
+                if pick_b { b } else { a }
+            })
+            .expect("pixels")
+    };
+    let drawn = [
+        extreme(|p| p.y, true),  // topmost
+        extreme(|p| p.x, false), // rightmost
+        extreme(|p| p.y, false), // bottommost
+        extreme(|p| p.x, true),  // leftmost
+    ];
+
+    // Where the overlay puts the corners, on a canvas the size of the frame.
+    let canvas =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32));
+    let box_on_canvas = to_canvas(
+        layer_box(2.0, width as f32 / height as f32, transform),
+        canvas,
+    );
+    let predicted = corners(box_on_canvas, transform.rotation_degrees);
+
+    // Every drawn extreme has a predicted corner beside it.
+    for point in drawn {
+        let nearest = predicted
+            .iter()
+            .map(|corner| corner.distance(point))
+            .fold(f32::MAX, f32::min);
+        assert!(
+            nearest <= 3.0,
+            "the picture has a corner at {point:?} and the nearest handle is {nearest:.1} px \
+             away; handles at {predicted:?}"
+        );
+    }
+}

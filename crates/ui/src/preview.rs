@@ -23,7 +23,14 @@ pub struct Preview {
 
     engine: PlaybackEngine,
     clock: PlaybackClock,
-    sink: Option<bettercut_audio::AudioSink>,
+    /// §20a.2's mixer thread, which owns the device's ring buffer. `None` when
+    /// there is no audio device, which is not a failure (§50) — the picture
+    /// still plays.
+    mixer: Option<bettercut_playback::MixerThread>,
+    /// The last snapshot sent to it, so a new one goes only when the audio
+    /// changed. A slider drag on a video clip is a project change sixty times
+    /// a second, and none of them concern the mixer.
+    sent_plan: Option<bettercut_playback::AudioPlan>,
 
     quality: PreviewQuality,
 
@@ -103,13 +110,25 @@ impl Preview {
         let (clock, sink) = PlaybackClock::open();
         tracing::info!(audio = %clock.describe(), "playback ready");
 
+        let mixer = sink.and_then(|sink| {
+            match bettercut_playback::MixerThread::spawn(sink, decoder_threads) {
+                Ok(mixer) => Some(mixer),
+                Err(err) => {
+                    // §50: no mixer means no sound, not no editor.
+                    tracing::error!(%err, "could not start the audio mixer; playback will be silent");
+                    None
+                }
+            }
+        });
+
         Ok(Self {
             compositor,
             texture_id,
             render_state: render_state.clone(),
             engine: PlaybackEngine::new(cache_bytes, decoder_threads),
             clock,
-            sink,
+            mixer,
+            sent_plan: None,
             quality: PreviewQuality::default(),
             gpu,
             proxy_height: None,
@@ -174,7 +193,8 @@ impl Preview {
             playing: self.clock.is_playing(),
             dropped_frames: self.dropped_total,
             underruns: self.clock.clock().underruns(),
-            limited_samples: self.engine.limited_samples(),
+            limited_samples: self.mixer.as_ref().map_or(0, |m| m.limited_samples()),
+            peaks: self.mixer.as_ref().map_or((0.0, 0.0), |m| m.peaks()),
             prefetch_hits: self.engine.prefetch_hits(),
             ring_frames: self.engine.prefetched_frames(),
             quality: match self.render_quality() {
@@ -196,13 +216,21 @@ impl Preview {
             // Start the clock and the audio fill from wherever the playhead is,
             // or the sound would resume from where it last stopped.
             self.clock.seek_to(editor.playhead());
-            self.engine.reset_audio(editor.playhead());
+            // The plan first, so the first block mixed is from the timeline as
+            // it is now rather than as it was when playback last stopped.
+            self.send_plan(editor);
+            if let Some(mixer) = &self.mixer {
+                mixer.seek(editor.playhead());
+            }
             // §47a.3: decode ahead only while playing. A paused editor has
             // nothing to run ahead of, and holding a decode thread and its
             // share of the frame budget for nothing works against §81.
             self.engine.start_prefetch(self.prefetch_budget(editor));
         } else {
             self.engine.stop_prefetch();
+        }
+        if let Some(mixer) = &self.mixer {
+            mixer.set_playing(playing);
         }
         self.clock.set_playing(playing);
     }
@@ -235,7 +263,9 @@ impl Preview {
     /// Move the clock to follow a user-driven seek.
     pub fn seek_to(&mut self, position: TimelineTime) {
         self.clock.seek_to(position);
-        self.engine.reset_audio(position);
+        if let Some(mixer) = &self.mixer {
+            mixer.seek(position);
+        }
         // §47a.5: frames queued for where the playhead was are worthless, and
         // their bytes are needed for where it is going.
         self.engine.reset_prefetch();
@@ -323,14 +353,28 @@ impl Preview {
             .prefetch_ahead(project, sequence, self.clock.position(), span);
     }
 
+    /// Keep the mixer's snapshot current (§20a.2).
+    ///
+    /// The mixing itself happens on the mixer thread; all that is left here is
+    /// telling it when the audio changed, so an edit made during playback is
+    /// heard. Compared first, because sending is not free and most frames
+    /// change nothing it cares about.
     fn pump_audio(&mut self, editor: &Editor) {
-        let Some(sink) = self.sink.as_mut() else {
+        self.send_plan(editor);
+    }
+
+    fn send_plan(&mut self, editor: &Editor) {
+        let Some(mixer) = &self.mixer else {
             return;
         };
         let Some(sequence) = editor.active_sequence() else {
             return;
         };
-        self.engine.fill_audio(editor.project(), sequence, sink);
+        let plan = bettercut_playback::AudioPlan::of(editor.project(), sequence);
+        if self.sent_plan.as_ref() != Some(&plan) {
+            mixer.set_plan(plan.clone());
+            self.sent_plan = Some(plan);
+        }
     }
 
     fn render(&mut self, editor: &Editor, position: TimelineTime) {

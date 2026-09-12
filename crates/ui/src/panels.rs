@@ -6,8 +6,8 @@
 use bettercut_editor_core::foundation::{FrameRate, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_editor_core::project_format::PerformanceMode;
-use bettercut_editor_core::timeline::{AnimatedParameter, Resolution, VideoClip};
-use bettercut_editor_core::{Editor, SettingChange, TrackFlag};
+use bettercut_editor_core::timeline::{AnimatedParameter, ColorAdjust, Resolution, VideoClip};
+use bettercut_editor_core::{Editor, Movement, SettingChange, TrackFlag};
 
 use crate::state::UiState;
 use crate::theme;
@@ -108,6 +108,16 @@ pub fn toolbar(
             }
         }
 
+        // §31: a whole edit from a few clips. Beside the other things that put
+        // something on the timeline.
+        if ui
+            .button("Templates")
+            .on_hover_text("Start from a ready-made edit and fill in your clips")
+            .clicked()
+        {
+            state.template_dialog.open();
+        }
+
         // One slot rather than two buttons: importing subtitles is something
         // done once per project, and the toolbar is already the busiest strip
         // in the window.
@@ -195,6 +205,21 @@ pub fn toolbar(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The last thing on the right, where people look for help.
+            if ui
+                .button("Captions")
+                .on_hover_text("Every caption in one list, editable in place")
+                .clicked()
+            {
+                state.captions_open = !state.captions_open;
+            }
+            if ui
+                .button("Shortcuts")
+                .on_hover_text("Every keyboard shortcut (? or F1)")
+                .clicked()
+            {
+                state.shortcuts_open = !state.shortcuts_open;
+            }
             ui.label(
                 egui::RichText::new(editor.playhead().format_timecode())
                     .monospace()
@@ -217,13 +242,18 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         import_media(editor, state);
     }
 
-    if ui
-        .button("Add placeholder clip")
-        .on_hover_text(
-            "Adds a 5-second synthetic asset — useful for laying out a timeline \
-             before the real footage is available.",
-        )
-        .clicked()
+    // Development builds only. It creates an asset pointing at a file that does
+    // not exist, which is useful for laying out a timeline while working on the
+    // editor and baffling to anyone else: the clip renders nothing and the
+    // library lists it as missing. A release build is what people are shown.
+    if cfg!(debug_assertions)
+        && ui
+            .button("Add placeholder clip")
+            .on_hover_text(
+                "Development builds only: adds a 5-second synthetic asset with no \
+                 file behind it.",
+            )
+            .clicked()
     {
         add_placeholder_clip(editor, state);
     }
@@ -231,12 +261,17 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     ui.separator();
 
     if editor.project().media.is_empty() {
-        ui.label(egui::RichText::new("No media imported yet.").color(theme::DISABLED));
+        ui.label(
+            egui::RichText::new(
+                "No media yet. Drag files onto the window, or press Import.                  Dropped on the timeline, they are added to it too.",
+            )
+            .color(theme::DISABLED),
+        );
         return;
     }
 
     // Collect first so the list can be drawn while dispatching commands below.
-    let assets: Vec<(MediaId, String, bool, bool, MediaTime)> = editor
+    let assets: Vec<(MediaId, String, bool, bool, MediaTime, bool)> = editor
         .project()
         .media
         .iter()
@@ -245,8 +280,10 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                 m.id,
                 m.file_name.clone(),
                 m.missing,
-                m.duration.is_zero(),
+                // A photo has no duration and needs none.
+                !m.is_still() && m.duration.is_zero(),
                 m.duration,
+                m.is_still(),
             )
         })
         .collect();
@@ -293,7 +330,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (id, name, missing, no_duration, duration) in &assets {
+        for (id, name, missing, no_duration, duration, still) in &assets {
             ui.group(|ui| {
                 thumbnail(ui, state, *id, *missing);
 
@@ -304,9 +341,10 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     }
                 });
 
-                if *no_duration {
-                    // Still images have no duration, and so does a file whose
-                    // container never declared one.
+                if *still {
+                    ui.label(egui::RichText::new("Photo").small().color(theme::DISABLED));
+                } else if *no_duration {
+                    // A file whose container never declared a duration.
                     ui.label(
                         egui::RichText::new("no duration")
                             .small()
@@ -334,8 +372,8 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     if ui
                         .add_enabled(can_place, egui::Button::new("Add to timeline"))
                         .on_disabled_hover_text(
-                            "This file has no duration to place — it is a still image, \
-                             or the file is missing from disk.",
+                            "This file has no duration to place, or it is missing \
+                             from disk.",
                         )
                         .clicked()
                     {
@@ -572,14 +610,23 @@ fn transform_handles(
         .and_then(|id| visible.iter().find(|shown| shown.clip == id).copied());
 
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
-    let on_corner = selected
-        .zip(pointer)
-        .and_then(|(shown, at)| overlay::corner_at(shown.box_on_canvas, at));
+    let on_corner = selected.zip(pointer).and_then(|(shown, at)| {
+        overlay::corner_at(shown.box_on_canvas, shown.transform.rotation_degrees, at)
+    });
+    let on_rotate = selected.zip(pointer).is_some_and(|(shown, at)| {
+        overlay::on_rotate_handle(shown.box_on_canvas, shown.transform.rotation_degrees, at)
+    });
 
     // The cursor says what is under it before it is pressed.
-    if on_corner.is_some() {
+    if on_rotate {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    } else if on_corner.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-    } else if pointer.is_some_and(|at| visible.iter().any(|s| s.box_on_canvas.contains(at))) {
+    } else if pointer.is_some_and(|at| {
+        visible
+            .iter()
+            .any(|s| overlay::contains(s.box_on_canvas, s.transform.rotation_degrees, at))
+    }) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
 
@@ -611,6 +658,16 @@ fn transform_handles(
         && let Some(at) = pointer
     {
         let grabbed = match (selected, on_corner) {
+            // The rotate handle first: it sits outside the box, so nothing
+            // else could claim that press, but checked ahead of the corners
+            // in case a very small clip brings the two within reach.
+            (Some(shown), _) if on_rotate => Some((
+                shown,
+                overlay::Gesture::Rotate {
+                    from: shown.transform.rotation_degrees,
+                    grab_angle: overlay::angle_of(shown.box_on_canvas.center(), at),
+                },
+            )),
             // A corner only counts for the clip that is already selected;
             // otherwise the corners of an unselected clip would be invisible
             // hotspots.
@@ -661,7 +718,12 @@ fn transform_handles(
         .preview_drag
         .is_some_and(|drag| drag.clip == shown.clip && response.dragged());
 
-    overlay::draw(painter, shown.box_on_canvas, dragging);
+    overlay::draw(
+        painter,
+        shown.box_on_canvas,
+        shown.transform.rotation_degrees,
+        dragging,
+    );
 
     if dragging
         && let Some(at) = pointer
@@ -789,9 +851,17 @@ fn visible_boxes(
 
 /// The frontmost clip whose picture covers `at`.
 fn topmost_at(visible: &[ShownClip], at: egui::Pos2) -> Option<ShownClip> {
+    // Against the picture as it is drawn, turned — not its upright box, which
+    // would grab a turned clip by its empty corners and miss its tips.
     visible
         .iter()
-        .find(|shown| shown.box_on_canvas.contains(at))
+        .find(|shown| {
+            crate::preview_overlay::contains(
+                shown.box_on_canvas,
+                shown.transform.rotation_degrees,
+                at,
+            )
+        })
         .copied()
 }
 
@@ -885,12 +955,23 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             );
 
             ui.add_space(6.0);
-            inspector_tabs(ui, state, true, false);
+            // Audio too: the whole video has a volume (§20a.4's master gain).
+            inspector_tabs(ui, state, true, true);
             ui.add_space(4.0);
 
             master_properties(ui, editor, state);
         }
         (1, Some((id, video, audio))) => {
+            // The sound the Audio tab adjusts: this clip's own, or — for a
+            // picture placed from a file with sound — the clip linked to it
+            // (§12). Selecting the video and finding "no sound" when the sound
+            // is right there beneath it is a dead end.
+            let sound = audio.map(|a| (id, a.1)).or_else(|| {
+                editor
+                    .linked_with(id)
+                    .into_iter()
+                    .find_map(|c| editor.audio_clip(c).map(|a| (c, a.gain)))
+            });
             let media_id = video.map(|v| v.media_id).or_else(|| audio.map(|a| a.2));
             let name = media_id
                 .and_then(|m| editor.project().media_asset(m))
@@ -921,7 +1002,7 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             }
 
             ui.add_space(6.0);
-            inspector_tabs(ui, state, video.is_some(), audio.is_some());
+            inspector_tabs(ui, state, video.is_some(), sound.is_some());
             ui.add_space(4.0);
 
             match state.inspector_tab {
@@ -940,14 +1021,26 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     }
                 }
                 InspectorTab::Audio => {
-                    if let Some((_, gain, _)) = audio {
-                        clip_audio_properties(ui, editor, state, id, gain);
+                    if let Some((sound_id, gain)) = sound {
+                        if sound_id != id {
+                            ui.label(
+                                egui::RichText::new("The sound that came with this clip.")
+                                    .small()
+                                    .color(theme::DISABLED),
+                            );
+                        }
+                        clip_audio_properties(ui, editor, state, sound_id, gain);
                     } else {
                         unavailable(ui, "This clip has no sound.");
                     }
                 }
                 InspectorTab::Speed => {
-                    if video.is_some() {
+                    if video.is_some() && !editor.can_retime(id) {
+                        // A hold and a photo are one picture: there is nothing
+                        // to play faster, and offering the slider would let it
+                        // shrink the clip to the frame it holds.
+                        unavailable(ui, "A held frame and a photo have no motion to re-time.");
+                    } else if video.is_some() {
                         clip_speed(ui, editor, state, id);
                     } else {
                         unavailable(ui, "Only picture can be re-timed so far.");
@@ -1281,6 +1374,12 @@ pub fn transport(
                 .color(theme::DISABLED),
         );
 
+        // §20a: what is going to the device, right now.
+        if let Some(stats) = state.playback {
+            ui.separator();
+            draw_meter(ui, stats.peaks, stats.limited_samples > 0);
+        }
+
         let width = ui.available_width().max(400.0);
 
         match preview {
@@ -1312,6 +1411,74 @@ pub fn transport(
             state.needs_repaint = true;
         }
     });
+}
+
+/// How full the meter's bar is for a peak level, 0.0 to 1.0.
+///
+/// A decibel scale, not a linear one. Linearly, everything from a whisper to a
+/// shout crowds into the top fifth of the bar and the meter is decoration;
+/// -60 dB to 0 spreads the range the way the ear hears it, which is the only
+/// way the bar says anything useful about how loud the mix is.
+pub fn meter_fraction(peak: f32) -> f32 {
+    const FLOOR_DB: f32 = -60.0;
+    if peak <= 0.0 || !peak.is_finite() {
+        return 0.0;
+    }
+    let db = 20.0 * peak.max(1e-6).log10();
+    ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// A stereo peak meter, two bars high (§20a).
+///
+/// Drawn on a decibel scale rather than a linear one: linearly, everything from
+/// a whisper to a shout crowds into the top fifth of the bar and the meter is
+/// decoration. -60 dB to 0 spreads it the way the ear hears it, which is the
+/// only way the bar says anything useful about how loud the mix is.
+///
+/// Turns red when the limiter has had to clamp — the one thing a meter must
+/// never be quiet about.
+fn draw_meter(ui: &mut egui::Ui, (left, right): (f32, f32), clipping: bool) {
+    const WIDTH: f32 = 86.0;
+    const BAR: f32 = 5.0;
+
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(WIDTH, BAR * 2.0 + 3.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    for (index, peak) in [left, right].into_iter().enumerate() {
+        let top = rect.top() + index as f32 * (BAR + 3.0);
+        let track = egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(WIDTH, BAR));
+        painter.rect_filled(track, 1.0, theme::DISABLED.gamma_multiply(0.35));
+
+        let filled = WIDTH * meter_fraction(peak);
+        if filled > 0.5 {
+            let colour = if clipping || peak >= 1.0 {
+                theme::PLAYHEAD
+            } else if peak > 0.7 {
+                theme::SELECTION
+            } else {
+                theme::AUDIO_CLIP_TOP
+            };
+            painter.rect_filled(
+                egui::Rect::from_min_size(track.min, egui::vec2(filled, BAR)),
+                1.0,
+                colour,
+            );
+        }
+    }
+
+    let db = |peak: f32| {
+        if peak <= 0.0 {
+            "-inf".to_owned()
+        } else {
+            format!("{:.0}", 20.0 * peak.log10())
+        }
+    };
+    response.on_hover_text(format!(
+        "Output level: {} dB left, {} dB right",
+        db(left),
+        db(right)
+    ));
 }
 
 /// One asset's poster image, or a placeholder of the same size.
@@ -1539,6 +1706,7 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         return;
     };
     let master = sequence.master;
+    let master_volume = sequence.master_volume;
     let mut change: Option<(ClipProperty, bool)> = None;
     let mut reset: Option<ClipProperty> = None;
 
@@ -1649,11 +1817,37 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             if response.changed() {
                 change = Some((ClipProperty::Saturation(saturation), response.dragged()));
             }
+
+            // The whole video has looks too: grading the finished picture is
+            // the usual way to give an edit one feel (§22).
+            looks_row(ui, editor, state, None, master.color, false);
         }
-        InspectorTab::Audio => unavailable(
-            ui,
-            "There is no whole-video volume yet. Select a clip to set its own.",
-        ),
+        InspectorTab::Audio => {
+            // §20a.4's master gain: everything at once, after every clip and
+            // track has been mixed. Applied to the export as well as to what
+            // plays here — the two must not differ (§46).
+            let mut volume = master_volume;
+            let response = master_row(ui, ClipProperty::Gain(master_volume), &mut reset, |ui| {
+                ui.add(
+                    egui::Slider::new(
+                        &mut volume,
+                        0.0..=bettercut_editor_core::timeline::sequence::MAX_MASTER_VOLUME,
+                    )
+                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                    .text("volume"),
+                )
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Gain(volume), response.dragged()));
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Applies to the export too. Select a clip to set its own volume.",
+                )
+                .small()
+                .color(theme::DISABLED),
+            );
+        }
         InspectorTab::Speed => unavailable(
             ui,
             "Speed applies to one clip at a time. Select a clip to re-time it.",
@@ -1723,6 +1917,128 @@ fn unavailable(ui: &mut egui::Ui, message: &str) {
 }
 
 /// Brightness, contrast and saturation (§45's cheap colour adjustment).
+/// The shape of a clip's picture and of the frame it is drawn in, for the fit
+/// and fill buttons. `None` when the media's size is not known.
+fn aspects(editor: &Editor, media: MediaId) -> Option<(f32, f32)> {
+    let asset = editor.project().media_asset(media)?;
+    let sequence = editor.active_sequence()?;
+    let aspect = |w: u32, h: u32| (w > 0 && h > 0).then(|| w as f32 / h as f32);
+    Some((
+        aspect(asset.width, asset.height)?,
+        aspect(sequence.resolution.width, sequence.resolution.height)?,
+    ))
+}
+
+/// One-click grades, built from the three colour controls (§45).
+///
+/// Presets rather than a curve editor: these are the adjustments people
+/// actually reach for, and each is three numbers that only mean something
+/// together — which is why applying one is a single undo step.
+///
+/// Named for what they do to a shot, not for a film stock: "Punchy" says what
+/// to expect, "Kodachrome" says it only to someone who already knows.
+pub const LOOKS: [(&str, ColorAdjust); 6] = [
+    (
+        "None",
+        ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        },
+    ),
+    (
+        "Punchy",
+        ColorAdjust {
+            brightness: 1.02,
+            contrast: 1.25,
+            saturation: 1.25,
+        },
+    ),
+    (
+        "Soft",
+        ColorAdjust {
+            brightness: 1.06,
+            contrast: 0.9,
+            saturation: 0.92,
+        },
+    ),
+    (
+        "Faded",
+        ColorAdjust {
+            brightness: 1.1,
+            contrast: 0.82,
+            saturation: 0.72,
+        },
+    ),
+    (
+        "Moody",
+        ColorAdjust {
+            brightness: 0.88,
+            contrast: 1.18,
+            saturation: 0.82,
+        },
+    ),
+    (
+        "Black & white",
+        ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.08,
+            saturation: 0.0,
+        },
+    ),
+];
+
+/// Whether `color` is one of the presets, near enough to highlight it.
+fn look_of(color: ColorAdjust) -> Option<&'static str> {
+    let near = |a: f32, b: f32| (a - b).abs() < 0.005;
+    LOOKS.iter().find_map(|(name, look)| {
+        (near(color.brightness, look.brightness)
+            && near(color.contrast, look.contrast)
+            && near(color.saturation, look.saturation))
+        .then_some(*name)
+    })
+}
+
+/// The row of looks. `clip` is `None` for the whole video.
+///
+/// Disabled while the colour is animated: keys override a static value (§24),
+/// so the button would appear to do nothing.
+fn looks_row(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: Option<bettercut_editor_core::foundation::ClipId>,
+    color: ColorAdjust,
+    animated: bool,
+) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Looks").strong());
+    let current = look_of(color);
+    let mut chosen = None;
+    ui.horizontal_wrapped(|ui| {
+        for (name, look) in LOOKS {
+            let response = ui.add_enabled(
+                !animated,
+                egui::Button::selectable(current == Some(name), name),
+            );
+            if response
+                .on_disabled_hover_text(
+                    "This clip's colour is animated, so a look would be overridden by                      its keyframes.",
+                )
+                .clicked()
+            {
+                chosen = Some(look);
+            }
+        }
+    });
+    if let Some(look) = chosen {
+        match editor.set_color_adjust(clip, look) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+}
+
 fn clip_colour_properties(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -1783,6 +2099,21 @@ fn clip_colour_properties(
             .small()
             .color(theme::DISABLED),
     );
+
+    let animated = [
+        AnimatedParameter::Brightness,
+        AnimatedParameter::Contrast,
+        AnimatedParameter::Saturation,
+    ]
+    .iter()
+    .any(|p| {
+        look.keys[AnimatedParameter::ALL
+            .iter()
+            .position(|a| a == p)
+            .unwrap_or(0)]
+        .animated
+    });
+    looks_row(ui, editor, state, Some(clip), color, animated);
 
     apply_row_actions(editor, state, clip, change, toggle, reset);
 }
@@ -1896,6 +2227,73 @@ fn clip_video_properties(
             ClipProperty::Scale { x: scale, y: scale },
             response.dragged(),
         ));
+    }
+
+    // Fit leaves bars at the sides; fill crops to cover the frame. The two
+    // together are what reframing landscape footage for a vertical edit needs,
+    // and neither is obvious from a scale slider alone.
+    if let Some((source_aspect, output_aspect)) = aspects(editor, look.media_id) {
+        let fill = bettercut_editor_core::timeline::fill_scale(source_aspect, output_aspect);
+        let near = |a: f32, b: f32| (a - b).abs() < 0.005;
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            if ui
+                .add(egui::Button::selectable(near(scale, 1.0), "Fit"))
+                .on_hover_text(
+                    "Show the whole picture, bars at the sides if it is a different shape",
+                )
+                .clicked()
+            {
+                change = Some((ClipProperty::Scale { x: 1.0, y: 1.0 }, false));
+            }
+            let same_shape = near(fill, 1.0);
+            if ui
+                .add_enabled(
+                    !same_shape,
+                    egui::Button::selectable(near(scale, fill), "Fill"),
+                )
+                .on_hover_text("Cover the frame, cropping what does not fit")
+                .on_disabled_hover_text("This clip is already the shape of the frame")
+                .clicked()
+            {
+                change = Some((ClipProperty::Scale { x: fill, y: fill }, false));
+            }
+        });
+    }
+
+    // A slow zoom, written as keyframes (§24). Beside the scale it animates,
+    // because that is what it changes — and what to adjust afterwards.
+    let current = editor.movement_of(clip);
+    let mut movement = None;
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.label("movement");
+        for option in Movement::ALL {
+            if ui
+                .add(egui::Button::selectable(
+                    current == Some(option),
+                    match option {
+                        Movement::None => "None",
+                        Movement::ZoomIn => "Zoom in",
+                        Movement::ZoomOut => "Zoom out",
+                    },
+                ))
+                .on_hover_text(match option {
+                    Movement::None => "No movement; any zoom keyframes are removed",
+                    Movement::ZoomIn => "Grow slowly across the clip",
+                    Movement::ZoomOut => "Start close and pull back",
+                })
+                .clicked()
+            {
+                movement = Some(option);
+            }
+        }
+    });
+    if let Some(movement) = movement {
+        match editor.set_movement(clip, movement) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
     }
 
     let position = ClipProperty::Position {
@@ -2189,6 +2587,7 @@ fn text_properties(
     let mut style = existing.style.clone();
     let transform = existing.transform;
     let opacity = existing.opacity;
+    let mut animation = existing.animation;
 
     ui.monospace(format!("start     {}", range.start.format_timecode()));
     ui.monospace(format!("duration  {}", range.duration().format_timecode()));
@@ -2458,6 +2857,12 @@ fn text_properties(
     }
 
     ui.add_space(8.0);
+    ui.label(egui::RichText::new("Animation").strong());
+    if text_animation(ui, &mut animation) {
+        change = Some((TextProperty::Animation(animation), false));
+    }
+
+    ui.add_space(8.0);
     if ui.button("Remove title").clicked() {
         remove = true;
     }
@@ -2477,6 +2882,62 @@ fn text_properties(
             Err(err) => state.error(err.to_string()),
         }
     }
+}
+
+/// A title's entrance and exit (§26): a preset and a length for each end.
+///
+/// Returns whether anything changed. A length drag is not coalesced into one
+/// undo step the way a slider elsewhere is, deliberately: the slider moves in
+/// tenths of a second, so a drag is a handful of steps, and each is a length
+/// someone might want to go back to.
+fn text_animation(
+    ui: &mut egui::Ui,
+    animation: &mut bettercut_editor_core::timeline::TextAnimation,
+) -> bool {
+    use bettercut_editor_core::timeline::{DEFAULT_MOTION, Motion, MotionKind};
+
+    let mut changed = false;
+    let ends = [
+        ("in", "text intro", &mut animation.intro),
+        ("out", "text outro", &mut animation.outro),
+    ];
+    for (label, salt, end) in ends {
+        ui.horizontal(|ui| {
+            ui.add_sized([28.0, 18.0], egui::Label::new(label));
+            egui::ComboBox::from_id_salt(salt)
+                .selected_text(end.map_or("None", |m| m.kind.label()))
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(end.is_none(), "None").clicked() {
+                        *end = None;
+                        changed = true;
+                    }
+                    for kind in MotionKind::ALL {
+                        let chosen = end.is_some_and(|m| m.kind == kind);
+                        if ui.selectable_label(chosen, kind.label()).clicked() && !chosen {
+                            // Keep the length when only the kind changes.
+                            let length = end.map_or(DEFAULT_MOTION, |m| m.duration);
+                            *end = Some(Motion::new(kind, length));
+                            changed = true;
+                        }
+                    }
+                });
+            if let Some(motion) = end {
+                // Tenths of a second, as a person thinks of a motion's length;
+                // turned into ticks at once, and never used as a position.
+                let mut tenths = (motion.duration.ticks() as f64 / 96_000.0).round() as i64;
+                let response = ui.add(
+                    egui::Slider::new(&mut tenths, 1..=30)
+                        .custom_formatter(|v, _| format!("{:.1} s", v / 10.0)),
+                );
+                if response.changed() {
+                    *motion = Motion::new(motion.kind, TimelineTime::from_ticks(tenths * 96_000));
+                    changed = true;
+                }
+            }
+        });
+    }
+    changed
 }
 
 /// The font list (§26).
@@ -2774,6 +3235,40 @@ fn clip_audio_properties(
             response.dragged(),
         );
     }
+
+    // Fades, in tenths of a second: the unit a person thinks of a fade in,
+    // turned into ticks at once and never used as a position.
+    let Some((fade_in, fade_out)) = editor.audio_clip(clip).map(|c| (c.fade_in, c.fade_out)) else {
+        return;
+    };
+    let tenths = |t: TimelineTime| (t.ticks() as f64 / 96_000.0).round() as i64;
+    let mut values = [tenths(fade_in), tenths(fade_out)];
+    let mut dragging = false;
+    let mut changed = false;
+    for (value, label) in values.iter_mut().zip(["fade in", "fade out"]) {
+        let response = ui.add(
+            egui::Slider::new(value, 0..=100)
+                .custom_formatter(|v, _| {
+                    if v == 0.0 {
+                        "none".to_owned()
+                    } else {
+                        format!("{:.1} s", v / 10.0)
+                    }
+                })
+                .text(label),
+        );
+        if response.changed() {
+            changed = true;
+            dragging |= response.dragged();
+        }
+    }
+    if changed {
+        let [fade_in, fade_out] = values.map(|v| TimelineTime::from_ticks(v * 96_000));
+        match editor.set_clip_fades(clip, fade_in, fade_out, dragging) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 }
 
 fn apply_clip_property(
@@ -2823,6 +3318,22 @@ const ASPECTS: [(&str, (u32, u32), &str); 5] = [
     ("4:5", (4, 5), "Portrait — Instagram feed"),
     ("21:9", (21, 9), "Ultrawide — cinematic"),
 ];
+
+/// Re-scale every clip for the frame, and say what happened (§36).
+///
+/// The count matters: "nothing to do" and "done" look identical on a timeline
+/// of clips that were already the right shape, and a button that appears to do
+/// nothing is a button the user stops trusting.
+fn reframe(editor: &mut Editor, state: &mut UiState, fill: bool) {
+    match editor.reframe_clips(fill) {
+        Ok((0, 0)) => state.info("Every clip already frames that way"),
+        Ok((changed, 0)) => state.info(format!("Reframed {changed} clip(s)")),
+        Ok((changed, animated)) => state.info(format!(
+            "Reframed {changed} clip(s); left {animated} with a movement of its own alone"
+        )),
+        Err(err) => state.error(err.to_string()),
+    }
+}
 
 /// Whether a size is that shape, to within rounding.
 ///
@@ -2895,6 +3406,28 @@ fn sequence_format(
                 // something smaller in both directions.
                 wanted.0 = with_aspect(current, ratio);
             }
+        }
+    });
+
+    // Changing the shape leaves every clip the shape it was, which is §36's
+    // rule — the media is not touched — and also, for a whole edit moved from
+    // landscape to vertical, a sequence of pillarboxed clips. These say it
+    // once for all of them.
+    ui.horizontal(|ui| {
+        ui.label("clips");
+        if ui
+            .button("Fill frame")
+            .on_hover_text("Scale every clip to cover the frame, cropping what does not fit")
+            .clicked()
+        {
+            reframe(editor, state, true);
+        }
+        if ui
+            .button("Fit frame")
+            .on_hover_text("Show every clip whole, with bars where the shapes differ")
+            .clicked()
+        {
+            reframe(editor, state, false);
         }
     });
 
@@ -3238,7 +3771,7 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
             "media",
             &[
                 "mp4", "mov", "mkv", "webm", "avi", "mp3", "wav", "m4a", "flac", "png", "jpg",
-                "jpeg",
+                "jpeg", "webp", "bmp", "gif", "tif", "tiff",
             ],
         )
         .pick_files()
@@ -3246,15 +3779,28 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
         return;
     };
 
+    import_paths(editor, state, &paths);
+}
+
+/// Import files from wherever they came from — the file picker, or dropped
+/// onto the window — and say what happened. Returns what was imported, in the
+/// order given.
+pub fn import_paths(
+    editor: &mut Editor,
+    state: &mut UiState,
+    paths: &[std::path::PathBuf],
+) -> Vec<MediaId> {
     let total = paths.len();
     let mut imported = 0;
+    let mut ids = Vec::new();
     let mut failures: Vec<String> = Vec::new();
     let mut adopted = None;
 
     for path in paths {
-        match editor.import_file(&path) {
+        match editor.import_file(path) {
             Ok(id) => {
                 imported += 1;
+                ids.push(id);
                 // §8: match an empty sequence to the first real video, so 25 or
                 // 50 fps footage does not land on a 30 fps grid and judder.
                 if adopted.is_none() {
@@ -3290,6 +3836,7 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
             failures.join(", ")
         )),
     }
+    ids
 }
 
 /// A synthetic 5-second asset, so the timeline, selection, undo, and save/load

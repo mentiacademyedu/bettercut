@@ -502,3 +502,51 @@ fn the_command_round_trips_through_json() {
         );
     }
 }
+
+/// A look is three values that only mean something together, so it goes on in
+/// one step and comes off in one.
+#[test]
+fn a_look_applies_to_a_clip_as_one_undo_step() {
+    use bettercut_editor_core::timeline::ColorAdjust;
+
+    let (mut editor, clip, _) = editor_with_clips();
+    let depth = editor.undo_depth();
+    let look = ColorAdjust {
+        brightness: 1.1,
+        contrast: 0.8,
+        saturation: 0.7,
+    };
+
+    editor.set_color_adjust(Some(clip), look).unwrap();
+
+    let color = editor.video_clip(clip).unwrap().color;
+    assert_eq!(color, look);
+    assert_eq!(editor.undo_depth(), depth + 1);
+
+    editor.undo().unwrap();
+    assert_eq!(
+        editor.video_clip(clip).unwrap().color,
+        ColorAdjust::default()
+    );
+}
+
+#[test]
+fn a_look_applies_to_the_whole_video_when_no_clip_is_given() {
+    use bettercut_editor_core::timeline::ColorAdjust;
+
+    let (mut editor, _, _) = editor_with_clips();
+    let look = ColorAdjust {
+        brightness: 0.9,
+        contrast: 1.2,
+        saturation: 0.0,
+    };
+
+    editor.set_color_adjust(None, look).unwrap();
+
+    assert_eq!(editor.active_sequence().unwrap().master.color, look);
+    editor.undo().unwrap();
+    assert_eq!(
+        editor.active_sequence().unwrap().master.color,
+        ColorAdjust::default()
+    );
+}

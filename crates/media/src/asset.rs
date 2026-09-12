@@ -26,6 +26,34 @@ impl MediaKind {
     }
 }
 
+/// How long a photo runs when it is first placed. Long enough to register,
+/// short enough that a handful make a montage without trimming each one.
+pub const STILL_DURATION: MediaTime = MediaTime::from_seconds(5);
+
+/// The longest edge a decoded still keeps, in pixels.
+///
+/// A phone photo is 4000–8000 pixels across, and decoded to RGBA at full size
+/// it is 60–250 MB for one frame, past what many GPUs accept as one texture.
+/// Nothing is exported larger than 4K, so detail past this edge could never
+/// reach the output anyway.
+pub const MAX_STILL_EDGE: u32 = 4096;
+
+/// A size scaled down, keeping its shape, until neither edge is over `limit`.
+///
+/// Even dimensions, like every size the pipeline hands to an encoder, and
+/// never zero.
+pub fn fit_within(width: u32, height: u32, limit: u32) -> (u32, u32) {
+    let long = width.max(height);
+    if long <= limit || long == 0 {
+        return (width, height);
+    }
+    let scale = |edge: u32| {
+        let scaled = (u64::from(edge) * u64::from(limit) / u64::from(long)) as u32;
+        (scaled & !1).max(2)
+    };
+    (scale(width), scale(height))
+}
+
 /// An imported source file, referenced by clips but never copied (§2).
 ///
 /// `path` is stored alongside `file_name` and `file_size` so §66's relink can
@@ -109,13 +137,53 @@ impl MediaAsset {
         self
     }
 
+    /// A still image: one picture, with no length of its own.
+    pub fn is_still(&self) -> bool {
+        self.kind == MediaKind::Image
+    }
+
+    /// The instant in the file that holds the picture for `time`.
+    ///
+    /// A still has one picture and every instant shows it. Mapping them all
+    /// to zero here, rather than asking the decoder for a time the file does
+    /// not have, is also what makes a frame cache keyed by time hit on every
+    /// frame of a still clip — otherwise the photo would be decoded again for
+    /// each frame of playback.
+    pub fn frame_time(&self, time: MediaTime) -> MediaTime {
+        if self.is_still() {
+            MediaTime::ZERO
+        } else {
+            time
+        }
+    }
+
+    /// How far into the file a clip may read: `None` for a still, which runs
+    /// as long as it is dragged out to.
+    pub fn source_limit(&self) -> Option<MediaTime> {
+        (!self.is_still()).then_some(self.duration)
+    }
+
+    /// How long a clip of this runs when first put on the timeline: the whole
+    /// file, or [`STILL_DURATION`] for a picture.
+    pub fn placement_duration(&self) -> MediaTime {
+        if self.is_still() {
+            STILL_DURATION
+        } else {
+            self.duration
+        }
+    }
+
     /// Whether §13's rules say this asset should get a proxy.
     ///
     /// ```text
     /// >= 1440p · HEVC/H.265 · AV1 · 10-bit · high frame rate
     /// ```
+    ///
+    /// Never for a still: a proxy is a lighter *video* to decode on every
+    /// frame, and a still is decoded once. A large photo is scaled down at
+    /// decode instead ([`MAX_STILL_EDGE`]).
     pub fn should_generate_proxy(&self) -> bool {
-        if self.kind == MediaKind::Audio {
+        if self.kind != MediaKind::Video {
             return false;
         }
         let big = self.height >= 1440;
@@ -153,6 +221,38 @@ impl MediaAsset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_is_fitted_keeping_its_shape() {
+        assert_eq!(fit_within(1920, 1080, 4096), (1920, 1080), "small enough");
+        assert_eq!(fit_within(8000, 6000, 4096), (4096, 3072));
+        assert_eq!(fit_within(3000, 9000, 4096), (1364, 4096), "portrait");
+        assert_eq!(fit_within(100_000, 1, 4096), (4096, 2), "never zero");
+        assert_eq!(fit_within(0, 0, 4096), (0, 0));
+    }
+
+    #[test]
+    fn a_still_shows_one_picture_for_as_long_as_it_runs() {
+        let still = MediaAsset::new(MediaKind::Image, "C:/media/p.jpg", MediaTime::ZERO);
+        assert_eq!(
+            still.frame_time(MediaTime::from_seconds(7)),
+            MediaTime::ZERO
+        );
+        assert_eq!(still.source_limit(), None);
+        assert_eq!(still.placement_duration(), STILL_DURATION);
+        assert!(
+            !MediaAsset {
+                height: 4000,
+                ..still
+            }
+            .should_generate_proxy()
+        );
+
+        let clip = video(1080);
+        let later = MediaTime::from_seconds(7);
+        assert_eq!(clip.frame_time(later), later);
+        assert_eq!(clip.source_limit(), Some(clip.duration));
+    }
 
     fn video(height: u32) -> MediaAsset {
         MediaAsset::new(

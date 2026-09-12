@@ -40,12 +40,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::TimelineRange;
 
-/// What happens at the cut (§25's initial set, started).
+/// What happens at the cut (§25's initial set).
 ///
-/// Two, deliberately. §25: *"Avoid implementing dozens before the engine is
-/// stable."* These cover most cuts, and between them they exercise both shapes
-/// the engine has to support — one that needs frames from two clips at once,
-/// and one that does not.
+/// Five of §25's seven. The two it leaves out — Flash and Blur — both need
+/// something the compositor does not have: a generated white layer, and a blur
+/// applied to a *pair* of layers rather than to one clip. The five here are
+/// all expressible as opacity and transform on the two clips either side, which
+/// is why they are one `match` in `layer_requests` rather than five shaders
+/// (§46: preview and export draw from the same rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
@@ -56,15 +58,32 @@ pub enum TransitionKind {
     /// The outgoing clip fades out to black, then the incoming fades in from
     /// it. Needs no handles, and works at the very start or end of a file.
     FadeThroughBlack,
+    /// The incoming clip slides in from the right, over a stationary outgoing
+    /// one.
+    Slide,
+    /// The incoming clip pushes the outgoing one off to the left, as if both
+    /// were on one strip being pulled across.
+    Push,
+    /// The outgoing clip swells and fades, the incoming arriving behind it.
+    Zoom,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 2] = [Self::Crossfade, Self::FadeThroughBlack];
+    pub const ALL: [Self; 5] = [
+        Self::Crossfade,
+        Self::FadeThroughBlack,
+        Self::Slide,
+        Self::Push,
+        Self::Zoom,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Crossfade => "Crossfade",
             Self::FadeThroughBlack => "Fade through black",
+            Self::Slide => "Slide",
+            Self::Push => "Push",
+            Self::Zoom => "Zoom",
         }
     }
 
@@ -78,12 +97,26 @@ impl TransitionKind {
                 "This shot fades out, the next fades in. Works anywhere, \
                  including against the start or end of a file."
             }
+            Self::Slide => {
+                "The next shot slides in from the right over this one. Needs spare footage either side of the cut."
+            }
+            Self::Push => {
+                "The next shot pushes this one off to the left. Needs spare footage either side of the cut."
+            }
+            Self::Zoom => {
+                "This shot swells and fades as the next arrives behind it. Needs spare footage either side of the cut."
+            }
         }
     }
 
     /// Whether this reads material outside the clips' own ranges.
+    ///
+    /// Everything that shows both clips at once does: during the first half of
+    /// the window the incoming clip must supply frames from before its
+    /// in-point, and during the second half the outgoing one from after its
+    /// out-point. Only a fade through black shows one at a time.
     pub fn needs_handles(self) -> bool {
-        matches!(self, Self::Crossfade)
+        !matches!(self, Self::FadeThroughBlack)
     }
 }
 

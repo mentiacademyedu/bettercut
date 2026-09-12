@@ -40,7 +40,22 @@ pub struct Track<C> {
     pub enabled: bool,
     /// A locked track rejects edits (§10 "Lock track").
     pub locked: bool,
+
+    /// §20a.4's track gain and pan: linear volume, and -1 (left) to +1
+    /// (right). Mixed only on audio tracks; a picture has no volume. Absent
+    /// from older projects, which load at unity and centred.
+    #[serde(default = "unity")]
+    pub gain: f32,
+    #[serde(default)]
+    pub pan: f32,
 }
+
+fn unity() -> f32 {
+    1.0
+}
+
+/// The loudest a track may be turned up: the same ceiling as a clip's gain.
+pub const MAX_TRACK_GAIN: f32 = 4.0;
 
 impl<C: Clip> Track<C> {
     pub fn new(name: impl Into<String>) -> Self {
@@ -50,6 +65,8 @@ impl<C: Clip> Track<C> {
             clips: Vec::new(),
             enabled: true,
             locked: false,
+            gain: 1.0,
+            pan: 0.0,
         }
     }
 
@@ -438,6 +455,9 @@ impl<C: Clip> Track<C> {
             start: source_split,
             end: source.end,
         });
+        // And the mirror: whatever decorated the original's start stays with
+        // the left half, which still has it.
+        right.clear_transition_in();
 
         let (left_id, right_id) = (left.id(), right.id());
         self.clips[index] = left;

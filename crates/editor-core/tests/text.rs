@@ -404,3 +404,31 @@ fn a_title_refuses_the_properties_it_does_not_have() {
             .is_err()
     );
 }
+
+/// A title's entrance and exit are one undoable property, kept in range by the
+/// edit itself so a replayed journal cannot bring back a length the panel
+/// would never offer.
+#[test]
+fn a_titles_animation_is_set_clamped_and_undone() {
+    use bettercut_editor_core::timeline::{MIN_MOTION, Motion, MotionKind, TextAnimation};
+
+    let mut editor = editor();
+    let clip = editor.add_text("Hello").unwrap();
+    let wanted = TextAnimation {
+        intro: Some(Motion {
+            kind: MotionKind::Pop,
+            duration: TimelineTime::ZERO,
+        }),
+        outro: None,
+    };
+
+    editor
+        .set_text_property(clip, TextProperty::Animation(wanted), false)
+        .unwrap();
+    let intro = text_of(&editor, clip).animation.intro.expect("an entrance");
+    assert_eq!(intro.kind, MotionKind::Pop);
+    assert_eq!(intro.duration, MIN_MOTION, "a zero length was let through");
+
+    editor.undo().unwrap();
+    assert!(text_of(&editor, clip).animation.is_none());
+}

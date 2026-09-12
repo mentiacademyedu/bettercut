@@ -25,6 +25,8 @@ pub enum SnapKind {
     Playhead,
     ClipStart(ClipId),
     ClipEnd(ClipId),
+    /// A marker (`crate::marker`), placed there on purpose.
+    Marker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +42,11 @@ impl SnapKind {
     fn priority(self) -> u8 {
         match self {
             Self::Playhead => 0,
-            Self::SequenceStart => 1,
-            Self::ClipStart(_) | Self::ClipEnd(_) => 2,
+            // Put there on purpose, like the playhead, and unlike a clip edge
+            // that is wherever the last trim left it.
+            Self::Marker => 1,
+            Self::SequenceStart => 2,
+            Self::ClipStart(_) | Self::ClipEnd(_) => 3,
         }
     }
 }
@@ -93,6 +98,18 @@ pub fn collect_targets(
             push_clip(clip.id(), clip.timeline());
         }
     }
+    // Titles too: lining a caption up with the cut it describes is as common
+    // as lining up two shots.
+    for track in &sequence.text_tracks {
+        for clip in track.clips() {
+            push_clip(clip.id(), clip.timeline());
+        }
+    }
+
+    targets.extend(sequence.markers.iter().map(|marker| SnapTarget {
+        time: marker.time,
+        kind: SnapKind::Marker,
+    }));
 
     targets
 }

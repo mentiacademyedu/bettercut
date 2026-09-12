@@ -214,6 +214,52 @@ fn edits_made_after_the_last_save_survive_a_crash() {
     );
 }
 
+/// A snapshot that falls due partway through journalling a group must not
+/// capture the rest of the group, or recovery applies those commands twice.
+#[test]
+fn a_group_journalled_across_a_snapshot_recovers_once() {
+    use bettercut_editor_core::journal::SNAPSHOT_EVERY_COMMANDS;
+    use bettercut_editor_core::{Command, RecoveryPaths, TrackKindRepr, recover};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("group.vproj");
+
+    let expected;
+    {
+        let (mut editor, _events) = Editor::new_project("Group");
+        editor.save_as(&path).expect("save");
+        let sequence = editor.active_sequence().expect("sequence").id;
+
+        // Two short of a snapshot, so it falls due inside the group below.
+        for i in 0..SNAPSHOT_EVERY_COMMANDS - 2 {
+            editor
+                .dispatch(Command::RenameProject {
+                    name: format!("n{i}"),
+                })
+                .expect("rename");
+        }
+        let tracks: Vec<Command> = (0..5)
+            .map(|i| Command::AddTrack {
+                sequence,
+                kind: TrackKindRepr::Video,
+                name: format!("G{i}"),
+                id: bettercut_foundation::TrackId::new(),
+            })
+            .collect();
+        editor.dispatch_group("Add Tracks", tracks).expect("group");
+
+        expected = editor.active_sequence().expect("sequence").track_count();
+        std::mem::forget(editor);
+    }
+
+    let session = recover(RecoveryPaths::for_project(Some(&path), "x")).expect("recoverable");
+    assert_eq!(session.failed, 0, "some of the group replayed onto itself");
+    assert_eq!(
+        session.project.active().expect("sequence").track_count(),
+        expected
+    );
+}
+
 /// A clean save clears the recovery data: offering to restore work the user
 /// already has reads as data loss even though nothing was lost.
 #[test]

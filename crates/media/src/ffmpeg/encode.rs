@@ -226,47 +226,16 @@ impl VideoLeg {
         // around half as bright. When the source is HDR the whole conversion —
         // tone-map, primaries, matrix, range, size — happens in one filter
         // chain and the scaler is bypassed.
-        let hdr = matches!(
+        let hdr_spec = super::filter::hdr_to_sdr_spec(
             src_trc,
-            ffi::AVCOL_TRC_SMPTE2084 | ffi::AVCOL_TRC_ARIB_STD_B67
+            src_primaries,
+            src_space,
+            src_range,
+            target_width,
+            target_height,
         );
 
-        let (tonemap, scaler) = if hdr {
-            // The input side is stated explicitly rather than left to the
-            // frame's own tags. `zscale` reads those tags when they are there,
-            // and silently assumes SDR when they are not — which produces a
-            // proxy that looks *exactly* like the untone-mapped bug this
-            // guards against. We probed the source, so we already know.
-            let tin = match src_trc {
-                ffi::AVCOL_TRC_SMPTE2084 => "smpte2084",
-                _ => "arib-std-b67",
-            };
-            let pin = match src_primaries {
-                ffi::AVCOL_PRI_BT2020 => "bt2020",
-                ffi::AVCOL_PRI_BT709 => "bt709",
-                _ => "bt2020", // HDR is overwhelmingly BT.2020
-            };
-            let min = match src_space {
-                ffi::AVCOL_SPC_BT2020_NCL => "bt2020nc",
-                ffi::AVCOL_SPC_BT709 => "bt709",
-                _ => "bt2020nc",
-            };
-            let rin = if src_range == ffi::AVCOL_RANGE_JPEG {
-                "full"
-            } else {
-                "limited"
-            };
-
-            // `tonemap` is left on its default `desat`. Setting `desat=0`
-            // looks harmless — "do not desaturate highlights" — and roughly
-            // halves the result: measured 116 against 227 on the fixture. The
-            // default is what every reference chain uses.
-            let spec = format!(
-                "zscale=tin={tin}:pin={pin}:min={min}:rin={rin}:t=linear:npl=100,\
-                 tonemap=hable,\
-                 zscale=w={target_width}:h={target_height}:p=bt709:t=bt709:m=bt709:r=tv,\
-                 format=yuv420p"
-            );
+        let (tonemap, scaler) = if let Some(spec) = hdr_spec {
             let graph = FilterGraph::new(
                 &spec,
                 src_width,

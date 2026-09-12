@@ -70,6 +70,20 @@ pub fn build_for_replay(
             clip,
             speed,
         } => Box::new(SetClipSpeed::new(sequence, track, clip, speed)),
+        Command::SetClipFades {
+            sequence,
+            track,
+            clip,
+            fade_in,
+            fade_out,
+        } => Box::new(SetClipFades::new(sequence, track, clip, fade_in, fade_out)),
+        Command::SetTrackMix {
+            sequence,
+            track,
+            gain,
+            pan,
+        } => Box::new(SetTrackMix::new(sequence, track, gain, pan)),
+        Command::SetMarkers { sequence, markers } => Box::new(SetMarkers::new(sequence, markers)),
         Command::Unlink { sequence, link } => Box::new(Unlink::new(sequence, link)),
         Command::AddText {
             sequence,
@@ -87,6 +101,12 @@ pub fn build_for_replay(
             clip,
             property,
         } => Box::new(SetTextProperty::new(sequence, track, clip, property)),
+        Command::SetGainEnvelope {
+            sequence,
+            track,
+            clip,
+            keys,
+        } => Box::new(SetGainEnvelope::new(sequence, track, clip, keys)),
         Command::SetKeyframe {
             sequence,
             track,
@@ -271,6 +291,7 @@ fn with_track<R>(
 ///
 /// `None` when the media is unknown, in which case only the structural
 /// invariants apply — a missing asset must not make trimming impossible (§66).
+/// `None` for a still, too, which runs as long as it is dragged out.
 fn media_limit(project: &Project, sequence: SequenceId, clip: ClipId) -> Option<MediaTime> {
     let sequence = project.sequence(sequence)?;
     let media_id = sequence
@@ -283,7 +304,17 @@ fn media_limit(project: &Project, sequence: SequenceId, clip: ClipId) -> Option<
                 .iter()
                 .find_map(|t| t.get(clip).map(|c| c.media_id))
         })?;
-    project.media_asset(media_id).map(|m| m.duration)
+    // A frozen clip holds one instant, so how much material is left past it
+    // does not limit how long it can be held — the same answer as a still.
+    let frozen = sequence
+        .video_tracks
+        .iter()
+        .find_map(|t| t.get(clip).map(|c| c.frozen))
+        .unwrap_or(false);
+    if frozen {
+        return None;
+    }
+    project.media_asset(media_id)?.source_limit()
 }
 
 /// The longest transition the cut at the end of `clip` can support (§25).
@@ -310,11 +341,29 @@ pub(crate) fn transition_room(
     // Handles are whatever the file has outside each clip's own range. Media
     // that cannot be read reports none, which refuses a crossfade rather than
     // promising one that would flash black (§66).
-    let handle_after = project
-        .media_asset(outgoing.media_id)
-        .map(|m| MediaTime::from_ticks((m.duration.ticks() - outgoing.source.end.ticks()).max(0)))
-        .unwrap_or(MediaTime::ZERO);
-    let handle_before = incoming.source.start;
+    //
+    // A still has handles without end: every instant outside its range is the
+    // same picture as every instant inside it. A day stands in for "without
+    // end" — far past any transition, and small enough that scaling it by a
+    // clip's speed cannot overflow.
+    const ENDLESS: MediaTime = MediaTime::from_seconds(24 * 60 * 60);
+    let still = |media| project.media_asset(media).is_some_and(|m| m.is_still());
+
+    let handle_after = if still(outgoing.media_id) {
+        ENDLESS
+    } else {
+        project
+            .media_asset(outgoing.media_id)
+            .map(|m| {
+                MediaTime::from_ticks((m.duration.ticks() - outgoing.source.end.ticks()).max(0))
+            })
+            .unwrap_or(MediaTime::ZERO)
+    };
+    let handle_before = if still(incoming.media_id) {
+        ENDLESS
+    } else {
+        incoming.source.start
+    };
 
     // §51: `max_duration` reasons in *timeline* ticks, and a handle is source.
     // A clip playing at 2× burns two ticks of handle for every tick of
@@ -513,6 +562,10 @@ impl SetTextProperty {
                 clip.opacity = AnimatedParameter::Opacity.clamp(value);
                 TextProperty::Opacity(was)
             }
+            TextProperty::Animation(animation) => TextProperty::Animation(std::mem::replace(
+                &mut clip.animation,
+                animation.sanitized(),
+            )),
         })
     }
 }
@@ -754,6 +807,190 @@ impl EditorCommand for SetClipSpeed {
 
     fn label(&self) -> String {
         "Change speed".to_owned()
+    }
+}
+
+/// Replace a sequence's markers.
+#[derive(Debug)]
+pub struct SetMarkers {
+    sequence: SequenceId,
+    markers: Vec<bettercut_timeline::Marker>,
+    previous: Option<Vec<bettercut_timeline::Marker>>,
+}
+
+impl SetMarkers {
+    pub fn new(sequence: SequenceId, markers: Vec<bettercut_timeline::Marker>) -> Self {
+        Self {
+            sequence,
+            markers,
+            previous: None,
+        }
+    }
+}
+
+impl EditorCommand for SetMarkers {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let sequence = sequence_mut(project, self.sequence)?;
+        let previous = std::mem::replace(
+            &mut sequence.markers,
+            bettercut_timeline::marker::normalized(self.markers.clone()),
+        );
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.clone().ok_or(EditorError::NotExecuted)?;
+        sequence_mut(project, self.sequence)?.markers = previous;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change markers".to_owned()
+    }
+}
+
+/// Set an audio track's volume and pan.
+#[derive(Debug)]
+pub struct SetTrackMix {
+    sequence: SequenceId,
+    track: TrackId,
+    mix: (f32, f32),
+    previous: Option<(f32, f32)>,
+}
+
+impl SetTrackMix {
+    pub fn new(sequence: SequenceId, track: TrackId, gain: f32, pan: f32) -> Self {
+        Self {
+            sequence,
+            track,
+            mix: (gain, pan),
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        (gain, pan): (f32, f32),
+    ) -> Result<(f32, f32), EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        // A picture has no volume: refused rather than stored where nothing
+        // would ever read it.
+        let missing = if sequence.track_kind(track).is_some() {
+            EditorError::ClipKindMismatch
+        } else {
+            EditorError::TrackNotFound(track)
+        };
+        let track = sequence.audio_track_mut(track).ok_or(missing)?;
+        let was = (track.gain, track.pan);
+        // Clamped in the model, for §38.2's reason; a non-number becomes the
+        // neutral value rather than silence or a hard pan.
+        let finite = |v: f32, neutral: f32| if v.is_finite() { v } else { neutral };
+        track.gain = finite(gain, 1.0).clamp(0.0, bettercut_timeline::MAX_TRACK_GAIN);
+        track.pan = finite(pan, 0.0).clamp(-1.0, 1.0);
+        Ok(was)
+    }
+}
+
+impl EditorCommand for SetTrackMix {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.track, self.mix)?;
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change track volume".to_owned()
+    }
+}
+
+/// Set a sound clip's fade in and fade out.
+#[derive(Debug)]
+pub struct SetClipFades {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    fades: (TimelineTime, TimelineTime),
+    previous: Option<(TimelineTime, TimelineTime)>,
+}
+
+impl SetClipFades {
+    pub fn new(
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        fade_in: TimelineTime,
+        fade_out: TimelineTime,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            fades: (fade_in, fade_out),
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        (fade_in, fade_out): (TimelineTime, TimelineTime),
+    ) -> Result<(TimelineTime, TimelineTime), EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        // A fade on a picture or a title is a request for something else.
+        let missing = if sequence.track_kind(track).is_some() {
+            EditorError::ClipKindMismatch
+        } else {
+            EditorError::TrackNotFound(track)
+        };
+        let track = sequence.audio_track_mut(track).ok_or(missing)?;
+        let clip = track.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        // Clamped here rather than in the panel, for §38.2's reason: the
+        // journal replays commands, and a limit only the slider knew about
+        // would come back unapplied. Longer than the clip is allowed — the
+        // mixer fits the two into whatever length the clip has at the time,
+        // so trimming a clip does not quietly throw its fades away.
+        let limit = |t: TimelineTime| t.clamp(TimelineTime::ZERO, bettercut_timeline::MAX_FADE);
+        let was = (clip.fade_in, clip.fade_out);
+        clip.fade_in = limit(fade_in);
+        clip.fade_out = limit(fade_out);
+        Ok(was)
+    }
+}
+
+impl EditorCommand for SetClipFades {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.track, self.clip, self.fades)?;
+        // First execute only: a redo restores the state from before the whole
+        // gesture, not from the previous redo step.
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, self.clip, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change fade".to_owned()
     }
 }
 
@@ -1027,6 +1264,89 @@ impl SetClipProperty {
 /// and writing them as two types would duplicate the undo logic, which is the
 /// part with the subtlety in it — undoing an *insert* has to delete, while
 /// undoing a *replace* has to put the old key back.
+/// Replace a sound clip's whole volume envelope (§24).
+#[derive(Debug)]
+pub struct SetGainEnvelope {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    keys: Vec<Keyframe>,
+    /// What was on the parameter before the first execute. The outer `Option`
+    /// is "has this run"; the inner is "was there an envelope".
+    previous: Option<Option<bettercut_timeline::KeyframeTrack>>,
+}
+
+impl SetGainEnvelope {
+    pub fn new(sequence: SequenceId, track: TrackId, clip: ClipId, keys: Vec<Keyframe>) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            keys,
+            previous: None,
+        }
+    }
+
+    fn with_clip<T>(
+        &self,
+        project: &mut Project,
+        act: impl FnOnce(&mut bettercut_timeline::AudioClip) -> T,
+    ) -> Result<T, EditorError> {
+        with_track(
+            project,
+            self.sequence,
+            self.track,
+            // Volume belongs to sound. A picture clip's own audio is a
+            // separate, linked clip (§12), and that is the one to envelope.
+            |_video| Err(EditorError::ClipKindMismatch),
+            |audio| {
+                let clip = audio
+                    .get_mut(self.clip)
+                    .ok_or(EditorError::ClipNotFound(self.clip))?;
+                Ok(act(clip))
+            },
+        )
+    }
+}
+
+impl EditorCommand for SetGainEnvelope {
+    fn label(&self) -> String {
+        if self.keys.is_empty() {
+            "Clear Volume Envelope".to_owned()
+        } else {
+            "Volume Envelope".to_owned()
+        }
+    }
+
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let keys: Vec<Keyframe> = self
+            .keys
+            .iter()
+            .map(|key| {
+                let mut key = *key;
+                key.value = AnimatedParameter::Gain.clamp(key.value);
+                key
+            })
+            .collect();
+        let previous = self.with_clip(project, |clip| {
+            clip.keyframes.replace(AnimatedParameter::Gain, keys)
+        })?;
+        // Only the first execute records what was there; a redo must not
+        // remember the envelope it just wrote.
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.clone().ok_or(EditorError::NotExecuted)?;
+        self.with_clip(project, |clip| {
+            clip.keyframes.restore(AnimatedParameter::Gain, previous);
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct SetKeyframe {
     sequence: SequenceId,
@@ -1103,10 +1423,23 @@ impl SetKeyframe {
                     None => clip.keyframes.remove(parameter, time),
                 })
             },
-            // §59 lists clip gain as keyframeable, but Milestone 8 animates the
-            // video parameters only. Refusing here beats silently accepting a
-            // key that nothing would ever read.
-            |_audio| Err(EditorError::ClipKindMismatch),
+            // §59's keyframeable clip gain: the one parameter a sound clip
+            // has. The rest describe a picture, and accepting a key nothing
+            // would ever read would be worse than refusing it.
+            |audio| {
+                if parameter != AnimatedParameter::Gain {
+                    return Err(EditorError::ClipKindMismatch);
+                }
+                let clip = audio.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                Ok(match key {
+                    Some(mut key) => {
+                        key.value = parameter.clamp(key.value);
+                        key.time = time;
+                        clip.keyframes.set(parameter, key)
+                    }
+                    None => clip.keyframes.remove(parameter, time),
+                })
+            },
         )
     }
 }
@@ -1224,7 +1557,16 @@ impl SetSequenceProperty {
     ) -> Result<ClipProperty, EditorError> {
         use bettercut_timeline::AnimatedParameter as A;
 
-        let master = &mut sequence_mut(project, sequence)?.master;
+        let sequence = sequence_mut(project, sequence)?;
+        // §20a.4's master gain lives beside the picture adjustments, not among
+        // them; see `Sequence::master_volume`.
+        if let ClipProperty::Gain(value) = property {
+            let was = sequence.master_volume;
+            sequence.master_volume =
+                value.clamp(0.0, bettercut_timeline::sequence::MAX_MASTER_VOLUME);
+            return Ok(ClipProperty::Gain(was));
+        }
+        let master = &mut sequence.master;
         // Clamped through the same limits a clip uses, so the master cannot
         // reach a value the controls could not express.
         Ok(match property {
@@ -1268,9 +1610,8 @@ impl SetSequenceProperty {
                 master.blur = A::Blur.clamp(value);
                 ClipProperty::Blur(was)
             }
-            // Master audio is the mixer's master gain, which is a monitoring
-            // level rather than project data (§20a.4) — deliberately not here.
-            ClipProperty::Gain(_) => return Err(EditorError::ClipKindMismatch),
+            // Handled above, before `master` was borrowed.
+            ClipProperty::Gain(_) => unreachable!("master volume returns early"),
         })
     }
 }

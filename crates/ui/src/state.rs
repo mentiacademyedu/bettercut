@@ -44,6 +44,48 @@ pub struct DragState {
     pub target_invalid: bool,
     /// What the preview snapped to, if anything. Drawn as a guide line.
     pub snapped_to: Option<SnapTarget>,
+    /// §12's linked partners — a video's sound, or a sound's picture — each
+    /// with its track and where it was when the drag began.
+    ///
+    /// Captured at the press, because the editor moves them on release and the
+    /// drag's own preview is the only thing that can show where they are going
+    /// in the meantime. Without it the sound jumps when the mouse is let go,
+    /// which reads as a glitch rather than as a link.
+    pub partners: Vec<(TrackId, TimelineRange)>,
+}
+
+impl DragState {
+    /// Where a partner will land, given where the dragged clip is going.
+    ///
+    /// By the same *delta*, exactly as the editor applies it (§12), so the
+    /// ghost is where the clip will actually end up rather than an
+    /// approximation of it.
+    pub fn partner_preview(&self, partner: TimelineRange) -> TimelineRange {
+        let shift = |t: TimelineTime, by: i64| TimelineTime::from_ticks(t.ticks() + by);
+        match self.mode {
+            DragMode::Move => {
+                let by = self.preview.start.ticks() - self.original.start.ticks();
+                TimelineRange {
+                    start: shift(partner.start, by),
+                    end: shift(partner.end, by),
+                }
+            }
+            DragMode::TrimStart => TimelineRange {
+                start: shift(
+                    partner.start,
+                    self.preview.start.ticks() - self.original.start.ticks(),
+                ),
+                end: partner.end,
+            },
+            DragMode::TrimEnd => TimelineRange {
+                start: partner.start,
+                end: shift(
+                    partner.end,
+                    self.preview.end.ticks() - self.original.end.ticks(),
+                ),
+            },
+        }
+    }
 }
 
 /// Zoom ladder, in ticks per pixel.
@@ -70,7 +112,7 @@ pub struct StatusMessage {
 }
 
 /// What playback is actually doing, for the System panel (§49, §52).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackStats {
     pub playing: bool,
     /// §47a.4: frames arriving too late to show. Non-zero while playing means
@@ -81,6 +123,8 @@ pub struct PlaybackStats {
     pub underruns: u32,
     /// §20a.4: samples the limiter had to clamp — the mix is too hot.
     pub limited_samples: u64,
+    /// §20a: the last block's peak level per side, 0.0 to 1.0 or beyond.
+    pub peaks: (f32, f32),
     /// §47a.3: frames served from the decode-ahead ring rather than decoded
     /// inline. Zero while playing means decode-ahead is not helping.
     pub prefetch_hits: u64,
@@ -88,6 +132,30 @@ pub struct PlaybackStats {
     pub ring_frames: usize,
     /// §16's preview scale in force right now.
     pub quality: &'static str,
+}
+
+/// Dragging one point of a sound clip's volume envelope (§24).
+///
+/// The whole envelope is carried, as it was when the drag started, because the
+/// envelope is written as one command: each frame moves one point in this copy
+/// and sends the lot. Carrying the *original* also means the drag is built
+/// against the shape before it began, which is what lets the frames coalesce
+/// into one undo step.
+#[derive(Debug, Clone)]
+pub struct EnvelopeDrag {
+    pub clip: ClipId,
+    /// Which point is being moved.
+    pub index: usize,
+    /// The envelope as it is now, in timeline instants and levels.
+    pub points: Vec<(bettercut_editor_core::foundation::TimelineTime, f32)>,
+    /// The clip's rect when the drag began, which is what turns the pointer's
+    /// height into a level. Captured once: after the first frame the pointer
+    /// has usually left the dot, and the draw pass then reports no hit to read
+    /// a rect from.
+    pub rect: egui::Rect,
+    /// Set once the pointer moves, so the first frame starts the undo step and
+    /// the rest join it. A press that never moves is not an edit at all.
+    pub moved: bool,
 }
 
 /// A rubber-band selection in progress.
@@ -195,6 +263,37 @@ pub struct UiState {
     /// job scheduler, can read what the user chose.
     pub export_dialog: crate::export_dialog::ExportDialog,
 
+    /// The Templates window (§31). Here so a half-filled template survives
+    /// closing the window to go and import the clip it was missing.
+    pub template_dialog: crate::template_dialog::TemplateDialog,
+
+    /// The Shortcuts window (`?` or F1).
+    pub shortcuts_open: bool,
+
+    /// A volume point being dragged on the timeline (§24).
+    pub envelope_drag: Option<EnvelopeDrag>,
+
+    /// The Captions window: the list of captions, editable in place.
+    pub captions_open: bool,
+
+    /// Which caption is being typed into, so the keystrokes after the first
+    /// join the same undo step and a different caption starts its own.
+    pub caption_typing: Option<ClipId>,
+
+    /// The Remove Silences window (§78), with its suggestion.
+    pub silence: Option<crate::silence_dialog::SilenceDialog>,
+
+    /// The Find Cuts window (§45), once detection has been started.
+    pub scenes: Option<crate::scene_dialog::SceneDialog>,
+
+    /// A clip the user asked to have its cuts found. Picked up by the shell,
+    /// because starting a job needs the scheduler and the scheduler is not the
+    /// interface's to hold — the same route the Export window takes.
+    pub scene_request: Option<ClipId>,
+
+    /// A detection to stop, for the same reason.
+    pub scene_cancel: Option<bettercut_jobs::JobId>,
+
     /// Work found from a session that did not shut down cleanly (§39).
     ///
     /// Held rather than applied: §39.5 says never overwrite the original
@@ -255,6 +354,15 @@ impl Default for UiState {
             preview_is_stale: false,
             marquee: None,
             export_dialog: crate::export_dialog::ExportDialog::default(),
+            template_dialog: crate::template_dialog::TemplateDialog::default(),
+            shortcuts_open: false,
+            envelope_drag: None,
+            captions_open: false,
+            caption_typing: None,
+            silence: None,
+            scenes: None,
+            scene_request: None,
+            scene_cancel: None,
             pending_recovery: None,
             needs_repaint: true,
             context: None,
@@ -341,6 +449,30 @@ impl UiState {
         }
     }
 
+    /// Keep the playhead on screen while playing, a page at a time.
+    ///
+    /// Not the same as [`Self::scroll_to_reveal`], which brings a point just
+    /// inside the edge it went past. Doing that sixty times a second would
+    /// scroll the timeline by a pixel per frame with the playhead pinned to the
+    /// right edge — the picture moving under a stationary line, which is
+    /// horrible to watch and impossible to read. This pages instead: when the
+    /// playhead reaches the last eighth of the view, the view jumps forward so
+    /// it starts again near the left.
+    pub fn follow_playhead(&mut self, t: TimelineTime, width_pixels: f32) {
+        let span = (width_pixels as i64).saturating_mul(self.ticks_per_pixel());
+        if span <= 0 {
+            return;
+        }
+        let margin = span / 8;
+        let left = self.scroll_ticks;
+        let trigger = left.saturating_add(span - margin);
+
+        if t.ticks() < left || t.ticks() >= trigger {
+            self.scroll_ticks = (t.ticks() - margin).max(0);
+            self.needs_repaint = true;
+        }
+    }
+
     pub fn select_only(&mut self, clip: ClipId) {
         self.selected_clips.clear();
         self.selected_clips.insert(clip);
@@ -392,6 +524,48 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn range(start: i64, end: i64) -> TimelineRange {
+        TimelineRange {
+            start: TimelineTime::from_seconds(start),
+            end: TimelineTime::from_seconds(end),
+        }
+    }
+
+    fn drag(mode: DragMode, original: TimelineRange, preview: TimelineRange) -> DragState {
+        DragState {
+            clip: ClipId::new(),
+            source_track: TrackId::new(),
+            mode,
+            grab_offset: 0,
+            original,
+            preview,
+            moved: true,
+            target_track: TrackId::new(),
+            target_invalid: false,
+            snapped_to: None,
+            partners: Vec::new(),
+        }
+    }
+
+    /// §12: the partner's ghost has to land where the editor will put it, by
+    /// the same delta. A ghost somewhere else would be worse than none.
+    #[test]
+    fn a_moved_partner_lands_by_the_same_delta() {
+        let d = drag(DragMode::Move, range(0, 10), range(4, 14));
+        assert_eq!(d.partner_preview(range(0, 10)), range(4, 14));
+        // A partner that had drifted keeps its offset, as the editor does.
+        assert_eq!(d.partner_preview(range(1, 9)), range(5, 13));
+    }
+
+    #[test]
+    fn a_trimmed_partner_moves_only_the_same_edge() {
+        let start = drag(DragMode::TrimStart, range(0, 10), range(3, 10));
+        assert_eq!(start.partner_preview(range(0, 10)), range(3, 10));
+
+        let end = drag(DragMode::TrimEnd, range(0, 10), range(0, 6));
+        assert_eq!(end.partner_preview(range(0, 10)), range(0, 6));
+    }
 
     #[test]
     fn default_zoom_is_thirty_pixels_per_second() {
@@ -455,6 +629,35 @@ mod tests {
 
         s.scroll_to_reveal(TimelineTime::from_ticks(100_000_000), 1000.0);
         assert!(s.scroll_ticks > 0);
+    }
+
+    /// While playing, the view pages forward rather than creeping a pixel at a
+    /// time with the playhead stuck to the right edge.
+    #[test]
+    fn following_the_playhead_pages_the_view() {
+        let mut s = UiState::default();
+        let span = 1000 * s.ticks_per_pixel();
+        let margin = span / 8;
+
+        // Inside the view and not near the edge: nothing moves.
+        s.follow_playhead(TimelineTime::from_ticks(span / 2), 1000.0);
+        assert_eq!(s.scroll_ticks, 0);
+
+        // Reaching the last eighth pages forward, leaving the playhead near
+        // the left edge.
+        let at = span - margin;
+        s.follow_playhead(TimelineTime::from_ticks(at), 1000.0);
+        assert_eq!(s.scroll_ticks, at - margin);
+
+        // And it does not page again immediately.
+        let scrolled = s.scroll_ticks;
+        s.follow_playhead(TimelineTime::from_ticks(at + 10), 1000.0);
+        assert_eq!(s.scroll_ticks, scrolled);
+
+        // Jumping backwards — the playhead moved behind the view — brings it
+        // back into sight.
+        s.follow_playhead(TimelineTime::ZERO, 1000.0);
+        assert_eq!(s.scroll_ticks, 0);
     }
 
     #[test]

@@ -31,9 +31,20 @@ pub enum Source {
     Proxy,
 }
 
+/// Decoded stills kept per `FrameSource`: two, so a crossfade between photos
+/// holds both sides without decoding either twice.
+///
+/// Small on purpose. A still is up to `MAX_STILL_EDGE`² × 4 bytes — tens of
+/// megabytes — and there are three `FrameSource`s (preview, decode-ahead,
+/// export). A montage plays its photos in order, so the two most recent are
+/// the two that matter.
+const STILLS_KEPT: usize = 2;
+
 /// A pool of open decoders, one per (asset, copy).
 pub struct FrameSource {
     decoders: HashMap<(MediaId, Source), FfmpegDecoder>,
+    /// Decoded stills, most recently used last.
+    stills: std::collections::VecDeque<(MediaId, Arc<VideoFrame>)>,
     proxy: Option<ProxySource>,
     /// FFmpeg threads per decoder (§15.1), from `HardwareProfile`.
     threads: u32,
@@ -45,6 +56,7 @@ impl FrameSource {
     pub fn new(threads: u32) -> Self {
         Self {
             decoders: HashMap::new(),
+            stills: std::collections::VecDeque::new(),
             proxy: None,
             threads: threads.max(1),
             last_seek_error: MediaTime::ZERO,
@@ -61,10 +73,12 @@ impl FrameSource {
     /// Drop the decoders for one asset, so the next request reopens it.
     pub fn invalidate(&mut self, media: MediaId) {
         self.decoders.retain(|(cached, _), _| *cached != media);
+        self.stills.retain(|(cached, _)| *cached != media);
     }
 
     pub fn clear(&mut self) {
         self.decoders.clear();
+        self.stills.clear();
     }
 
     pub fn last_seek_error(&self) -> MediaTime {
@@ -82,6 +96,10 @@ impl FrameSource {
         mode: SeekMode,
         cancel: &dyn CancellationToken,
     ) -> Result<Arc<VideoFrame>, PlaybackError> {
+        if asset.is_still() {
+            return self.still(asset, cancel);
+        }
+
         // §14: preview reads the proxy when there is one. §13.1's all-intra
         // encoding is what makes the seek below cost one decode instead of a
         // walk forward from the previous keyframe.
@@ -129,6 +147,41 @@ impl FrameSource {
             MediaTime::from_ticks((frame.timestamp.ticks() - source_time.ticks()).abs());
 
         Ok(Arc::new(frame))
+    }
+
+    /// A still's one picture, decoded once.
+    ///
+    /// The decoder is opened, read and dropped rather than pooled: it owns an
+    /// RGBA buffer as large as the picture, and keeping it open would hold
+    /// every still twice. Always the original — stills have no proxies.
+    fn still(
+        &mut self,
+        asset: &MediaAsset,
+        cancel: &dyn CancellationToken,
+    ) -> Result<Arc<VideoFrame>, PlaybackError> {
+        self.last_seek_error = MediaTime::ZERO;
+        if let Some(index) = self.stills.iter().position(|(id, _)| *id == asset.id)
+            && let Some(entry) = self.stills.remove(index)
+        {
+            let frame = Arc::clone(&entry.1);
+            self.stills.push_back(entry);
+            return Ok(frame);
+        }
+
+        let mut decoder = FfmpegDecoder::new(self.threads)?;
+        decoder.open(asset)?;
+        let frame = decoder
+            .decode_frame(cancel)?
+            .ok_or(PlaybackError::NoFrame {
+                at: MediaTime::ZERO,
+            })?;
+        let frame = Arc::new(frame);
+
+        self.stills.push_back((asset.id, Arc::clone(&frame)));
+        while self.stills.len() > STILLS_KEPT {
+            self.stills.pop_front();
+        }
+        Ok(frame)
     }
 
     /// How many decoders are open, for diagnostics.

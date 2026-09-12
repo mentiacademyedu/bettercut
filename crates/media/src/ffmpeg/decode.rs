@@ -68,6 +68,13 @@ pub struct FfmpegDecoder {
     audio: Option<StreamDecoder>,
 
     scaler: Option<Scaler>,
+    /// §21a.1's tone-mapping chain, when the source is HDR. Its output is
+    /// SDR yuv420p, which `scaler` then turns into RGBA exactly as it would a
+    /// proxy — so an original and its proxy decode to the same picture.
+    tonemap: Option<super::filter::FilterGraph>,
+    /// Where the chain's output lands between the two steps. Reused, like
+    /// `rgba`, so steady-state playback allocates nothing (§68).
+    tonemapped: Frame,
     resampler: Option<Resampler>,
 
     packet: Packet,
@@ -124,6 +131,8 @@ impl FfmpegDecoder {
             video: None,
             audio: None,
             scaler: None,
+            tonemap: None,
+            tonemapped: Frame::new()?,
             resampler: None,
             packet: Packet::new()?,
             frame: Frame::new()?,
@@ -282,6 +291,8 @@ impl MediaDecoder for FfmpegDecoder {
         let mut width = 0;
         let mut height = 0;
         let mut color = asset.color;
+        let mut hdr_spec: Option<String> = None;
+        let mut hdr_input = (0, ffi::AVRational { num: 1, den: 1 });
 
         for stream in input.streams() {
             // SAFETY: `streams()` filtered nulls; the stream outlives this loop.
@@ -302,6 +313,15 @@ impl MediaDecoder for FfmpegDecoder {
                 let codec = CodecContext::open(params, self.threads)?;
                 width = par.width.max(0) as u32;
                 height = par.height.max(0) as u32;
+                hdr_spec = super::filter::hdr_to_sdr_spec(
+                    par.color_trc,
+                    par.color_primaries,
+                    par.color_space,
+                    par.color_range,
+                    par.width,
+                    par.height,
+                );
+                hdr_input = (par.format, time_base);
                 color = super::probe::resolve_color(par, height);
                 video = Some(StreamDecoder {
                     index,
@@ -337,20 +357,63 @@ impl MediaDecoder for FfmpegDecoder {
             return Err(MediaError::NoStream(asset.path.clone()));
         }
 
+        // A decoder can be reopened on another file; nothing from the last one
+        // may carry over, least of all a tone-mapper built for an HDR source.
+        self.tonemap = None;
+        self.scaler = None;
+
+        // A large still comes out scaled to fit `MAX_STILL_EDGE` (see there).
+        // Video is left alone: a large video gets a proxy instead (§13).
+        let (out_width, out_height) = if asset.is_still() {
+            crate::fit_within(width, height, crate::MAX_STILL_EDGE)
+        } else {
+            (width, height)
+        };
+
         if let Some(v) = &video
             && width > 0
             && height > 0
         {
-            self.scaler = Some(Scaler::to_rgba(
-                width as i32,
-                height as i32,
-                v.format,
-                v.full_range,
-                v.colorspace,
-            )?);
-            self.rgba = vec![0; (width * height * 4) as usize];
+            self.scaler = Some(match hdr_spec {
+                // §21a.1: HDR is tone-mapped to SDR first, by the same chain
+                // the proxy encoder uses; the scaler then sees what a proxy
+                // would give it — BT.709, limited range, 4:2:0 — and converts
+                // that to RGBA the ordinary way.
+                Some(spec) => {
+                    let (format, timebase) = hdr_input;
+                    self.tonemap = Some(super::filter::FilterGraph::new(
+                        &spec,
+                        width as i32,
+                        height as i32,
+                        format,
+                        timebase,
+                        ffi::AVRational { num: 1, den: 1 },
+                    )?);
+                    tracing::info!(file = %asset.file_name, "tone-mapping an HDR original");
+                    Scaler::to_rgba(
+                        width as i32,
+                        height as i32,
+                        ffi::AV_PIX_FMT_YUV420P,
+                        false,
+                        sws_colorspace(ffi::AVCOL_SPC_BT709),
+                    )?
+                }
+                None => Scaler::to_rgba_sized(
+                    (width as i32, height as i32),
+                    (out_width as i32, out_height as i32),
+                    v.format,
+                    v.full_range,
+                    v.colorspace,
+                )?,
+            });
         }
 
+        // The HDR path above converts at the source size.
+        let (width, height) = self
+            .scaler
+            .as_ref()
+            .map_or((width, height), |s| (s.width as u32, s.height as u32));
+        self.rgba = vec![0; (width * height * 4) as usize];
         self.width = width;
         self.height = height;
         self.duration = asset.duration;
@@ -478,12 +541,27 @@ impl MediaDecoder for FfmpegDecoder {
             }
         };
 
-        // §21a.2: the one conversion, at the boundary.
+        // §21a.2: the one conversion, at the boundary — preceded by §21a.1's
+        // tone-map when the source is HDR.
         let scaler = self
             .scaler
             .as_mut()
             .ok_or_else(|| MediaError::DecodeFailed("no scaler for this stream".to_owned()))?;
-        scaler.convert(&self.frame, &mut self.rgba)?;
+        match self.tonemap.as_mut() {
+            Some(graph) => {
+                graph.push(&self.frame)?;
+                // The chain is 1:1, so a frame in yields a frame out. If it
+                // does not, converting the untone-mapped frame instead would
+                // quietly produce the dark picture this exists to prevent.
+                if !graph.pull(&mut self.tonemapped)? {
+                    return Err(MediaError::DecodeFailed(
+                        "the HDR tone-mapping chain produced no frame".to_owned(),
+                    ));
+                }
+                scaler.convert(&self.tonemapped, &mut self.rgba)?;
+            }
+            None => scaler.convert(&self.frame, &mut self.rgba)?,
+        }
 
         // Where the demuxer now stands, so the next request can tell whether
         // it is simply the next frame along (§47a.2's `Playback`) or a real
@@ -618,6 +696,96 @@ mod tests {
         let mut decoder = FfmpegDecoder::new(1).expect("allocate");
         decoder.open(&asset).expect("open");
         decoder
+    }
+
+    fn mean_luma(frame: &VideoFrame) -> f64 {
+        let crate::FrameStorage::System { data, .. } = &frame.storage else {
+            panic!("expected a RAM frame");
+        };
+        data.chunks_exact(4)
+            .map(|p| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) as f64 / 3.0)
+            .sum::<f64>()
+            / (data.len() / 4) as f64
+    }
+
+    /// §21a.1 on the path that decodes *originals*, which is the path export
+    /// takes (§14: proxies for editing, originals for export).
+    ///
+    /// The proxy encoder tone-maps HDR, so the preview looked right — and the
+    /// export, reading the original, came out around half as bright, because
+    /// swscale cannot convert a transfer function. Measured on this fixture:
+    /// mean luma ~122 untone-mapped, ~227 tone-mapped.
+    #[test]
+    fn an_hdr_original_decodes_tone_mapped() {
+        let mut decoder = open("hlg-bt2020.mkv");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+
+        let mean = mean_luma(&frame);
+        assert!(
+            mean > 150.0,
+            "an HDR original decoded to mean luma {mean:.1}; it was not tone-mapped \
+             (untone-mapped measures ~122, tone-mapped ~227)"
+        );
+    }
+
+    #[test]
+    fn a_small_still_decodes_at_its_own_size() {
+        let mut decoder = open("still.png");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!((frame.width, frame.height), (320, 180));
+    }
+
+    /// A photo wider than `MAX_STILL_EDGE` comes out scaled to fit, keeping
+    /// its shape and its colour.
+    #[test]
+    fn a_large_still_is_scaled_to_fit() {
+        let (width, height) = (5000u32, 100u32);
+        let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+        for _ in 0..width * height {
+            ppm.extend_from_slice(&[200, 40, 20]);
+        }
+        let dir = std::env::temp_dir().join(format!("bettercut-still-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("wide.ppm");
+        std::fs::write(&path, ppm).expect("write");
+
+        let asset = FfmpegProber.probe(&path).expect("probe");
+        assert!(asset.is_still(), "setup: a PPM is a still");
+        let mut decoder = FfmpegDecoder::new(1).expect("allocate");
+        decoder.open(&asset).expect("open");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!((frame.width, frame.height), (4096, 80));
+        let crate::FrameStorage::System { data, .. } = &frame.storage else {
+            panic!("expected a RAM frame");
+        };
+        assert_eq!(data.len(), 4096 * 80 * 4);
+        let middle = (40 * 4096 + 2048) * 4;
+        let pixel = &data[middle..middle + 3];
+        for (got, want) in pixel.iter().zip([200u8, 40, 20]) {
+            assert!(got.abs_diff(want) <= 2, "colour changed: {pixel:?}");
+        }
+    }
+
+    /// An SDR source must come out exactly as before — the tone-mapping chain
+    /// is for HDR only, and running SDR through it would shift every colour.
+    #[test]
+    fn an_sdr_source_is_not_sent_through_the_tone_mapper() {
+        let decoder = open("ntsc-2997.mp4");
+        assert!(
+            decoder.tonemap.is_none(),
+            "an SDR source was given a tone-mapping chain"
+        );
     }
 
     #[test]

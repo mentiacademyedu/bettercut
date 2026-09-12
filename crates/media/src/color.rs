@@ -40,13 +40,12 @@ pub enum TransferFunction {
 impl TransferFunction {
     /// HDR transfers need tone-mapping into the SDR working space (§21a.1).
     ///
-    /// **Detected, not yet handled.** This currently only decides whether a
-    /// proxy is worth generating ([`ColorMetadata::needs_normalization`]).
-    /// Nothing in the upload path converts PQ or HLG to the SDR working space,
-    /// and the proxy encoder rescales and retags without transforming the
-    /// transfer either — `sws_setColorspaceDetails` covers matrix and range,
-    /// not gamma. HDR footage therefore reaches the screen with its code
-    /// values interpreted as BT.709 and looks dark and flat.
+    /// Done by one filter chain (`ffmpeg::filter::hdr_to_sdr_spec`) that both
+    /// the proxy encoder and the decoder run, so an original and its proxy
+    /// decode to the same picture — which matters because §14 exports from
+    /// originals. swscale alone cannot do it: `sws_setColorspaceDetails`
+    /// covers matrix and range, not the transfer function, and an HLG frame
+    /// through it alone lands at about half its brightness.
     pub fn is_hdr(self) -> bool {
         matches!(self, Self::Pq | Self::Hlg)
     }

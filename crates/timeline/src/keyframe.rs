@@ -47,10 +47,18 @@ pub enum AnimatedParameter {
     Contrast,
     Saturation,
     Blur,
+    /// A clip's volume over time (§24 applied to §20a.4's clip-gain stage).
+    ///
+    /// Sound rather than picture, which is why it is absent from [`Self::ALL`]:
+    /// that list is what the Inspector offers for a *video* clip, and a volume
+    /// row among opacity and blur would be a control with nothing to act on.
+    Gain,
 }
 
 impl AnimatedParameter {
-    /// Every parameter, in the order the inspector shows them.
+    /// Every picture parameter, in the order the inspector shows them.
+    ///
+    /// [`Self::Gain`] is deliberately not here — see its own note.
     pub const ALL: [Self; 10] = [
         Self::Opacity,
         Self::ScaleX,
@@ -80,6 +88,9 @@ impl AnimatedParameter {
             Self::ScaleX | Self::ScaleY => Some((0.01, 10.0)),
             Self::Brightness | Self::Contrast | Self::Saturation => Some((0.0, 4.0)),
             Self::Blur => Some((0.0, crate::clip::MAX_BLUR)),
+            // The same ceiling a track's own volume has: four times is already
+            // a long way past where most material starts to distort.
+            Self::Gain => Some((0.0, crate::track::MAX_TRACK_GAIN)),
         }
     }
 
@@ -98,7 +109,8 @@ impl AnimatedParameter {
             | Self::ScaleY
             | Self::Brightness
             | Self::Contrast
-            | Self::Saturation => 1.0,
+            | Self::Saturation
+            | Self::Gain => 1.0,
             Self::PositionX | Self::PositionY | Self::Rotation | Self::Blur => 0.0,
         }
     }
@@ -130,6 +142,7 @@ impl AnimatedParameter {
             Self::Contrast => "contrast",
             Self::Saturation => "saturation",
             Self::Blur => "blur",
+            Self::Gain => "volume",
         }
     }
 }
@@ -453,6 +466,37 @@ impl Keyframes {
         self.track(parameter)?.get(time)
     }
 
+    /// Replace everything on one parameter, returning what was there.
+    ///
+    /// A whole envelope at once, because that is the unit a volume envelope is
+    /// edited in: ducking writes a shape, dragging a point moves one within a
+    /// shape, and both are one thing the user did (§11). Setting a dozen keys
+    /// one at a time would also make undo replay them one at a time.
+    pub fn replace(
+        &mut self,
+        parameter: AnimatedParameter,
+        keys: Vec<Keyframe>,
+    ) -> Option<KeyframeTrack> {
+        let previous = match self.tracks.iter().position(|t| t.parameter == parameter) {
+            Some(index) => Some(self.tracks.remove(index)),
+            None => None,
+        };
+        if !keys.is_empty() {
+            self.tracks.push(KeyframeTrack::sorted(parameter, keys));
+        }
+        previous
+    }
+
+    /// Put a whole parameter's keys back, as [`Self::replace`] took them.
+    pub fn restore(&mut self, parameter: AnimatedParameter, track: Option<KeyframeTrack>) {
+        if let Some(index) = self.tracks.iter().position(|t| t.parameter == parameter) {
+            self.tracks.remove(index);
+        }
+        if let Some(track) = track {
+            self.tracks.push(track);
+        }
+    }
+
     /// Set a key, returning the one it replaced.
     pub fn set(&mut self, parameter: AnimatedParameter, key: Keyframe) -> Option<Keyframe> {
         match self.tracks.iter_mut().find(|t| t.parameter == parameter) {
@@ -493,6 +537,89 @@ impl Keyframes {
         times.sort_unstable_by_key(|time| time.ticks());
         times.dedup();
         times
+    }
+}
+
+/// A slow move across a clip — the "Ken Burns" effect (§24).
+///
+/// A preset, not a mode: [`Self::keyframes`] writes ordinary keys on the
+/// scale, so the renderer knows nothing about it and the keyframe editor can
+/// adjust the result. Here rather than in the editor because a template writes
+/// the same move, and two copies of "18% over the clip" would drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Movement {
+    #[default]
+    None,
+    ZoomIn,
+    ZoomOut,
+}
+
+/// How far a movement travels: 18% across the clip, whatever its length.
+/// Enough to notice on a five-second photo, not enough to feel like a push-in.
+pub const ZOOM_AMOUNT: f32 = 1.18;
+
+impl Movement {
+    pub const ALL: [Self; 3] = [Self::None, Self::ZoomIn, Self::ZoomOut];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::ZoomIn => "Zoom in",
+            Self::ZoomOut => "Zoom out",
+        }
+    }
+
+    /// The name a template file uses.
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "none" => Self::None,
+            "zoom_in" => Self::ZoomIn,
+            "zoom_out" => Self::ZoomOut,
+            _ => return None,
+        })
+    }
+
+    /// The scale at the clip's first and last instants, as a multiple of
+    /// whatever scale it already has.
+    pub fn scales(self) -> Option<(f32, f32)> {
+        match self {
+            Self::None => None,
+            Self::ZoomIn => Some((1.0, ZOOM_AMOUNT)),
+            Self::ZoomOut => Some((ZOOM_AMOUNT, 1.0)),
+        }
+    }
+
+    /// The keys this movement writes on a clip: both scale axes, at the first
+    /// and last instants the clip plays.
+    ///
+    /// Around `base`, the clip's own scale, so a shot already set to fill the
+    /// frame keeps filling it while it moves. Eased at both ends — a move that
+    /// starts and stops abruptly reads as a glitch.
+    pub fn keyframes(
+        self,
+        base: crate::clip::Vec2,
+        source: crate::clip::SourceRange,
+    ) -> Vec<(AnimatedParameter, Keyframe)> {
+        let Some((from, to)) = self.scales() else {
+            return Vec::new();
+        };
+        // The source range is half-open, so a key at the very end would never
+        // be reached.
+        let first = source.start;
+        let last = MediaTime::from_ticks((source.end.ticks() - 1).max(first.ticks()));
+        let mut keys = Vec::with_capacity(4);
+        for (parameter, base) in [
+            (AnimatedParameter::ScaleX, base.x),
+            (AnimatedParameter::ScaleY, base.y),
+        ] {
+            for (time, factor) in [(first, from), (last, to)] {
+                keys.push((
+                    parameter,
+                    Keyframe::new(time, base * factor, Interpolation::EaseInOut),
+                ));
+            }
+        }
+        keys
     }
 }
 

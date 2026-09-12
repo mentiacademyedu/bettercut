@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use bettercut_audio::{AudioClock, AudioOutput};
 use bettercut_foundation::{MediaTime, TICKS_PER_AUDIO_SAMPLE, TimelineTime};
 use bettercut_media::{FfmpegProber, MediaProber};
-use bettercut_playback::{PlaybackEngine, SyncDecision, plan_frame};
+use bettercut_playback::{
+    AudioMixer, AudioPlan, BLOCK_FRAMES, MixerThread, PlaybackEngine, SyncDecision, plan_frame,
+};
 use bettercut_project_format::Project;
 use bettercut_timeline::{AudioClip, SourceRange, VideoClip};
 
@@ -110,6 +112,39 @@ fn a_position_past_every_clip_resolves_to_nothing() {
     assert!(layers.is_empty());
 }
 
+/// A photo shows its one picture at every instant of its clip — including
+/// instants the file has no frame for — and it is decoded once, not once per
+/// frame of playback.
+#[test]
+fn a_photo_shows_throughout_its_clip_from_one_decode() {
+    let mut project = Project::new("Photo");
+    let asset = FfmpegProber.probe(&fixture("still.png")).expect("probe");
+    assert!(asset.is_still(), "setup: a PNG is a still");
+    let media = project.add_media(asset);
+    let source = SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(5)).expect("valid");
+    project.active_mut().expect("sequence").video_tracks[0]
+        .insert(VideoClip::new(media, TimelineTime::ZERO, source).expect("valid"))
+        .expect("no overlap");
+
+    let sequence = project.active().expect("sequence");
+    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
+
+    let first = engine.resolve_video(&project, sequence, TimelineTime::ZERO);
+    assert_eq!(first.len(), 1, "the photo at its first frame");
+    let misses = engine.cache().misses();
+
+    for millis in [40, 1000, 3000, 4960] {
+        let layers = engine.resolve_video(&project, sequence, TimelineTime::from_millis(millis));
+        assert_eq!(layers.len(), 1, "no photo at {millis} ms");
+        assert_eq!((layers[0].frame.width, layers[0].frame.height), (320, 180));
+    }
+    assert_eq!(
+        engine.cache().misses(),
+        misses,
+        "the photo was decoded again for a later frame"
+    );
+}
+
 /// The second visit to a position must come from the cache, not the decoder.
 #[test]
 fn repeated_positions_are_served_from_the_cache() {
@@ -128,48 +163,278 @@ fn repeated_positions_are_served_from_the_cache() {
     );
 }
 
-/// §20a: audio has to actually reach the device buffer, and it has to be sound
-/// rather than silence.
+/// The mixer produces the fixture's tone, not silence — and needs no sound card
+/// to prove it, now that mixing is a function rather than a side effect of
+/// feeding a device.
 #[test]
-fn audio_fills_the_device_buffer_with_real_samples() {
-    // No device on a headless CI machine is not a failure (§50).
-    let Ok((_output, mut sink)) = AudioOutput::open() else {
-        eprintln!("no audio device; skipping");
-        return;
-    };
-
+fn the_mixer_produces_real_samples() {
     let project = project_with_fixture();
     let sequence = project.active().expect("sequence");
-    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
-    engine.reset_audio(TimelineTime::ZERO);
+    let plan = AudioPlan::of(&project, sequence);
+    let mut mixer = AudioMixer::new(1);
 
-    let pushed = engine.fill_audio(&project, sequence, &mut sink);
-    assert!(pushed > 0, "no audio reached the sink");
+    let mut block = vec![0.0_f32; BLOCK_FRAMES * 2];
+    mixer.mix_block(
+        &plan,
+        TimelineTime::from_millis(100),
+        BLOCK_FRAMES,
+        2,
+        &mut block,
+    );
 
-    // The fixture is a 440 Hz tone, so it cannot be silent.
-    assert_eq!(engine.limited_samples(), 0, "a plain tone should not clip");
+    let peak = block.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.01, "the block is silent (peak {peak})");
 }
 
+/// A fade in is heard: near silence at the clip's start, full level once the
+/// fade has run — and mixed in two blocks, the result is sample-for-sample
+/// the one-block result, which is what lets preview and export agree (§46).
 #[test]
-fn audio_filling_stops_when_the_buffer_is_full() {
-    let Ok((_output, mut sink)) = AudioOutput::open() else {
+fn a_fade_in_is_heard_and_does_not_depend_on_block_size() {
+    let mut project = project_with_fixture();
+    let sequence = project.active_mut().expect("sequence");
+    let track = &mut sequence.audio_tracks[0];
+    let id = track.clips()[0].id;
+    track.get_mut(id).expect("clip").fade_in = TimelineTime::from_millis(500);
+
+    let sequence = project.active().expect("sequence");
+    let plan = AudioPlan::of(&project, sequence);
+    let peak = |block: &[f32]| block.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+
+    let mut mixer = AudioMixer::new(1);
+    let mut start = vec![0.0_f32; BLOCK_FRAMES];
+    mixer.mix_block(&plan, TimelineTime::ZERO, BLOCK_FRAMES, 1, &mut start);
+    let mut later = vec![0.0_f32; BLOCK_FRAMES];
+    mixer.mix_block(
+        &plan,
+        TimelineTime::from_millis(700),
+        BLOCK_FRAMES,
+        1,
+        &mut later,
+    );
+    assert!(
+        peak(&start) < 0.05 * peak(&later),
+        "the first 10 ms were not faded (peak {} against {})",
+        peak(&start),
+        peak(&later)
+    );
+
+    let span = BLOCK_FRAMES * 4;
+    let mut whole = vec![0.0_f32; span];
+    AudioMixer::new(1).mix_block(&plan, TimelineTime::from_millis(100), span, 1, &mut whole);
+    let mut halves = vec![0.0_f32; span];
+    let mut two_blocks = AudioMixer::new(1);
+    let (first, second) = halves.split_at_mut(span / 2);
+    two_blocks.mix_block(&plan, TimelineTime::from_millis(100), span / 2, 1, first);
+    two_blocks.mix_block(
+        &plan,
+        TimelineTime::from_millis(100)
+            + TimelineTime::from_ticks((span / 2) as i64 * TICKS_PER_AUDIO_SAMPLE),
+        span / 2,
+        1,
+        second,
+    );
+    let worst = whole
+        .iter()
+        .zip(&halves)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(worst < 1e-6, "block size changed the fade by {worst}");
+}
+
+/// The track stage reaches the mix: half the volume is half the level, and a
+/// hard-left pan leaves the right channel silent.
+#[test]
+fn a_tracks_volume_and_pan_are_heard() {
+    let block_for = |gain: f32, pan: f32| {
+        let mut project = project_with_fixture();
+        let track = &mut project.active_mut().expect("sequence").audio_tracks[0];
+        track.gain = gain;
+        track.pan = pan;
+        let sequence = project.active().expect("sequence");
+        let plan = AudioPlan::of(&project, sequence);
+        let mut out = vec![0.0_f32; BLOCK_FRAMES * 2];
+        AudioMixer::new(1).mix_block(
+            &plan,
+            TimelineTime::from_millis(100),
+            BLOCK_FRAMES,
+            2,
+            &mut out,
+        );
+        out
+    };
+    let peak =
+        |samples: &mut dyn Iterator<Item = f32>| samples.fold(0.0_f32, |m, s| m.max(s.abs()));
+
+    let full = block_for(1.0, 0.0);
+    let half = block_for(0.5, 0.0);
+    let ratio = peak(&mut half.iter().copied()) / peak(&mut full.iter().copied());
+    assert!(
+        (ratio - 0.5).abs() < 1e-3,
+        "half volume gave {ratio} of the level"
+    );
+
+    let left = block_for(1.0, -1.0);
+    assert!(
+        peak(&mut left.iter().step_by(2).copied()) > 0.01,
+        "left went silent"
+    );
+    assert!(
+        peak(&mut left.iter().skip(1).step_by(2).copied()) < 1e-6,
+        "hard left still reached the right channel"
+    );
+}
+
+/// §51 in the mixed output, where the export bug lived. The fixture is a 440 Hz
+/// tone, so doubling the speed has to double the pitch — and the zero crossings
+/// are a way to count that without an FFT. Export calls this same function, so
+/// this is what stops a 2× clip exporting its sound at normal speed again.
+#[test]
+fn a_fast_clip_mixes_at_its_own_speed() {
+    let crossings = |speed: bettercut_foundation::Rational| {
+        let mut project = project_with_fixture();
+        let sequence = project.active_mut().expect("sequence");
+        let track = &mut sequence.audio_tracks[0];
+        let id = track.clips()[0].id;
+        track.get_mut(id).expect("clip").speed = speed;
+
+        let sequence = project.active().expect("sequence");
+        let plan = AudioPlan::of(&project, sequence);
+        let mut mixer = AudioMixer::new(1);
+
+        // Mono, and several blocks so the count is not dominated by where the
+        // first one happens to start in the waveform.
+        let frames = BLOCK_FRAMES * 8;
+        let mut out = vec![0.0_f32; frames];
+        mixer.mix_block(&plan, TimelineTime::from_millis(50), frames, 1, &mut out);
+        out.windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count()
+    };
+
+    let normal = crossings(bettercut_foundation::Rational::ONE);
+    let double = crossings(bettercut_foundation::Rational::new(2, 1).expect("ratio"));
+
+    assert!(
+        normal > 10,
+        "the tone is not there to count ({normal} crossings)"
+    );
+    let ratio = double as f64 / normal as f64;
+    assert!(
+        (1.8..=2.2).contains(&ratio),
+        "at 2x the tone crossed zero {double} times against {normal}: a ratio of {ratio:.2}, not 2"
+    );
+}
+
+/// A clip deleted from the timeline must not keep its decoder open for the life
+/// of the mixer — a file handle and FFmpeg's buffers, held for nothing.
+#[test]
+fn the_mixer_closes_decoders_the_plan_no_longer_needs() {
+    let project = project_with_fixture();
+    let sequence = project.active().expect("sequence");
+    let plan = AudioPlan::of(&project, sequence);
+    let mut mixer = AudioMixer::new(1);
+
+    let mut block = vec![0.0_f32; BLOCK_FRAMES * 2];
+    mixer.mix_block(&plan, TimelineTime::ZERO, BLOCK_FRAMES, 2, &mut block);
+    assert_eq!(mixer.open_sources(), 1, "setup: the clip's decoder opened");
+
+    mixer.retain_current(&AudioPlan::default());
+    assert_eq!(mixer.open_sources(), 0, "the decoder outlived its clip");
+}
+
+/// The snapshot compares equal when nothing about the audio changed, which is
+/// what stops the preview re-sending it on every frame of a video-only edit.
+#[test]
+fn an_unchanged_project_gives_an_equal_plan() {
+    let project = project_with_fixture();
+    let sequence = project.active().expect("sequence");
+    assert_eq!(
+        AudioPlan::of(&project, sequence),
+        AudioPlan::of(&project, sequence)
+    );
+
+    let mut changed = project.clone();
+    let sequence = changed.active_mut().expect("sequence");
+    let id = sequence.audio_tracks[0].clips()[0].id;
+    sequence.audio_tracks[0].get_mut(id).expect("clip").gain = 0.5;
+    let sequence = changed.active().expect("sequence");
+    assert_ne!(
+        AudioPlan::of(&project, project.active().expect("sequence")),
+        AudioPlan::of(&changed, sequence),
+        "a gain change did not change the plan, so the mixer would never hear it"
+    );
+}
+
+/// §20a.2's thread, end to end: it fills the device while playing and stops
+/// when paused. Skipped without a sound card, which is not a failure (§50).
+#[test]
+fn the_mixer_thread_feeds_the_device_only_while_playing() {
+    let Ok((_output, sink)) = AudioOutput::open() else {
         eprintln!("no audio device; skipping");
         return;
     };
-
     let project = project_with_fixture();
     let sequence = project.active().expect("sequence");
-    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
-    engine.reset_audio(TimelineTime::ZERO);
 
-    // Fill until full, then confirm a second pass does not spin.
-    let first = engine.fill_audio(&project, sequence, &mut sink);
-    let second = engine.fill_audio(&project, sequence, &mut sink);
+    let mixer = MixerThread::spawn(sink, 1).expect("thread");
+    mixer.set_plan(AudioPlan::of(&project, sequence));
+    mixer.seek(TimelineTime::ZERO);
 
-    assert!(first > 0);
+    // Paused: nothing should reach the device.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    assert_eq!(
+        mixer.frames_pushed(),
+        0,
+        "the mixer pushed audio while paused"
+    );
+
+    mixer.set_playing(true);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while mixer.frames_pushed() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(mixer.frames_pushed() > 0, "the mixer never fed the device");
+    assert_eq!(mixer.limited_samples(), 0, "a plain tone should not clip");
+
+    // §20a's meter: the fixture has sound in it, so something must register.
+    let (left, right) = mixer.peaks();
     assert!(
-        second < first,
-        "the second fill pushed as much as the first; it is not respecting the buffer"
+        left > 0.0 || right > 0.0,
+        "the meter stayed at zero while audio was playing"
+    );
+
+    // And it falls back to silence when paused. A meter holding the last level
+    // of a stopped mix looks like sound that is not there.
+    mixer.set_playing(false);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while mixer.peaks() != (0.0, 0.0) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        mixer.peaks(),
+        (0.0, 0.0),
+        "the meter stayed lit after playback stopped"
+    );
+}
+
+/// Dropping the handle stops the thread and joins it. A mixer that outlived its
+/// preview would keep a decoder and the device's ring buffer alive.
+#[test]
+fn dropping_the_mixer_stops_its_thread() {
+    let Ok((_output, sink)) = AudioOutput::open() else {
+        eprintln!("no audio device; skipping");
+        return;
+    };
+    let mixer = MixerThread::spawn(sink, 1).expect("thread");
+    mixer.set_playing(true);
+
+    let started = std::time::Instant::now();
+    drop(mixer);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "joining the mixer took {:?}",
+        started.elapsed()
     );
 }
 
@@ -525,5 +790,47 @@ fn audio_block_timing_is_tick_exact() {
     assert_eq!(
         TimelineTime::from_ticks(block_ticks),
         TimelineTime::from_millis(10)
+    );
+}
+
+/// A held frame shows the same picture throughout, and costs one decode
+/// however long it is held — the same trick a photo uses.
+#[test]
+fn a_frozen_clip_shows_one_frame_from_one_decode() {
+    let mut project = project_with_fixture();
+    let sequence = project.active_mut().expect("sequence");
+    let clip = sequence.video_tracks[0].clips()[0].id;
+    {
+        let clip = sequence.video_tracks[0].get_mut(clip).expect("clip");
+        clip.frozen = true;
+        clip.source.start = MediaTime::from_millis(500);
+    }
+
+    let sequence = project.active().expect("sequence");
+    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
+
+    let signature = |layer: &bettercut_playback::ResolvedLayer| {
+        let bettercut_media::FrameStorage::System { data, .. } = &layer.frame.storage else {
+            panic!("expected a RAM frame");
+        };
+        data.iter().step_by(997).map(|b| u64::from(*b)).sum::<u64>()
+    };
+
+    let first = engine.resolve_video(&project, sequence, TimelineTime::ZERO);
+    let held = signature(&first[0]);
+    let misses = engine.cache().misses();
+
+    for millis in [40, 500, 1_200] {
+        let layers = engine.resolve_video(&project, sequence, TimelineTime::from_millis(millis));
+        assert_eq!(
+            signature(&layers[0]),
+            held,
+            "the picture moved at {millis} ms"
+        );
+    }
+    assert_eq!(
+        engine.cache().misses(),
+        misses,
+        "a held frame was decoded more than once"
     );
 }

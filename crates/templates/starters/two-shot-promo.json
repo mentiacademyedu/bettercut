@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "two-shot-promo",
+  "name": "Two-Shot Promo",
+  "category": "Social",
+  "duration": 6.0,
+  "description": "Two shots with a fade between them, a headline, and a call to action.",
+  "slots": [
+    { "id": "shot_a", "type": "video", "label": "First shot" },
+    { "id": "shot_b", "type": "video", "label": "Second shot" },
+    { "id": "headline", "type": "text", "label": "Headline", "default_text": "New Drop" },
+    { "id": "call", "type": "text", "label": "Call to action", "default_text": "Shop now" },
+    { "id": "music", "type": "audio", "label": "Music" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "shot_a", "start": 0, "duration": 3,
+      "transition_out": { "kind": "fade_through_black", "duration": 0.5 } },
+    { "type": "clip", "slot": "shot_b", "start": 3, "duration": 3 },
+    { "type": "text", "slot": "headline", "start": 0.4, "duration": 2.4,
+      "transform": { "position": [0.0, -0.3] },
+      "style": { "size": 96, "weight": "bold" },
+      "animation": { "in": { "kind": "slide_up", "duration": 0.5 },
+                     "out": { "kind": "fade", "duration": 0.3 } } },
+    { "type": "text", "slot": "call", "start": 3.4, "duration": 2.6,
+      "transform": { "position": [0.0, 0.32] },
+      "style": {
+        "size": 72, "weight": "bold", "stroke": null,
+        "background": { "color": { "r": 230, "g": 40, "b": 70, "a": 235 },
+                        "padding": 22, "corner_radius": 14 }
+      },
+      "animation": { "in": { "kind": "pop", "duration": 0.4 } } },
+    { "type": "audio", "slot": "music", "start": 0, "duration": 6, "volume": 0.8,
+      "fade_out": 1.0 }
+  ]
+}

@@ -50,6 +50,63 @@ fn text_rasterizes_to_something_visible() {
     assert!(ink(&bitmap) > 0, "the bitmap is completely transparent");
 }
 
+/// Drawing glyph by glyph (for the typewriter) must not change a title that
+/// shows everything.
+#[test]
+fn revealing_everything_is_the_ordinary_picture() {
+    let mut renderer = renderer();
+    let style = TextStyle::default();
+    let whole = renderer.rasterize("Two\nlines", &style).unwrap();
+    let revealed = renderer
+        .rasterize_revealed("Two\nlines", &style, Some(100))
+        .unwrap();
+    assert_eq!(
+        (whole.width, whole.height),
+        (revealed.width, revealed.height)
+    );
+    assert_eq!(whole.pixels, revealed.pixels);
+}
+
+/// A typewriter keeps the finished title's layout: same bitmap size at every
+/// step, more ink as letters arrive, and the second line only once the first
+/// is done.
+#[test]
+fn a_partial_reveal_keeps_the_layout_and_draws_less() {
+    let mut renderer = renderer();
+    let style = plain(48.0);
+    let text = "Hello\nthere";
+    let whole = renderer.rasterize(text, &style).unwrap();
+
+    let mut previous = 0;
+    for chars in [1, 3, 5, 7, 11] {
+        let step = renderer
+            .rasterize_revealed(text, &style, Some(chars))
+            .unwrap();
+        assert_eq!(
+            (step.width, step.height),
+            (whole.width, whole.height),
+            "the layout changed at {chars} characters"
+        );
+        let drawn = ink(&step);
+        assert!(drawn > previous, "no new ink at {chars} characters");
+        previous = drawn;
+    }
+    assert_eq!(previous, ink(&whole), "all eleven is the whole title");
+
+    // "Hello" and the newline: nothing below the first line yet.
+    let first_line = renderer.rasterize_revealed(text, &style, Some(6)).unwrap();
+    let lower_half = &first_line.pixels[(first_line.pixels.len() / 2)..];
+    assert!(
+        lower_half.chunks_exact(4).all(|p| p[3] == 0),
+        "the second line started early"
+    );
+
+    assert!(matches!(
+        renderer.rasterize_revealed(text, &style, Some(0)),
+        Err(TextError::Empty)
+    ));
+}
+
 /// Whatever the font, twice the size is a bigger picture. A size control that
 /// silently did nothing would still produce a valid bitmap.
 #[test]

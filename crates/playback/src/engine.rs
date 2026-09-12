@@ -20,15 +20,13 @@
 //! rather than moving forward, so there is nothing to predict. That path is
 //! what §13.1's all-intra proxies make cheap.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime, TrackId};
-use bettercut_media::{FfmpegDecoder, MediaAsset, NeverCancelled, SeekMode, VideoFrame};
+use bettercut_media::{MediaAsset, NeverCancelled, SeekMode, VideoFrame};
 use bettercut_project_format::Project;
 use bettercut_timeline::{Clip, Sequence, Transform, TransitionKind, VideoClip};
 
-use crate::audio_source::AudioSource;
 use crate::cache::{FrameCache, FrameKey};
 use crate::error::PlaybackError;
 use crate::frame_source::FrameSource;
@@ -58,6 +56,9 @@ pub struct LayerRequest {
     pub source_time: MediaTime,
     /// §24: animation applied, so the static fields are already overridden.
     pub look: bettercut_timeline::ClipLook,
+    /// For a title typing itself in: how many characters to draw. `None` for
+    /// everything, and always `None` for media.
+    pub reveal: Option<usize>,
 }
 
 /// Where a layer's picture comes from.
@@ -142,6 +143,35 @@ pub fn layer_requests(
                 let fade = (2.0 * progress - 1.0).abs();
                 push_layer(&mut requests, project, track.id, clip, position, fade);
             }
+            // §25's moving transitions. All three show both clips at once, like
+            // a crossfade, and differ only in where the two are drawn — which
+            // is why they are a handful of numbers here rather than a shader
+            // each: the compositor already applies a transform per layer, and
+            // preview and export both come through this one function (§46).
+            Some(Cut {
+                outgoing,
+                incoming,
+                progress,
+                kind,
+            }) => {
+                let (out_move, in_move) = moving_transition(kind, progress);
+                push_moving(
+                    &mut requests,
+                    project,
+                    track.id,
+                    outgoing,
+                    position,
+                    out_move,
+                );
+                push_moving(
+                    &mut requests,
+                    project,
+                    track.id,
+                    incoming,
+                    position,
+                    in_move,
+                );
+            }
             None => push_layer(&mut requests, project, track.id, clip, position, 1.0),
         }
     }
@@ -161,6 +191,8 @@ pub fn layer_requests(
             continue;
         }
 
+        // Entrance and exit applied, in the timeline crate, once (§46).
+        let look = clip.look_at(position);
         requests.push(LayerRequest {
             clip: clip.id,
             track: track.id,
@@ -168,15 +200,96 @@ pub fn layer_requests(
             // Zero-based within the clip's own span; see `timeline::text`.
             source_time: source_time_of(clip.timeline.start, clip.source.start, position),
             look: bettercut_timeline::ClipLook {
-                transform: clip.transform,
-                opacity: clip.opacity,
+                transform: look.transform,
+                opacity: look.opacity,
                 color: bettercut_timeline::ColorAdjust::default(),
                 blur: 0.0,
             },
+            reveal: look.reveal,
         });
     }
 
     requests
+}
+
+/// Which audio clips are audible in `[position, position + duration)`.
+///
+/// Over tracks rather than a sequence so the mixer thread can ask it of the
+/// snapshot it holds (§54): the thread never sees the project.
+pub fn resolve_audio_tracks(
+    tracks: &[bettercut_timeline::AudioTrack],
+    position: TimelineTime,
+    duration: TimelineTime,
+) -> Vec<AudibleClip> {
+    let end = position + duration;
+    let mut audible = Vec::new();
+
+    for track in tracks {
+        if !track.enabled {
+            continue; // muted (§8)
+        }
+        let range = bettercut_timeline::TimelineRange {
+            start: position,
+            end,
+        };
+        for clip in track.clips_in_range(range) {
+            // Where this clip begins inside the requested block.
+            let offset = if clip.timeline.start > position {
+                clip.timeline.start - position
+            } else {
+                TimelineTime::ZERO
+            };
+            let from = position.max(clip.timeline.start);
+            // Scaled by the clip's speed, like every other
+            // timeline-to-source mapping (§51): a clip at 2× is already
+            // twice as far into its material at the same instant.
+            let into_clip = from.ticks() - clip.timeline.start.ticks();
+            let source_start =
+                MediaTime::from_ticks(clip.source.start.ticks() + clip.speed.scale(into_clip));
+
+            // In output frames, from the frame the clip first contributes: see
+            // `Fades` for why that makes a fade independent of block size.
+            let frames =
+                |ticks: i64| ticks.div_euclid(bettercut_foundation::TICKS_PER_AUDIO_SAMPLE);
+            let (fade_in, fade_out) = clip.fitted_fades();
+            let fades = bettercut_audio::Fades {
+                into_clip: frames(into_clip),
+                remaining: frames(clip.timeline.end.ticks() - from.ticks()),
+                fade_in: frames(fade_in),
+                fade_out: frames(fade_out),
+            };
+
+            // §24: a keyframed volume is evaluated at both ends of the block
+            // and mixed as the line between them, so a duck ramps smoothly
+            // instead of stepping at every block boundary.
+            let automation = clip
+                .keyframes
+                .is_animated(bettercut_timeline::AnimatedParameter::Gain)
+                .then(|| {
+                    let until = end.min(clip.timeline.end);
+                    bettercut_audio::GainRamp {
+                        from: clip.gain_at(from),
+                        to: clip.gain_at(until),
+                        frames: frames(until.ticks() - from.ticks()),
+                    }
+                });
+
+            audible.push(AudibleClip {
+                clip: clip.id,
+                media: clip.media_id,
+                source_start,
+                speed: clip.speed,
+                gain: if automation.is_some() { 1.0 } else { clip.gain },
+                offset,
+                fades,
+                automation,
+                track_gain: track.gain,
+                track_pan: track.pan,
+            });
+        }
+    }
+
+    audible
 }
 
 /// How a resolved layer should be positioned on the canvas.
@@ -281,8 +394,10 @@ fn push_layer(
     }
     let source_time = handle_time(clip, position);
     // §24: resolved in the timeline crate, once, so an animated fade exports
-    // as the fade the user watched.
-    let mut look = clip.look_at(source_time);
+    // as the fade the user watched. Against the clip's *progress* rather than
+    // the frame it reads, so a frozen clip still animates: the picture is
+    // held, the movement over it is not.
+    let mut look = clip.look_at(clip.progress_time_at(position));
     look.opacity *= alpha;
     requests.push(LayerRequest {
         clip: clip.id,
@@ -290,7 +405,104 @@ fn push_layer(
         source: LayerSource::Media(clip.media_id),
         source_time,
         look,
+        reveal: None,
     });
+}
+
+/// Where one clip sits during a moving transition, and how solid it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerMove {
+    /// Offset from centre in frame widths: 1.0 is one whole frame to the right.
+    pub offset_x: f32,
+    /// Multiplied into the clip's own scale.
+    pub scale: f32,
+    /// Multiplied into the clip's own opacity.
+    pub alpha: f32,
+}
+
+impl LayerMove {
+    const STILL: Self = Self {
+        offset_x: 0.0,
+        scale: 1.0,
+        alpha: 1.0,
+    };
+}
+
+/// The outgoing and incoming placements for a moving transition (§25).
+///
+/// `progress` is 0 at the window's start and 1 at its end. Written as one
+/// function so the rule can be read — and tested — without a GPU.
+pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, LayerMove) {
+    let t = progress.clamp(0.0, 1.0);
+    match kind {
+        // The next shot slides in over a stationary one. The outgoing clip is
+        // not moved and not faded: it is being *covered*, which is what makes
+        // this read differently from a crossfade.
+        TransitionKind::Slide => (
+            LayerMove::STILL,
+            LayerMove {
+                offset_x: 1.0 - t,
+                ..LayerMove::STILL
+            },
+        ),
+        // Both move together, as if the two shots were on one strip being
+        // pulled across: whatever the incoming clip has not covered, the
+        // outgoing one has already vacated.
+        TransitionKind::Push => (
+            LayerMove {
+                offset_x: -t,
+                ..LayerMove::STILL
+            },
+            LayerMove {
+                offset_x: 1.0 - t,
+                ..LayerMove::STILL
+            },
+        ),
+        // The outgoing shot swells and fades; the incoming one is simply
+        // behind it, at rest. Scaling the incoming clip *up* from small would
+        // show the frame's edges around it for the first half of the window.
+        TransitionKind::Zoom => (
+            LayerMove {
+                offset_x: 0.0,
+                scale: 1.0 + 0.35 * t,
+                alpha: 1.0 - t,
+            },
+            LayerMove::STILL,
+        ),
+        // A crossfade is the incoming clip coming up over the outgoing one, and
+        // a fade through black never has two layers at once; neither is a
+        // moving transition, and both are handled before this is called.
+        TransitionKind::Crossfade => (
+            LayerMove::STILL,
+            LayerMove {
+                alpha: t,
+                ..LayerMove::STILL
+            },
+        ),
+        TransitionKind::FadeThroughBlack => (LayerMove::STILL, LayerMove::STILL),
+    }
+}
+
+/// Push one layer of a moving transition, placed by `movement`.
+fn push_moving(
+    requests: &mut Vec<LayerRequest>,
+    project: &Project,
+    track: TrackId,
+    clip: &VideoClip,
+    position: TimelineTime,
+    movement: LayerMove,
+) {
+    let before = requests.len();
+    push_layer(requests, project, track, clip, position, movement.alpha);
+    // §66: a missing file pushes nothing, and there is then nothing to place.
+    let Some(request) = requests.get_mut(before) else {
+        return;
+    };
+    // Applied *over* whatever the clip already has, so a transition on a clip
+    // the user has moved or scaled shifts it from where they put it.
+    request.look.transform.position.x += movement.offset_x;
+    request.look.transform.scale.x *= movement.scale;
+    request.look.transform.scale.y *= movement.scale;
 }
 
 /// Where in the source a clip is reading at `position`, *including* outside its
@@ -301,6 +513,12 @@ fn push_layer(
 /// the handle is the whole point. Only the start of the file clamps here,
 /// because there is genuinely nothing before it.
 fn handle_time(clip: &VideoClip, position: TimelineTime) -> MediaTime {
+    // A freeze holds one instant, inside its own range and out: reading a
+    // handle would show the frames either side of it during a transition,
+    // which is not a freeze.
+    if clip.frozen {
+        return clip.source().start;
+    }
     let into_clip = position.ticks() - clip.timeline().start.ticks();
     // Scaled by the clip's speed (§51), like every other timeline-to-source
     // mapping: during a crossfade a 2× clip reads its handle twice as fast as
@@ -321,12 +539,17 @@ pub struct AudibleClip {
     pub gain: f32,
     /// Offset from the start of the requested block, in timeline ticks.
     pub offset: TimelineTime,
+    /// The clip's fades, measured from the first frame it contributes to the
+    /// block.
+    pub fades: bettercut_audio::Fades,
+    /// §24's volume envelope across this block, where the clip has one. When
+    /// it is here, [`Self::gain`] is 1.0: a keyframed value replaces the static
+    /// one rather than scaling it.
+    pub automation: Option<bettercut_audio::GainRamp>,
+    /// §20a.4's track stage, from the track the clip is on.
+    pub track_gain: f32,
+    pub track_pan: f32,
 }
-
-/// Samples pushed to the device per round. 480 frames is 10 ms at 48 kHz:
-/// small enough that a seek takes effect promptly, large enough that the
-/// per-block overhead is irrelevant.
-const AUDIO_BLOCK_FRAMES: usize = 480;
 
 /// Where preview frames are read from (§14).
 ///
@@ -374,18 +597,6 @@ pub struct PlaybackEngine {
     /// FFmpeg threads per decoder (§15.1), from `HardwareProfile`.
     decoder_threads: u32,
 
-    /// Audio decoders, kept separate from the video ones.
-    ///
-    /// A decoder owns one demuxer with one read position. Sharing it between
-    /// the video path (which seeks to wherever the playhead is) and the audio
-    /// path (which streams forward) would make them fight over that position,
-    /// and the symptom would be stuttering sound.
-    audio_sources: HashMap<MediaId, AudioSource>,
-    /// Timeline position audio has been pushed up to.
-    audio_filled_to: TimelineTime,
-    master_gain: f32,
-    limited_samples: u64,
-
     /// The decode-ahead thread (§47a.3). `None` until playback starts, because
     /// a paused editor has nothing to decode ahead of.
     prefetcher: Option<crate::prefetcher::Prefetcher>,
@@ -406,10 +617,6 @@ impl PlaybackEngine {
             proxy: None,
             cache: FrameCache::new(cache_bytes),
             decoder_threads: decoder_threads.max(1),
-            audio_sources: HashMap::new(),
-            audio_filled_to: TimelineTime::ZERO,
-            master_gain: 1.0,
-            limited_samples: 0,
             prefetcher: None,
             prefetch_hits: 0,
             text: crate::text_frames::TextFrames::new(),
@@ -490,7 +697,11 @@ impl PlaybackEngine {
                 let Some(asset) = project.media_asset(clip.media_id) else {
                     continue;
                 };
-                let source = source_time_of(clip.timeline().start, clip.source().start, at);
+                let source = asset.frame_time(if clip.frozen {
+                    clip.source().start
+                } else {
+                    source_time_of(clip.timeline().start, clip.source().start, at)
+                });
                 let key = FrameKey {
                     media: asset.id,
                     timestamp: source,
@@ -515,143 +726,6 @@ impl PlaybackEngine {
             proxy: self.proxy.clone(),
             items,
         });
-    }
-
-    pub fn set_master_gain(&mut self, gain: f32) {
-        self.master_gain = gain.clamp(0.0, 4.0);
-    }
-
-    /// Samples the limiter had to clamp (§20a.4). Non-zero means the mix is
-    /// genuinely too hot and the user should be told, not just left to hear it.
-    pub fn limited_samples(&self) -> u64 {
-        self.limited_samples
-    }
-
-    /// Restart audio from `position`.
-    ///
-    /// Called on seek and on play. Without it the engine would keep filling
-    /// from wherever it had got to and the sound would lag the picture by the
-    /// whole buffer depth.
-    pub fn reset_audio(&mut self, position: TimelineTime) {
-        self.audio_filled_to = position;
-    }
-
-    /// Top the device buffer up from the sequence's audio tracks.
-    ///
-    /// Returns how many frames were pushed. Called every UI frame while
-    /// playing; the ring buffer holds 150 ms, so a UI frame or two of jitter is
-    /// absorbed without a gap.
-    ///
-    /// **Interim placement.** §20a.2's diagram puts this on a dedicated mixer
-    /// thread. It runs on the UI thread for now because the project lives
-    /// there and §54 makes the editor core its sole owner; moving it needs a
-    /// snapshot of the audible clips rather than the project itself. The rules
-    /// that actually protect the sound - no allocation, no locks, no blocking
-    /// in the *callback* - are already satisfied, and an underrun here is
-    /// counted and audible rather than silent corruption.
-    pub fn fill_audio(
-        &mut self,
-        project: &Project,
-        sequence: &Sequence,
-        sink: &mut bettercut_audio::AudioSink,
-    ) -> usize {
-        let channels = sink.channels();
-        if channels == 0 {
-            return 0;
-        }
-
-        let block_ticks = TimelineTime::from_ticks(
-            AUDIO_BLOCK_FRAMES as i64 * bettercut_foundation::TICKS_PER_AUDIO_SAMPLE,
-        );
-        let mut pushed = 0;
-        let mut interleaved = vec![0.0_f32; AUDIO_BLOCK_FRAMES * channels];
-
-        while sink.vacant_frames() >= AUDIO_BLOCK_FRAMES {
-            interleaved.fill(0.0);
-            let block_start = self.audio_filled_to;
-
-            for audible in Self::resolve_audio(sequence, block_start, block_ticks) {
-                let Some(asset) = project.media_asset(audible.media) else {
-                    continue;
-                };
-                let Ok(source) = self.audio_source_for(asset) else {
-                    continue;
-                };
-
-                let offset_frames = (audible.offset.ticks()
-                    / bettercut_foundation::TICKS_PER_AUDIO_SAMPLE)
-                    as usize;
-                let wanted = AUDIO_BLOCK_FRAMES.saturating_sub(offset_frames);
-                if wanted == 0 {
-                    continue;
-                }
-
-                // §51: at 2× the block needs twice as many source frames,
-                // resampled back down to the number the device is expecting.
-                // `input_frames_needed` includes the one extra frame the last
-                // interpolation reads.
-                let rate = audible.speed.as_f64();
-                let to_read = if audible.speed.is_one() {
-                    wanted
-                } else {
-                    bettercut_audio::input_frames_needed(wanted, rate)
-                };
-
-                match source.read(audible.source_start, to_read) {
-                    Ok(planes) if !planes.is_empty() => {
-                        let planes = if audible.speed.is_one() {
-                            planes
-                        } else {
-                            bettercut_audio::resample(&planes, wanted, rate)
-                        };
-                        bettercut_audio::mix_into(
-                            &mut interleaved,
-                            channels,
-                            &planes,
-                            offset_frames,
-                            bettercut_audio::MixParams {
-                                clip_gain: audible.gain,
-                                // Track gain and pan arrive with the mixer UI;
-                                // the stage exists in the §20a.4 order already.
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(err) => {
-                        tracing::warn!(%err, "audio read failed; that clip is silent");
-                    }
-                }
-            }
-
-            // §20a.4's final stage: master gain, then the limiter.
-            self.limited_samples +=
-                bettercut_audio::finish(&mut interleaved, self.master_gain) as u64;
-
-            let accepted = sink.push(&interleaved);
-            pushed += accepted / channels;
-            self.audio_filled_to += block_ticks;
-
-            if accepted < interleaved.len() {
-                // The device did not take the whole block; stop rather than
-                // spin. Next frame will find room.
-                break;
-            }
-        }
-
-        pushed
-    }
-
-    fn audio_source_for(&mut self, asset: &MediaAsset) -> Result<&mut AudioSource, PlaybackError> {
-        let threads = self.decoder_threads;
-        match self.audio_sources.entry(asset.id) {
-            std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let decoder = FfmpegDecoder::new(threads)?;
-                let source = AudioSource::open(asset, Box::new(decoder))?;
-                Ok(entry.insert(source))
-            }
-        }
     }
 
     pub fn cache(&self) -> &FrameCache {
@@ -682,7 +756,8 @@ impl PlaybackEngine {
     pub fn invalidate(&mut self, media: MediaId) {
         self.cache.invalidate_media(media);
         self.frames.invalidate(media);
-        self.audio_sources.remove(&media);
+        // Audio decoders live on the mixer thread now (§20a.2), which notices a
+        // changed asset in the next plan it is sent — see `AudioMixer`.
     }
 
     pub fn set_cache_bytes(&mut self, bytes: usize) {
@@ -726,7 +801,7 @@ impl PlaybackEngine {
                     let Some(text) = sequence.text_clip(clip) else {
                         continue;
                     };
-                    match self.text.frame_for(text) {
+                    match self.text.frame_for(text, request.reveal) {
                         Some(frame) => frame,
                         None => continue,
                     }
@@ -763,44 +838,7 @@ impl PlaybackEngine {
         position: TimelineTime,
         duration: TimelineTime,
     ) -> Vec<AudibleClip> {
-        let end = position + duration;
-        let mut audible = Vec::new();
-
-        for track in &sequence.audio_tracks {
-            if !track.enabled {
-                continue; // muted (§8)
-            }
-            let range = bettercut_timeline::TimelineRange {
-                start: position,
-                end,
-            };
-            for clip in track.clips_in_range(range) {
-                // Where this clip begins inside the requested block.
-                let offset = if clip.timeline.start > position {
-                    clip.timeline.start - position
-                } else {
-                    TimelineTime::ZERO
-                };
-                let from = position.max(clip.timeline.start);
-                // Scaled by the clip's speed, like every other
-                // timeline-to-source mapping (§51): a clip at 2× is already
-                // twice as far into its material at the same instant.
-                let into_clip = from.ticks() - clip.timeline.start.ticks();
-                let source_start =
-                    MediaTime::from_ticks(clip.source.start.ticks() + clip.speed.scale(into_clip));
-
-                audible.push(AudibleClip {
-                    clip: clip.id,
-                    media: clip.media_id,
-                    source_start,
-                    speed: clip.speed,
-                    gain: clip.gain,
-                    offset,
-                });
-            }
-        }
-
-        audible
+        resolve_audio_tracks(&sequence.audio_tracks, position, duration)
     }
 
     /// Decode (or recall) the frame of `asset` at `source_time`.
@@ -809,6 +847,9 @@ impl PlaybackEngine {
         asset: &MediaAsset,
         source_time: MediaTime,
     ) -> Result<Arc<VideoFrame>, PlaybackError> {
+        // Every instant of a still is the same picture, and keyed as one it
+        // is decoded once rather than once per frame.
+        let source_time = asset.frame_time(source_time);
         let key = FrameKey {
             media: asset.id,
             timestamp: source_time,

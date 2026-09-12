@@ -14,6 +14,7 @@ members = [
     "crates/export",
     "crates/editor-core",
     "crates/captions",
+    "crates/templates",
     "crates/text",
     "crates/ui",
 ]
@@ -42,6 +43,7 @@ bettercut-project-format = { path = "crates/project-format" }
 bettercut-editor-core = { path = "crates/editor-core" }
 bettercut-text = { path = "crates/text" }
 bettercut-captions = { path = "crates/captions" }
+bettercut-templates = { path = "crates/templates" }
 bettercut-ui = { path = "crates/ui" }
 
 # Kept deliberately short. §74: "Add large dependencies without justification."
