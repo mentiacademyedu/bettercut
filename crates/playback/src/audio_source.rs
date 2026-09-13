@@ -21,8 +21,22 @@ use crate::error::PlaybackError;
 /// flush that follows it; beyond about a second it stops being true.
 const FORWARD_DECODE_LIMIT: i64 = bettercut_foundation::TICKS_PER_SECOND;
 
+/// A rewind to within this of the file's start reopens the file and decodes
+/// forward instead of seeking.
+///
+/// The first packets of a compressed audio stream carry the encoder's
+/// priming — samples the decoder is told to drop when it reads from the
+/// beginning. A seek lands on them without that instruction, and the sound
+/// comes out shifted by a few thousand samples: harmless mid-file, where a
+/// seek lands on ordinary packets, and audibly wrong at the start, which is
+/// exactly where a reversed clip's last block reads. Reopening costs a file
+/// open; decoding this far is a few milliseconds.
+const REOPEN_BELOW: i64 = bettercut_foundation::TICKS_PER_SECOND;
+
 pub struct AudioSource {
     decoder: Box<dyn MediaDecoder + Send>,
+    /// The file, for reopening it (see [`REOPEN_BELOW`]).
+    asset: MediaAsset,
     /// Planar samples currently held, one `Vec` per channel.
     buffered: Vec<Vec<f32>>,
     /// Source position of `buffered[..][0]`.
@@ -39,6 +53,7 @@ impl AudioSource {
         decoder.open(asset)?;
         Ok(Self {
             decoder,
+            asset: asset.clone(),
             buffered: Vec::new(),
             buffered_start: MediaTime::ZERO,
             channels: 0,
@@ -86,7 +101,14 @@ impl AudioSource {
                 break;
             };
 
-            if self.buffered.is_empty() {
+            // Nothing held — the first decode, *or the first after a seek*.
+            // A seek empties the planes but keeps them, so asking whether the
+            // list of planes is empty only caught the first case: after a
+            // rewind the next buffer was filed under the seek target rather
+            // than its own timestamp, and every sample read from it came from
+            // the wrong instant. Reversed sound rewinds on every block, which
+            // is how this surfaced; scrubbing backwards had it too.
+            if self.buffered_frames() == 0 {
                 self.channels = buffer.channels();
                 self.buffered = vec![Vec::new(); self.channels];
                 self.buffered_start = buffer.timestamp;
@@ -144,7 +166,11 @@ impl AudioSource {
     }
 
     fn seek(&mut self, to: MediaTime) -> Result<(), PlaybackError> {
-        self.decoder.seek(to, SeekMode::Precise)?;
+        if to.ticks() < REOPEN_BELOW {
+            self.decoder.open(&self.asset)?;
+        } else {
+            self.decoder.seek(to, SeekMode::Precise)?;
+        }
         for plane in &mut self.buffered {
             plane.clear();
         }

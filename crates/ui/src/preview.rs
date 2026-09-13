@@ -18,6 +18,9 @@ use eframe::egui_wgpu::RenderState;
 /// Everything needed to show moving pictures.
 pub struct Preview {
     compositor: Compositor,
+    /// Colour lookup tables already offered to the compositor, so each file is
+    /// read once — and a newly imported one is picked up on the next frame.
+    tried_luts: std::collections::HashSet<bettercut_editor_core::foundation::LutId>,
     texture_id: egui::TextureId,
     render_state: RenderState,
 
@@ -66,6 +69,11 @@ pub struct Preview {
     /// how wide "Hello" comes out is not something the model can answer. So the
     /// render records it, and the overlay reads it back.
     layer_sizes: Vec<(bettercut_editor_core::foundation::ClipId, u32, u32)>,
+
+    /// A J/L shuttle at any speed but normal forward play (`crate::shuttle`):
+    /// the rate, and when the playhead was last moved for it. Silent, and
+    /// driven from here rather than by the audio clock.
+    shuttle: Option<(i32, std::time::Instant)>,
 }
 
 impl Preview {
@@ -123,6 +131,7 @@ impl Preview {
 
         Ok(Self {
             compositor,
+            tried_luts: std::collections::HashSet::new(),
             texture_id,
             render_state: render_state.clone(),
             engine: PlaybackEngine::new(cache_bytes, decoder_threads),
@@ -140,6 +149,7 @@ impl Preview {
             has_content: false,
             was_playing: false,
             layer_sizes: Vec::new(),
+            shuttle: None,
         })
     }
 
@@ -147,8 +157,16 @@ impl Preview {
         self.texture_id
     }
 
+    /// The colour of one pixel of the picture on screen, in sRGB (§45).
+    ///
+    /// For the eyedropper: a green screen is named by pointing at it, not by
+    /// hunting for it on a colour wheel.
+    pub fn read_pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        self.compositor.read_pixel(x, y)
+    }
+
     pub fn is_playing(&self) -> bool {
-        self.clock.is_playing()
+        self.clock.is_playing() || self.shuttle.is_some()
     }
 
     /// How big the source picture for `clip` was in the last composited frame.
@@ -210,8 +228,34 @@ impl Preview {
         self.clock.describe()
     }
 
+    /// How fast and which way the playhead is moving: 0 stopped, 1 normal
+    /// playback, otherwise a shuttle rate (`crate::shuttle`).
+    pub fn shuttle_rate(&self) -> i32 {
+        match self.shuttle {
+            Some((rate, _)) => rate,
+            None => i32::from(self.clock.is_playing()),
+        }
+    }
+
+    /// Move at `rate`: stopped, normal playback with sound, or a silent
+    /// shuttle at any other speed or backwards.
+    pub fn set_shuttle(&mut self, editor: &Editor, rate: i32) {
+        match rate {
+            0 => self.set_playing(editor, false),
+            1 => self.set_playing(editor, true),
+            _ => {
+                self.set_playing(editor, false);
+                self.shuttle = Some((rate, std::time::Instant::now()));
+            }
+        }
+    }
+
     /// Start or stop playback (§55 `playback.play` / `playback.pause`).
+    ///
+    /// Either way, a shuttle stops: Space during a fast forward means stop,
+    /// and play means play normally.
     pub fn set_playing(&mut self, editor: &Editor, playing: bool) {
+        self.shuttle = None;
         if playing {
             // Start the clock and the audio fill from wherever the playhead is,
             // or the sound would resume from where it last stopped.
@@ -262,6 +306,10 @@ impl Preview {
 
     /// Move the clock to follow a user-driven seek.
     pub fn seek_to(&mut self, position: TimelineTime) {
+        // A shuttle carries on from where the playhead was moved to.
+        if let Some((_, since)) = &mut self.shuttle {
+            *since = std::time::Instant::now();
+        }
         self.clock.seek_to(position);
         if let Some(mixer) = &self.mixer {
             mixer.seek(position);
@@ -288,8 +336,19 @@ impl Preview {
     pub fn update(&mut self, editor: &mut Editor) -> bool {
         self.clock.tick();
 
-        let playing = self.clock.is_playing();
-        if playing {
+        if let Some((rate, since)) = self.shuttle {
+            let now = std::time::Instant::now();
+            let end = editor
+                .active_sequence()
+                .map_or(TimelineTime::ZERO, |s| s.duration());
+            let (position, at_edge) =
+                crate::shuttle::advance(editor.playhead(), rate, now - since, end);
+            editor.set_playhead(position);
+            self.shuttle = (!at_edge).then_some((rate, now));
+        }
+
+        let playing = self.clock.is_playing() || self.shuttle.is_some();
+        if self.clock.is_playing() {
             self.pump_audio(editor);
             self.pump_prefetch(editor);
 
@@ -444,15 +503,29 @@ impl Preview {
         let layers: Vec<Layer<'_>> = resolved
             .iter()
             .map(|resolved| Layer {
-                color: resolved.color,
-                blur: resolved.blur,
                 frame: &resolved.frame,
-                transform: resolved.transform,
-                opacity: resolved.opacity,
+                look: resolved.look,
             })
             .collect();
 
-        if let Err(err) = self.compositor.composite(&layers, master) {
+        // Adjustment lanes, graded over the pictures actually resolved — the
+        // same two functions the export calls, so what is graded here is what
+        // is graded there (§46).
+        let beneath =
+            bettercut_playback::graded_beneath(sequence, resolved.iter().map(|layer| layer.track));
+        let grades: Vec<bettercut_renderer::Grade> =
+            bettercut_playback::adjustments_at(sequence, position)
+                .into_iter()
+                .map(|look| bettercut_renderer::Grade { beneath, look })
+                .collect();
+
+        self.compositor
+            .set_grain_seed(bettercut_playback::grain_seed(sequence, position));
+        let compositor = &mut self.compositor;
+        bettercut_playback::load_luts(editor.project(), &mut self.tried_luts, |id, lut| {
+            compositor.load_lut(id, lut);
+        });
+        if let Err(err) = self.compositor.composite_graded(&layers, &grades, master) {
             tracing::warn!(%err, "compositing failed");
             return;
         }

@@ -68,6 +68,13 @@ pub enum ElementFile {
         track: usize,
         #[serde(default)]
         transform: TransformFile,
+        /// §22's crop, as `[left, top, right, bottom]` in fractions of the
+        /// source. Beside the transform rather than inside it, because that is
+        /// where it sits on a clip — §22 runs it *before* the transform, and
+        /// nesting it would suggest otherwise. A title has none, which is why
+        /// this is on the clip element alone.
+        #[serde(default)]
+        crop: Option<[f32; 4]>,
         #[serde(default)]
         opacity: Option<f32>,
         #[serde(default)]
@@ -77,6 +84,10 @@ pub enum ElementFile {
         /// A slow move across the shot: `zoom_in`, `zoom_out` or `none`.
         #[serde(default)]
         movement: Option<String>,
+        /// How the shot arrives and leaves, in the same shape a title's
+        /// animation takes — the presets are the same ones.
+        #[serde(default)]
+        animation: Option<AnimationFile>,
     },
     /// Text: from a text slot, or fixed wording the user cannot change.
     Text {
@@ -125,6 +136,12 @@ pub struct TransformFile {
     /// Degrees, clockwise on screen.
     #[serde(default)]
     pub rotation: Option<f32>,
+    /// Mirror left-to-right. No range to check: a flag is already in range.
+    #[serde(default)]
+    pub flip_h: bool,
+    /// Mirror top-to-bottom.
+    #[serde(default)]
+    pub flip_v: bool,
 }
 
 /// A title's entrance and exit: `{ "in": {...}, "out": {...} }`.
@@ -140,7 +157,9 @@ pub struct AnimationFile {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MotionFile {
-    /// `fade`, `slide_up`, `slide_down`, `pop` or `typewriter`.
+    /// One of `MotionKind`'s names: `fade`, `slide_up`, `pop`, `spin` and so
+    /// on. A title may also use `typewriter`; a picture has no letters to
+    /// reveal, so it may not.
     pub kind: String,
     /// Seconds.
     pub duration: f64,

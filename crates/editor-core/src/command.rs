@@ -20,6 +20,16 @@ use serde::{Deserialize, Serialize};
 use crate::error::EditorError;
 pub use crate::ops::TrimEdge;
 
+/// What a clip reads, and how: the part of a clip a media replacement changes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MediaSwap {
+    pub media: bettercut_foundation::MediaId,
+    pub source: bettercut_timeline::SourceRange,
+    pub speed: bettercut_foundation::Rational,
+    pub reversed: bool,
+    pub link: Option<bettercut_foundation::LinkId>,
+}
+
 /// A clip of either kind, so commands can be written once.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClipPayload {
@@ -29,6 +39,9 @@ pub enum ClipPayload {
     /// around — split's undo, ripple delete's undo — apply to them too, and a
     /// separate payload type would mean writing those commands twice.
     Text(Box<bettercut_timeline::TextClip>),
+    /// An adjustment (`bettercut_timeline::adjustment`), for the same reason a
+    /// title is here: split's and ripple delete's undo hand the whole clip back.
+    Adjustment(Box<bettercut_timeline::AdjustmentClip>),
 }
 
 impl ClipPayload {
@@ -37,6 +50,7 @@ impl ClipPayload {
             Self::Video(c) => c.id,
             Self::Audio(c) => c.id,
             Self::Text(c) => c.id,
+            Self::Adjustment(c) => c.id,
         }
     }
 
@@ -45,6 +59,7 @@ impl ClipPayload {
             Self::Video(_) => TrackKind::Video,
             Self::Audio(_) => TrackKind::Audio,
             Self::Text(_) => TrackKind::Text,
+            Self::Adjustment(_) => TrackKind::Adjustment,
         }
     }
 
@@ -53,6 +68,7 @@ impl ClipPayload {
             Self::Video(c) => c.timeline.start,
             Self::Audio(c) => c.timeline.start,
             Self::Text(c) => c.timeline.start,
+            Self::Adjustment(c) => c.timeline.start,
         }
     }
 }
@@ -79,14 +95,24 @@ impl From<bettercut_timeline::TextClip> for ClipPayload {
     }
 }
 
-/// A whole track, held by `RemoveTrack` so undo can restore it intact.
-#[derive(Debug, Clone, PartialEq)]
+impl From<bettercut_timeline::AdjustmentClip> for ClipPayload {
+    fn from(clip: bettercut_timeline::AdjustmentClip) -> Self {
+        Self::Adjustment(Box::new(clip))
+    }
+}
+
+/// A whole track: held by `RemoveTrack` so undo can restore it intact, and
+/// carried by `InsertTrack` to put a prepared one in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TrackPayload {
     Video(Box<bettercut_timeline::VideoTrack>),
     Audio(Box<bettercut_timeline::AudioTrack>),
     /// §26's text lanes, including §27's captions. A lane that can be created
     /// and not removed is a trap, and the caption import creates one.
     Text(Box<bettercut_timeline::TextTrack>),
+    /// An adjustment lane, for the same reason: one that could be added and
+    /// not removed would be a trap.
+    Adjustment(Box<bettercut_timeline::AdjustmentTrack>),
 }
 
 /// Boolean track flags, so one command covers hide/mute/lock (§10).
@@ -96,6 +122,8 @@ pub enum TrackFlag {
     /// Visible for video tracks, unmuted for audio tracks.
     Enabled,
     Locked,
+    /// §20a.4: while any track in a lane is soloed, only those play.
+    Solo,
 }
 
 /// A project setting the user can change (§13, §67).
@@ -157,6 +185,12 @@ pub enum TextProperty {
     /// How the title arrives and leaves (§26). Both ends in one property: the
     /// panel edits them side by side, and each change is one undo step.
     Animation(bettercut_timeline::TextAnimation),
+    /// Smear the title along the way it is moving, as a picture clip can be.
+    MotionBlur(bool),
+    /// The shape drawn in place of the text, or none for text again.
+    Shape(Option<bettercut_text::Shape>),
+    /// A counting number drawn in place of the text, or none for text again.
+    Counter(Option<bettercut_timeline::Counter>),
 }
 
 impl TextProperty {
@@ -175,7 +209,27 @@ impl TextProperty {
             ClipProperty::Brightness(_)
             | ClipProperty::Contrast(_)
             | ClipProperty::Saturation(_)
+            | ClipProperty::Temperature(_)
+            | ClipProperty::Tint(_)
             | ClipProperty::Blur(_)
+            | ClipProperty::Backdrop(_)
+            | ClipProperty::ChromaKey(_)
+            | ClipProperty::Mask(_)
+            | ClipProperty::Blend(_)
+            | ClipProperty::MotionBlur(_)
+            | ClipProperty::Motion(_)
+            | ClipProperty::Background(_)
+            | ClipProperty::Flip { .. }
+            | ClipProperty::Crop(_)
+            | ClipProperty::Vignette(_)
+            | ClipProperty::Grain(_)
+            | ClipProperty::Sharpen(_)
+            | ClipProperty::Lut(_)
+            | ClipProperty::Reverse(_)
+            | ClipProperty::RgbSplit(_)
+            | ClipProperty::Glitch(_)
+            | ClipProperty::Reflection(_)
+            | ClipProperty::Denoise(_)
             | ClipProperty::Gain(_) => None,
         }
     }
@@ -190,6 +244,9 @@ impl TextProperty {
             Self::Rotation(_) => "text rotation",
             Self::Opacity(_) => "text opacity",
             Self::Animation(_) => "text animation",
+            Self::MotionBlur(_) => "text motion blur",
+            Self::Shape(_) => "shape",
+            Self::Counter(_) => "timer",
         }
     }
 }
@@ -267,6 +324,30 @@ pub enum Command {
         clip: ClipId,
         property: TextProperty,
     },
+    /// Add an adjustment clip. Carries the whole clip, id included, for the
+    /// reason `AddText` does: a replay must produce the same project.
+    AddAdjustment {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: Box<bettercut_timeline::AdjustmentClip>,
+    },
+    RemoveAdjustment {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+    },
+    /// Set how an adjustment grades what is beneath it.
+    ///
+    /// The whole look at once rather than a property each, as a title's style
+    /// is: the panel edits it as one thing and the renderer takes it as one.
+    /// A slider drag still collapses into one undo step, because drags collapse
+    /// on the history label and this one's never changes.
+    SetAdjustmentLook {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        look: bettercut_timeline::AdjustmentLook,
+    },
     /// Detach a video's sound from its picture (§12), so the two can be moved,
     /// trimmed and re-timed independently.
     ///
@@ -277,7 +358,7 @@ pub enum Command {
         sequence: SequenceId,
         link: bettercut_foundation::LinkId,
     },
-    /// Change how fast a clip plays (§51).
+    /// Change how fast a clip plays.
     ///
     /// A separate command from [`Self::SetClipProperty`] because it is not a
     /// property of the picture — it changes how long the clip *is*, which the
@@ -297,6 +378,24 @@ pub enum Command {
         sequence: SequenceId,
         markers: Vec<bettercut_timeline::Marker>,
     },
+    /// Leave a note on a clip, or take it off with an empty `text`.
+    SetClipNote {
+        sequence: SequenceId,
+        clip: ClipId,
+        text: String,
+    },
+    /// Replace a sequence's clip groups — the whole list, so grouping and
+    /// ungrouping are each one undo step however many groups they touch.
+    SetGroups {
+        sequence: SequenceId,
+        groups: Vec<Vec<ClipId>>,
+    },
+    /// Set both marks at once, either possibly clear.
+    SetInOut {
+        sequence: SequenceId,
+        mark_in: Option<bettercut_foundation::TimelineTime>,
+        mark_out: Option<bettercut_foundation::TimelineTime>,
+    },
     /// An audio track's volume and pan (§20a.4's track stage).
     SetTrackMix {
         sequence: SequenceId,
@@ -308,6 +407,13 @@ pub enum Command {
     ///
     /// Both ends in one command, because the panel shows them side by side and
     /// a change to either is one thing the user did.
+    /// Tag a clip with a colour (`ColorLabel`). Any lane.
+    SetColorLabel {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        label: bettercut_timeline::ColorLabel,
+    },
     SetClipFades {
         sequence: SequenceId,
         track: TrackId,
@@ -369,6 +475,20 @@ pub enum Command {
         resolution: ResolutionRepr,
         frame_rate: FrameRate,
     },
+    /// Give a track a new name.
+    RenameTrack {
+        sequence: SequenceId,
+        track: TrackId,
+        name: String,
+    },
+    /// Put a whole prepared track — clips and all — in at `index` among the
+    /// tracks of its kind. What duplicating a track dispatches; the ids inside
+    /// are fixed in the request, so a replay makes the same track.
+    InsertTrack {
+        sequence: SequenceId,
+        index: usize,
+        track: TrackPayload,
+    },
     AddTrack {
         sequence: SequenceId,
         kind: TrackKindRepr,
@@ -401,6 +521,14 @@ pub enum Command {
         sequence: SequenceId,
         track: TrackId,
         clip: ClipId,
+    },
+    /// Point a picture or sound clip at other media, keeping everything else
+    /// about it (`crate::replace`). Its span on the timeline does not change.
+    ReplaceClipMedia {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        swap: MediaSwap,
     },
     MoveClip {
         sequence: SequenceId,
@@ -481,9 +609,67 @@ pub enum ClipProperty {
     Brightness(f32),
     Contrast(f32),
     Saturation(f32),
+    /// White balance, -1..1, zero for no change (§45).
+    Temperature(f32),
+    Tint(f32),
     /// §45's blur, 0–100. Video only. A fraction of frame height rather than a
     /// pixel radius, so preview and export agree (§46).
     Blur(f32),
+    /// What fills the frame around a clip that does not cover it (§36). Video
+    /// only, and not animatable: it is a choice, not a dial.
+    Backdrop(bettercut_timeline::Backdrop),
+    /// The chroma key, or `None` to take it off. Video only, and not
+    /// animatable — it is a fact about the footage.
+    ChromaKey(Option<bettercut_timeline::ChromaKey>),
+    /// The mask, or `None` to take it off. Video only.
+    Mask(Option<bettercut_timeline::Mask>),
+    /// §22: how a clip combines with what is beneath it. Video only.
+    Blend(bettercut_timeline::BlendMode),
+    /// How the shot arrives and leaves. Video only, and not animatable —
+    /// it *is* an animation, and keyframing one would be two movements over
+    /// the same instants arguing with each other.
+    Motion(bettercut_timeline::ClipMotion),
+    /// Smear a moving shot along its path. Video only, and not animatable —
+    /// it is a property of the shot, not a dial to ride.
+    MotionBlur(bool),
+    /// §22's crop: how much of the source is thrown away before anything else.
+    /// Video only, and not animatable — a crop that moved through a shot is a
+    /// pan, and a pan is the transform's job.
+    Crop(bettercut_timeline::Crop),
+    /// Mirror the picture. Video only, and not animatable: there is no halfway
+    /// between a shot and its reflection to interpolate through.
+    Flip {
+        axis: bettercut_timeline::FlipAxis,
+        on: bool,
+    },
+    /// §22: what shows where no picture does. The mirror image of the video
+    /// properties above — this one belongs to the sequence and a clip has no
+    /// use for it, because a clip *is* a picture.
+    Background([f32; 3]),
+    /// How much the edges of the whole frame are darkened, 0–1. The sequence's
+    /// alone, for the reason `MasterLook::vignette` gives: a vignette frames the
+    /// frame, and on a clip in a corner it would frame the wrong thing.
+    Vignette(f32),
+    /// Film grain over the whole frame, 0–1. The sequence's alone, like the
+    /// vignette: grain is the film the whole picture is on.
+    Grain(f32),
+    /// Sharpening, 0–100 (`bettercut_timeline::MAX_SHARPEN`). Video only, and
+    /// not animatable: a property of the shot rather than a dial to ride.
+    Sharpen(f32),
+    /// A colour lookup table and its strength (`bettercut_timeline::lut`), or
+    /// none. Video only: a LUT grades footage.
+    Lut(Option<bettercut_timeline::ClipLut>),
+    /// Play backwards. Picture and sound both take it, and
+    /// `Editor::set_reversed` applies it to a linked pair together (§12).
+    Reverse(bool),
+    /// RGB split, 0–100. Video only, not animated.
+    RgbSplit(f32),
+    /// Glitch, 0–100. Video only, not animated.
+    Glitch(f32),
+    /// Mirrored halves, four-way or a kaleidoscope. Video only, not animated.
+    Reflection(bettercut_timeline::Reflection),
+    /// Voice clean-up on a sound clip, 0–100. Sound only, not animated.
+    Denoise(f32),
 }
 
 impl ClipProperty {
@@ -507,8 +693,28 @@ impl ClipProperty {
             Self::Brightness(v) => [Some((P::Brightness, v)), None],
             Self::Contrast(v) => [Some((P::Contrast, v)), None],
             Self::Saturation(v) => [Some((P::Saturation, v)), None],
+            Self::Temperature(v) => [Some((P::Temperature, v)), None],
+            Self::Tint(v) => [Some((P::Tint, v)), None],
             Self::Blur(v) => [Some((P::Blur, v)), None],
-            Self::Gain(_) => [None, None],
+            Self::Backdrop(_)
+            | Self::ChromaKey(_)
+            | Self::Mask(_)
+            | Self::Blend(_)
+            | Self::Motion(_)
+            | Self::Background(_)
+            | Self::MotionBlur(_)
+            | Self::Flip { .. }
+            | Self::Crop(_)
+            | Self::Vignette(_)
+            | Self::Grain(_)
+            | Self::Sharpen(_)
+            | Self::Lut(_)
+            | Self::Reverse(_)
+            | Self::RgbSplit(_)
+            | Self::Glitch(_)
+            | Self::Reflection(_)
+            | Self::Denoise(_)
+            | Self::Gain(_) => [None, None],
         }
     }
 
@@ -525,6 +731,53 @@ impl ClipProperty {
         // greyed out whatever the volume is.
         if let Self::Gain(value) = self {
             return (value - 1.0).abs() < 1e-6;
+        }
+        // And the same for the background, for the same reason: it has no
+        // animated parameter to compare against, so falling through would
+        // report every colour as the default one and leave its reset button
+        // greyed out however far from black it was.
+        if let Self::Background(colour) = self {
+            return colour.iter().all(|channel| *channel == 0.0);
+        }
+        // And again: no animated parameter behind it, so without this every
+        // vignette reads as untouched and its reset stays greyed out.
+        if let Self::Vignette(amount) = self {
+            return amount == 0.0;
+        }
+        // Nor behind grain.
+        if let Self::Grain(amount) = self {
+            return amount == 0.0;
+        }
+        // The same trap once more: no animated parameter behind it.
+        if let Self::Sharpen(amount) = self {
+            return amount == 0.0;
+        }
+        if let Self::Lut(lut) = self {
+            return lut.is_none();
+        }
+        if let Self::Reverse(on) = self {
+            return !on;
+        }
+        if let Self::RgbSplit(amount) | Self::Glitch(amount) | Self::Denoise(amount) = self {
+            return amount == 0.0;
+        }
+        if let Self::Reflection(kind) = self {
+            return matches!(kind, bettercut_timeline::Reflection::None);
+        }
+        if let Self::MotionBlur(on) = self {
+            return !on;
+        }
+        // And the same again: a mirror is its own control with no animated
+        // parameter behind it, so falling through would call every flipped clip
+        // untouched and leave its reset greyed out.
+        if let Self::Flip { on, .. } = self {
+            return !on;
+        }
+        // And once more for the crop, which has no animated parameter either:
+        // without this every cropped clip reports itself untouched and its
+        // reset button stays greyed out however much was taken off.
+        if let Self::Crop(crop) = self {
+            return crop.is_none();
         }
         self.animated()
             .into_iter()
@@ -544,7 +797,29 @@ impl ClipProperty {
             Self::Brightness(_) => "Brightness",
             Self::Contrast(_) => "Contrast",
             Self::Saturation(_) => "Saturation",
+            Self::Temperature(_) => "Temperature",
+            Self::Tint(_) => "Tint",
             Self::Blur(_) => "Blur",
+            Self::Backdrop(_) => "Backdrop",
+            Self::ChromaKey(_) => "Chroma Key",
+            Self::Mask(_) => "Mask",
+            Self::Blend(_) => "Blend",
+            Self::Motion(_) => "Animation",
+            Self::Background(_) => "Background",
+            Self::MotionBlur(_) => "Motion Blur",
+            Self::Crop(_) => "Crop",
+            Self::Vignette(_) => "Vignette",
+            Self::Grain(_) => "Grain",
+            Self::Sharpen(_) => "Sharpen",
+            Self::Lut(_) => "LUT",
+            Self::Reverse(_) => "Reverse",
+            Self::RgbSplit(_) => "RGB split",
+            Self::Glitch(_) => "Glitch",
+            Self::Reflection(_) => "Mirror",
+            Self::Denoise(_) => "Voice clean-up",
+            // The axis is in the name so that mirroring one way and then the
+            // other is two undo steps rather than one collapsed gesture.
+            Self::Flip { axis, .. } => axis.label(),
         }
     }
 }
@@ -585,6 +860,8 @@ pub enum TrackKindRepr {
     /// §26's text overlays and §27's captions, which share a lane kind because
     /// a caption *is* a text clip — one with its timing read from a file.
     Text,
+    /// Adjustment lanes: grades over a stretch of the edit.
+    Adjustment,
 }
 
 impl From<TrackKindRepr> for TrackKind {
@@ -593,6 +870,7 @@ impl From<TrackKindRepr> for TrackKind {
             TrackKindRepr::Video => Self::Video,
             TrackKindRepr::Audio => Self::Audio,
             TrackKindRepr::Text => Self::Text,
+            TrackKindRepr::Adjustment => Self::Adjustment,
         }
     }
 }
@@ -719,9 +997,21 @@ mod tests {
                 name: "A2".to_owned(),
                 id: TrackId::new(),
             },
+            Command::InsertTrack {
+                sequence: seq,
+                index: 1,
+                track: TrackPayload::Audio(Box::new(bettercut_timeline::AudioTrack::new(
+                    "A1 copy",
+                ))),
+            },
             Command::RemoveTrack {
                 sequence: seq,
                 track,
+            },
+            Command::RenameTrack {
+                sequence: seq,
+                track,
+                name: "Voice".to_owned(),
             },
             Command::SetTrackFlag {
                 sequence: seq,
@@ -733,6 +1023,31 @@ mod tests {
                 sequence: seq,
                 track,
                 clip: ClipId::new(),
+            },
+            Command::SetGroups {
+                sequence: seq,
+                groups: vec![vec![ClipId::new(), ClipId::new()]],
+            },
+            Command::SetClipNote {
+                sequence: seq,
+                clip: ClipId::new(),
+                text: "swap for take 3".to_owned(),
+            },
+            Command::ReplaceClipMedia {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                swap: MediaSwap {
+                    media: bettercut_foundation::MediaId::new(),
+                    source: bettercut_timeline::SourceRange::new(
+                        bettercut_foundation::MediaTime::ZERO,
+                        bettercut_foundation::MediaTime::from_seconds(2),
+                    )
+                    .expect("valid"),
+                    speed: bettercut_foundation::Rational::ONE,
+                    reversed: true,
+                    link: Some(bettercut_foundation::LinkId::new()),
+                },
             },
             // §38.2 replays these to rebuild an animation after a crash, so the
             // curve has to survive the wire as exactly as the value does.

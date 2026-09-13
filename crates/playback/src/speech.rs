@@ -77,7 +77,7 @@ pub fn speech_ranges(
         .collect();
 
     // A bucket index within the clip's slice, to a timeline instant — through
-    // the speed, like every other source-to-timeline mapping (§51).
+    // the speed, like every other source-to-timeline mapping.
     let at = |index: usize| {
         let into_source = MediaTime::from_ticks(index as i64 * TICKS_PER_SECOND / rate);
         (clip.timeline.start
@@ -142,6 +142,14 @@ pub fn speech_ranges(
                 ranges.push(range);
             }
         }
+    }
+    // As for silence: phrases found forwards, mirrored for a reversed clip.
+    if clip.reversed {
+        ranges = ranges
+            .into_iter()
+            .rev()
+            .map(|range| bettercut_timeline::mirror_range_in(clip.timeline, range))
+            .collect();
     }
     ranges
 }
@@ -270,7 +278,7 @@ mod tests {
         );
     }
 
-    /// §51: the clip's speed maps source to timeline, here as everywhere. At
+    /// the clip's speed maps source to timeline, here as everywhere. At
     /// double speed a two-second sentence is heard in one second.
     #[test]
     fn speed_moves_the_captions() {

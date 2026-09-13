@@ -176,7 +176,7 @@ fn a_freeze_survives_a_crash() {
     assert_eq!(held[0].timeline.duration(), seconds(2));
 }
 
-/// §51 re-times footage. A hold is one picture, and taking its length from its
+/// Re-timing applies to footage. A hold is one picture, and taking its length from its
 /// source range — as a speed change does — used to collapse a two-second hold
 /// to the single frame it holds.
 #[test]

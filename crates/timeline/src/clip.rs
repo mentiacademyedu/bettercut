@@ -37,6 +37,19 @@ pub struct Transform {
     pub rotation_degrees: f32,
     /// Rotation/scale origin, normalized: (0.5, 0.5) is the clip centre.
     pub anchor: Vec2,
+    /// Mirror left-to-right.
+    ///
+    /// A mirror is not a scale of `-1`: it changes which part of the picture
+    /// lands where and nothing else. The clip covers exactly the same region of
+    /// the frame afterwards, which is why this is a flag and not a sign — a
+    /// negative scale would run through the Inspector's sliders, through
+    /// keyframe interpolation, and through every `fit`/`fill` multiply, and
+    /// would have to be made to mean "mirror" again at each one.
+    #[serde(default)]
+    pub flip_h: bool,
+    /// Mirror top-to-bottom.
+    #[serde(default)]
+    pub flip_v: bool,
 }
 
 impl Default for Transform {
@@ -46,6 +59,8 @@ impl Default for Transform {
             scale: Vec2::ONE,
             rotation_degrees: 0.0,
             anchor: Vec2::new(0.5, 0.5),
+            flip_h: false,
+            flip_v: false,
         }
     }
 }
@@ -57,7 +72,148 @@ impl Transform {
             && self.scale == Vec2::ONE
             && self.rotation_degrees == 0.0
             && self.anchor == Vec2::new(0.5, 0.5)
+            && !self.flip_h
+            && !self.flip_v
     }
+}
+
+/// Which way a mirror runs, so a caller cannot pass the wrong `bool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FlipAxis {
+    /// Left becomes right.
+    Horizontal,
+    /// Top becomes bottom.
+    Vertical,
+}
+
+impl FlipAxis {
+    pub const ALL: [Self; 2] = [Self::Horizontal, Self::Vertical];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Horizontal => "Flip Horizontal",
+            Self::Vertical => "Flip Vertical",
+        }
+    }
+
+    /// The flag this axis owns, for reading or writing.
+    pub fn flag(self, transform: &mut Transform) -> &mut bool {
+        match self {
+            Self::Horizontal => &mut transform.flip_h,
+            Self::Vertical => &mut transform.flip_v,
+        }
+    }
+
+    pub fn is_set(self, transform: &Transform) -> bool {
+        match self {
+            Self::Horizontal => transform.flip_h,
+            Self::Vertical => transform.flip_v,
+        }
+    }
+}
+
+/// How much of the source is thrown away before anything else happens (§22).
+///
+/// Each field is the fraction of the source taken off that edge, so all zero is
+/// the whole picture. §22 puts this *before* the transform, and that ordering is
+/// the whole difference between a crop and a rectangular mask:
+///
+/// * a **mask** hides part of a layer that is already placed, so the shot stays
+///   the size it was and a hole appears in it;
+/// * a **crop** changes what the layer *is*. What is left is a new picture, of
+///   a new shape, and it is then fitted to the frame like any other source —
+///   which is why cropping a 16:9 shot to a square and dropping it on a 9:16
+///   sequence fills the width.
+///
+/// Fractions rather than pixels, so a crop set on a proxy still means the same
+/// thing when the full-resolution media arrives (§13).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Crop {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+/// The least of the source a crop may leave on either axis.
+///
+/// A crop that takes everything leaves a zero-sized quad, which is not a
+/// picture and cannot be dragged back out of — the same trap `ScaleX`'s lower
+/// bound exists for.
+pub const MIN_CROP_REMAINING: f32 = 0.05;
+
+impl Crop {
+    pub const NONE: Self = Self {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
+
+    /// True when nothing is taken off, so the renderer can skip the remap.
+    pub fn is_none(&self) -> bool {
+        *self == Self::NONE
+    }
+
+    /// Brought into range, as every value a project file can carry is.
+    ///
+    /// Each edge is held to 0..1 first, and then the *pair* on each axis is
+    /// held apart by [`MIN_CROP_REMAINING`] — clamping the two independently
+    /// would still allow 0.6 and 0.6, which leaves nothing at all.
+    pub fn clamped(self) -> Self {
+        let (left, right) = clamped_pair(self.left, self.right);
+        let (top, bottom) = clamped_pair(self.top, self.bottom);
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// The shape of what is left, given the shape of the source it came from.
+    ///
+    /// **The one place this is worked out.** The renderer fits this to the
+    /// frame, and the preview's handles have to sit on the picture the renderer
+    /// drew — so both ask here. When the preview computed its own box from the
+    /// *source's* aspect, every cropped clip had its move, scale and rotate
+    /// handles drawn around a shape the picture no longer was.
+    pub fn applied_to(self, source_aspect: f32) -> f32 {
+        let (kept_x, kept_y) = self.remaining();
+        if kept_y <= 0.0 || !source_aspect.is_finite() {
+            return source_aspect;
+        }
+        source_aspect * kept_x / kept_y
+    }
+
+    /// What is left across and down, each in 0..1.
+    pub fn remaining(self) -> (f32, f32) {
+        let crop = self.clamped();
+        (1.0 - crop.left - crop.right, 1.0 - crop.top - crop.bottom)
+    }
+}
+
+/// Hold two opposite edges inside the frame with something left between them.
+///
+/// The excess comes off both edges evenly rather than off whichever is named
+/// second: a crop read from a file is not a gesture with an order to respect,
+/// and taking it all off one side would slide the surviving picture sideways.
+fn clamped_pair(low: f32, high: f32) -> (f32, f32) {
+    let low = if low.is_finite() {
+        low.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let high = if high.is_finite() {
+        high.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let over = low + high - (1.0 - MIN_CROP_REMAINING);
+    if over <= 0.0 {
+        return (low, high);
+    }
+    ((low - over / 2.0).max(0.0), (high - over / 2.0).max(0.0))
 }
 
 /// Basic colour adjustment (§45 "Colour adjustment → Cheap", Milestone 8).
@@ -72,6 +228,16 @@ pub struct ColorAdjust {
     pub contrast: f32,
     /// 0.0 is greyscale, 1.0 is unchanged, above 1.0 is more saturated.
     pub saturation: f32,
+    /// White balance, warm/cool, on -1..1. Zero leaves the picture alone.
+    ///
+    /// `serde(default)` because it arrived after the three above: a project
+    /// written before it says nothing about the white balance, and nothing is
+    /// exactly what zero means.
+    #[serde(default)]
+    pub temperature: f32,
+    /// White balance, green/magenta, on -1..1.
+    #[serde(default)]
+    pub tint: f32,
 }
 
 impl Default for ColorAdjust {
@@ -80,16 +246,347 @@ impl Default for ColorAdjust {
             brightness: 1.0,
             contrast: 1.0,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         }
     }
 }
 
 impl ColorAdjust {
+    /// The adjustment that changes nothing: every control at its identity.
+    pub const IDENTITY: Self = Self {
+        brightness: 1.0,
+        contrast: 1.0,
+        saturation: 1.0,
+        temperature: 0.0,
+        tint: 0.0,
+    };
+
+    /// Part of the way from this adjustment to another.
+    ///
+    /// What a look's *strength* is: 0 leaves the picture alone, 1 is the look
+    /// as written, and between them is the same grade applied less. Each axis
+    /// is independent — three multipliers around 1.0 and two offsets around
+    /// 0.0 — so interpolating them separately is the whole of it.
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let mix = |from: f32, to: f32| from + (to - from) * t;
+        Self {
+            brightness: mix(self.brightness, other.brightness),
+            contrast: mix(self.contrast, other.contrast),
+            saturation: mix(self.saturation, other.saturation),
+            temperature: mix(self.temperature, other.temperature),
+            tint: mix(self.tint, other.tint),
+        }
+    }
+
+    /// How far along `self` is from [`Self::IDENTITY`] towards `look`, or
+    /// `None` when it is not on that line at all.
+    ///
+    /// The inverse of [`Self::lerp`], and it exists so the interface can hold
+    /// **one** source of truth. A clip stores the grade it ended up with and
+    /// nothing else; which preset produced it, and how strongly, is recovered
+    /// from the numbers. Storing the preset beside the grade would be two
+    /// records of one fact, and they would disagree the first time someone
+    /// nudged a slider.
+    pub fn strength_towards(self, look: Self) -> Option<f32> {
+        // The component that moves furthest carries the best signal; one that
+        // barely moves says nothing about how far along the line we are.
+        // Each axis as (where this grade is, where the look goes, where doing
+        // nothing sits) — the identity is 1.0 for the multipliers and 0.0 for
+        // the white balance, so it cannot be assumed.
+        let axes = [
+            (self.brightness, look.brightness, 1.0),
+            (self.contrast, look.contrast, 1.0),
+            (self.saturation, look.saturation, 1.0),
+            (self.temperature, look.temperature, 0.0),
+            (self.tint, look.tint, 0.0),
+        ];
+        let (value, target, identity) = axes
+            .into_iter()
+            .max_by(|a, b| (a.1 - a.2).abs().total_cmp(&(b.1 - b.2).abs()))?;
+
+        // A look that goes nowhere is the identity, and everything is zero
+        // strength towards it.
+        if (target - identity).abs() < 1e-4 {
+            return self.is_identity().then_some(0.0);
+        }
+
+        let t = ((value - identity) / (target - identity)).clamp(0.0, 1.0);
+
+        // And it has to be the *same* t on the other two, or this grade merely
+        // happens to share one number with the look. This is also what rejects
+        // a grade *past* the look or against it: `lerp` clamps, so the
+        // comparison below simply fails rather than needing a range check of
+        // its own.
+        Self::IDENTITY.lerp(look, t).near(self).then_some(t)
+    }
+
+    /// Whether two adjustments are the same to within what a control can set.
+    fn near(self, other: Self) -> bool {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.005;
+        near(self.brightness, other.brightness)
+            && near(self.contrast, other.contrast)
+            && near(self.saturation, other.saturation)
+            && near(self.temperature, other.temperature)
+            && near(self.tint, other.tint)
+    }
+
     /// True when this does nothing, so the shader can take the cheap path.
     pub fn is_identity(&self) -> bool {
-        self.brightness == 1.0 && self.contrast == 1.0 && self.saturation == 1.0
+        self.brightness == 1.0
+            && self.contrast == 1.0
+            && self.saturation == 1.0
+            && self.temperature == 0.0
+            && self.tint == 0.0
     }
 }
+
+/// How a layer combines with what is beneath it (§22).
+///
+/// Normal is alpha-over, which is what §22 specifies and what every clip does
+/// unless it is an overlay. The other three are what overlays are *for*: a
+/// light leak, a dust plate or a glow is shot on black and screened on, and
+/// compositing it normally would just cover the shot with a dark rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlendMode {
+    /// Alpha over: the layer covers what is beneath it.
+    #[default]
+    Normal,
+    /// `src + dst - src*dst`. Never darkens: black in the layer disappears,
+    /// which is how a light leak or a glow is laid on.
+    Screen,
+    /// `src * dst`. Never lightens: white in the layer disappears, which is how
+    /// a shadow, a vignette or a texture is laid on.
+    Multiply,
+    /// `src + dst`. Brighter than screen and clips sooner — for sparks, flares
+    /// and anything meant to blow out.
+    Add,
+}
+
+impl BlendMode {
+    pub const ALL: [Self; 4] = [Self::Normal, Self::Screen, Self::Multiply, Self::Add];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Screen => "Screen",
+            Self::Multiply => "Multiply",
+            Self::Add => "Add",
+        }
+    }
+}
+
+/// The shape of a mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskShape {
+    /// A straight edge: everything on one side of it is kept.
+    ///
+    /// What a split screen and a reveal are made of, and the only one of the
+    /// three with no inside — its "size" is the softness of the edge alone.
+    #[default]
+    Linear,
+    Rectangle,
+    Ellipse,
+}
+
+impl MaskShape {
+    pub const ALL: [Self; 3] = [Self::Linear, Self::Rectangle, Self::Ellipse];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "Linear",
+            Self::Rectangle => "Rectangle",
+            Self::Ellipse => "Ellipse",
+        }
+    }
+}
+
+/// Keep part of a clip and hide the rest.
+///
+/// Everything is in the clip's **own** frame, 0–1 across it, so a mask stays
+/// over the part of the picture it was drawn on however the clip is afterwards
+/// moved, scaled or re-timed. A mask in output coordinates would slide off its
+/// subject the moment the clip was nudged.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Mask {
+    pub shape: MaskShape,
+    /// The middle of the shape, 0–1 across the clip's frame. (0.5, 0.5) is the
+    /// centre.
+    pub center: [f32; 2],
+    /// Half-width and half-height, in the same units. For a linear mask only
+    /// the orientation and the feather matter.
+    pub size: [f32; 2],
+    /// How far the edge takes to fade out, 0–1. Zero is a hard edge.
+    pub feather: f32,
+    /// Turns the whole shape, in degrees, about its own centre.
+    pub rotation_degrees: f32,
+    /// Keep the *outside* instead: the same shape, cut the other way.
+    pub invert: bool,
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::default(),
+            center: [0.5, 0.5],
+            size: [0.25, 0.25],
+            feather: 0.05,
+            rotation_degrees: 0.0,
+            invert: false,
+        }
+    }
+}
+
+impl Mask {
+    /// Hold every value inside what the shader can use.
+    ///
+    /// NaN turns the mask off rather than through, for the reason
+    /// [`ChromaKey::clamped`] gives: a project file is a text file someone can
+    /// edit, and one NaN makes every comparison in the shader false.
+    pub fn clamped(self) -> Self {
+        fn sane(value: f32, low: f32, high: f32) -> f32 {
+            if value.is_nan() {
+                low
+            } else {
+                value.clamp(low, high)
+            }
+        }
+
+        Self {
+            shape: self.shape,
+            // A centre outside the frame is legitimate — half a mask hanging
+            // off the edge is how a reveal starts — but not unboundedly so.
+            center: self.center.map(|v| sane(v, -2.0, 3.0)),
+            size: self.size.map(|v| sane(v, 0.0, 4.0)),
+            feather: sane(self.feather, 0.0, 1.0),
+            rotation_degrees: if self.rotation_degrees.is_finite() {
+                self.rotation_degrees
+            } else {
+                0.0
+            },
+            invert: self.invert,
+        }
+    }
+}
+
+/// Making one colour transparent: a green screen.
+///
+/// The colour is what the user picked out of the picture, in the same sRGB the
+/// project stores everywhere else. Everything else is a shape: how far from
+/// that colour still counts as background, how quickly the edge gives way, and
+/// how much of the screen's colour to take back out of what is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ChromaKey {
+    /// The screen's colour, 0–1 per channel, sRGB-encoded.
+    pub color: [f32; 3],
+    /// How far a pixel's colour may be from the key and still be removed.
+    ///
+    /// Measured as *chromaticity* rather than as a plain colour distance, so a
+    /// shadowed corner of the screen keys as readily as a lit one — the shape
+    /// of the colour is what matters, not how much light fell on it.
+    pub tolerance: f32,
+    /// The width of the fade from removed to kept, in the same units.
+    ///
+    /// Zero gives a hard, aliased edge that reads as a cut-out. A little
+    /// softness is what makes hair and motion blur survive.
+    pub softness: f32,
+    /// How much of the screen's colour to take out of what is kept, 0–1.
+    ///
+    /// A green screen throws green onto everything in front of it, and the
+    /// rim of a subject keyed against one is green even where it is opaque.
+    pub spill: f32,
+}
+
+impl Default for ChromaKey {
+    fn default() -> Self {
+        Self {
+            // Chroma-key green, the colour most screens are painted.
+            color: [0.0, 1.0, 0.0],
+            tolerance: 0.12,
+            softness: 0.08,
+            spill: 0.6,
+        }
+    }
+}
+
+impl ChromaKey {
+    /// The widest a tolerance or softness may be.
+    ///
+    /// Chromaticity distance runs past 1.0 between the furthest-apart colours
+    /// there are — pure green against pure orange is about 1.06 — so this is
+    /// not "wide enough to remove anything". It is deliberately short of that:
+    /// a key that can take the whole picture is not a dial anyone can use, and
+    /// past about this much it has stopped telling a screen from a subject.
+    pub const MAX_SPREAD: f32 = 0.6;
+
+    /// Hold every value inside the range the shader can use.
+    ///
+    /// `f32::clamp` passes NaN straight through, and a project file is a text
+    /// file someone can edit: a single NaN in a key reaches the shader, where
+    /// every comparison against it is false and the key does something nobody
+    /// asked for. A broken value turns the effect *off* rather than on.
+    pub fn clamped(self) -> Self {
+        fn sane(value: f32, low: f32, high: f32) -> f32 {
+            if value.is_nan() {
+                low
+            } else {
+                value.clamp(low, high)
+            }
+        }
+
+        Self {
+            color: self.color.map(|channel| sane(channel, 0.0, 1.0)),
+            tolerance: sane(self.tolerance, 0.0, Self::MAX_SPREAD),
+            softness: sane(self.softness, 0.0, Self::MAX_SPREAD),
+            spill: sane(self.spill, 0.0, 1.0),
+        }
+    }
+}
+
+/// What is drawn behind a clip that does not fill the frame (§36's reframing).
+///
+/// A property of the clip rather than a second clip on a lower track: it is the
+/// *same picture*, and anything that moves, trims or re-times the clip has to
+/// carry it. A backdrop built from a duplicate clip would come apart the first
+/// time either was touched — the same argument §25 makes for attaching a
+/// transition to its clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Backdrop {
+    /// Nothing: black bars where the shapes disagree.
+    #[default]
+    None,
+    /// The clip's own picture, scaled to cover the frame and blurred.
+    Blur,
+}
+
+impl Backdrop {
+    pub const ALL: [Self; 2] = [Self::None, Self::Blur];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Blur => "Blur",
+        }
+    }
+}
+
+/// How much the blurred backdrop is softened, on [`MAX_BLUR`]'s 0–100 scale.
+///
+/// Heavy on purpose. A lightly blurred copy reads as a second, wrong picture
+/// competing with the shot; at this strength it reads as colour and movement
+/// behind it, which is what it is for.
+pub const BACKDROP_BLUR: f32 = 70.0;
+
+/// How much larger than "just covering" the backdrop is drawn.
+///
+/// A blur samples outside its own edges, so a backdrop scaled to exactly cover
+/// the frame shows a soft, darker rim where the filter runs off the picture.
+/// A tenth over hides it.
+pub const BACKDROP_OVERSCAN: f32 = 1.1;
 
 /// Gaussian blur strength, on the 0–100 scale §35's effect schema defines
 /// (`{"id": "gaussian_blur", "parameters": [{"id": "amount", "min": 0,
@@ -101,6 +598,10 @@ impl ColorAdjust {
 /// amounts and the preview would be lying about the result. The renderer turns
 /// this into texels against whatever it is actually sampling.
 pub const MAX_BLUR: f32 = 100.0;
+
+/// The top of the sharpen control. On the same 0–100 scale as the blur, so the
+/// two read as the two ends of one idea rather than two unrelated numbers.
+pub const MAX_SHARPEN: f32 = 100.0;
 
 /// The span a clip occupies on the timeline, half-open: `[start, end)`.
 ///
@@ -165,6 +666,10 @@ pub struct VideoClip {
     pub timeline: TimelineRange,
     pub source: SourceRange,
 
+    /// §22's crop, ahead of the transform. Framing, like the transform beside
+    /// it: a project written before it had none, and none is the default.
+    #[serde(default)]
+    pub crop: Crop,
     #[serde(default)]
     pub transform: Transform,
     #[serde(default = "one")]
@@ -176,6 +681,76 @@ pub struct VideoClip {
     /// answer without a helper.
     #[serde(default)]
     pub blur: f32,
+    /// Sharpening, 0–100 ([`MAX_SHARPEN`]). Zero is none, and older projects
+    /// have none.
+    ///
+    /// Not animated, unlike the blur: a blur that eases in is a transition
+    /// people use, and a sharpen that eases in is not something anyone asks
+    /// for. It is a property of the shot.
+    #[serde(default)]
+    pub sharpen: f32,
+
+    /// RGB split, 0–100 ([`MAX_GLITCH`]): red and blue pulled apart sideways.
+    /// Not animated, like the sharpen.
+    #[serde(default)]
+    pub rgb_split: f32,
+
+    /// Glitch, 0–100: bands of the picture thrown sideways, different ones
+    /// every frame.
+    #[serde(default)]
+    pub glitch: f32,
+
+    /// The picture folded onto itself: mirrored halves, four-way, or a
+    /// kaleidoscope (`crate::reflection`). Not animated.
+    #[serde(default)]
+    pub reflection: crate::reflection::Reflection,
+
+    /// A colour lookup table and how strongly it applies (`crate::lut`).
+    /// Not animated: a LUT is the look of the shot.
+    #[serde(default)]
+    pub lut: Option<crate::lut::ClipLut>,
+
+    /// How this clip combines with what is beneath it (§22).
+    #[serde(default)]
+    pub blend: BlendMode,
+
+    /// Keep part of the picture and hide the rest.
+    #[serde(default)]
+    pub mask: Option<Mask>,
+
+    /// Make one colour transparent: a green screen.
+    ///
+    /// `None` on everything that was not shot against one, which is almost
+    /// everything — and on every project written before this existed.
+    #[serde(default)]
+    pub chroma_key: Option<ChromaKey>,
+
+    /// What fills the frame around a clip that does not cover it.
+    ///
+    /// Landscape footage in a vertical sequence is the everyday case, and the
+    /// choice is bars or *something*. [`Backdrop::Blur`] is what every phone
+    /// editor does: the same picture, blown up to cover and softened, so the
+    /// frame is full without cropping the shot itself.
+    #[serde(default)]
+    pub backdrop: Backdrop,
+
+    /// Smear the picture along the way it is moving (§45's "motion blur").
+    ///
+    /// Off by default: it costs several draws of the same frame, and on a shot
+    /// that is not moving it costs them for nothing.
+    #[serde(default)]
+    pub motion_blur: bool,
+
+    /// How the shot arrives and leaves: the animations every phone editor
+    /// puts one tap away.
+    ///
+    /// Separate from the transitions on either side, which are about the *cut*
+    /// between two clips. An animation belongs to this clip alone and happens
+    /// whether or not there is anything next to it — which is what makes it the
+    /// right tool for a clip standing on its own over a background.
+    #[serde(default)]
+    pub motion: crate::motion::ClipMotion,
+
     /// Parameters that change over the clip (§24). Empty for most clips.
     #[serde(default)]
     pub keyframes: Keyframes,
@@ -192,10 +767,30 @@ pub struct VideoClip {
     /// of footage the difference between exact and floating point is a
     /// visible drift by the end.
     ///
+    /// **Not in the development guide.** Re-timing appears nowhere in it: not
+    /// in §10's editing list, not in §45's effects, nowhere. It is here because
+    /// an editor without it is not one anyone would use, and the guide's own
+    /// rules — §9's exact timebase and §74's ban on floats in position
+    /// arithmetic — are what shape it. This comment exists because the code
+    /// used to cite "§51" for speed in forty-four places, and §51 is the
+    /// testing strategy: a citation pointing at the wrong section is worse
+    /// than none, because the next person follows it.
+    ///
     /// `serde(default)` gives projects written before speed existed the only
     /// answer that preserves them: normal.
     #[serde(default = "normal_speed")]
     pub speed: Rational,
+
+    /// Played backwards: the clip's first instant shows the last frame of its
+    /// material and its last instant the first (`Clip::reversed`). The source
+    /// range is the same material either way, so reversing twice is exactly
+    /// where it started. Defaulted, so older projects play forwards.
+    #[serde(default)]
+    pub reversed: bool,
+
+    /// A colour tag for organising the edit ([`ColorLabel`]).
+    #[serde(default)]
+    pub color_label: ColorLabel,
 
     /// A transition at this clip's *end*, if any (§25).
     ///
@@ -233,7 +828,46 @@ pub struct MasterLook {
     pub color: ColorAdjust,
     #[serde(default)]
     pub blur: f32,
+
+    /// What shows where no picture does (§22): the letterbox around a clip
+    /// that does not fill the frame, a gap between clips, the space under the
+    /// lowest track.
+    ///
+    /// sRGB, and black by default, which is what it always used to be. Every
+    /// project written before this existed gets black from `serde(default)`,
+    /// which is the same picture they had.
+    #[serde(default)]
+    pub background: [f32; 3],
+
+    /// How much the edges of the frame are darkened, 0–1 (see [`MAX_VIGNETTE`]).
+    ///
+    /// On the whole picture rather than on a clip, because a vignette frames
+    /// the *frame*: on a shot shrunk into a corner, darkening that shot's own
+    /// edges would look like a mistake. Defaulted, so older projects have none.
+    #[serde(default)]
+    pub vignette: f32,
+
+    /// Film grain over the whole picture, 0–1 (see [`MAX_GRAIN`]). On the
+    /// frame for the same reason as the vignette: grain is the texture of the
+    /// film the whole picture was shot on, not of one shot in it. It moves
+    /// every frame, as real grain does. Defaulted, so older projects have none.
+    #[serde(default)]
+    pub grain: f32,
 }
+
+/// The top of the voice clean-up slider (`bettercut_audio::voice`).
+pub const MAX_DENOISE: f32 = 100.0;
+
+/// The top of the RGB split and glitch sliders.
+pub const MAX_GLITCH: f32 = 100.0;
+
+/// The heaviest grain: clearly textured, still a picture rather than static.
+pub const MAX_GRAIN: f32 = 1.0;
+
+/// The strongest vignette: the corners go fully dark. Past this the darkening
+/// would have to reach into the middle of the picture, which stops being a
+/// frame and starts being a spotlight.
+pub const MAX_VIGNETTE: f32 = 1.0;
 
 impl Default for MasterLook {
     fn default() -> Self {
@@ -242,18 +876,27 @@ impl Default for MasterLook {
             opacity: 1.0,
             color: ColorAdjust::default(),
             blur: 0.0,
+            background: [0.0, 0.0, 0.0],
+            vignette: 0.0,
+            grain: 0.0,
         }
     }
 }
 
 impl MasterLook {
-    /// True when this changes nothing, so the renderer can skip the extra pass
-    /// and the full-resolution texture it needs. The common case by far.
+    /// True when this changes nothing *the extra pass would do*.
+    ///
+    /// The background is deliberately not part of it: it is the colour the
+    /// frame is cleared to, which costs nothing and happens either way — so a
+    /// white background must not drag in a full-resolution scratch texture it
+    /// has no use for.
     pub fn is_identity(&self) -> bool {
         self.transform.is_identity()
             && self.opacity == 1.0
             && self.color.is_identity()
             && self.blur == 0.0
+            && self.vignette == 0.0
+            && self.grain == 0.0
     }
 }
 
@@ -263,10 +906,29 @@ impl MasterLook {
 /// renderer draws. They differ only where a parameter is keyed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipLook {
+    /// §22's first stage, ahead of the transform. Not part of a *copied* look —
+    /// see `Editor::clip_look`, which leaves framing alone deliberately.
+    pub crop: Crop,
     pub transform: Transform,
     pub opacity: f32,
     pub color: ColorAdjust,
     pub blur: f32,
+    /// Sharpening, 0–100. Run as an effect-graph node after the blur.
+    pub sharpen: f32,
+    /// A colour lookup table, run as the first effect-graph node.
+    pub lut: Option<crate::lut::ClipLut>,
+    /// RGB split, 0–100, and glitch, 0–100: the effect graph's last node.
+    pub rgb_split: f32,
+    pub glitch: f32,
+    /// A reflection (`crate::reflection`): the effect graph's first node.
+    pub reflection: crate::reflection::Reflection,
+    /// The chroma key. Not animated — it is a choice about the footage, not
+    /// a dial that moves through a shot.
+    pub chroma_key: Option<ChromaKey>,
+    /// The mask, in the clip's own frame.
+    pub mask: Option<Mask>,
+    /// §22's blend mode.
+    pub blend: BlendMode,
 }
 
 /// An audio clip on an audio track (§8).
@@ -283,7 +945,7 @@ pub struct AudioClip {
     #[serde(default)]
     pub link: Option<LinkId>,
 
-    /// How fast this clip plays (§51), exactly as on a video clip.
+    /// How fast this clip plays, exactly as on a video clip.
     ///
     /// Re-timing sound means resampling it, which changes the pitch — sped-up
     /// audio is higher, as it is on tape. That is what the effect *is*, and
@@ -292,9 +954,22 @@ pub struct AudioClip {
     #[serde(default = "normal_speed")]
     pub speed: Rational,
 
+    /// Played backwards, as on a video clip — sound reversed with its picture.
+    #[serde(default)]
+    pub reversed: bool,
+
+    /// A colour tag for organising the edit ([`ColorLabel`]).
+    #[serde(default)]
+    pub color_label: ColorLabel,
+
     /// Linear gain, not decibels. Applied first in the §20a.4 mix graph.
     #[serde(default = "one")]
     pub gain: f32,
+
+    /// Voice clean-up, 0–100 (`bettercut_audio::voice`): rumble removed and
+    /// the background pulled down between words. Not animated.
+    #[serde(default)]
+    pub denoise: f32,
     #[serde(default)]
     pub enabled: bool,
 
@@ -372,6 +1047,53 @@ pub fn fill_scale(source_aspect: f32, output_aspect: f32) -> f32 {
     }
 }
 
+/// §33's auto crop: the crop that makes a source the frame's own shape.
+///
+/// The third answer to "landscape footage, vertical edit", and the best one
+/// where the subject is near the middle:
+///
+/// * **fit** shows the whole shot and leaves bars;
+/// * **fill** ([`fill_scale`]) scales up until the bars are gone, which throws
+///   away resolution — a 1080p shot covering a 1080×1920 frame is enlarged
+///   1.8× and is no longer 1080p;
+/// * **crop** takes the frame's shape out of the source at full size. Nothing
+///   is enlarged and nothing is letterboxed; what is lost is the part of the
+///   picture that was never going to be on screen anyway.
+///
+/// Centred, because the middle is where the subject is when nothing has told us
+/// otherwise. §28's subject tracking is what would move it, and that needs a
+/// model; this is the honest version without one.
+///
+/// The result always leaves the source's *other* axis untouched: making a wide
+/// shot tall is done by taking from the sides, never by taking from both.
+pub fn crop_to_aspect(source_aspect: f32, output_aspect: f32) -> Crop {
+    if !source_aspect.is_finite()
+        || !output_aspect.is_finite()
+        || source_aspect <= 0.0
+        || output_aspect <= 0.0
+    {
+        return Crop::NONE;
+    }
+
+    // How much of each axis survives. Exactly one of these is below 1: the
+    // source is either wider than the frame or taller than it, and a source
+    // already the right shape keeps all of both.
+    let (keep_x, keep_y) = if source_aspect > output_aspect {
+        (output_aspect / source_aspect, 1.0)
+    } else {
+        (1.0, source_aspect / output_aspect)
+    };
+
+    let side = |keep: f32| ((1.0 - keep) / 2.0).clamp(0.0, 1.0);
+    Crop {
+        left: side(keep_x),
+        right: side(keep_x),
+        top: side(keep_y),
+        bottom: side(keep_y),
+    }
+    .clamped()
+}
+
 /// The transform that draws a generated bitmap at its own size (§26).
 ///
 /// Every layer is *fitted* to the canvas — a 640×360 frame fills a 1920×1080
@@ -410,6 +1132,47 @@ pub fn natural_size_transform(
     natural
 }
 
+/// Where `at` lands when the clip spanning `span` plays the other way.
+///
+/// Anything found by reading a clip's material forwards — a cut, a pause, a
+/// beat — lands on a reversed clip at the mirror image of where it would land
+/// forwards: as far from the clip's end as it would have been from its start.
+/// One reflection, shared by every detector, so they cannot disagree about
+/// where a reversed clip's events are.
+pub fn mirror_in(span: TimelineRange, at: TimelineTime) -> TimelineTime {
+    TimelineTime::from_ticks(span.start.ticks() + span.end.ticks() - at.ticks())
+}
+
+/// A range within `span`, mirrored the same way: its start and end trade places.
+pub fn mirror_range_in(span: TimelineRange, range: TimelineRange) -> TimelineRange {
+    TimelineRange {
+        start: mirror_in(span, range.end),
+        end: mirror_in(span, range.start),
+    }
+}
+
+/// The instant of `source` a clip reads `into_clip` timeline ticks after its
+/// start, at `speed`, forwards or backwards.
+///
+/// Backwards reads from the end: the range is half-open, so the first instant
+/// shown is one tick before `source.end`, the last frame of the material,
+/// and a reversed clip's last instant lands on the first frame — the exact
+/// mirror of the forward mapping. Every picture and sound lookup goes through
+/// this, so a reversed clip cannot show one direction and sound the other.
+pub fn source_time(
+    source: SourceRange,
+    speed: Rational,
+    reversed: bool,
+    into_clip: i64,
+) -> MediaTime {
+    let travelled = speed.scale(into_clip);
+    if reversed {
+        MediaTime::from_ticks(source.end.ticks() - 1 - travelled)
+    } else {
+        MediaTime::from_ticks(source.start.ticks() + travelled)
+    }
+}
+
 /// Shared behaviour so tracks can be generic over what they hold.
 pub trait Clip {
     fn id(&self) -> ClipId;
@@ -425,6 +1188,11 @@ pub trait Clip {
     /// selection, undo, and every lookup that assumes IDs are unique.
     fn set_id(&mut self, id: ClipId);
 
+    /// The clip's colour tag ([`ColorLabel`]). Every kind has one, so the
+    /// edit that sets it is written once for whichever lane holds the clip.
+    fn color_label(&self) -> ColorLabel;
+    fn set_color_label(&mut self, label: ColorLabel);
+
     /// What this clip is linked to, if anything (§12).
     fn link(&self) -> Option<LinkId> {
         None
@@ -434,7 +1202,18 @@ pub trait Clip {
     /// sound to be tied to.
     fn set_link(&mut self, _link: Option<LinkId>) {}
 
-    /// Set the playback rate (§51).
+    /// Whether the clip plays its material backwards.
+    ///
+    /// On the trait for the reason [`Self::speed`] is: trimming and splitting
+    /// are generic over the clip kind, and on a reversed clip the timeline's
+    /// start is the *end* of the material — trimming the start moves the
+    /// source's out-point, and the left half of a split keeps the later
+    /// material. Defaulted to forwards for a title, which has no material.
+    fn reversed(&self) -> bool {
+        false
+    }
+
+    /// Set the playback rate.
     ///
     /// Defaulted to doing nothing, for the one clip kind that has no rate: a
     /// title is drawn, not played, and there is no material to run through
@@ -472,6 +1251,66 @@ pub trait Clip {
     fn clear_transition_in(&mut self) {}
 }
 
+/// A colour tag on a clip, for finding your way round a long edit: the
+/// interview in blue, B-roll in green, the takes still to check in red.
+///
+/// Organisation only — it changes nothing that is drawn or heard. Every kind
+/// of clip carries one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorLabel {
+    #[default]
+    None,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Pink,
+}
+
+impl ColorLabel {
+    /// Every label, in the order the menu offers them.
+    pub const ALL: [Self; 8] = [
+        Self::None,
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+        }
+    }
+
+    /// The colour it is drawn in, sRGB. `None` for no label.
+    pub fn rgb(self) -> Option<[u8; 3]> {
+        Some(match self {
+            Self::None => return None,
+            Self::Red => [229, 72, 77],
+            Self::Orange => [240, 140, 50],
+            Self::Yellow => [240, 205, 60],
+            Self::Green => [80, 190, 110],
+            Self::Blue => [70, 140, 235],
+            Self::Purple => [160, 100, 225],
+            Self::Pink => [235, 110, 180],
+        })
+    }
+}
+
 /// The shared half of [`Clip`], plus whatever else a given kind of clip needs.
 macro_rules! impl_clip {
     ($t:ty $(, $extra:item)*) => {
@@ -495,6 +1334,12 @@ macro_rules! impl_clip {
             fn set_id(&mut self, id: ClipId) {
                 self.id = id;
             }
+            fn color_label(&self) -> $crate::clip::ColorLabel {
+                self.color_label
+            }
+            fn set_color_label(&mut self, label: $crate::clip::ColorLabel) {
+                self.color_label = label;
+            }
         }
     };
 }
@@ -515,6 +1360,9 @@ impl_clip!(
     },
     fn set_speed(&mut self, speed: Rational) {
         self.speed = speed;
+    },
+    fn reversed(&self) -> bool {
+        self.reversed
     },
     fn link(&self) -> Option<LinkId> {
         self.link
@@ -539,6 +1387,9 @@ impl_clip!(
     fn set_speed(&mut self, speed: Rational) {
         self.speed = speed;
     },
+    fn reversed(&self) -> bool {
+        self.reversed
+    },
     fn link(&self) -> Option<LinkId> {
         self.link
     },
@@ -560,17 +1411,31 @@ impl VideoClip {
     ) -> Result<Self, TimelineError> {
         let end = start + TimelineTime::from_ticks(source.duration().ticks());
         Ok(Self {
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            reflection: crate::Reflection::None,
             id: ClipId::new(),
             media_id,
             timeline: TimelineRange::new(start, end)?,
             source,
+            crop: Crop::NONE,
             transform: Transform::default(),
             opacity: 1.0,
             color: ColorAdjust::default(),
             blur: 0.0,
+            backdrop: Backdrop::default(),
+            motion: crate::motion::ClipMotion::default(),
+            motion_blur: false,
+            chroma_key: None,
+            mask: None,
+            blend: BlendMode::default(),
             keyframes: Keyframes::default(),
             link: None,
             speed: Rational::ONE,
+            reversed: false,
+            color_label: ColorLabel::None,
             transition_out: None,
             enabled: true,
             frozen: false,
@@ -588,10 +1453,21 @@ impl VideoClip {
     /// [`crate::keyframe`].
     pub fn look_at(&self, source_time: MediaTime) -> ClipLook {
         let mut look = ClipLook {
+            // Not animated: a crop that moved through a shot is a pan, and a
+            // pan is the transform's job (§24 animates position, not framing).
+            crop: self.crop,
             transform: self.transform,
             opacity: self.opacity,
             color: self.color,
             blur: self.blur,
+            sharpen: self.sharpen,
+            lut: self.lut.map(crate::lut::ClipLut::clamped),
+            rgb_split: self.rgb_split,
+            glitch: self.glitch,
+            reflection: self.reflection,
+            chroma_key: self.chroma_key,
+            mask: self.mask,
+            blend: self.blend,
         };
         if self.keyframes.is_empty() {
             return look;
@@ -614,6 +1490,8 @@ impl VideoClip {
         animated(AnimatedParameter::Brightness, &mut look.color.brightness);
         animated(AnimatedParameter::Contrast, &mut look.color.contrast);
         animated(AnimatedParameter::Saturation, &mut look.color.saturation);
+        animated(AnimatedParameter::Temperature, &mut look.color.temperature);
+        animated(AnimatedParameter::Tint, &mut look.color.tint);
         animated(AnimatedParameter::Blur, &mut look.blur);
         look
     }
@@ -634,6 +1512,8 @@ impl VideoClip {
             AnimatedParameter::Brightness => self.color.brightness,
             AnimatedParameter::Contrast => self.color.contrast,
             AnimatedParameter::Saturation => self.color.saturation,
+            AnimatedParameter::Temperature => self.color.temperature,
+            AnimatedParameter::Tint => self.color.tint,
             AnimatedParameter::Blur => self.blur,
         }
     }
@@ -641,14 +1521,14 @@ impl VideoClip {
     /// Where in the source the playhead at `position` is reading.
     ///
     /// Integer throughout (§74): the offset into the clip is scaled by the
-    /// clip's speed (§51), and a frozen clip reads its in-point whatever the
+    /// clip's speed, and a frozen clip reads its in-point whatever the
     /// position.
     pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
         if self.frozen {
             return self.source.start;
         }
         let into_clip = position.ticks() - self.timeline.start.ticks();
-        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
+        source_time(self.source, self.speed, self.reversed, into_clip)
     }
 
     /// How far through the clip `position` is, in source terms, *ignoring* a
@@ -656,9 +1536,60 @@ impl VideoClip {
     ///
     /// What keyframes are evaluated against, so a frozen frame can still drift
     /// or fade: the picture is held, the animation is not.
+    ///
+    /// On a reversed clip the animation reverses with the picture: keys stay
+    /// on the frames they were set on. Anchoring them to forward progress
+    /// instead would keep a zoom zooming the same way, but every trim of a
+    /// reversed clip's start would slide its keys along the timeline — and an
+    /// edit that moves animation the user did not touch is the worse surprise.
     pub fn progress_time_at(&self, position: TimelineTime) -> MediaTime {
         let into_clip = position.ticks() - self.timeline.start.ticks();
-        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
+        source_time(self.source, self.speed, self.reversed, into_clip)
+    }
+
+    /// Where a key sits on the timeline, given keys are stored in source time.
+    ///
+    /// The inverse of [`Self::progress_time_at`], which is what keys are
+    /// evaluated against — so a key on a 2× clip lands where the animation
+    /// actually reaches it, at half the source offset.
+    pub fn timeline_time_of(&self, key: MediaTime) -> TimelineTime {
+        // Backwards, a key's distance is measured from the material's end —
+        // the mirror of `source_time`, less the tick it reads before the end.
+        let into_source = if self.reversed {
+            MediaTime::from_ticks(self.source.end.ticks() - 1 - key.ticks())
+        } else {
+            MediaTime::from_ticks(key.ticks() - self.source.start.ticks())
+        };
+        TimelineTime::from_ticks(
+            self.timeline.start.ticks() + timeline_ticks_for(into_source, self.speed),
+        )
+    }
+
+    /// The nearest key on either side of `from`, as a timeline position.
+    ///
+    /// Only keys inside the clip's own range. Trimming does not delete the keys
+    /// outside it — that is what lets trimming back restore them (§24) — but
+    /// there is nowhere to put the playhead that would reach one, so offering
+    /// to jump there would strand the user off the clip.
+    ///
+    /// Strictly past `from`, so pressing it twice moves twice rather than
+    /// sticking on the key it just landed on.
+    pub fn key_beside(&self, from: TimelineTime, forward: bool) -> Option<TimelineTime> {
+        let inside = |key: &MediaTime| {
+            key.ticks() >= self.source.start.ticks() && key.ticks() <= self.source.end.ticks()
+        };
+        let times = self
+            .keyframes
+            .times()
+            .into_iter()
+            .filter(inside)
+            .map(|key| self.timeline_time_of(key));
+
+        if forward {
+            times.filter(|at| at.ticks() > from.ticks()).min()
+        } else {
+            times.filter(|at| at.ticks() < from.ticks()).max()
+        }
     }
 
     /// How long this clip runs on the timeline at its current speed.
@@ -716,8 +1647,11 @@ impl AudioClip {
             timeline: TimelineRange::new(start, end)?,
             source,
             gain: 1.0,
+            denoise: 0.0,
             link: None,
             speed: Rational::ONE,
+            reversed: false,
+            color_label: ColorLabel::None,
             enabled: true,
             fade_in: TimelineTime::ZERO,
             fade_out: TimelineTime::ZERO,
@@ -730,12 +1664,12 @@ impl AudioClip {
     /// share whatever is left rather than overlapping into nonsense.
     /// Where in the source this clip is reading at a timeline instant.
     ///
-    /// Scaled by the clip's speed (§51), like every other timeline-to-source
+    /// Scaled by the clip's speed, like every other timeline-to-source
     /// mapping — and it is source time that keyframes are anchored to (§24), so
     /// trimming the clip's start does not slide its envelope.
     pub fn source_time_at(&self, position: TimelineTime) -> MediaTime {
         let into_clip = position.ticks() - self.timeline.start.ticks();
-        MediaTime::from_ticks(self.source.start.ticks() + self.speed.scale(into_clip))
+        source_time(self.source, self.speed, self.reversed, into_clip)
     }
 
     /// The clip's volume at a timeline instant: its envelope where it has one,
@@ -840,7 +1774,7 @@ mod gain_tests {
         );
     }
 
-    /// §51: at double speed the clip covers its source twice as fast, so the
+    /// at double speed the clip covers its source twice as fast, so the
     /// envelope arrives twice as fast too.
     #[test]
     fn speed_carries_the_envelope_with_it() {
@@ -1304,5 +2238,259 @@ mod speed_tests {
         assert!((fill_scale(wide, wide) - 1.0).abs() < 1e-6);
         // Nonsense in, no panic and no infinity out.
         assert_eq!(fill_scale(0.0, wide), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod look_strength_tests {
+    use super::*;
+
+    const PUNCHY: ColorAdjust = ColorAdjust {
+        brightness: 1.02,
+        contrast: 1.25,
+        saturation: 1.25,
+        temperature: 0.0,
+        tint: 0.0,
+    };
+
+    /// A look whose largest move is on the white balance, where "no change" is
+    /// zero rather than one.
+    ///
+    /// `strength_towards` picks the axis that moves furthest and divides by how
+    /// far it goes; written against the multipliers alone it measured every
+    /// axis from 1.0, so a temperature of 0.45 read as *less* movement than a
+    /// contrast of 1.05 and the strength came back off the wrong axis entirely.
+    const WARM: ColorAdjust = ColorAdjust {
+        brightness: 1.02,
+        contrast: 1.05,
+        saturation: 1.08,
+        temperature: 0.45,
+        tint: 0.05,
+    };
+
+    #[test]
+    fn strength_zero_is_the_picture_untouched() {
+        assert_eq!(
+            ColorAdjust::IDENTITY.lerp(PUNCHY, 0.0),
+            ColorAdjust::IDENTITY
+        );
+    }
+
+    #[test]
+    fn strength_one_is_the_look_as_written() {
+        assert_eq!(ColorAdjust::IDENTITY.lerp(PUNCHY, 1.0), PUNCHY);
+    }
+
+    #[test]
+    fn half_strength_is_half_the_grade() {
+        let half = ColorAdjust::IDENTITY.lerp(PUNCHY, 0.5);
+        assert!((half.contrast - 1.125).abs() < 1e-5);
+        assert!((half.saturation - 1.125).abs() < 1e-5);
+        assert!((half.brightness - 1.01).abs() < 1e-5);
+    }
+
+    /// Every strength comes back out again: this is what lets the interface
+    /// keep no state of its own about which look is on.
+    #[test]
+    fn a_strength_is_recovered_from_the_grade() {
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let graded = ColorAdjust::IDENTITY.lerp(PUNCHY, t);
+            let found = graded.strength_towards(PUNCHY).expect("on the line");
+            assert!(
+                (found - t).abs() < 0.01,
+                "applied at {t} and read back as {found}"
+            );
+        }
+    }
+
+    /// A grade nobody made from this look is not attributed to it.
+    #[test]
+    fn an_unrelated_grade_is_not_on_the_line() {
+        let hand_made = ColorAdjust {
+            brightness: 1.02,
+            contrast: 0.6,
+            saturation: 1.9,
+            temperature: 0.0,
+            tint: 0.0,
+        };
+        assert_eq!(hand_made.strength_towards(PUNCHY), None);
+    }
+
+    /// Sharing one number with a look is not being that look: a grade that
+    /// happens to have the right contrast but nothing else must not light the
+    /// button up.
+    #[test]
+    fn matching_one_axis_is_not_enough() {
+        let coincidence = ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.25,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+        };
+        assert_eq!(coincidence.strength_towards(PUNCHY), None);
+    }
+
+    /// Black and white is the awkward one: its saturation goes to zero while
+    /// its brightness does not move at all.
+    #[test]
+    fn a_look_that_moves_one_axis_still_inverts() {
+        let mono = ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.08,
+            saturation: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+        };
+        let half = ColorAdjust::IDENTITY.lerp(mono, 0.5);
+        assert!((half.saturation - 0.5).abs() < 1e-5);
+        let found = half.strength_towards(mono).expect("on the line");
+        assert!((found - 0.5).abs() < 0.01, "read back as {found}");
+    }
+
+    /// The same round trip on a look that lives mostly on the white balance.
+    #[test]
+    fn a_strength_is_recovered_from_a_white_balance_look() {
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let graded = ColorAdjust::IDENTITY.lerp(WARM, t);
+            let found = graded.strength_towards(WARM).expect("on the line");
+            assert!(
+                (found - t).abs() < 0.01,
+                "applied at {t} and read back as {found}"
+            );
+        }
+    }
+
+    /// A warm grade is not a cool one, however alike the other axes are.
+    #[test]
+    fn a_grade_warmed_the_other_way_is_not_this_look() {
+        let cooled = ColorAdjust {
+            temperature: -WARM.temperature,
+            tint: -WARM.tint,
+            ..WARM
+        };
+        assert_eq!(cooled.strength_towards(WARM), None);
+    }
+
+    #[test]
+    fn nothing_is_at_full_strength_towards_the_identity() {
+        assert_eq!(
+            ColorAdjust::IDENTITY.strength_towards(ColorAdjust::IDENTITY),
+            Some(0.0)
+        );
+        assert_eq!(PUNCHY.strength_towards(ColorAdjust::IDENTITY), None);
+    }
+}
+
+#[cfg(test)]
+mod key_navigation_tests {
+    use super::*;
+    use crate::keyframe::{AnimatedParameter, Interpolation, Keyframe};
+
+    fn secs(n: i64) -> TimelineTime {
+        TimelineTime::from_seconds(n)
+    }
+
+    fn media(n: i64) -> MediaTime {
+        MediaTime::from_seconds(n)
+    }
+
+    /// A clip playing 10–20 s of a file, sitting at 100 s on the timeline.
+    fn clip_with_keys(speed: Rational) -> VideoClip {
+        let mut clip = VideoClip::new(
+            MediaId::new(),
+            secs(100),
+            SourceRange::new(media(10), media(20)).expect("range"),
+        )
+        .expect("clip");
+        clip.speed = speed;
+        for at in [media(12), media(16)] {
+            clip.keyframes.set(
+                AnimatedParameter::Opacity,
+                Keyframe::new(at, 0.5, Interpolation::Linear),
+            );
+        }
+        clip
+    }
+
+    /// Keys are stored in source time and the playhead is in timeline time, so
+    /// the mapping is the whole feature.
+    #[test]
+    fn a_key_maps_to_where_the_animation_reaches_it() {
+        let clip = clip_with_keys(Rational::ONE);
+        assert_eq!(clip.timeline_time_of(media(12)), secs(102));
+        assert_eq!(clip.timeline_time_of(media(16)), secs(106));
+    }
+
+    /// At double speed the clip covers its source in half the time, so a key
+    /// two seconds into the footage arrives one second in.
+    #[test]
+    fn speed_moves_the_keys_with_the_footage() {
+        let clip = clip_with_keys(Rational::new(2, 1).expect("ratio"));
+        assert_eq!(clip.timeline_time_of(media(12)), secs(101));
+        assert_eq!(clip.timeline_time_of(media(16)), secs(103));
+    }
+
+    #[test]
+    fn jumping_finds_the_next_key_and_then_stops() {
+        let clip = clip_with_keys(Rational::ONE);
+
+        assert_eq!(clip.key_beside(secs(100), true), Some(secs(102)));
+        assert_eq!(clip.key_beside(secs(102), true), Some(secs(106)));
+        assert_eq!(clip.key_beside(secs(106), true), None, "ran off the end");
+
+        assert_eq!(clip.key_beside(secs(110), false), Some(secs(106)));
+        assert_eq!(clip.key_beside(secs(106), false), Some(secs(102)));
+        assert_eq!(clip.key_beside(secs(102), false), None);
+    }
+
+    /// Strictly past the playhead, or pressing it twice would land on the same
+    /// key and the user would think the control was broken.
+    #[test]
+    fn a_key_under_the_playhead_is_not_where_it_jumps_to() {
+        let clip = clip_with_keys(Rational::ONE);
+        assert_ne!(clip.key_beside(secs(102), true), Some(secs(102)));
+        assert_ne!(clip.key_beside(secs(102), false), Some(secs(102)));
+    }
+
+    /// §24: trimming does not delete the keys outside the trim, so that
+    /// trimming back restores them. There is nowhere to put the playhead that
+    /// reaches one, so jumping must not offer it.
+    #[test]
+    fn keys_outside_the_trimmed_range_are_not_jumped_to() {
+        let mut clip = clip_with_keys(Rational::ONE);
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            Keyframe::new(media(5), 0.5, Interpolation::Linear),
+        );
+        clip.keyframes.set(
+            AnimatedParameter::Opacity,
+            Keyframe::new(media(30), 0.5, Interpolation::Linear),
+        );
+
+        assert_eq!(
+            clip.key_beside(secs(100), false),
+            None,
+            "jumped back to a key before the clip's in-point"
+        );
+        assert_eq!(
+            clip.key_beside(secs(106), true),
+            None,
+            "jumped past the out-point"
+        );
+    }
+
+    #[test]
+    fn a_clip_with_no_keys_has_nowhere_to_jump() {
+        let clip = VideoClip::new(
+            MediaId::new(),
+            secs(100),
+            SourceRange::new(media(10), media(20)).expect("range"),
+        )
+        .expect("clip");
+        assert_eq!(clip.key_beside(secs(105), true), None);
+        assert_eq!(clip.key_beside(secs(105), false), None);
     }
 }

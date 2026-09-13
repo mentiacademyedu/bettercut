@@ -118,6 +118,28 @@ fn delete_removes_a_selected_title() {
     );
 }
 
+/// An adjustment is selectable too, so the same key has to remove it — through
+/// its own command, since a media clip's removal does not know its lane.
+#[test]
+fn delete_removes_a_selected_adjustment() {
+    let (mut editor, _rx) = Editor::new_project("Delete an adjustment");
+    let adjustment = editor.add_adjustment().unwrap();
+    let mut state = UiState::default();
+    state.selected_clips.insert(adjustment);
+
+    press(&mut editor, &mut state, Key::Delete, Modifiers::NONE);
+
+    assert!(
+        editor.adjustment_clip(adjustment).is_none(),
+        "Delete left the adjustment on the timeline"
+    );
+    assert!(
+        state.status.as_ref().is_none_or(|s| !s.is_error),
+        "Delete reported an error: {:?}",
+        state.status.as_ref().map(|s| &s.text)
+    );
+}
+
 /// Ripple delete of a linked pair closes the gap on *both* tracks, in one undo.
 #[test]
 fn ripple_deleting_a_linked_pair_closes_both_tracks() {

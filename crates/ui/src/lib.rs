@@ -6,14 +6,19 @@
 
 pub mod caption_list;
 pub mod context_menu;
+pub mod effects;
 pub mod export_dialog;
 pub mod file_drop;
+pub mod history_panel;
+pub mod marker_list;
 pub mod media_jobs;
 pub mod panels;
 pub mod preview;
 pub mod preview_overlay;
+pub mod recent;
 pub mod scene_dialog;
 pub mod shortcuts;
+pub mod shuttle;
 pub mod silence_dialog;
 pub mod state;
 pub mod template_dialog;
@@ -108,6 +113,8 @@ pub fn draw(
     silence_dialog::show(ui.ctx(), editor, state);
     scene_dialog::show(ui.ctx(), editor, state);
     caption_list::show(ui.ctx(), editor, state);
+    marker_list::show(ui.ctx(), editor, state);
+    history_panel::show(ui.ctx(), editor, state);
     file_drop::handle(ui.ctx(), editor, state, timeline_rect);
 }
 

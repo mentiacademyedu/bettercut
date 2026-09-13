@@ -503,7 +503,7 @@ fn the_command_round_trips_through_json() {
     }
 }
 
-/// A look is three values that only mean something together, so it goes on in
+/// A look is several values that only mean something together, so it goes on in
 /// one step and comes off in one.
 #[test]
 fn a_look_applies_to_a_clip_as_one_undo_step() {
@@ -515,6 +515,8 @@ fn a_look_applies_to_a_clip_as_one_undo_step() {
         brightness: 1.1,
         contrast: 0.8,
         saturation: 0.7,
+        temperature: 0.4,
+        tint: -0.15,
     };
 
     editor.set_color_adjust(Some(clip), look).unwrap();
@@ -539,6 +541,8 @@ fn a_look_applies_to_the_whole_video_when_no_clip_is_given() {
         brightness: 0.9,
         contrast: 1.2,
         saturation: 0.0,
+        temperature: -0.3,
+        tint: 0.2,
     };
 
     editor.set_color_adjust(None, look).unwrap();
@@ -549,4 +553,417 @@ fn a_look_applies_to_the_whole_video_when_no_clip_is_given() {
         editor.active_sequence().unwrap().master.color,
         ColorAdjust::default()
     );
+}
+
+/// The chroma key, and the one thing about it the editor is responsible for:
+/// the shader trusts what it is given, so nothing out of range may reach it.
+mod chroma_key {
+    use bettercut_editor_core::foundation::MediaTime;
+    use bettercut_editor_core::media::{MediaAsset, MediaKind};
+    use bettercut_editor_core::timeline::ChromaKey;
+    use bettercut_editor_core::{ClipProperty, Editor, EditorError};
+
+    fn editor_with_a_shot() -> (Editor, bettercut_editor_core::foundation::ClipId) {
+        let (mut editor, _events) = Editor::new_project("Key");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/screen.mp4",
+            MediaTime::from_seconds(10),
+        ));
+        let placed = editor.place_media(media).unwrap();
+        (editor, placed[0])
+    }
+
+    #[test]
+    fn a_key_out_of_range_is_brought_back_in() {
+        let (mut editor, clip) = editor_with_a_shot();
+
+        editor
+            .set_clip_property(
+                clip,
+                ClipProperty::ChromaKey(Some(ChromaKey {
+                    color: [-4.0, 12.0, f32::NAN],
+                    tolerance: 900.0,
+                    softness: -3.0,
+                    spill: 50.0,
+                })),
+                false,
+            )
+            .unwrap();
+
+        let key = editor.video_clip(clip).unwrap().chroma_key.expect("a key");
+        assert_eq!(key.tolerance, ChromaKey::MAX_SPREAD, "tolerance unclamped");
+        assert_eq!(key.softness, 0.0, "a negative softness reached the shader");
+        assert_eq!(key.spill, 1.0, "spill unclamped");
+        assert_eq!(key.color[0], 0.0);
+        assert_eq!(key.color[1], 1.0);
+        // NaN turns the effect off rather than through: `f32::clamp` passes
+        // it along, and one NaN in a project file would otherwise reach the
+        // shader, where every comparison against it is false.
+        assert_eq!(
+            key.color[2], 0.0,
+            "a NaN channel reached the shader: {:?}",
+            key.color
+        );
+    }
+
+    /// Sound has no screen behind it.
+    #[test]
+    fn a_sound_clip_takes_no_key() {
+        let (mut editor, _picture) = editor_with_a_shot();
+        let (mut editor2, _events) = Editor::new_project("Key");
+        let mut asset = MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/talk.mp4",
+            MediaTime::from_seconds(10),
+        );
+        asset.audio_codec = Some("aac".to_owned());
+        let media = editor2.import_media(asset);
+        let sound = editor2.place_media(media).unwrap()[1];
+
+        let refused = editor2.set_clip_property(
+            sound,
+            ClipProperty::ChromaKey(Some(ChromaKey::default())),
+            false,
+        );
+        assert!(
+            matches!(refused, Err(EditorError::ClipKindMismatch)),
+            "{refused:?}"
+        );
+        let _ = &mut editor;
+    }
+}
+
+/// The mask, and the same responsibility the chroma key has: the shader
+/// trusts what the editor hands it.
+mod mask {
+    use bettercut_editor_core::foundation::MediaTime;
+    use bettercut_editor_core::media::{MediaAsset, MediaKind};
+    use bettercut_editor_core::timeline::{Mask, MaskShape};
+    use bettercut_editor_core::{ClipProperty, Editor};
+
+    #[test]
+    fn a_mask_out_of_range_is_brought_back_in() {
+        let (mut editor, _events) = Editor::new_project("Mask");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/shot.mp4",
+            MediaTime::from_seconds(10),
+        ));
+        let clip = editor.place_media(media).unwrap()[0];
+
+        editor
+            .set_clip_property(
+                clip,
+                ClipProperty::Mask(Some(Mask {
+                    shape: MaskShape::Ellipse,
+                    center: [f32::NAN, 900.0],
+                    size: [-5.0, 1e9],
+                    feather: f32::NAN,
+                    rotation_degrees: f32::INFINITY,
+                    invert: false,
+                })),
+                false,
+            )
+            .unwrap();
+
+        let mask = editor.video_clip(clip).unwrap().mask.expect("a mask");
+        assert!(
+            mask.center.iter().all(|v| v.is_finite()),
+            "a NaN centre reached the shader: {:?}",
+            mask.center
+        );
+        assert!(
+            mask.size.iter().all(|v| v.is_finite() && *v >= 0.0),
+            "a negative or absurd size reached the shader: {:?}",
+            mask.size
+        );
+        assert_eq!(mask.feather, 0.0, "a NaN feather reached the shader");
+        assert!(
+            mask.rotation_degrees.is_finite(),
+            "an infinite angle reached the shader"
+        );
+    }
+}
+
+/// §22's background, and the trap it shares with volume: `is_default` falls
+/// through to the animated parameters, and a property that has none reports
+/// itself default whatever it holds — which greys its reset button out for
+/// good.
+#[test]
+fn a_background_knows_when_it_is_not_the_default() {
+    assert!(ClipProperty::Background([0.0, 0.0, 0.0]).is_default());
+    assert!(!ClipProperty::Background([1.0, 1.0, 1.0]).is_default());
+    assert!(
+        !ClipProperty::Background([0.0, 0.0, 0.02]).is_default(),
+        "a colour that is nearly black is still not black"
+    );
+}
+
+/// A mirror is an ordinary undoable property, and the two axes are independent:
+/// mirroring left-to-right must not also turn the picture over.
+#[test]
+fn each_mirror_goes_on_and_comes_off_on_its_own() {
+    use bettercut_editor_core::timeline::FlipAxis;
+
+    let (mut editor, video, _audio) = editor_with_clips();
+    assert!(!transform_of(&editor, video).flip_h);
+
+    editor
+        .set_clip_property(
+            video,
+            ClipProperty::Flip {
+                axis: FlipAxis::Horizontal,
+                on: true,
+            },
+            false,
+        )
+        .unwrap();
+
+    let after = transform_of(&editor, video);
+    assert!(after.flip_h, "the horizontal mirror did not go on");
+    assert!(
+        !after.flip_v,
+        "mirroring left to right also turned the picture over"
+    );
+
+    editor.undo().unwrap();
+    assert!(
+        !transform_of(&editor, video).flip_h,
+        "undo left the clip mirrored"
+    );
+}
+
+/// Mirroring one way and then the other is two undo steps, not one gesture that
+/// collapses — they are different edits and the user expects to take back the
+/// second without losing the first.
+#[test]
+fn the_two_mirrors_do_not_collapse_into_one_undo_step() {
+    use bettercut_editor_core::timeline::FlipAxis;
+
+    let (mut editor, video, _audio) = editor_with_clips();
+    for axis in FlipAxis::ALL {
+        editor
+            .set_clip_property(video, ClipProperty::Flip { axis, on: true }, false)
+            .unwrap();
+    }
+
+    let both = transform_of(&editor, video);
+    assert!(both.flip_h && both.flip_v, "both mirrors should be on");
+
+    editor.undo().unwrap();
+    let one = transform_of(&editor, video);
+    assert!(
+        one.flip_h && !one.flip_v,
+        "one undo took back both mirrors: {one:?}"
+    );
+}
+
+/// A sound has no picture to mirror, and the refusal is the model's, not the
+/// interface's — the journal replays commands without an interface in sight.
+#[test]
+fn a_sound_cannot_be_mirrored() {
+    use bettercut_editor_core::timeline::FlipAxis;
+
+    let (mut editor, _video, audio) = editor_with_clips();
+    assert!(
+        editor
+            .set_clip_property(
+                audio,
+                ClipProperty::Flip {
+                    axis: FlipAxis::Horizontal,
+                    on: true,
+                },
+                false,
+            )
+            .is_err(),
+        "a sound accepted a mirror"
+    );
+}
+
+/// The whole video's vignette: set, undone, and refused by a clip.
+///
+/// The `is_default` check is the one that matters most and would pass unnoticed
+/// if wrong: a vignette has no animated parameter behind it, so without its own
+/// case every vignette reads as untouched and its reset stays greyed out.
+#[test]
+fn the_whole_video_takes_a_vignette_and_a_clip_does_not() {
+    assert!(ClipProperty::Vignette(0.0).is_default());
+    assert!(
+        !ClipProperty::Vignette(0.4).is_default(),
+        "a vignette reads as untouched, so its reset would never be offered"
+    );
+
+    let (mut editor, video, _) = editor_with_clips();
+    editor
+        .set_sequence_value(ClipProperty::Vignette(0.5), false)
+        .unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.vignette, 0.5);
+
+    editor.undo().unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.vignette, 0.0);
+
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Vignette(0.5), false)
+            .is_err(),
+        "a clip accepted a vignette, which frames the frame and not a clip"
+    );
+}
+
+/// §50: whatever the command carries, the master holds a vignette in range.
+#[test]
+fn a_runaway_vignette_is_brought_into_range() {
+    let (mut editor, _, _) = editor_with_clips();
+    editor
+        .set_sequence_value(ClipProperty::Vignette(40.0), false)
+        .unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.vignette, 1.0);
+
+    editor
+        .set_sequence_value(ClipProperty::Vignette(f32::NAN), false)
+        .unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.vignette, 0.0);
+}
+
+/// A sound clip's voice clean-up: set, undone, clamped, and refused by a
+/// picture and by the whole video.
+#[test]
+fn a_sound_clip_takes_voice_clean_up_and_a_picture_does_not() {
+    assert!(ClipProperty::Denoise(0.0).is_default());
+    assert!(!ClipProperty::Denoise(40.0).is_default());
+
+    let (mut editor, video, audio) = editor_with_clips();
+    editor
+        .set_clip_property(audio, ClipProperty::Denoise(500.0), false)
+        .unwrap();
+    assert_eq!(editor.audio_clip(audio).unwrap().denoise, 100.0);
+    editor.undo().unwrap();
+    assert_eq!(editor.audio_clip(audio).unwrap().denoise, 0.0);
+
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Denoise(50.0), false)
+            .is_err()
+    );
+    assert!(
+        editor
+            .set_sequence_value(ClipProperty::Denoise(50.0), false)
+            .is_err()
+    );
+}
+
+/// The whole video's film grain: set, undone, clamped, refused by a clip, and
+/// with the `is_default` case that keeps its reset button honest.
+#[test]
+fn the_whole_video_takes_grain_and_a_clip_does_not() {
+    assert!(ClipProperty::Grain(0.0).is_default());
+    assert!(!ClipProperty::Grain(0.3).is_default());
+
+    let (mut editor, video, _) = editor_with_clips();
+    editor
+        .set_sequence_value(ClipProperty::Grain(0.5), false)
+        .unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.grain, 0.5);
+    editor.undo().unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.grain, 0.0);
+
+    for runaway in [40.0, f32::NAN] {
+        editor
+            .set_sequence_value(ClipProperty::Grain(runaway), false)
+            .unwrap();
+        let grain = editor.active_sequence().unwrap().master.grain;
+        assert!((0.0..=1.0).contains(&grain), "{runaway} became {grain}");
+    }
+
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Grain(0.5), false)
+            .is_err(),
+        "a clip accepted grain, which is the film the whole frame is on"
+    );
+}
+
+/// A clip's sharpen: set, undone, clamped, and refused by sound and by the
+/// whole video — with the `is_default` check that keeps its reset honest.
+#[test]
+fn a_clip_takes_a_sharpen_and_nothing_else_does() {
+    assert!(ClipProperty::Sharpen(0.0).is_default());
+    assert!(
+        !ClipProperty::Sharpen(30.0).is_default(),
+        "a sharpen reads as untouched, so its reset would never be offered"
+    );
+
+    let (mut editor, video, audio) = editor_with_clips();
+    editor
+        .set_clip_property(video, ClipProperty::Sharpen(40.0), false)
+        .unwrap();
+    assert_eq!(editor.video_clip(video).unwrap().sharpen, 40.0);
+    editor.undo().unwrap();
+    assert_eq!(editor.video_clip(video).unwrap().sharpen, 0.0);
+
+    editor
+        .set_clip_property(video, ClipProperty::Sharpen(9_000.0), false)
+        .unwrap();
+    assert_eq!(
+        editor.video_clip(video).unwrap().sharpen,
+        bettercut_editor_core::timeline::MAX_SHARPEN,
+        "a runaway sharpen got through"
+    );
+
+    assert!(
+        editor
+            .set_clip_property(audio, ClipProperty::Sharpen(40.0), false)
+            .is_err(),
+        "a sound accepted a sharpen"
+    );
+    assert!(
+        editor
+            .set_sequence_value(ClipProperty::Sharpen(40.0), false)
+            .is_err(),
+        "the whole video accepted a sharpen, which is a decision about one shot"
+    );
+}
+
+/// A reflection is set, undone and redone like any property, refused on sound,
+/// and a project saved before reflections existed loads with none.
+#[test]
+fn a_reflection_applies_undoes_and_is_picture_only() {
+    use bettercut_editor_core::timeline::Reflection;
+
+    let (mut editor, video, audio) = editor_with_clips();
+    let reflection_of = |editor: &Editor| editor.video_clip(video).unwrap().reflection;
+    assert_eq!(reflection_of(&editor), Reflection::None);
+
+    editor
+        .set_clip_property(
+            video,
+            ClipProperty::Reflection(Reflection::Kaleidoscope),
+            false,
+        )
+        .unwrap();
+    assert_eq!(reflection_of(&editor), Reflection::Kaleidoscope);
+    assert_eq!(editor.undo_label().as_deref(), Some("Change Mirror"));
+    editor.undo().unwrap();
+    assert_eq!(reflection_of(&editor), Reflection::None);
+    editor.redo().unwrap();
+    assert_eq!(reflection_of(&editor), Reflection::Kaleidoscope);
+
+    assert!(
+        editor
+            .set_clip_property(audio, ClipProperty::Reflection(Reflection::FourWay), false)
+            .is_err()
+    );
+
+    let mut json: serde_json::Value = serde_json::to_value(editor.project()).expect("serialize");
+    let clip = &mut json["sequences"][0]["video_tracks"][0]["clips"][0];
+    assert!(
+        clip.get("reflection").is_some(),
+        "the field is not where this test looks"
+    );
+    clip.as_object_mut().unwrap().remove("reflection");
+    let project: bettercut_editor_core::project_format::Project =
+        serde_json::from_value(json).expect("an old project loads");
+    let old = project.sequences[0].video_tracks[0].clips()[0].reflection;
+    assert_eq!(old, Reflection::None);
 }

@@ -55,7 +55,7 @@ fn video_resolves_to_a_layer_at_the_playhead() {
 
     assert_eq!(layers.len(), 1, "expected exactly the one video track");
     assert_eq!((layers[0].frame.width, layers[0].frame.height), (640, 360));
-    assert_eq!(layers[0].opacity, 1.0);
+    assert_eq!(layers[0].look.opacity, 1.0);
 }
 
 /// Stepping through the timeline must produce *different* pictures. A decoder
@@ -285,7 +285,7 @@ fn a_tracks_volume_and_pan_are_heard() {
     );
 }
 
-/// §51 in the mixed output, where the export bug lived. The fixture is a 440 Hz
+/// in the mixed output, where the export bug lived. The fixture is a 440 Hz
 /// tone, so doubling the speed has to double the pitch — and the zero crossings
 /// are a way to count that without an FFT. Export calls this same function, so
 /// this is what stops a 2× clip exporting its sound at normal speed again.
@@ -833,4 +833,88 @@ fn a_frozen_clip_shows_one_frame_from_one_decode() {
         misses,
         "a held frame was decoded more than once"
     );
+}
+
+/// §20a.4's solo, at the place it has to take effect: what is on screen and
+/// what is audible. The rule itself is tested in the timeline crate — this is
+/// the wire from the flag to the picture.
+mod solo {
+    use bettercut_foundation::{MediaTime, TimelineTime};
+    use bettercut_media::{MediaAsset, MediaKind};
+    use bettercut_playback::layer_requests;
+    use bettercut_project_format::Project;
+    use bettercut_timeline::{SourceRange, VideoClip};
+
+    /// Two picture tracks, one clip on each, both over the same instant.
+    fn project_with_two_tracks() -> Project {
+        let mut project = Project::new("Solo");
+        let asset = MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/a.mp4",
+            MediaTime::from_seconds(60),
+        );
+        let media = project.add_media(asset);
+        let source = SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(10)).expect("range");
+
+        let sequence = project.active_mut().expect("sequence");
+        sequence
+            .video_tracks
+            .push(bettercut_timeline::VideoTrack::new("V2"));
+        for index in 0..2 {
+            let clip = VideoClip::new(media, TimelineTime::ZERO, source).expect("clip");
+            sequence.video_tracks[index].insert(clip).expect("empty");
+        }
+        project
+    }
+
+    fn layers_now(project: &Project) -> usize {
+        let sequence = project.active().expect("sequence");
+        layer_requests(project, sequence, TimelineTime::from_seconds(1)).len()
+    }
+
+    #[test]
+    fn soloing_a_track_takes_the_others_off_the_screen() {
+        let mut project = project_with_two_tracks();
+        assert_eq!(layers_now(&project), 2, "expected both tracks on screen");
+
+        project.active_mut().expect("sequence").video_tracks[1].solo = true;
+        assert_eq!(
+            layers_now(&project),
+            1,
+            "the unsoloed track was still drawn"
+        );
+    }
+
+    /// And solo beats mute at the engine, not only in the rule: a soloed track
+    /// that is also hidden is still the one the user asked to see.
+    #[test]
+    fn a_soloed_track_is_drawn_even_when_it_is_hidden() {
+        let mut project = project_with_two_tracks();
+        {
+            let sequence = project.active_mut().expect("sequence");
+            sequence.video_tracks[1].solo = true;
+            sequence.video_tracks[1].enabled = false;
+        }
+        assert_eq!(layers_now(&project), 1, "the soloed track was hidden");
+    }
+
+    /// Taking the solo off puts everything back, including whatever was muted
+    /// before — the reason to reach for solo rather than muting three lanes.
+    #[test]
+    fn removing_the_solo_restores_the_lane_as_it_was() {
+        let mut project = project_with_two_tracks();
+        {
+            let sequence = project.active_mut().expect("sequence");
+            sequence.video_tracks[0].enabled = false;
+            sequence.video_tracks[1].solo = true;
+        }
+        assert_eq!(layers_now(&project), 1);
+
+        project.active_mut().expect("sequence").video_tracks[1].solo = false;
+        assert_eq!(
+            layers_now(&project),
+            1,
+            "the track that was hidden before the solo came back with it"
+        );
+    }
 }

@@ -9,5 +9,5 @@ pub mod settings;
 
 pub use error::ProjectError;
 pub use file::{PROJECT_EXTENSION, SCHEMA_VERSION, load, save};
-pub use project::Project;
+pub use project::{LutAsset, Project};
 pub use settings::{PerformanceMode, ProjectSettings};

@@ -303,8 +303,13 @@ fn the_inspector_draws_a_text_clip() {
         words.contains("Legibility"),
         "the text panel was never reached; drew: {words}"
     );
+    // "blur" used to be the marker here, on the grounds that only footage can
+    // be blurred. It is not one any more: a title smears along a fast entrance
+    // exactly as a shot does, so the word now belongs on both panels. The
+    // green screen is a claim about *filmed* colour, which a drawn title can
+    // never have.
     assert!(
-        !words.contains("blur"),
+        !words.contains("green screen"),
         "the video clip's controls appeared for a title"
     );
 }
@@ -348,7 +353,7 @@ fn the_inspector_draws_a_fully_decorated_title() {
     }
 }
 
-/// §51: the Speed tab is a real control now, not a note saying it is not built.
+/// the Speed tab is a real control now, not a note saying it is not built.
 #[test]
 fn the_inspector_draws_the_speed_controls() {
     use bettercut_ui::panels::InspectorTab;
@@ -614,5 +619,130 @@ mod meter {
         assert_eq!(meter_fraction(f32::NAN), 0.0);
         assert_eq!(meter_fraction(f32::INFINITY), 0.0);
         assert_eq!(meter_fraction(-1.0), 0.0);
+    }
+}
+
+/// The Looks row, and the strength that CapCut puts under every filter (§45).
+mod look_strength {
+    use bettercut_editor_core::timeline::ColorAdjust;
+    use bettercut_ui::panels::LOOKS;
+
+    fn punchy() -> ColorAdjust {
+        LOOKS
+            .iter()
+            .find_map(|(name, look)| (*name == "Punchy").then_some(*look))
+            .expect("Punchy is one of the looks")
+    }
+
+    /// Every preset is reachable and distinct: a row of buttons where two do
+    /// the same thing is a row with a mistake in it.
+    #[test]
+    fn the_looks_differ_from_each_other() {
+        for (index, (name, look)) in LOOKS.iter().enumerate() {
+            for (other_name, other) in LOOKS.iter().skip(index + 1) {
+                assert_ne!(
+                    (look.brightness, look.contrast, look.saturation),
+                    (other.brightness, other.contrast, other.saturation),
+                    "{name} and {other_name} are the same grade"
+                );
+            }
+        }
+    }
+
+    /// The first look is the way back: a row of grades with no way off them
+    /// would be a trap.
+    #[test]
+    fn the_first_look_is_the_way_back_to_nothing() {
+        let (name, look) = LOOKS[0];
+        assert_eq!(name, "None");
+        assert!(look.is_identity());
+    }
+
+    /// What the strength slider rests on: a look applied at a fraction is still
+    /// recognisably that look, at that fraction, with nothing remembered
+    /// anywhere but the grade itself.
+    #[test]
+    fn a_weakened_look_is_still_recognisably_itself() {
+        for strength in [0.25_f32, 0.5, 0.75, 1.0] {
+            let graded = ColorAdjust::IDENTITY.lerp(punchy(), strength);
+            let (name, at) = bettercut_ui::panels::look_of(graded).expect("still a look");
+            assert_eq!(name, "Punchy");
+            assert!(
+                (at - strength).abs() < 0.01,
+                "applied at {strength}, read back at {at}"
+            );
+        }
+    }
+
+    /// A grade the user made by hand is nobody's preset, and the row shows
+    /// none of them selected rather than the nearest.
+    #[test]
+    fn a_hand_made_grade_matches_no_look() {
+        let hand_made = ColorAdjust {
+            brightness: 1.3,
+            contrast: 0.7,
+            saturation: 1.4,
+            temperature: 0.0,
+            tint: 0.0,
+        };
+        assert_eq!(bettercut_ui::panels::look_of(hand_made), None);
+    }
+
+    /// Every look in the row is recognised as itself, at full strength.
+    ///
+    /// `look_of` returns the *first* preset a grade lies on, so two looks that
+    /// a grade satisfies at once would make the row light up whichever comes
+    /// earlier in the list. Warm and Cool are the pair most at risk of that:
+    /// they differ only in the sign of the white balance, and everything else
+    /// about them is close.
+    #[test]
+    fn every_look_is_recognised_as_itself() {
+        for (name, look) in bettercut_ui::panels::LOOKS.iter().skip(1) {
+            let (found, at) = bettercut_ui::panels::look_of(*look)
+                .unwrap_or_else(|| panic!("{name} is not recognised as a look at all"));
+            assert_eq!(found, *name, "{name} was reported as {found}");
+            assert!((at - 1.0).abs() < 0.01, "{name} read back at strength {at}");
+        }
+    }
+
+    /// And an untouched clip is not reported as a weak version of everything.
+    #[test]
+    fn an_untouched_clip_is_on_no_look() {
+        assert_eq!(bettercut_ui::panels::look_of(ColorAdjust::IDENTITY), None);
+    }
+}
+
+/// The Inspector's tabs (§59).
+mod tabs {
+    use bettercut_ui::panels::InspectorTab;
+
+    /// Every tab is reachable and named: a tab missing from `ALL` exists in the
+    /// enum and nowhere a user can click.
+    #[test]
+    fn every_tab_is_offered_and_named() {
+        assert_eq!(InspectorTab::ALL.len(), 6);
+        for tab in InspectorTab::ALL {
+            assert!(!tab.label().is_empty(), "{tab:?} has no label");
+        }
+        for (index, tab) in InspectorTab::ALL.iter().enumerate() {
+            for other in InspectorTab::ALL.iter().skip(index + 1) {
+                assert_ne!(tab.label(), other.label(), "two tabs share a label");
+            }
+        }
+    }
+
+    /// Video is what opens on a fresh selection: placement is what a user
+    /// reaches for constantly, and effects are a choice made once.
+    #[test]
+    fn video_is_the_default_tab() {
+        assert_eq!(InspectorTab::default(), InspectorTab::Video);
+        assert_eq!(InspectorTab::ALL[0], InspectorTab::Video);
+    }
+
+    /// Effects sits beside Video rather than at the end: the two are the halves
+    /// of one question — where the picture is, and what is done to it.
+    #[test]
+    fn effects_sits_next_to_video() {
+        assert_eq!(InspectorTab::ALL[1], InspectorTab::Effects);
     }
 }

@@ -14,19 +14,32 @@
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
+use bettercut_timeline::{ClipLook, ColorAdjust, MasterLook, Resolution, Transform, Vec2};
 
+/// One GPU device for the whole binary, shared by every test in it.
+///
+/// libtest runs tests on parallel threads, and a device per test meant several
+/// being created at once — which deadlocks this machine's driver and hung the
+/// whole workspace run with no output. `pixel_read.rs` has the full account.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
             .ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("rotation test"),
-        ..Default::default()
-    }))
-    .ok()
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("rotation test"),
+                ..Default::default()
+            }))
+            .ok()
+        })
+        .clone()
 }
 
 macro_rules! gpu_or_skip {
@@ -85,14 +98,25 @@ fn render(
                 frame: &frame,
                 // Half size, so a 45° turn stays well inside the frame and
                 // nothing is lost off the edge to confuse the count.
-                transform: Transform {
-                    scale: Vec2::new(0.4, 0.4),
-                    rotation_degrees: degrees,
-                    ..Transform::default()
+                look: ClipLook {
+                    sharpen: 0.0,
+                    lut: None,
+                    rgb_split: 0.0,
+                    glitch: 0.0,
+                    reflection: bettercut_timeline::Reflection::None,
+                    crop: bettercut_timeline::Crop::NONE,
+                    transform: Transform {
+                        scale: Vec2::new(0.4, 0.4),
+                        rotation_degrees: degrees,
+                        ..Transform::default()
+                    },
+                    opacity: 1.0,
+                    color: ColorAdjust::default(),
+                    blur: 0.0,
+                    chroma_key: None,
+                    mask: None,
+                    blend: bettercut_timeline::BlendMode::Normal,
                 },
-                opacity: 1.0,
-                color: ColorAdjust::default(),
-                blur: 0.0,
             }],
             MasterLook::default(),
         )

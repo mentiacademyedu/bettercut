@@ -2,7 +2,7 @@
 //!
 //! The analysis is [`bettercut_audio::beats`]; this is the translation around
 //! it — from the clip's slice of its file's waveform, and back from positions
-//! in that slice to instants on the timeline, through the clip's speed (§51).
+//! in that slice to instants on the timeline, through the clip's speed.
 
 use bettercut_cache::Waveform;
 use bettercut_foundation::{MediaTime, TICKS_PER_SECOND, TimelineTime};
@@ -34,19 +34,26 @@ pub fn beat_markers(clip: &AudioClip, waveform: &Waveform) -> Option<(Vec<Timeli
         .collect();
 
     let grid = bettercut_audio::beats::detect(&envelope, rate as u32)?;
-    let times = grid
+    let mut times: Vec<TimelineTime> = grid
         .beats
         .iter()
         .filter_map(|&index| index.checked_sub(lead))
         .map(|index| {
             // Back from the slice to the source, then through the speed to the
-            // timeline — the same mapping as every other one (§51).
+            // timeline — the same mapping as every other one.
             let into_source = MediaTime::from_ticks(index as i64 * TICKS_PER_SECOND / rate);
-            clip.timeline.start
-                + TimelineTime::from_ticks(timeline_ticks_for(into_source, clip.speed))
+            let forwards = clip.timeline.start
+                + TimelineTime::from_ticks(timeline_ticks_for(into_source, clip.speed));
+            // Reversed, each hit lands mirrored across the clip.
+            if clip.reversed {
+                bettercut_timeline::mirror_in(clip.timeline, forwards)
+            } else {
+                forwards
+            }
         })
-        .filter(|&t| t < clip.timeline.end)
+        .filter(|&t| t >= clip.timeline.start && t < clip.timeline.end)
         .collect();
+    times.sort_unstable();
     Some((times, grid.bpm * clip.speed.as_f64()))
 }
 

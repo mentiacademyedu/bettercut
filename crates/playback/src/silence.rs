@@ -59,7 +59,7 @@ pub fn silent_ranges(
         .collect();
 
     // A bucket index within the clip's slice, to a timeline instant — through
-    // the speed, like every other source-to-timeline mapping (§51).
+    // the speed, like every other source-to-timeline mapping.
     let at = |index: usize| {
         let into_source = MediaTime::from_ticks(index as i64 * TICKS_PER_SECOND / rate);
         (clip.timeline.start
@@ -96,6 +96,15 @@ pub fn silent_ranges(
         {
             ranges.push(range);
         }
+    }
+    // Found reading the material forwards; a reversed clip plays it the other
+    // way, so each pause sits mirrored across the clip, and in reverse order.
+    if clip.reversed {
+        ranges = ranges
+            .into_iter()
+            .rev()
+            .map(|range| bettercut_timeline::mirror_range_in(clip.timeline, range))
+            .collect();
     }
     ranges
 }

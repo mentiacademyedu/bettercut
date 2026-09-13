@@ -43,6 +43,38 @@ fn blur_shader_is_valid() {
     check("blur.wgsl", include_str!("../src/blur.wgsl"));
 }
 
+/// **Every** shader in the crate, found by listing the directory rather than
+/// by a list someone has to remember to extend. The two named tests above were
+/// the whole of this file while three more shaders were added beside them —
+/// one with a reserved word for a variable name that only a GPU run caught.
+#[test]
+fn every_shader_in_the_crate_is_valid() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut checked = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|e| e == "wgsl") {
+            let source = std::fs::read_to_string(&path).expect("read");
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            check(&name, &source);
+            checked.push(name);
+        }
+    }
+    for expected in [
+        "composite.wgsl",
+        "blur.wgsl",
+        "sharpen.wgsl",
+        "lut.wgsl",
+        "glitch.wgsl",
+        "reflect.wgsl",
+    ] {
+        assert!(
+            checked.iter().any(|n| n == expected),
+            "{expected} was not found to check"
+        );
+    }
+}
+
 /// The uniform structs are written by hand on the Rust side, at byte offsets
 /// the shaders have to agree with. naga knows the layout the GPU will use, so
 /// it can be asked directly rather than reasoned about in a comment.
@@ -56,7 +88,13 @@ fn the_uniform_structs_are_the_sizes_the_rust_side_writes() {
             "composite.wgsl",
             include_str!("../src/composite.wgsl"),
             "Layer",
-            64,
+            // 48 for the transform's three columns, 16 for opacity and the
+            // colour values in its padding, the chroma key's `vec3` at 64 with
+            // tolerance in its tail, the mask's numbers from 88, the white
+            // balance in the tail that left at 120, §22's crop as two `vec2`s
+            // from 128, and the vignette at 144 — rounded to the struct's
+            // 16-byte alignment.
+            160,
         ),
         (
             "blur.wgsl",

@@ -19,9 +19,9 @@ Built to `development_guide.md`. Section references throughout the code (`§9`,
 | **4 — Playback** | 🟡 Video + audio in sync, decode-ahead ring; hardware decode still open |
 | **5 — Persistence** | ✅ Journal, snapshots, crash recovery, media relink |
 | **6 — Export** | ✅ Export… in the toolbar, on the job pool, with progress and a stop button |
-| **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes, and the effect graph |
+| **8 — Effects** | ✅ Transform, opacity, colour, blur, keyframes and the effect graph — plus masks, green screen, blend modes, clip animations, motion blur and a background colour |
 | **7 — Proxies** | ✅ Generated on import, preferred by preview, adaptive quality recovers |
-| **9 — Text and transitions** | ✅ Titles with entrances and exits; crossfade, fade through black, slide, push and zoom |
+| **9 — Text and transitions** | ✅ Titles with entrances and exits; all seven of §25's transitions |
 | **10 — Captions** | ✅ SRT and VTT in and out, on a lane of their own |
 | **11 — Templates** | ✅ Format, validator, browser, slots, and adding your own |
 | **12 — Automation** | 🟡 Silence removal, beat markers, scene detection and reframing done; automatic captions open |
@@ -34,7 +34,7 @@ of §10's editing list —
 ```text
 add · move (within and across tracks) · trim both edges · split at playhead
 delete · ripple delete · duplicate · copy / paste · snapping
-track add/remove/hide/mute/lock · zoom · scrub · undo / redo
+track add/remove/hide/mute/solo/lock · zoom · scrub · undo / redo
 multi-select: Ctrl+click and rubber-band box select
 nudge by frame · trim to playhead · markers · jump between cuts
 ```
@@ -45,8 +45,9 @@ as exactly one undo step.
 
 Right-clicking the timeline opens a context menu, and what it offers depends on
 what is under the pointer: a clip gets split/cut/copy/duplicate/delete/ripple
-delete, a track header gets hide-or-mute, lock, add and remove, and empty canvas
-gets paste and playhead moves. Every entry calls the same function as its
+delete, a track header gets hide-or-mute, solo, lock, add and remove, and empty canvas
+gets paste and playhead moves. Mute and solo are also buttons on the header
+itself, since they are pressed dozens of times in a cut. Every entry calls the same function as its
 keyboard shortcut and shows that shortcut beside it.
 
 Playback works: the preview shows composited video, audio plays through the
@@ -119,6 +120,21 @@ Work survives a crash. Every command is appended to a journal as it executes
 everything since the last save. On the next launch the snapshot plus the journal
 are replayed and the result is *offered* — §39.5 is explicit that recovery must
 never overwrite the user's file by itself, and it doesn't.
+
+Two things about the other end of that. A clean quit discards its own recovery
+data, so the next launch does not offer back work the user already has on disk;
+a quit with **unsaved** changes keeps it, because there is no save prompt on the
+close button yet and to the work that quit is indistinguishable from a crash.
+And the abandoned sessions that accumulate — one per run, and every test that
+builds an editor leaves one — are pruned on a background thread after the scan
+rather than before the window opens. Deleting seven thousand of them took nine
+seconds of startup on this machine; housekeeping has no business holding the
+window shut.
+
+If autosave itself stops working — a full disk, a folder that cannot be written
+to, neither of which announces itself — the status bar says so in the loudest
+thing on it. An autosave that has quietly stopped is worse than none, because
+the user believes they are protected while they are not.
 
 The media browser shows poster thumbnails, decoded a tenth of the way into each
 file — frame zero is so often black, a slate, or a fade that it makes a useless
@@ -270,6 +286,16 @@ Three decisions carry most of the weight:
   except its endpoints; solving for x is what the tests check, by asserting that
   ease-in lags the linear midpoint and ease-out leads it.
 
+Those curves went unreachable for a long time: every key a user placed was
+linear, because nothing offered the others. **Keyframe Easing** on the clip menu
+now sets the curve of the keys under the playhead — every parameter keyed at
+that instant, not one, since a scale is two parameters and easing half of it
+would let the shape drift as it moved. **Previous/Next Keyframe** sits above it,
+because keys land on exact ticks and the playhead is dragged in pixels: without
+a way to jump, the easing was there and unusable. The timeline draws the curve
+in the shape of the mark — a diamond for a straight ramp, a circle for an eased
+one, a square for a hold — so it is possible to see which keys carry it.
+
 Animating a parameter takes its slider away from the static value — the
 renderer stops reading it — so editing one with the playhead off the clip is
 refused with a message rather than silently changing a number nothing reads.
@@ -301,6 +327,13 @@ apart and check the two halves differ — and both layers have to be blurred for
 the test to bite, since a layer at zero declines before it writes anything. I
 verified that by reintroducing the bug and watching the test fail.
 
+The golden set covers masks, chroma key and blend modes as well as transform,
+colour, blur and stacked tracks — so §46's guarantee extends to the new effects
+rather than stopping at the old ones. Each effect case is also rendered a second
+time with only its own effect removed, and the two have to differ: a golden case
+that renders the same either way passes forever and guards nothing, while
+looking in the suite like cover for a feature.
+
 **Golden-frame tests** (§51.1) are what keep §46 honest — one render graph, two
 configurations — and §51.1 calls a failure a release blocker. Two checks, because
 there are two different questions:
@@ -312,6 +345,20 @@ there are two different questions:
 - *Did the picture change at all?* The check above cannot answer that: a
   regression hitting both configs equally keeps it green. So each case also has
   a stored signature under `crates/renderer/tests/golden/`.
+
+They guard §46 from the layer inwards, and there is a step before that: turning
+a `LayerRequest` into a renderer layer. That was written out twice, once in the
+preview and once in the export, and the golden frames could not see it — both
+were handed the same layers to compare. Removing the mask from the export's copy
+alone passed every test in the workspace, which is a silent version of exactly
+the bug §46 exists to prevent.
+
+So a layer carries **one** `ClipLook` rather than a field each. Both paths pass
+it straight through, the resolved transform included, and there is no list to
+keep in step: adding a look field now touches the one function that builds a
+look from a clip, and reaches the preview and the export without either being
+edited. The compiler was the test — before, a new field needed a line in each
+mapping and forgetting one said nothing.
 
 The signatures are not reference PNGs. A byte-exact image would need
 regenerating per GPU — an NVIDIA card and an Intel iGPU disagree in the last bit
@@ -395,8 +442,8 @@ each encoder the machine has.
 
 ### Transitions
 
-Five of §25's seven — crossfade, fade through black, slide, push and zoom —
-attached to the **outgoing clip** rather than to the track. That placement is the whole design: move, trim,
+All seven of §25's — crossfade, fade through black, slide, push, zoom, flash
+and blur dissolve — attached to the **outgoing clip** rather than to the track. That placement is the whole design: move, trim,
 split, cut and paste all carry the clip, and a transition stored beside the
 timeline would have to be rewritten by every one of those operations. It is the
 same argument §24 makes for anchoring keyframes to the source.
@@ -431,9 +478,10 @@ anyway would render as a black flash. So the model works out what is actually
 there and clamps the length to it — in the command, not in the interface, because
 §38.2 replays commands after a crash and a check that only runs on the way in
 comes back unchecked on the way out. Everything that shows two clips at once
-needs them; a fade through black is the only kind that does not, because each
-clip fades within its own range, so it works on any cut — including one against
-the very start or end of a file. The inspector offers whichever kinds
+needs them. Two kinds do not: a fade through black and a flash, because each
+covers the cut with a colour rather than with the other shot, so both work on
+any cut — including one against the very start or end of a file, which is where
+a phone recording is usually trimmed to. The inspector offers whichever kinds
 the cut can support and says why the other is unavailable.
 
 ### Text
@@ -834,6 +882,18 @@ is a half-finished job rather than a file full of blanks. When a real provider
 lands it answers in the same shape with the words filled in, and everything
 downstream of that point is already built (§46).
 
+### Title looks
+
+Four presets on a title — **Headline**, **Lower third**, **Quote**,
+**Typewriter** — each carrying *where it sits* as well as how it looks, applied
+as one undo step. A lower third in the middle of the frame is not a lower third,
+so a look that changed only the style would be half a look.
+
+Separate from the caption looks on purpose: a caption is one long thread of the
+same thing, styled by the lane, while a title is placed and dressed on its own.
+They keep the same readability rule, though — every look carries a box, a rim or
+a shadow, and every one wraps.
+
 ### The Captions window
 
 Timing thirty captions takes a second; typing into them by clicking each one on
@@ -862,6 +922,213 @@ tracked, because every caption edit shares a history label and a keystroke
 marked as continuing would otherwise fold into the caption typed before it,
 where one undo wipes both.
 
+### Look strength
+
+The dial CapCut puts under every filter: the same look, applied less. It appears
+once a clip is on one of the presets, and slides from nothing to the look as
+written.
+
+The clip stores **only the grade it ended up with** — which preset produced it,
+and how strongly, is recovered by inverting the interpolation. Storing the
+preset beside the grade would be two records of one fact, and they would
+disagree the first time someone nudged a slider; recovering it also means the
+strength still sits in the right place when a project is opened a week later.
+
+Two cases had to be answered for. A grade that happens to share one number with
+a preset is not that preset, so the strength has to come out the same on all
+three axes or the look does not match at all. And an untouched clip is at zero
+strength towards *every* look, which would light up whichever preset came first
+over every ungraded clip — so ungraded is its own answer.
+
+### Seeing what a clip is doing
+
+A mask, a key or a blend other than normal looks exactly like an ordinary clip
+in the lane, and a user left wondering why the preview disagrees with the
+timeline is a user who distrusts both. Each now shows a small badge at the top
+right of its clip, beside the hold and speed badges that were already there.
+
+They stack leftwards in one row and stop rather than overrun the file name,
+because a badge sitting on top of the name says less than no badge at all. The
+hold and speed badges used to be drawn independently at the same anchor, which
+worked only because a held frame cannot also be re-timed — one row is what lets
+a clip carry three at once.
+
+Some of it is drawn as shapes rather than words, because that is what the thing
+is: a clip with an entrance gets the same shaded ramp a sound's fade gets, so a
+shot that is arriving looks like it instead of looking ordinary with a badge on
+it. A soloed track says **SOLO** on its header in the loudest thing in the bar,
+since a solo left on is the reason every other lane has gone quiet — and the
+export window says so too, because the export reads the same rule the preview
+does and would otherwise quietly contain only that one track.
+
+### Blend modes
+
+**blend** on a video clip: Normal, Screen, Multiply, Add. Screen never darkens,
+so black in an overlay disappears — which is how a light leak, a glow or a dust
+plate is laid on. Multiply never lightens, so white disappears. Add is brighter
+than screen and clips sooner.
+
+A blend state lives in a wgpu pipeline and nowhere else, so four modes are four
+pipelines sharing one shader — and that shader now emits **premultiplied**
+colour, because each mode is a different pair of blend factors and every one of
+them needs the source already weighted by its alpha. Otherwise a 50% overlay
+would screen at full strength.
+
+That change moved two golden frames, and both are recorded in the test with the
+reason. One is an improvement: hardware clamps a fragment before blending, so
+scaling by opacity in the shader keeps range the old clamp-then-scale threw
+away. The other is a real cost of a fraction of an 8-bit step, because the
+premultiplied product is quantised before the blend — accepted knowingly, since
+the alternative is a float target for every composite.
+
+### Masks
+
+**mask** on a video clip keeps part of the picture and hides the rest: a
+straight edge, a box or an oval, each with a centre, a size, an angle, a feather
+and an invert. Split screens, picture-in-picture and reveals are all made of
+these.
+
+Everything is in the clip's **own** frame, 0–1 across the picture, so a mask
+stays over what it was drawn on however the clip is afterwards moved, scaled or
+re-timed. A mask in output coordinates would slide off its subject the moment
+the clip was nudged.
+
+The three shapes are one signed distance each — negative inside, zero on the
+edge, positive outside — so a single feathering rule serves all of them, and the
+feather straddles the edge rather than eating inwards from it: softening a mask
+must not also shrink it.
+
+It rides in the same composite pass as the key and the colour adjustment, and
+costs nothing when there is no mask.
+
+A masked clip shows two handles on the preview — its centre and its edge — so
+it can be moved and resized there rather than typed into the Inspector. The mask is in the clip's own frame
+and the preview shows that frame as a box which may be moved, scaled and turned,
+so dragging goes through the box and back — which means a mask on a turned clip
+follows the *picture* rather than the screen. The conversion round-trips
+exactly, because a mask that drifted a little every time it was picked up would
+be worse than one that could not be dragged at all. A turned mask grows along
+its *own* axes: on a mask at a quarter turn, dragging down the screen widens it
+rather than making it taller, because what is "down the screen" is its width.
+The size stops short of nothing, since a mask dragged away to zero has no handle
+left to drag it back by.
+
+### Green screen
+
+**green screen** on a video clip makes one colour transparent: pick the screen's
+colour, then tolerance, softness and spill.
+
+The colour is picked off the picture, not guessed on a wheel. **pick** arms an
+eyedropper and the next click on the preview reads that pixel back off the GPU
+and makes it the key — no two green screens are the same green once a light has
+been near them, and the right answer was always already on screen. While it is
+armed the picture is a colour chart rather than something to drag, so the
+transform handles stand down and Escape puts it away. Re-picking keeps the
+tolerance and softness already dialled in: the usual reason to pick again is
+that the first point was slightly off.
+
+The key works on **chromaticity** — the proportions of a colour with its
+brightness divided out — rather than on plain colour distance, and that choice
+is the whole feature. A real screen is never evenly lit, and its shadowed folds
+are a long way from its lit parts in RGB; keyed on distance they survive as dark
+green fringes. Keyed on proportions they are the same colour, so both go. That
+is a test: a frame that is lit screen on one side and deep shadow on the other,
+keyed off the lit half, has to lose both.
+
+Black is the case that needs protecting from the other direction. It has no
+proportions to speak of, so it must be answered for explicitly or the key eats
+every shadow in the shot.
+
+Two more things worth saying. The tolerance dial cannot be turned up until the
+picture disappears: chromaticity distance runs past 1.0 between the furthest
+colours, and the cap is deliberately short of that, because a key that can
+remove everything is not a key. And spill suppression exists because a green
+screen throws green onto what is in front of it — a subject keyed against one
+has a green rim even where it is fully opaque.
+
+It rides in the composite pass with the colour adjustment, so it costs nothing
+when it is off and no extra pass when it is on. The key colour is converted to
+linear light once per layer on the way in, because the shader compares it
+against samples from an sRGB-aware texture (§21a.1).
+
+### Clip animations, and blurring what moves
+
+A shot that arrives gets the same presets a title does — fade, slide in any of
+four directions, pop, spin — because an editor in which "slide up" means one
+thing on a caption and another on a shot is one nobody can predict. They share
+every preset and all of the arithmetic; the single difference is how far a slide
+travels. A caption is nudged, because one that flew in from off-screen would be
+unreadable while it travelled. A shot comes in from outside the frame, because
+that is the effect.
+
+An animation is applied **on top of** the clip's own placement, so a shot pushed
+into a corner slides in to that corner rather than to the middle. It is decided
+in the same function the export reads (§46), and it draws on the timeline as the
+ramp a fade gets.
+
+**motion blur** smears a moving shot along its path: the same picture drawn at
+the places it passed through, each fainter than the last. §45 calls motion blur
+expensive and it is when done properly — a velocity buffer and a directional
+pass. This is what the compositor can already do without either, which is also
+what a shutter records. A shot that is not moving is drawn once, so leaving it on
+costs nothing until something moves, and the copies share the opacity the layer
+would have had alone — otherwise turning it on looks like turning the exposure
+up.
+
+Anything that moves smears: an entrance, a keyframed move, a slow zoom. Nothing
+in the smear knows which. Three places in the engine take the layer they just
+pushed and rewrite it — a backdrop, a softened half of a dissolve, a shot placed
+by a moving transition — and each asks for a single layer rather than a trail,
+because a copy none of them rewrote is the shot drawn where the effect never put
+it.
+
+### Carrying a look to the other clips
+
+Setting up a shot is minutes of work and the next twenty want the same
+treatment. **Copy Look** takes the grade, blur, opacity, blend, mask, key,
+animation, motion blur and backdrop off one clip; **Paste Look** puts them on the selection,
+as one undo step. **Clear Look** is the same edit with a plain look instead of a
+copied one, so clearing and pasting cannot disagree about what a look contains.
+
+What it leaves alone matters as much. Framing is a decision about the individual
+shot — a wide landscape and a close-up do not want the same crop — and keyframes
+are anchored to source time, so the same keys on a clip of another length land
+somewhere else entirely. A sound in the selection is skipped rather than
+refusing the whole paste, because a timeline selection carries the linked sound
+with it (§12).
+
+### Filling the frame behind a shot
+
+Fit leaves bars, and for a landscape shot in a vertical edit those bars are most
+of the screen. **behind: Blur**, beside Fit and Fill, puts the clip's own
+picture back there — blown up to cover and heavily softened, which is what every
+phone editor does.
+
+It is a property of the *clip*, not a second clip on a lower track: it is the
+same picture, and anything that moves, trims or re-times the shot has to carry
+it. A backdrop built from a duplicate would come apart the first time either was
+touched — the argument §25 makes for attaching a transition to its clip.
+
+Three details that are each a test. The backdrop does **not** inherit the clip's
+own framing, so a shot pushed to one side still has a full frame behind it. It
+is skipped entirely when the clip already covers the frame, where it would be a
+second decode and a second draw of something nobody can see. And it is not drawn
+during a transition: both clips are moving then, and a backdrop would be revealed
+at the edges as they slide — a picture of the bug rather than of the shot.
+
+It does carry the clip's opacity and its animation, which took a correction. The
+backdrop used to be forced fully opaque so a half-transparent shot still had a
+full frame behind it; that reasoning only holds over black, and over another
+track it meant a clip at any opacity blotted out everything beneath it — a clip
+faded to nothing still covered the frame with a blurred copy of itself.
+
+Where there is no picture at all, the frame shows the **background** colour from
+the whole-video tab: black by default, which is what it always was, and the
+answer to black bars for anyone who would rather have white or a brand colour.
+It is stated in sRGB like every other colour here and converted once on the way
+to the clear, because the target encodes on write and a value handed over
+unconverted comes out visibly pale.
+
 ### Changing shape for another platform
 
 §36's resize is about the canvas: the **shape** row in the Inspector switches
@@ -878,6 +1145,19 @@ undo step.
 Clips with a movement of their own are deliberately left alone and counted
 separately in the message. A Ken Burns push is framing the user wrote by hand;
 flattening it to one number would throw away work that cannot be guessed back.
+
+### Cutting on the beat
+
+**Cut on Beats** splits a clip at every beat of its music. Both halves of it
+already existed and were tested — where the beats are, and cutting a clip at a
+list of instants — so the feature is the joining, plus one piece of judgement:
+more than four hundred cuts is refused with the count rather than performed. A
+whole song at 120 bpm is a thousand clips and an undo step nobody can see the
+end of.
+
+The beats come from the sound and the cut lands on the clip, which carries its
+linked partner (§12): cutting a music video on the beat means cutting the
+picture, not the song.
 
 ### Finding the cuts in footage
 

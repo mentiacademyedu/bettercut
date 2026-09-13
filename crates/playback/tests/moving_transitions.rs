@@ -123,17 +123,41 @@ fn every_moving_transition_lands_the_next_shot_square() {
     }
 }
 
-/// Everything that shows two clips at once needs handles; only a fade through
-/// black works against the very start or end of a file.
+/// Everything that shows two clips at once needs handles. The ones that work
+/// against the very start or end of a file are the two that cover the cut with
+/// a colour instead: a fade through black, and a flash.
+///
+/// Listed rather than read back from `needs_handles`, which is the whole point
+/// — asking the function under test what to expect passes whatever it answers.
+/// A blur dissolve is on the handled side despite covering the cut, because it
+/// is a crossfade underneath and both shots are on screen.
 #[test]
 fn the_moving_kinds_need_handles() {
-    assert!(!TransitionKind::FadeThroughBlack.needs_handles());
+    for kind in [TransitionKind::FadeThroughBlack, TransitionKind::Flash] {
+        assert!(
+            !kind.needs_handles(),
+            "{} claims to need footage it never reads",
+            kind.label()
+        );
+    }
     for kind in [
         TransitionKind::Crossfade,
         TransitionKind::Slide,
         TransitionKind::Push,
         TransitionKind::Zoom,
+        TransitionKind::Blur,
     ] {
         assert!(kind.needs_handles(), "{} claims to need none", kind.label());
     }
+}
+
+/// And between them those two lists are the whole enum — so a kind added
+/// without a thought about handles fails here rather than at a user's cut.
+#[test]
+fn every_kind_is_accounted_for_above() {
+    assert_eq!(
+        TransitionKind::ALL.len(),
+        7,
+        "a transition kind was added or removed; say which side of the handle rule it is on in `the_moving_kinds_need_handles`"
+    );
 }

@@ -20,6 +20,11 @@ eframe.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+# Golden frames for §25's flash use the *shipped* generated-layer frame rather
+# than a copy of it, so the picture under test is the one that ships. Playback
+# does not depend on the renderer, so this is not a cycle.
+bettercut-playback.workspace = true
+bettercut-project-format.workspace = true
 # Only to drive wgpu's async device setup from a synchronous test. wgpu
 # already depends on it, so this adds nothing to the build.
 pollster = "0.4"

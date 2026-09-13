@@ -1,4 +1,4 @@
-//! Finding the cuts in footage: scene detection (§45 "Scene detection").
+//! Finding the cuts in footage: scene detection (Milestone 12's "Scene detection").
 //!
 //! A file that came off a camera in one take has no cuts in it, but a file
 //! exported from somewhere else — a screen recording, a download, last year's

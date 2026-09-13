@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "punchy-reel",
+  "name": "Punchy Reel",
+  "category": "Social",
+  "duration": 6.0,
+  "description": "Three shots that snap in, a flash on the first cut, and a title that spins on.",
+  "slots": [
+    { "id": "shot_one", "type": "video", "label": "First shot" },
+    { "id": "shot_two", "type": "video", "label": "Second shot" },
+    { "id": "shot_three", "type": "video", "label": "Third shot" },
+    { "id": "headline", "type": "text", "label": "Headline", "default_text": "WAIT FOR IT" },
+    { "id": "music", "type": "audio", "label": "Music" }
+  ],
+  "elements": [
+    { "type": "clip", "slot": "shot_one", "start": 0, "duration": 2,
+      "animation": { "in": { "kind": "slide_right", "duration": 0.4 } },
+      "transition_out": { "kind": "flash", "duration": 0.3 } },
+    { "type": "clip", "slot": "shot_two", "start": 2, "duration": 2,
+      "animation": { "in": { "kind": "pop", "duration": 0.35 } },
+      "transition_out": { "kind": "fade_through_black", "duration": 0.4 } },
+    { "type": "clip", "slot": "shot_three", "start": 4, "duration": 2,
+      "animation": { "in": { "kind": "slide_left", "duration": 0.4 },
+                     "out": { "kind": "fade", "duration": 0.5 } },
+      "movement": "zoom_in" },
+    { "type": "text", "slot": "headline", "start": 0.4, "duration": 2.2,
+      "transform": { "position": [0.0, 0.28] },
+      "style": { "size": 96, "weight": "bold" },
+      "animation": { "in": { "kind": "spin", "duration": 0.5 },
+                     "out": { "kind": "fade", "duration": 0.3 } } },
+    { "type": "audio", "slot": "music", "start": 0, "duration": 6, "volume": 0.85,
+      "fade_out": 1.0 }
+  ]
+}

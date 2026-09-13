@@ -130,6 +130,60 @@ fn a_projects_own_recovery_directory_is_never_in_the_temp_root() {
     assert!(unsaved.dir.starts_with(&temp_root));
 }
 
+/// The other half of the arithmetic: sessions arrive one per run, and only a
+/// clean quit takes its own away again. Nothing called `shutdown`, so none of
+/// them ever were — a saved project accumulated a `recovery` directory beside
+/// it that the pruner deliberately will not touch, and the next launch offered
+/// to restore work the user already had on disk.
+#[test]
+fn a_clean_quit_removes_its_own_recovery_data() {
+    let root = scratch("clean-quit");
+    let project = root.join("film.vproj");
+
+    let (mut editor, _rx) = Editor::new_project("Quit");
+    editor.save_as(&project).expect("save");
+
+    // Leftovers from a previous run of this same project, where its journal
+    // now points. Saved, so the editor has nothing outstanding.
+    let beside = plant_session(&root, "recovery");
+    assert!(beside.exists());
+    assert!(!editor.is_dirty());
+
+    assert!(editor.shutdown(), "a clean quit reported keeping its data");
+    assert!(
+        !beside.exists(),
+        "quitting left {} behind for the next launch to offer back",
+        beside.display()
+    );
+}
+
+/// And the half that must not happen. There is no prompt on the close button,
+/// so quitting with edits outstanding loses them unless the journal survives —
+/// which makes that quit, to the work, exactly the crash §39 is for.
+#[test]
+fn quitting_with_unsaved_changes_keeps_the_recovery_data() {
+    let root = scratch("dirty-quit");
+    let project = root.join("film.vproj");
+
+    let (mut editor, _rx) = Editor::new_project("Quit");
+    editor.save_as(&project).expect("save");
+
+    // An edit after the save: journalled, and not on disk anywhere else.
+    editor.add_video_track("V2").expect("add track");
+    let beside = root.join("recovery");
+    assert!(beside.exists(), "the edit was not journalled");
+    assert!(editor.is_dirty());
+
+    assert!(
+        !editor.shutdown(),
+        "a quit with unsaved work reported discarding it"
+    );
+    assert!(
+        beside.exists(),
+        "quitting threw away the only copy of an unsaved edit"
+    );
+}
+
 /// Backdate a session by rewriting its snapshot's modification time.
 fn set_age(dir: &Path, age: Duration) {
     let when = SystemTime::now()
@@ -193,5 +247,30 @@ fn this_processs_own_sessions_are_never_pruned() {
     assert!(
         doomed.is_empty(),
         "the running session's own recovery data was marked for deletion"
+    );
+}
+
+/// Pruning happens on a thread now, so it can run while the user is still
+/// deciding what to do about a session the scan offered — and a session old
+/// enough to prune is still one the scan will offer, so the two really can meet
+/// on the same directory.
+///
+/// What makes that safe is that recovery reads the work into memory when it
+/// finds it. Losing the files afterwards must not lose the project.
+#[test]
+fn recovered_work_survives_its_files_being_pruned_underneath_it() {
+    let root = scratch("pruned-underneath");
+    let dir = plant_session(&root, "1234-doomed");
+
+    let session = recover(RecoveryPaths { dir: dir.clone() }).expect("recoverable");
+
+    // The prune, arriving after the scan handed the work over.
+    std::fs::remove_dir_all(&dir).expect("remove");
+    assert!(!dir.exists());
+
+    let project = session.accept();
+    assert_eq!(
+        project.name, "Planted",
+        "the recovered project did not survive its files going"
     );
 }

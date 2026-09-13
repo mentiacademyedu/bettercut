@@ -39,8 +39,10 @@ pub use beat_markers::beat_markers;
 pub use cache::{FrameCache, FrameKey};
 pub use duck::{DuckSettings, duck_envelope};
 pub use engine::{
-    AudibleClip, LayerRequest, LayerSource, PlaybackEngine, ProxySource, ResolvedLayer,
-    layer_requests, layer_transform, resolve_audio_tracks, source_time_of,
+    AudibleClip, LayerRequest, LayerSource, MAX_TRANSITION_BLUR, PlaybackEngine, ProxySource,
+    ResolvedLayer, SMEAR_SAMPLES, adjustments_at, flash_alpha, graded_beneath, grain_seed,
+    layer_requests, layer_transform, load_luts, resolve_audio_tracks, smear, solid_frame,
+    source_time_of, transition_blur,
 };
 pub use error::PlaybackError;
 pub use filmstrip_job::{FilmstripJob, TILE_WIDTH, TILES};

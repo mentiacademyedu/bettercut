@@ -42,6 +42,19 @@ pub const TRANSITION: Color32 = Color32::from_rgb(214, 226, 240);
 /// a title is a different kind of thing and the lane is read at a glance.
 pub const TEXT_CLIP: Color32 = Color32::from_rgb(126, 96, 178);
 pub const TEXT_CLIP_TOP: Color32 = Color32::from_rgb(152, 120, 206);
+
+/// Adjustment clips: amber, because an adjustment changes the colour of what is
+/// beneath it, and it has to read at a glance as neither a picture nor a title.
+/// The in and out marks, and the span between them across the lanes.
+pub const IN_OUT_MARK: Color32 = Color32::from_rgb(120, 200, 255);
+pub const IN_OUT_SPAN: Color32 = Color32::from_rgba_premultiplied(20, 40, 60, 40);
+
+/// A fade handle on a sound clip's corner: near-white, so it reads on any
+/// clip colour and is not mistaken for a volume point's yellow.
+pub const FADE_HANDLE: Color32 = Color32::from_rgb(240, 240, 240);
+
+pub const ADJUSTMENT_CLIP: Color32 = Color32::from_rgb(168, 124, 52);
+pub const ADJUSTMENT_CLIP_TOP: Color32 = Color32::from_rgb(198, 152, 74);
 pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
 pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
 pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);
@@ -50,6 +63,7 @@ pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);
 pub const TRACK_HEADER_WIDTH: f32 = 148.0;
 /// Height of the timecode ruler above the tracks.
 pub const RULER_HEIGHT: f32 = 26.0;
+/// A lane at the normal height; `state::LaneHeight` offers smaller and larger.
 pub const TRACK_HEIGHT: f32 = 58.0;
 pub const TRACK_GAP: f32 = 2.0;
 pub const CLIP_CORNER_RADIUS: u8 = 4;

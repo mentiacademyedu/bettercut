@@ -272,7 +272,7 @@ fn a_point_cannot_be_dragged_past_its_neighbour() {
     assert_eq!(
         harness.gain_at(sound, 15),
         1.0,
-        "the dragged point ended up past the end of the duck, so the music is          still coming back up at fifteen seconds"
+        "the dragged point ended up past the end of the duck, so the music is still coming back up at fifteen seconds"
     );
     let last = harness
         .editor

@@ -8,11 +8,19 @@ pub mod command;
 pub mod editor;
 pub mod error;
 pub mod event;
+pub mod gaps;
 pub mod hardware;
 pub mod history;
 pub mod journal;
 pub mod ops;
+pub mod pip;
 pub mod recovery;
+pub mod replace;
+pub mod reshape;
+pub mod slideshow;
+pub mod speed_ramp;
+pub mod split_screen;
+pub mod swap;
 pub mod template_apply;
 
 pub use bettercut_timeline::{Movement, ZOOM_AMOUNT};
@@ -26,10 +34,15 @@ pub use event::{Event, EventReceiver, EventSender, event_channel};
 pub use hardware::HardwareProfile;
 pub use history::{DEFAULT_HISTORY_LIMIT, History};
 pub use journal::{Journal, RecoveryPaths};
+pub use pip::{PipCorner, PipSize};
 pub use recovery::{
     KEEP_UNSAVED_AT_MOST, KEEP_UNSAVED_FOR, RecoverableSession, prune_unsaved, recover,
     scan_unsaved, stale_sessions, unsaved_sessions,
 };
+pub use reshape::{SHAPES, Shape};
+pub use speed_ramp::SpeedRamp;
+pub use split_screen::SplitLayout;
+pub use swap::Neighbour;
 pub use template_apply::{AppliedTemplate, SlotFill};
 
 // Re-exported so the UI crate needs one dependency for the whole core, and so

@@ -1,4 +1,4 @@
-//! The preview's drag handles must sit on the picture (§41, §54).
+//! The preview's drag handles must sit on the picture (§54).
 //!
 //! `preview_overlay::layer_box` works out where a clip lands in the frame by
 //! inverting the matrix `layer_uniform` builds. That derivation is exactly the
@@ -16,28 +16,43 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use bettercut_editor_core::timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
+use bettercut_editor_core::timeline::{
+    ClipLook, ColorAdjust, MasterLook, Resolution, Transform, Vec2,
+};
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_ui::preview_overlay::layer_box;
+use bettercut_ui::preview_overlay::{clip_box, layer_box};
 
 /// Output size. Large enough that a one-texel disagreement is well under the
 /// tolerance, small enough to composite in milliseconds.
 const OUT_W: u32 = 320;
 const OUT_H: u32 = 320;
 
+/// One GPU device for the whole binary, shared by every test in it.
+///
+/// libtest runs tests on parallel threads, and a device per test meant several
+/// being created at once — which deadlocks this machine's driver and hung the
+/// whole workspace run with no output. `pixel_read.rs` has the full account.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
             .ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("preview handle test"),
-        ..Default::default()
-    }))
-    .ok()
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("preview handle test"),
+                ..Default::default()
+            }))
+            .ok()
+        })
+        .clone()
 }
 
 macro_rules! gpu_or_skip {
@@ -78,6 +93,23 @@ fn rendered_box(
     source: (u32, u32),
     transform: Transform,
 ) -> egui::Rect {
+    rendered_cropped_box(
+        device,
+        queue,
+        source,
+        bettercut_editor_core::timeline::Crop::NONE,
+        transform,
+    )
+}
+
+/// Where the renderer actually draws a *cropped* clip.
+fn rendered_cropped_box(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: (u32, u32),
+    crop: bettercut_editor_core::timeline::Crop,
+    transform: Transform,
+) -> egui::Rect {
     let mut compositor = Compositor::new(
         device.clone(),
         queue.clone(),
@@ -90,10 +122,21 @@ fn rendered_box(
         .composite(
             &[Layer {
                 frame: &frame,
-                transform,
-                opacity: 1.0,
-                color: ColorAdjust::default(),
-                blur: 0.0,
+                look: ClipLook {
+                    sharpen: 0.0,
+                    lut: None,
+                    rgb_split: 0.0,
+                    glitch: 0.0,
+                    reflection: bettercut_editor_core::timeline::Reflection::None,
+                    crop,
+                    transform,
+                    opacity: 1.0,
+                    color: ColorAdjust::default(),
+                    blur: 0.0,
+                    chroma_key: None,
+                    mask: None,
+                    blend: bettercut_editor_core::timeline::BlendMode::Normal,
+                },
             }],
             MasterLook::default(),
         )
@@ -308,6 +351,87 @@ fn the_check_notices_a_wrong_box() {
     );
 }
 
+/// §22's crop reshapes the picture, so the handles have to reshape with it.
+///
+/// The case the test above never had. The preview computed its box from the
+/// *source's* shape while the renderer fitted the *cropped* one, so every
+/// cropped clip had its move, scale and rotate handles drawn around a shape the
+/// picture no longer was — and nothing noticed, because no case here cropped.
+#[test]
+fn the_handle_box_follows_a_crop() {
+    use bettercut_editor_core::timeline::Crop;
+
+    let (device, queue) = gpu_or_skip!();
+    let tolerance = 2.0 / OUT_W as f32;
+    let output_aspect = OUT_W as f32 / OUT_H as f32;
+
+    let cases: &[(&str, (u32, u32), Crop, Transform)] = &[
+        // Square source cropped to a wide band: it should come out letterboxed.
+        (
+            "square cropped top and bottom",
+            (256, 256),
+            Crop {
+                top: 0.3,
+                bottom: 0.3,
+                ..Crop::NONE
+            },
+            transform(0.0, 0.0, 1.0, 1.0),
+        ),
+        // Square cropped unevenly to a narrow column: pillarboxed.
+        (
+            "square cropped at the sides",
+            (256, 256),
+            Crop {
+                left: 0.35,
+                right: 0.1,
+                ..Crop::NONE
+            },
+            transform(0.0, 0.0, 1.0, 1.0),
+        ),
+        // A wide source cropped back to square fills the square frame, where
+        // uncropped it would letterbox — the case the old box got most wrong.
+        (
+            "16:9 cropped to square",
+            (320, 180),
+            Crop {
+                left: 0.21875,
+                right: 0.21875,
+                ..Crop::NONE
+            },
+            transform(0.0, 0.0, 1.0, 1.0),
+        ),
+        (
+            "cropped, then moved and scaled",
+            (256, 256),
+            Crop {
+                top: 0.25,
+                bottom: 0.25,
+                ..Crop::NONE
+            },
+            transform(0.15, -0.1, 0.6, 0.6),
+        ),
+    ];
+
+    for (name, source, crop, transform) in cases {
+        let source_aspect = source.0 as f32 / source.1 as f32;
+        let predicted = clip_box(source_aspect, output_aspect, *crop, *transform);
+        let actual = rendered_cropped_box(&device, &queue, *source, *crop, *transform);
+
+        for (edge, a, b) in [
+            ("left", predicted.left(), actual.left()),
+            ("right", predicted.right(), actual.right()),
+            ("top", predicted.top(), actual.top()),
+            ("bottom", predicted.bottom(), actual.bottom()),
+        ] {
+            assert!(
+                (a - b).abs() <= tolerance,
+                "{name}: the handles put the {edge} edge at {a:.4} and the \
+                 renderer drew the cropped picture's edge at {b:.4}"
+            );
+        }
+    }
+}
+
 /// §54's rotate handle: the turned box has to sit on the turned picture.
 ///
 /// On a 16:9 frame, because that is where rotation used to go wrong — the
@@ -341,10 +465,21 @@ fn a_rotated_clips_corners_sit_on_its_picture() {
         .composite(
             &[Layer {
                 frame: &frame,
-                transform,
-                opacity: 1.0,
-                color: ColorAdjust::default(),
-                blur: 0.0,
+                look: ClipLook {
+                    sharpen: 0.0,
+                    lut: None,
+                    rgb_split: 0.0,
+                    glitch: 0.0,
+                    reflection: bettercut_editor_core::timeline::Reflection::None,
+                    crop: bettercut_editor_core::timeline::Crop::NONE,
+                    transform,
+                    opacity: 1.0,
+                    color: ColorAdjust::default(),
+                    blur: 0.0,
+                    chroma_key: None,
+                    mask: None,
+                    blend: bettercut_editor_core::timeline::BlendMode::Normal,
+                },
             }],
             MasterLook::default(),
         )

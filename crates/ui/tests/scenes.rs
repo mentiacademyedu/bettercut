@@ -1,4 +1,4 @@
-//! Find Cuts, through the window (§45).
+//! Find Cuts, through the window (Milestone 12).
 //!
 //! The window's job is to wait for a worker without looking broken, then show
 //! what was found and cut only when told. The detection itself is tested in

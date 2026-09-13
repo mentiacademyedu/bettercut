@@ -1,22 +1,31 @@
-//! How a title arrives and leaves (§26).
+//! How a title or a shot arrives and leaves (§26).
 //!
-//! A title with an entrance and an exit, rather than a picture that blinks on
+//! Something with an entrance and an exit, rather than a picture that blinks on
 //! and off — the single most requested thing in a short-form editor, and one
 //! that keyframes can do but nobody wants to key by hand for every caption.
 //!
 //! ## Presets, not curves
 //!
-//! Five motions, each a fixed recipe of opacity, offset, scale or reveal. A
-//! preset is one choice in a dropdown and one number for its length; the
-//! keyframe editor already exists for anyone who wants something else.
+//! A handful of motions, each a fixed recipe of opacity, offset, scale, turn or
+//! reveal. A preset is one choice in a dropdown and one number for its length;
+//! the keyframe editor already exists for anyone who wants something else.
+//!
+//! ## One set, two subjects
+//!
+//! [`TextAnimation`] animates a title and [`ClipMotion`] a picture clip, and
+//! they share every preset and all of the arithmetic. An editor in which "slide
+//! up" means one thing on a caption and another on a shot is one nobody can
+//! predict. The single difference is how far a slide travels: a caption is
+//! nudged and read, a shot comes in from outside the frame.
 //!
 //! ## Evaluated here, once
 //!
-//! [`TextAnimation::look`] is the one place a title's appearance at an instant
-//! is decided, and both the preview and the export call it (§46) — the same
-//! arrangement as `VideoClip::look_at` for keyframes. The progress through a
-//! motion is a ratio of two integer tick distances, the one kind of fraction
-//! §74 allows: it is the answer being asked for, not a position being stored.
+//! Their `look` methods are the one place an animated subject's appearance at
+//! an instant is decided, and both the preview and the export call them (§46) —
+//! the same arrangement as `VideoClip::look_at` for keyframes. The progress
+//! through a motion is a ratio of two integer tick distances, the one kind of
+//! fraction §74 allows: it is the answer being asked for, not a position being
+//! stored.
 
 use bettercut_foundation::TimelineTime;
 use serde::{Deserialize, Serialize};
@@ -33,18 +42,40 @@ pub enum MotionKind {
     SlideUp,
     /// Moves downward while fading: in from above, or out through the bottom.
     SlideDown,
+    /// Moves rightward while fading: in from the left, or out to the right.
+    SlideRight,
+    /// Moves leftward while fading: in from the right, or out to the left.
+    SlideLeft,
     /// Grows from half size with a slight overshoot, or shrinks away.
     Pop,
+    /// Turns into place, or turns away.
+    Spin,
     /// Letters appear one at a time, or disappear from the end.
     Typewriter,
 }
 
 impl MotionKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Fade,
         Self::SlideUp,
         Self::SlideDown,
+        Self::SlideRight,
+        Self::SlideLeft,
         Self::Pop,
+        Self::Spin,
+    ];
+
+    /// The ones a title can also do. A picture has no letters to reveal, so
+    /// the typewriter is a title's alone — offering it on a clip would be a
+    /// preset that visibly does nothing.
+    pub const FOR_TEXT: [Self; 8] = [
+        Self::Fade,
+        Self::SlideUp,
+        Self::SlideDown,
+        Self::SlideRight,
+        Self::SlideLeft,
+        Self::Pop,
+        Self::Spin,
         Self::Typewriter,
     ];
 
@@ -53,7 +84,10 @@ impl MotionKind {
             Self::Fade => "Fade",
             Self::SlideUp => "Slide up",
             Self::SlideDown => "Slide down",
+            Self::SlideRight => "Slide right",
+            Self::SlideLeft => "Slide left",
             Self::Pop => "Pop",
+            Self::Spin => "Spin",
             Self::Typewriter => "Typewriter",
         }
     }
@@ -81,8 +115,23 @@ pub const DEFAULT_MOTION: TimelineTime = TimelineTime::from_ticks(384_000);
 pub const MIN_MOTION: TimelineTime = TimelineTime::from_ticks(96_000);
 pub const MAX_MOTION: TimelineTime = TimelineTime::from_seconds(3);
 
-/// How far a slide travels, as a fraction of the frame's height.
-const SLIDE_DISTANCE: f32 = 0.08;
+/// How far a *title* slides, as a fraction of the frame.
+///
+/// A nudge, not an arrival: a caption that flew in from off-screen would be
+/// unreadable for the first half of its entrance, and the fade is what does the
+/// work of announcing it.
+const TITLE_TRAVEL: f32 = 0.08;
+
+/// How far a *picture* slides.
+///
+/// A whole frame, because that is what puts the clip off-screen: the position
+/// is doubled into clip space, so 1.0 carries the centre past the far edge and
+/// the shot genuinely enters from outside the frame rather than sliding within
+/// it (§59).
+const CLIP_TRAVEL: f32 = 1.0;
+
+/// How far a spin turns before settling.
+const SPIN_DEGREES: f32 = 180.0;
 
 /// A title's entrance and exit. Neither, by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -129,52 +178,155 @@ impl TextAnimation {
         position: TimelineTime,
         chars: usize,
     ) -> TextLook {
-        let mut look = TextLook {
+        evaluate(
+            self.intro,
+            self.outro,
             transform,
             opacity,
-            reveal: None,
-        };
-        if self.is_none() {
-            return look;
-        }
+            span,
+            position,
+            chars,
+            TITLE_TRAVEL,
+        )
+    }
+}
 
-        let length = span.duration().ticks().max(1);
-        let (intro, outro) = self.fitted(length);
-        let into = (position.ticks() - span.start.ticks()).clamp(0, length);
-        let left = (span.end.ticks() - position.ticks()).clamp(0, length);
+/// A picture clip's entrance and exit (Clip animations).
+///
+/// The same presets a title gets, and deliberately the same code: an editor in
+/// which "slide up" means one thing on a caption and another on a shot is an
+/// editor nobody can predict. What differs is how far a slide travels — a
+/// caption is nudged, a shot arrives from outside the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ClipMotion {
+    #[serde(default)]
+    pub intro: Option<Motion>,
+    #[serde(default)]
+    pub outro: Option<Motion>,
+}
 
-        if let Some((kind, ticks)) = intro {
-            apply(
-                &mut look,
-                kind,
-                presence(into, ticks),
-                Edge::Entering,
-                chars,
-            );
-        }
-        if let Some((kind, ticks)) = outro {
-            apply(&mut look, kind, presence(left, ticks), Edge::Leaving, chars);
-        }
-        look
+impl ClipMotion {
+    pub fn is_none(&self) -> bool {
+        self.intro.is_none() && self.outro.is_none()
     }
 
-    /// Both lengths, in ticks, shrunk in proportion when together they are
-    /// longer than the clip — so a short caption with a long entrance and exit
-    /// still reaches full presence at its middle rather than never arriving.
-    fn fitted(&self, length: i64) -> (Timed, Timed) {
-        let intro = self.intro.map(|m| (m.kind, m.duration.ticks().max(1)));
-        let outro = self.outro.map(|m| (m.kind, m.duration.ticks().max(1)));
-        let total = intro.map_or(0, |m| m.1) + outro.map_or(0, |m| m.1);
-        if total <= length {
-            return (intro, outro);
+    /// Every length inside the allowed range, as [`TextAnimation::sanitized`].
+    pub fn sanitized(self) -> Self {
+        let fix = |m: Option<Motion>| m.map(|m| Motion::new(m.kind, m.duration));
+        Self {
+            intro: fix(self.intro),
+            outro: fix(self.outro),
         }
-        let shrink = |(kind, ticks): (MotionKind, i64)| {
-            // i128: a tick count times a tick count is past i64 for long clips.
-            let scaled = (i128::from(ticks) * i128::from(length) / i128::from(total)) as i64;
-            (kind, scaled.max(1))
-        };
-        (intro.map(shrink), outro.map(shrink))
     }
+
+    /// How long the entrance and the exit take, in ticks.
+    ///
+    /// For drawing them on the timeline, where they are the same ramps a
+    /// sound's fades get: a clip that is arriving should look like it, not like
+    /// an ordinary clip with a badge on it.
+    pub fn ramps(&self) -> (i64, i64) {
+        (
+            self.intro.map_or(0, |m| m.duration.ticks()),
+            self.outro.map_or(0, |m| m.duration.ticks()),
+        )
+    }
+
+    /// The clip's transform and opacity at `position`, given how it looks when
+    /// fully present.
+    ///
+    /// Applied on top of the clip's own transform rather than replacing it, so
+    /// a shot that has been scaled and moved slides in from off-frame to where
+    /// the user put it — not to the middle.
+    pub fn look(
+        &self,
+        transform: Transform,
+        opacity: f32,
+        span: TimelineRange,
+        position: TimelineTime,
+    ) -> (Transform, f32) {
+        let look = evaluate(
+            self.intro,
+            self.outro,
+            transform,
+            opacity,
+            span,
+            position,
+            0,
+            CLIP_TRAVEL,
+        );
+        (look.transform, look.opacity)
+    }
+}
+
+/// One instant of an entrance and an exit, whichever subject they belong to.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the subject's whole state at an instant; splitting it would only \
+              move the arguments into a struct nobody else has a use for"
+)]
+fn evaluate(
+    intro: Option<Motion>,
+    outro: Option<Motion>,
+    transform: Transform,
+    opacity: f32,
+    span: TimelineRange,
+    position: TimelineTime,
+    chars: usize,
+    travel: f32,
+) -> TextLook {
+    let mut look = TextLook {
+        transform,
+        opacity,
+        reveal: None,
+    };
+    if intro.is_none() && outro.is_none() {
+        return look;
+    }
+
+    let length = span.duration().ticks().max(1);
+    let (intro, outro) = fitted(intro, outro, length);
+    let into = (position.ticks() - span.start.ticks()).clamp(0, length);
+    let left = (span.end.ticks() - position.ticks()).clamp(0, length);
+
+    if let Some((kind, ticks)) = intro {
+        apply(
+            &mut look,
+            kind,
+            presence(into, ticks),
+            Edge::Entering,
+            chars,
+            travel,
+        );
+    }
+    if let Some((kind, ticks)) = outro {
+        apply(
+            &mut look,
+            kind,
+            presence(left, ticks),
+            Edge::Leaving,
+            chars,
+            travel,
+        );
+    }
+    look
+}
+
+/// Both lengths, in ticks, shrunk in proportion when together they are longer
+/// than the clip — so a short caption with a long entrance and exit still
+/// reaches full presence at its middle rather than never arriving.
+fn fitted(intro: Option<Motion>, outro: Option<Motion>, length: i64) -> (Timed, Timed) {
+    let intro = intro.map(|m| (m.kind, m.duration.ticks().max(1)));
+    let outro = outro.map(|m| (m.kind, m.duration.ticks().max(1)));
+    let total = intro.map_or(0, |m| m.1) + outro.map_or(0, |m| m.1);
+    if total <= length {
+        return (intro, outro);
+    }
+    let shrink = |(kind, ticks): (MotionKind, i64)| {
+        // i128: a tick count times a tick count is past i64 for long clips.
+        let scaled = (i128::from(ticks) * i128::from(length) / i128::from(total)) as i64;
+        (kind, scaled.max(1))
+    };
+    (intro.map(shrink), outro.map(shrink))
 }
 
 /// A motion's kind and its length in ticks, once fitted to the clip.
@@ -192,7 +344,14 @@ fn presence(distance: i64, length: i64) -> f32 {
     (distance as f64 / length as f64).clamp(0.0, 1.0) as f32
 }
 
-fn apply(look: &mut TextLook, kind: MotionKind, presence: f32, edge: Edge, chars: usize) {
+fn apply(
+    look: &mut TextLook,
+    kind: MotionKind,
+    presence: f32,
+    edge: Edge,
+    chars: usize,
+    travel: f32,
+) {
     if presence >= 1.0 {
         return;
     }
@@ -207,8 +366,31 @@ fn apply(look: &mut TextLook, kind: MotionKind, presence: f32, edge: Edge, chars
                 Edge::Entering => upward,
                 Edge::Leaving => !upward,
             };
-            let away = SLIDE_DISTANCE * (1.0 - eased);
+            let away = travel * (1.0 - eased);
             look.transform.position.y += if below { away } else { -away };
+            look.opacity *= eased;
+        }
+        MotionKind::SlideRight | MotionKind::SlideLeft => {
+            // Positive x is rightward. Sliding right means arriving from the
+            // left and leaving off the right.
+            let rightward = kind == MotionKind::SlideRight;
+            let left_of_home = match edge {
+                Edge::Entering => rightward,
+                Edge::Leaving => !rightward,
+            };
+            let away = travel * (1.0 - eased);
+            look.transform.position.x += if left_of_home { -away } else { away };
+            look.opacity *= eased;
+        }
+        MotionKind::Spin => {
+            // Anticlockwise into place, clockwise away — the same direction of
+            // travel through the whole clip, so an intro and an outro read as
+            // one movement rather than a wobble.
+            let turn = SPIN_DEGREES * (1.0 - eased);
+            look.transform.rotation_degrees += match edge {
+                Edge::Entering => -turn,
+                Edge::Leaving => turn,
+            };
             look.opacity *= eased;
         }
         MotionKind::Pop => {
@@ -328,6 +510,111 @@ mod tests {
         };
         assert_eq!(at(long, 2000).opacity, 1.0);
         assert!((at(long, 1000).opacity - 0.5).abs() < 1e-6);
+    }
+
+    fn clip_motion(intro: MotionKind, outro: MotionKind) -> ClipMotion {
+        ClipMotion {
+            intro: Some(Motion::new(intro, secs(1))),
+            outro: Some(Motion::new(outro, secs(1))),
+        }
+    }
+
+    /// `(transform, opacity)` for a picture clip `ms` into the same span.
+    fn clip_at(motion: ClipMotion, ms: i64) -> (Transform, f32) {
+        motion.look(Transform::default(), 1.0, span(), millis(10_000 + ms))
+    }
+
+    /// The difference between a caption and a shot. A title is nudged, because
+    /// a caption that flew in from off-screen would be unreadable while it
+    /// travelled; a shot arrives from outside the frame, which is what the
+    /// animation is *for*.
+    #[test]
+    fn a_picture_arrives_from_outside_the_frame_and_a_title_only_leans_in() {
+        let picture = clip_at(clip_motion(MotionKind::SlideRight, MotionKind::Fade), 0);
+        assert!(
+            picture.0.position.x <= -1.0,
+            "the shot started inside the frame at {}",
+            picture.0.position.x
+        );
+
+        let title = at(animated(MotionKind::SlideUp, MotionKind::Fade), 0);
+        assert!(
+            title.transform.position.y.abs() < 0.2,
+            "a caption was thrown off-screen: {}",
+            title.transform.position.y
+        );
+    }
+
+    #[test]
+    fn sliding_right_enters_from_the_left_and_leaves_to_the_right() {
+        let right = clip_motion(MotionKind::SlideRight, MotionKind::SlideRight);
+        assert!(clip_at(right, 0).0.position.x < 0.0, "did not start left");
+        assert_eq!(clip_at(right, 2000).0.position.x, 0.0, "did not settle");
+        assert!(
+            clip_at(right, 3900).0.position.x > 0.0,
+            "did not leave right"
+        );
+
+        let left = clip_motion(MotionKind::SlideLeft, MotionKind::SlideLeft);
+        assert!(clip_at(left, 0).0.position.x > 0.0, "did not start right");
+        assert!(clip_at(left, 3900).0.position.x < 0.0, "did not leave left");
+    }
+
+    /// Anticlockwise in, clockwise out — one direction of travel through the
+    /// clip rather than a turn and a turn back, which reads as a wobble.
+    #[test]
+    fn a_spin_turns_one_way_through_the_whole_clip() {
+        let spin = clip_motion(MotionKind::Spin, MotionKind::Spin);
+        assert!(
+            clip_at(spin, 0).0.rotation_degrees < -90.0,
+            "did not turn in"
+        );
+        assert_eq!(clip_at(spin, 2000).0.rotation_degrees, 0.0, "never settled");
+        assert!(
+            clip_at(spin, 3900).0.rotation_degrees > 90.0,
+            "turned back the way it came"
+        );
+    }
+
+    /// An animation is *on top of* the clip's own placement. A shot the user
+    /// scaled and moved into a corner must slide in to that corner, not to the
+    /// middle of the frame.
+    #[test]
+    fn an_animation_leaves_the_clips_own_placement_alone() {
+        let placed = Transform {
+            position: crate::clip::Vec2::new(0.3, -0.2),
+            scale: crate::clip::Vec2::new(0.5, 0.5),
+            ..Transform::default()
+        };
+        let motion = clip_motion(MotionKind::SlideRight, MotionKind::Fade);
+
+        let middle = motion.look(placed, 1.0, span(), millis(12_000));
+        assert_eq!(middle.0, placed, "the clip did not settle where it was put");
+
+        let start = motion.look(placed, 1.0, span(), millis(10_000));
+        assert_eq!(
+            start.0.scale, placed.scale,
+            "the entrance rescaled the shot"
+        );
+        assert!(start.0.position.x < placed.position.x);
+        assert_eq!(start.0.position.y, placed.position.y);
+    }
+
+    /// A clip that is arriving should look like it on the timeline, the same
+    /// way a sound's fades and a title's entrance do — not like an ordinary
+    /// clip with a badge on it.
+    #[test]
+    fn a_motion_reports_its_length_for_drawing() {
+        assert_eq!(ClipMotion::default().ramps(), (0, 0), "nothing to draw");
+
+        let one = clip_motion(MotionKind::Fade, MotionKind::Spin);
+        assert_eq!(one.ramps(), (secs(1).ticks(), secs(1).ticks()));
+
+        let intro_only = ClipMotion {
+            intro: Some(Motion::new(MotionKind::Pop, millis(400))),
+            outro: None,
+        };
+        assert_eq!(intro_only.ramps(), (millis(400).ticks(), 0));
     }
 
     #[test]

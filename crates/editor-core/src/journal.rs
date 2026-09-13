@@ -393,6 +393,31 @@ mod tests {
         assert!(journal.snapshot_is_due());
     }
 
+    /// §50: a full disk must not stop the user editing — but it must not let
+    /// the editor quietly pretend to be protecting their work either. The count
+    /// is what the status bar reads to say so.
+    #[test]
+    fn a_journal_that_cannot_write_counts_the_failures() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A *file* where the recovery directory should be, so creating it
+        // fails the way a full disk or a read-only folder does.
+        let blocked = dir.path().join("recovery");
+        std::fs::write(&blocked, b"in the way").expect("write");
+
+        let mut journal = Journal::new(RecoveryPaths { dir: blocked });
+        assert_eq!(journal.write_failures(), 0);
+
+        journal.append(&rename("first"));
+        journal.append(&rename("second"));
+
+        assert_eq!(
+            journal.write_failures(),
+            2,
+            "the journal swallowed the failures without counting them"
+        );
+    }
+
     #[test]
     fn discarding_removes_the_recovery_data() {
         let dir = tempfile::tempdir().expect("tempdir");

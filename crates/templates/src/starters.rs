@@ -10,7 +10,7 @@
 use crate::{Template, parse};
 
 /// File name and contents, in the order the browser lists them.
-pub const FILES: [(&str, &str); 6] = [
+pub const FILES: [(&str, &str); 7] = [
     (
         "quick-intro.json",
         include_str!("../starters/quick-intro.json"),
@@ -29,6 +29,10 @@ pub const FILES: [(&str, &str); 6] = [
     ),
     ("outro.json", include_str!("../starters/outro.json")),
     ("meme.json", include_str!("../starters/meme.json")),
+    (
+        "punchy-reel.json",
+        include_str!("../starters/punchy-reel.json"),
+    ),
 ];
 
 /// Every starter that validates. All of them, unless a test has failed.

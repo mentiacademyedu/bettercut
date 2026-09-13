@@ -65,10 +65,14 @@ pub enum Element {
         duration: TimelineTime,
         track: usize,
         transform: Transform,
+        /// §22's crop. `Crop::NONE` for a template that asks for none.
+        crop: bettercut_timeline::Crop,
         opacity: f32,
         speed: Rational,
         transition_out: Option<(TransitionKind, TimelineTime)>,
         movement: Movement,
+        /// The entrance and exit. Neither, for a template that asks for none.
+        motion: bettercut_timeline::ClipMotion,
     },
     Text {
         slot: Option<String>,

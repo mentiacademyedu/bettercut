@@ -250,7 +250,7 @@ fn placing_unknown_media_is_refused() {
     );
 }
 
-/// §12: a video file is a picture clip and a sound clip, and §51's speed
+/// §12: a video file is a picture clip and a sound clip, and 's speed
 /// control has to treat them as one thing. Re-timing the picture alone is how
 /// the two drift apart the first time anyone touches the slider.
 #[test]

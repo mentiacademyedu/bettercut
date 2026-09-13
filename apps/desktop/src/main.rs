@@ -83,6 +83,11 @@ struct App {
 impl App {
     fn new(open: Option<std::path::PathBuf>, cc: &eframe::CreationContext<'_>) -> Self {
         let mut ui = UiState::default();
+        // The one place the real list is read and written: everything else,
+        // tests included, keeps an in-memory one.
+        ui.recent = bettercut_ui::recent::RecentProjects::stored_in(
+            bettercut_ui::recent::RecentProjects::default_file(),
+        );
 
         // A project that fails to open must not stop the app from starting:
         // §50 says a failure is reported and the session continues.
@@ -90,6 +95,7 @@ impl App {
             Some(path) => match Editor::open(&path) {
                 Ok(loaded) => {
                     tracing::info!(path = %path.display(), "opened project from command line");
+                    ui.recent.touch(&path);
                     loaded
                 }
                 Err(err) => {
@@ -136,11 +142,6 @@ impl App {
             None => tracing::warn!("running without a preview renderer"),
         }
 
-        // Abandoned sessions accumulate — one per editor, and only a clean
-        // shutdown removes its own — and nothing ever collected them. Pruned
-        // before the scan so the scan has less to look at.
-        bettercut_editor_core::prune_unsaved();
-
         // §39: look for work from a session that did not shut down cleanly.
         // Checked after the project is loaded so the prompt can say what it
         // would replace, and never applied without the user's say-so (§39.5).
@@ -148,6 +149,23 @@ impl App {
             bettercut_editor_core::RecoveryPaths::for_project(editor.path(), "previous"),
         )
         .or_else(|| bettercut_editor_core::scan_unsaved().into_iter().next());
+
+        // Abandoned sessions accumulate — one per editor, and only a clean
+        // shutdown removes its own — so a machine that has crashed a few times,
+        // or has run the test suite, can have thousands waiting.
+        //
+        // On a thread, because this is housekeeping and housekeeping has no
+        // business holding the window shut: deleting them took nine seconds
+        // here, ahead of anything being drawn.
+        //
+        // *After* the scan, and that order is the whole safety argument. The
+        // scan is synchronous and has already read what it found into memory
+        // by the time this starts, so a session it offers survives its own
+        // files being pruned underneath it — which can happen, because a
+        // session old enough to prune is still one the scan will offer. The
+        // thread is detached and may be killed at exit; pruning is idempotent
+        // and picks up where it left off next launch.
+        std::thread::spawn(bettercut_editor_core::prune_unsaved);
 
         if ui.pending_recovery.is_some() {
             tracing::info!("found recoverable work from a previous session");
@@ -282,21 +300,43 @@ impl eframe::App for App {
         );
         self.ui.export_dialog = dialog;
 
-        if let Some(settings) = requested {
-            match self.editor.active_sequence().map(|s| s.id) {
-                Some(sequence) => {
+        let files = requested.len();
+        for (index, request) in requested.into_iter().enumerate() {
+            // An extra shape exports a reshaped copy, so the edit on screen
+            // never changes shape under the user.
+            match self.editor.export_copy(request.shape) {
+                Ok((project, sequence)) => {
                     let job =
-                        bettercut_export::ExportJob::new(self.editor.project(), sequence, settings);
-                    let label = job.label_for_status();
+                        bettercut_export::ExportJob::new(&project, sequence, request.settings);
+                    if index == 0 {
+                        let label = job.label_for_status();
+                        self.ui.info(match files {
+                            1 => label,
+                            n => format!("{label}, then {} more shape(s)", n - 1),
+                        });
+                    }
                     self.proxies.submit_export(job);
-                    self.ui.info(label);
                     self.ui.needs_repaint = true;
                 }
-                None => self.ui.error("There is no sequence to export"),
+                Err(err) => self.ui.error(err.to_string()),
             }
         }
 
-        // §45: scene detection, started here for the same reason as export —
+        // A saved frame renders on the scheduler for the same reason: it opens
+        // a GPU device and seeks a decoder, neither of which the UI waits on.
+        if let Some((path, at)) = self.ui.still_request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    let job = bettercut_export::StillJob::new(project, sequence, at, path);
+                    self.ui
+                        .info(format!("Saving the frame at {}", at.format_timecode()));
+                    self.proxies.submit_still(job);
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // Milestone 12's scene detection, started here for the same reason as export —
         // it needs the scheduler, and the scheduler belongs to the shell.
         if let Some(clip) = self.ui.scene_request.take() {
             let threads = self
@@ -370,5 +410,15 @@ impl eframe::App for App {
     /// run to overwrite — the cache is disposable by construction (§67).
     fn on_exit(&mut self) {
         self.proxies.cancel_all();
+
+        // §39: this is the orderly shutdown `Journal::discard` is documented
+        // for, and nothing else reaches it. Without this every clean quit left
+        // its session behind, so the next launch offered to recover work the
+        // user already had — and, for a saved project, left a `recovery`
+        // directory sitting beside their project file for good.
+        //
+        // `shutdown` keeps the data when there are unsaved changes. That
+        // decision belongs with the journal, not here.
+        self.editor.shutdown();
     }
 }

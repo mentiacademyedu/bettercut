@@ -1,4 +1,4 @@
-//! The Find Cuts window (§45 "Scene detection").
+//! The Find Cuts window (Milestone 12's "Scene detection").
 //!
 //! Same shape as [`crate::silence_dialog`]: analyse, *show* what was found, and
 //! only cut when the user says so. The difference is that this one has to wait

@@ -46,6 +46,16 @@ pub enum AnimatedParameter {
     Brightness,
     Contrast,
     Saturation,
+    /// Warm or cool, on -1..1 (§45 "Colour adjustment → Cheap"). Zero leaves
+    /// the picture alone, positive warms it, negative cools it.
+    ///
+    /// An offset parameter among multipliers, which is why it defaults to zero
+    /// and the three above default to one: "no change" for a white balance is
+    /// no shift, and there is no meaningful `temperature × 1`.
+    Temperature,
+    /// Green or magenta, on -1..1. The other half of a white balance: the axis
+    /// a temperature alone cannot reach, and the one fluorescent light needs.
+    Tint,
     Blur,
     /// A clip's volume over time (§24 applied to §20a.4's clip-gain stage).
     ///
@@ -59,7 +69,7 @@ impl AnimatedParameter {
     /// Every picture parameter, in the order the inspector shows them.
     ///
     /// [`Self::Gain`] is deliberately not here — see its own note.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Opacity,
         Self::ScaleX,
         Self::ScaleY,
@@ -69,6 +79,8 @@ impl AnimatedParameter {
         Self::Brightness,
         Self::Contrast,
         Self::Saturation,
+        Self::Temperature,
+        Self::Tint,
         Self::Blur,
     ];
 
@@ -87,6 +99,10 @@ impl AnimatedParameter {
             // Zero renders nothing and cannot be dragged back out of.
             Self::ScaleX | Self::ScaleY => Some((0.01, 10.0)),
             Self::Brightness | Self::Contrast | Self::Saturation => Some((0.0, 4.0)),
+            // Symmetric about zero, because both directions are a real choice —
+            // unlike the multipliers above, where below one and above one are
+            // the same control seen from either side of its identity.
+            Self::Temperature | Self::Tint => Some((-1.0, 1.0)),
             Self::Blur => Some((0.0, crate::clip::MAX_BLUR)),
             // The same ceiling a track's own volume has: four times is already
             // a long way past where most material starts to distort.
@@ -111,7 +127,12 @@ impl AnimatedParameter {
             | Self::Contrast
             | Self::Saturation
             | Self::Gain => 1.0,
-            Self::PositionX | Self::PositionY | Self::Rotation | Self::Blur => 0.0,
+            Self::PositionX
+            | Self::PositionY
+            | Self::Rotation
+            | Self::Blur
+            | Self::Temperature
+            | Self::Tint => 0.0,
         }
     }
 
@@ -141,6 +162,8 @@ impl AnimatedParameter {
             Self::Brightness => "brightness",
             Self::Contrast => "contrast",
             Self::Saturation => "saturation",
+            Self::Temperature => "temperature",
+            Self::Tint => "tint",
             Self::Blur => "blur",
             Self::Gain => "volume",
         }
@@ -524,6 +547,28 @@ impl Keyframes {
         removed
     }
 
+    /// Which curve the mark at `time` should show, or `None` for an instant
+    /// with no keys on it.
+    ///
+    /// An instant can hold keys for several parameters — a scale is two, a
+    /// position two more — and the timeline draws one mark for all of them.
+    /// The first that is *not* a plain ramp wins, so a mark says "something
+    /// here is eased" rather than hiding it behind whichever parameter happened
+    /// to sort first. Linear only when every key there is linear.
+    pub fn interpolation_at(&self, time: MediaTime) -> Option<Interpolation> {
+        let mut found = None;
+        for track in &self.tracks {
+            let Some(key) = track.get(time) else {
+                continue;
+            };
+            if key.interpolation != Interpolation::Linear {
+                return Some(key.interpolation);
+            }
+            found = Some(key.interpolation);
+        }
+        found
+    }
+
     /// Every key time in the whole clip, sorted and deduplicated.
     ///
     /// What a keyframe row on the timeline draws, and what "jump to the next
@@ -775,6 +820,64 @@ mod tests {
         assert_eq!(times, vec![100, 200, 300]);
     }
 
+    /// The timeline draws one mark per instant, whatever the instant holds, so
+    /// the mark has to speak for every key there.
+    #[test]
+    fn an_instant_reports_the_curve_its_keys_use() {
+        let mut keyframes = Keyframes::default();
+        assert_eq!(keyframes.interpolation_at(at(0)), None, "no keys, no mark");
+
+        keyframes.set(
+            AnimatedParameter::ScaleX,
+            Keyframe::new(at(0), 1.0, Interpolation::Linear),
+        );
+        assert_eq!(
+            keyframes.interpolation_at(at(0)),
+            Some(Interpolation::Linear)
+        );
+        assert_eq!(keyframes.interpolation_at(at(1)), None, "the wrong instant");
+    }
+
+    /// A scale is two parameters and a position two more. Easing one and not
+    /// the other should show as eased — a mark saying "linear" because the
+    /// parameter that happened to sort first was untouched would hide exactly
+    /// the thing the user is looking for.
+    ///
+    /// Tried both ways round, because the tracks are walked in some order and a
+    /// test that only put the eased key second would pass on "the last one
+    /// wins" — which is not the rule and hides an eased key half the time.
+    #[test]
+    fn one_eased_key_is_enough_to_mark_the_instant() {
+        for (eased, plain) in [
+            (AnimatedParameter::ScaleX, AnimatedParameter::ScaleY),
+            (AnimatedParameter::ScaleY, AnimatedParameter::ScaleX),
+        ] {
+            let mut keyframes = Keyframes::default();
+            keyframes.set(eased, Keyframe::new(at(0), 1.0, Interpolation::EaseInOut));
+            keyframes.set(plain, Keyframe::new(at(0), 1.0, Interpolation::Linear));
+
+            assert_eq!(
+                keyframes.interpolation_at(at(0)),
+                Some(Interpolation::EaseInOut),
+                "an eased key on {} was hidden behind a linear one on {}",
+                eased.label(),
+                plain.label()
+            );
+        }
+    }
+
+    /// A hold is its own shape on the timeline, so it must not be folded in
+    /// with the eased curves.
+    #[test]
+    fn a_hold_is_reported_as_itself() {
+        let mut keyframes = Keyframes::default();
+        keyframes.set(
+            AnimatedParameter::Opacity,
+            Keyframe::new(at(0), 1.0, Interpolation::Hold),
+        );
+        assert_eq!(keyframes.interpolation_at(at(0)), Some(Interpolation::Hold));
+    }
+
     #[test]
     fn removing_the_last_key_stops_the_parameter_being_animated() {
         let mut keyframes = Keyframes::default();
@@ -942,6 +1045,15 @@ mod default_tests {
     #[test]
     fn the_defaults_are_the_identity_look() {
         let look = ClipLook {
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            reflection: crate::Reflection::None,
+            crop: crate::Crop::NONE,
+            chroma_key: None,
+            mask: None,
+            blend: crate::BlendMode::default(),
             transform: Transform::default(),
             opacity: AnimatedParameter::Opacity.default_value(),
             color: ColorAdjust::default(),

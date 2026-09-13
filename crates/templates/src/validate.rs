@@ -18,8 +18,9 @@
 
 use bettercut_foundation::{Rational, TimelineTime};
 use bettercut_timeline::{
-    AnimatedParameter, MAX_FADE, MAX_MOTION, MAX_SPEED, MIN_MOTION, MIN_SPEED, MIN_TRANSITION,
-    Motion, MotionKind, Movement, TextAnimation, Transform, TransitionKind, Vec2,
+    AnimatedParameter, Crop, MAX_FADE, MAX_MOTION, MAX_SPEED, MIN_CROP_REMAINING, MIN_MOTION,
+    MIN_SPEED, MIN_TRANSITION, Motion, MotionKind, Movement, TextAnimation, Transform,
+    TransitionKind, Vec2,
 };
 
 use crate::format::{ElementFile, TemplateFile, TransformFile};
@@ -288,10 +289,12 @@ fn element_of(
             slot,
             track,
             transform,
+            crop,
             opacity,
             speed,
             transition_out,
             movement,
+            animation,
             ..
         } => {
             let movement = match movement.as_deref() {
@@ -325,19 +328,17 @@ fn element_of(
             };
 
             let transition_out = transition_out.as_ref().and_then(|t| {
-                let kind = match t.kind.as_str() {
-                    "crossfade" => Some(TransitionKind::Crossfade),
-                    "fade_through_black" => Some(TransitionKind::FadeThroughBlack),
-                    other => {
-                        problems.push(problem(
-                            format!("{at}.transition_out.kind"),
-                            format!(
-                                "`{other}` is not a transition (crossfade, fade_through_black)"
-                            ),
-                        ));
-                        None
-                    }
-                };
+                let kind = kind_from_token::<TransitionKind>(&t.kind).or_else(|| {
+                    problems.push(problem(
+                        format!("{at}.transition_out.kind"),
+                        format!(
+                            "`{}` is not a transition ({})",
+                            t.kind,
+                            tokens_of(&TransitionKind::ALL)
+                        ),
+                    ));
+                    None
+                });
                 let length = seconds(
                     problems,
                     &format!("{at}.transition_out.duration"),
@@ -353,16 +354,20 @@ fn element_of(
                 kind.map(|kind| (kind, length))
             });
 
+            let motion = clip_motion_of(problems, at, animation.as_ref());
+            let crop = crop_of(problems, at, *crop);
             Element::Clip {
                 slot: slot.clone(),
                 start,
                 duration,
                 track: *track,
                 transform,
+                crop,
                 opacity,
                 speed,
                 transition_out,
                 movement,
+                motion,
             }
         }
         ElementFile::Text {
@@ -471,28 +476,46 @@ fn animation_of(
     at: &str,
     raw: Option<&crate::format::AnimationFile>,
 ) -> TextAnimation {
+    let (intro, outro) = motions_of(problems, at, raw, &MotionKind::FOR_TEXT);
+    TextAnimation { intro, outro }
+}
+
+/// A picture clip's entrance and exit.
+///
+/// The same presets and the same checks as a title's, minus the typewriter: a
+/// shot has no letters to reveal, and a template asking for one is an author
+/// who will not see why nothing happens.
+fn clip_motion_of(
+    problems: &mut Vec<Problem>,
+    at: &str,
+    raw: Option<&crate::format::AnimationFile>,
+) -> bettercut_timeline::ClipMotion {
+    let (intro, outro) = motions_of(problems, at, raw, &MotionKind::ALL);
+    bettercut_timeline::ClipMotion { intro, outro }
+}
+
+/// The shared half: two ends, each a known motion of an allowed length.
+fn motions_of(
+    problems: &mut Vec<Problem>,
+    at: &str,
+    raw: Option<&crate::format::AnimationFile>,
+    allowed: &[MotionKind],
+) -> (Option<Motion>, Option<Motion>) {
     let Some(raw) = raw else {
-        return TextAnimation::default();
+        return (None, None);
     };
     let mut motion = |end: &str, file: Option<&crate::format::MotionFile>| {
         let file = file?;
         let at = format!("{at}.animation.{end}");
-        let kind = match file.kind.as_str() {
-            "fade" => Some(MotionKind::Fade),
-            "slide_up" => Some(MotionKind::SlideUp),
-            "slide_down" => Some(MotionKind::SlideDown),
-            "pop" => Some(MotionKind::Pop),
-            "typewriter" => Some(MotionKind::Typewriter),
-            other => {
+        let kind = kind_from_token::<MotionKind>(&file.kind)
+            .filter(|kind| allowed.contains(kind))
+            .or_else(|| {
                 problems.push(problem(
                     format!("{at}.kind"),
-                    format!(
-                        "`{other}` is not a motion (fade, slide_up, slide_down, pop, typewriter)"
-                    ),
+                    format!("`{}` is not a motion ({})", file.kind, tokens_of(allowed)),
                 ));
                 None
-            }
-        };
+            });
         let length = seconds(problems, &format!("{at}.duration"), file.duration, false);
         if length != TimelineTime::ZERO && !(MIN_MOTION..=MAX_MOTION).contains(&length) {
             problems.push(problem(
@@ -506,10 +529,10 @@ fn animation_of(
         }
         kind.map(|kind| Motion::new(kind, length))
     };
-    TextAnimation {
-        intro: motion("in", raw.intro.as_ref()),
-        outro: motion("out", raw.outro.as_ref()),
-    }
+    (
+        motion("in", raw.intro.as_ref()),
+        motion("out", raw.outro.as_ref()),
+    )
 }
 
 /// A text style from only the settings the author changed.
@@ -584,6 +607,50 @@ fn seconds(problems: &mut Vec<Problem>, at: &str, value: f64, zero_allowed: bool
     TimelineTime::from_ticks((value * 960_000.0).round() as i64)
 }
 
+/// §22's crop, checked rather than clamped.
+///
+/// Out of range is *rejected*, for the reason this whole module gives: clamping
+/// is right for a slider, where the user watches the result, and wrong in a
+/// template, where it would silently render something other than what the
+/// author wrote. The editor clamps what a project file carries; a template is
+/// something someone is still writing, and it should be told.
+fn crop_of(problems: &mut Vec<Problem>, at: &str, raw: Option<[f32; 4]>) -> Crop {
+    let Some([left, top, right, bottom]) = raw else {
+        return Crop::NONE;
+    };
+    for (name, value) in [
+        ("left", left),
+        ("top", top),
+        ("right", right),
+        ("bottom", bottom),
+    ] {
+        if !value.is_finite() || !(0.0..1.0).contains(&value) {
+            problems.push(problem(
+                format!("{at}.crop.{name}"),
+                "must be a fraction of the source, from 0 up to but not including 1",
+            ));
+        }
+    }
+    for (axis, near, far) in [("across", left, right), ("down", top, bottom)] {
+        if near + far > 1.0 - MIN_CROP_REMAINING {
+            problems.push(problem(
+                format!("{at}.crop"),
+                format!(
+                    "leaves less than {:.0}% of the source {axis}",
+                    MIN_CROP_REMAINING * 100.0
+                ),
+            ));
+        }
+    }
+    Crop {
+        left,
+        top,
+        right,
+        bottom,
+    }
+    .clamped()
+}
+
 fn transform_of(problems: &mut Vec<Problem>, at: &str, raw: &TransformFile) -> Transform {
     let mut transform = Transform::default();
     if let Some([x, y]) = raw.position {
@@ -619,6 +686,9 @@ fn transform_of(problems: &mut Vec<Problem>, at: &str, raw: &TransformFile) -> T
         );
         transform.rotation_degrees = degrees;
     }
+
+    transform.flip_h = raw.flip_h;
+    transform.flip_v = raw.flip_v;
     transform
 }
 
@@ -692,6 +762,27 @@ fn is_identifier(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Read a kind's name against the model's own list.
+///
+/// Through serde rather than a `match`, because a match here is a second list
+/// of what the editor supports — and it had already drifted: the editor grew
+/// five transitions and three motions that templates then quietly refused,
+/// with an error naming only the two names the match still knew about. The
+/// enums carry `rename_all = "snake_case"`, so this accepts exactly what the
+/// model has, today and after the next one is added.
+fn kind_from_token<T: serde::de::DeserializeOwned>(token: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(token.to_owned())).ok()
+}
+
+/// The names a kind may be written as, for the error when it is not one.
+fn tokens_of<T: serde::Serialize>(all: &[T]) -> String {
+    all.iter()
+        .filter_map(|kind| serde_json::to_value(kind).ok())
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn problem(at: impl Into<String>, message: impl Into<String>) -> Problem {

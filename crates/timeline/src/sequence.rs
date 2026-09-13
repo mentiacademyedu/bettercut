@@ -3,6 +3,7 @@
 use bettercut_foundation::{ClipId, FrameRate, SequenceId, TimelineTime, TrackId, ticks_per_frame};
 use serde::{Deserialize, Serialize};
 
+use crate::clip::TimelineRange;
 use crate::error::TimelineError;
 use crate::text::TextTrack;
 use crate::track::{AudioTrack, VideoTrack};
@@ -41,13 +42,36 @@ impl Resolution {
     }
 }
 
-/// Where a track sits: video tracks composite bottom-up, audio tracks sum, and
-/// text tracks composite over everything (§22, §26).
+/// One clip as [`Sequence::clip_spans`] reports it: enough to find it, cut it
+/// and move it, without knowing what kind of clip it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipSpan {
+    pub track: TrackId,
+    pub kind: TrackKind,
+    pub clip: ClipId,
+    pub timeline: TimelineRange,
+    /// The picture or sound it is tied to (§12). `None` for a title or an
+    /// adjustment, which have nothing to be tied to.
+    pub link: Option<bettercut_foundation::LinkId>,
+}
+
+/// A note left on a clip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipNote {
+    pub clip: ClipId,
+    pub text: String,
+}
+
+/// Where a track sits: video tracks composite bottom-up, audio tracks sum,
+/// adjustment lanes grade the pictures beneath them, and text tracks composite
+/// over everything (§22, §26).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
     Audio,
     Text,
+    /// `crate::adjustment`: a grade over a stretch of the edit.
+    Adjustment,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,10 +118,39 @@ pub struct Sequence {
     #[serde(default)]
     pub text_tracks: Vec<TextTrack>,
 
+    /// Adjustment lanes (`crate::adjustment`): grades over a stretch of the
+    /// edit, applied to every picture beneath them and none of the titles.
+    ///
+    /// Composited between the two lists either side of it here — over the
+    /// video tracks, under the text — which is where a filter belongs.
+    /// Defaulted, so projects written before adjustments load with none.
+    #[serde(default)]
+    pub adjustment_tracks: Vec<crate::adjustment::AdjustmentTrack>,
+
     /// Named instants, sorted by time, one per instant (`crate::marker`).
     /// Defaulted, so projects written before markers load with none.
     #[serde(default)]
     pub markers: Vec<crate::marker::Marker>,
+
+    /// Clips grouped to move together, each group a list of clip ids. A clip
+    /// is in at most one. Ids of clips since deleted or split are ignored where
+    /// groups are read, not cleaned out here. Defaulted: older projects have
+    /// none.
+    #[serde(default)]
+    pub groups: Vec<Vec<bettercut_foundation::ClipId>>,
+
+    /// Short notes left on clips — "swap for take 3", "check the audio here".
+    /// At most one a clip; a note for a clip since deleted is ignored where
+    /// notes are read. Defaulted: older projects have none.
+    #[serde(default)]
+    pub notes: Vec<ClipNote>,
+
+    /// The in and out marks: a stretch of the sequence picked out to export on
+    /// its own. Either may be unset; the range exists when both are, in order.
+    #[serde(default)]
+    pub mark_in: Option<TimelineTime>,
+    #[serde(default)]
+    pub mark_out: Option<TimelineTime>,
 }
 
 fn unity() -> f32 {
@@ -134,7 +187,12 @@ impl Sequence {
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
             text_tracks: Vec::new(),
+            adjustment_tracks: Vec::new(),
             markers: Vec::new(),
+            groups: Vec::new(),
+            notes: Vec::new(),
+            mark_in: None,
+            mark_out: None,
         })
     }
 
@@ -164,14 +222,27 @@ impl Sequence {
         t.snap_to_frame(self.frame_rate).unwrap_or(t)
     }
 
+    /// The span between the in and out marks, when both are set and the in
+    /// comes first.
+    pub fn marked_range(&self) -> Option<TimelineRange> {
+        match (self.mark_in, self.mark_out) {
+            (Some(start), Some(end)) if start < end => Some(TimelineRange { start, end }),
+            _ => None,
+        }
+    }
+
     /// End of the last clip on any track.
     pub fn duration(&self) -> TimelineTime {
         let video = self.video_tracks.iter().map(|t| t.duration());
         let audio = self.audio_tracks.iter().map(|t| t.duration());
         let text = self.text_tracks.iter().map(|t| t.duration());
+        // An adjustment running past the last clip still has to be exported,
+        // or a fade to a graded black at the end would be cut off.
+        let adjustments = self.adjustment_tracks.iter().map(|t| t.duration());
         video
             .chain(audio)
             .chain(text)
+            .chain(adjustments)
             .fold(TimelineTime::ZERO, TimelineTime::max)
     }
 
@@ -200,6 +271,39 @@ impl Sequence {
             .map(|t| t.id)
     }
 
+    pub fn adjustment_track(&self, id: TrackId) -> Option<&crate::adjustment::AdjustmentTrack> {
+        self.adjustment_tracks.iter().find(|t| t.id == id)
+    }
+
+    pub fn adjustment_track_mut(
+        &mut self,
+        id: TrackId,
+    ) -> Option<&mut crate::adjustment::AdjustmentTrack> {
+        self.adjustment_tracks.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The adjustment clip with this id, wherever it is.
+    pub fn adjustment_clip(&self, id: ClipId) -> Option<&crate::adjustment::AdjustmentClip> {
+        self.adjustment_tracks.iter().find_map(|t| t.get(id))
+    }
+
+    pub fn adjustment_clip_mut(
+        &mut self,
+        id: ClipId,
+    ) -> Option<&mut crate::adjustment::AdjustmentClip> {
+        self.adjustment_tracks
+            .iter_mut()
+            .find_map(|t| t.get_mut(id))
+    }
+
+    /// Which adjustment lane a clip is on.
+    pub fn adjustment_track_of(&self, clip: ClipId) -> Option<TrackId> {
+        self.adjustment_tracks
+            .iter()
+            .find(|t| t.get(clip).is_some())
+            .map(|t| t.id)
+    }
+
     pub fn video_track(&self, id: TrackId) -> Option<&VideoTrack> {
         self.video_tracks.iter().find(|t| t.id == id)
     }
@@ -216,6 +320,49 @@ impl Sequence {
         self.audio_tracks.iter_mut().find(|t| t.id == id)
     }
 
+    /// A track's name, whatever kind of lane it is.
+    pub fn track_name(&self, id: TrackId) -> Option<&str> {
+        self.video_tracks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.name.as_str())
+            .or_else(|| {
+                self.audio_tracks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.name.as_str())
+            })
+            .or_else(|| {
+                self.text_tracks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.name.as_str())
+            })
+            .or_else(|| {
+                self.adjustment_tracks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.name.as_str())
+            })
+    }
+
+    /// The same, to change.
+    pub fn track_name_mut(&mut self, id: TrackId) -> Option<&mut String> {
+        if let Some(t) = self.video_tracks.iter_mut().find(|t| t.id == id) {
+            return Some(&mut t.name);
+        }
+        if let Some(t) = self.audio_tracks.iter_mut().find(|t| t.id == id) {
+            return Some(&mut t.name);
+        }
+        if let Some(t) = self.text_tracks.iter_mut().find(|t| t.id == id) {
+            return Some(&mut t.name);
+        }
+        self.adjustment_tracks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .map(|t| &mut t.name)
+    }
+
     pub fn track_kind(&self, id: TrackId) -> Option<TrackKind> {
         if self.video_tracks.iter().any(|t| t.id == id) {
             Some(TrackKind::Video)
@@ -223,20 +370,81 @@ impl Sequence {
             Some(TrackKind::Audio)
         } else if self.text_tracks.iter().any(|t| t.id == id) {
             Some(TrackKind::Text)
+        } else if self.adjustment_tracks.iter().any(|t| t.id == id) {
+            Some(TrackKind::Adjustment)
         } else {
             None
         }
     }
 
+    /// Every clip on every lane, in compositing order: video, audio, text,
+    /// adjustments.
+    ///
+    /// **The one list of lanes.** Finding a clip by id, finding what covers an
+    /// instant, and finding what a cut falls inside each walked the lanes
+    /// themselves, one copy per question — and a lane kind added later had to be
+    /// remembered in every copy. Titles were missed in one once; adjustments
+    /// were missed in five, each reading as "not found" for a clip that was
+    /// plainly there, with nothing from the compiler. Asked here, a new kind of
+    /// lane is added once.
+    pub fn clip_spans(&self) -> impl Iterator<Item = ClipSpan> + '_ {
+        let video = self.video_tracks.iter().flat_map(|track| {
+            track.clips().iter().map(move |clip| ClipSpan {
+                track: track.id,
+                kind: TrackKind::Video,
+                clip: clip.id,
+                timeline: clip.timeline,
+                link: clip.link,
+            })
+        });
+        let audio = self.audio_tracks.iter().flat_map(|track| {
+            track.clips().iter().map(move |clip| ClipSpan {
+                track: track.id,
+                kind: TrackKind::Audio,
+                clip: clip.id,
+                timeline: clip.timeline,
+                link: clip.link,
+            })
+        });
+        let text = self.text_tracks.iter().flat_map(|track| {
+            track.clips().iter().map(move |clip| ClipSpan {
+                track: track.id,
+                kind: TrackKind::Text,
+                clip: clip.id,
+                timeline: clip.timeline,
+                link: None,
+            })
+        });
+        let adjustments = self.adjustment_tracks.iter().flat_map(|track| {
+            track.clips().iter().map(move |clip| ClipSpan {
+                track: track.id,
+                kind: TrackKind::Adjustment,
+                clip: clip.id,
+                timeline: clip.timeline,
+                link: None,
+            })
+        });
+        video.chain(audio).chain(text).chain(adjustments)
+    }
+
+    /// Where a clip is and what it spans, whichever lane it is on.
+    pub fn clip_span(&self, clip: ClipId) -> Option<ClipSpan> {
+        self.clip_spans().find(|span| span.clip == clip)
+    }
+
     pub fn track_count(&self) -> usize {
-        self.video_tracks.len() + self.audio_tracks.len() + self.text_tracks.len()
+        self.video_tracks.len()
+            + self.audio_tracks.len()
+            + self.text_tracks.len()
+            + self.adjustment_tracks.len()
     }
 
     pub fn clip_count(&self) -> usize {
         let video: usize = self.video_tracks.iter().map(|t| t.len()).sum();
         let audio: usize = self.audio_tracks.iter().map(|t| t.len()).sum();
         let text: usize = self.text_tracks.iter().map(|t| t.len()).sum();
-        video + audio + text
+        let adjustments: usize = self.adjustment_tracks.iter().map(|t| t.len()).sum();
+        video + audio + text + adjustments
     }
 }
 

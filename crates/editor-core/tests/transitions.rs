@@ -264,6 +264,92 @@ fn the_room_available_is_reported() {
     );
 }
 
+/// Two clips whose footage runs right up to the ends of the file, so neither
+/// has a frame to spare past the cut.
+fn editor_with_no_handles() -> (Editor, ClipId) {
+    let (mut editor, _rx) = Editor::new_project("Edges");
+    let media = editor.import_media(MediaAsset::new(
+        MediaKind::Video,
+        "C:/media/a.mp4",
+        MediaTime::from_seconds(8),
+    ));
+    let track = editor.active_sequence().unwrap().video_tracks[0].id;
+
+    // The whole file, twice: nothing before the first in-point and nothing
+    // after the second out-point.
+    let whole = SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(8)).unwrap();
+    let a = VideoClip::new(media, TimelineTime::ZERO, whole).unwrap();
+    let b = VideoClip::new(media, TimelineTime::from_seconds(8), whole).unwrap();
+    let a_id = a.id;
+
+    editor
+        .add_clip(track, ClipPayload::Video(Box::new(a)))
+        .unwrap();
+    editor
+        .add_clip(track, ClipPayload::Video(Box::new(b)))
+        .unwrap();
+    (editor, a_id)
+}
+
+/// §25's promise, kept for every kind at once: the ones that show both shots
+/// need spare footage either side, and the ones that cover the cut with a
+/// colour work anywhere — including hard against the ends of a file, which is
+/// exactly where a phone recording cuts.
+///
+/// Written against `TransitionKind::ALL` rather than a list of its own, so a
+/// new kind is covered the day it is added rather than the day someone
+/// remembers to come back here.
+///
+/// Which kinds are handle-free is stated here rather than read back from
+/// `needs_handles`. Asking the same function the behaviour comes from would
+/// make this pass no matter what it answered — the expectation has to come
+/// from somewhere else, and where it comes from is §25 and the descriptions
+/// the menu shows the user.
+#[test]
+fn only_the_handle_free_kinds_are_offered_at_a_cut_with_nothing_to_spare() {
+    let (mut editor, a) = editor_with_no_handles();
+    let works_anywhere = |kind| {
+        matches!(
+            kind,
+            TransitionKind::FadeThroughBlack | TransitionKind::Flash
+        )
+    };
+
+    for kind in TransitionKind::ALL {
+        assert_eq!(
+            !works_anywhere(kind),
+            kind.needs_handles(),
+            "{} disagrees with what the menu promises about it",
+            kind.label()
+        );
+
+        let room = editor.transition_room(a, kind);
+        if !works_anywhere(kind) {
+            assert_eq!(
+                room,
+                Some(TimelineTime::ZERO),
+                "{} was offered room at a cut with no handles",
+                kind.label()
+            );
+            assert!(
+                editor.set_transition(a, kind).is_err(),
+                "{} was accepted with no footage to read",
+                kind.label()
+            );
+        } else {
+            assert_eq!(
+                room,
+                Some(TimelineTime::from_seconds(8)),
+                "{} was refused room it does not need",
+                kind.label()
+            );
+            editor.set_transition(a, kind).unwrap_or_else(|err| {
+                panic!("{} works anywhere, but was refused: {err}", kind.label())
+            });
+        }
+    }
+}
+
 /// §38.2: an edit lost to a crash is worse than one never made.
 #[test]
 fn a_transition_survives_a_save_and_load() {

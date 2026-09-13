@@ -1,4 +1,4 @@
-//! Speed through the editor (§51).
+//! Speed through the editor.
 //!
 //! The arithmetic is tested in the timeline crate. What matters here is what
 //! happens to the *timeline*: that a clip's length follows its speed, that a

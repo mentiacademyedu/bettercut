@@ -18,12 +18,27 @@ pub struct Project {
     pub media: Vec<MediaAsset>,
     pub sequences: Vec<Sequence>,
 
+    /// Colour lookup tables the project uses, by where they live on disk. The
+    /// tables themselves are read from there, not copied in: a 33³ table is
+    /// larger than the rest of a typical project put together.
+    #[serde(default)]
+    pub luts: Vec<LutAsset>,
+
     #[serde(default)]
     pub settings: ProjectSettings,
 
     /// Which sequence the UI is editing. `None` only for an empty project.
     #[serde(default)]
     pub active_sequence: Option<SequenceId>,
+}
+
+/// An imported `.cube` file (`bettercut_timeline::lut`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LutAsset {
+    pub id: bettercut_foundation::LutId,
+    /// What the menu calls it: the file's name, without the extension.
+    pub name: String,
+    pub path: std::path::PathBuf,
 }
 
 impl Project {
@@ -37,6 +52,7 @@ impl Project {
             name: name.into(),
             media: Vec::new(),
             sequences: vec![sequence],
+            luts: Vec::new(),
             settings: ProjectSettings::default(),
             active_sequence: Some(active),
         }
@@ -61,6 +77,10 @@ impl Project {
         // Resolve the id first so the borrow of `self` ends before the mutable one.
         let id = self.active().map(|s| s.id)?;
         self.sequence_mut(id)
+    }
+
+    pub fn lut_asset(&self, id: bettercut_foundation::LutId) -> Option<&LutAsset> {
+        self.luts.iter().find(|lut| lut.id == id)
     }
 
     pub fn media_asset(&self, id: MediaId) -> Option<&MediaAsset> {

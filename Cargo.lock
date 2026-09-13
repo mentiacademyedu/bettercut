@@ -568,9 +568,11 @@ dependencies = [
  "bettercut-project-format",
  "bettercut-renderer",
  "bettercut-timeline",
+ "png",
  "pollster 0.4.0",
  "thiserror 2.0.20",
  "tracing",
+ "weezl",
 ]
 
 [[package]]
@@ -639,6 +641,8 @@ version = "0.1.0"
 dependencies = [
  "bettercut-foundation",
  "bettercut-media",
+ "bettercut-playback",
+ "bettercut-project-format",
  "bettercut-timeline",
  "eframe",
  "naga",

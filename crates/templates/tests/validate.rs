@@ -290,6 +290,106 @@ fn set(value: &mut Value, pointer: &str, new: Value) {
     parent.as_object_mut().unwrap().insert(key.to_owned(), new);
 }
 
+/// The name a kind is written as in a template, from the model itself.
+fn token<T: serde::Serialize>(kind: T) -> String {
+    serde_json::to_value(kind)
+        .expect("a kind serializes")
+        .as_str()
+        .expect("a kind is a plain name")
+        .to_owned()
+}
+
+/// A template can give a *shot* an entrance, not only a title. The
+/// presets are the same ones, so a template author who has animated a caption
+/// already knows how.
+#[test]
+fn a_shot_can_arrive_and_leave() {
+    use bettercut_timeline::MotionKind;
+
+    let mut value = good();
+    value["elements"][0]["animation"] = json!({
+        "in": { "kind": "slide_right", "duration": 0.5 },
+        "out": { "kind": "spin", "duration": 0.4 }
+    });
+
+    let template = parse(&value.to_string()).expect("valid");
+    let Element::Clip { motion, .. } = &template.elements[0] else {
+        panic!("the first element is a clip");
+    };
+    assert_eq!(
+        motion.intro.expect("an entrance").kind,
+        MotionKind::SlideRight
+    );
+    assert_eq!(motion.outro.expect("an exit").kind, MotionKind::Spin);
+}
+
+/// And the one motion a picture may not have. A shot has no letters to reveal,
+/// so a template asking for a typewriter is an author who would never work out
+/// why nothing happens — better to say so at validation.
+#[test]
+fn a_shot_cannot_be_typed_out_letter_by_letter() {
+    let mut value = good();
+    value["elements"][0]["animation"] = json!({
+        "in": { "kind": "typewriter", "duration": 0.5 }
+    });
+    refused(&value, "typewriter");
+
+    // Still allowed on a title, which is what it was made for.
+    let mut value = good();
+    value["elements"][3]["animation"] = json!({
+        "in": { "kind": "typewriter", "duration": 0.5 }
+    });
+    parse(&value.to_string()).expect("a title may still type itself in");
+}
+
+/// Every transition the editor has, expressible in a template.
+///
+/// The validator used to carry its own list of two while the editor grew to
+/// seven, so a template asking for a zoom was told a zoom is not a transition.
+/// Walking the model's own list is what stops that returning: a kind added
+/// tomorrow fails here until a template can name it.
+#[test]
+fn every_transition_kind_can_be_written_in_a_template() {
+    use bettercut_timeline::TransitionKind;
+
+    for kind in TransitionKind::ALL {
+        let mut value = good();
+        value["elements"][0]["transition_out"] = json!({ "kind": token(kind), "duration": 0.5 });
+
+        let template = parse(&value.to_string())
+            .unwrap_or_else(|problems| panic!("{} was refused: {problems:?}", token(kind)));
+        let Element::Clip {
+            transition_out: Some((written, _)),
+            ..
+        } = &template.elements[0]
+        else {
+            panic!("the first element should carry a transition");
+        };
+        assert_eq!(*written, kind, "a template changed the kind");
+    }
+}
+
+/// And every motion a title can have, for the same reason — three of them had
+/// been added to the editor and never reached the format.
+#[test]
+fn every_text_motion_can_be_written_in_a_template() {
+    use bettercut_timeline::MotionKind;
+
+    for kind in MotionKind::FOR_TEXT {
+        let mut value = good();
+        value["elements"][3]["animation"] = json!({
+            "in": { "kind": token(kind), "duration": 0.5 }
+        });
+
+        let template = parse(&value.to_string())
+            .unwrap_or_else(|problems| panic!("{} was refused: {problems:?}", token(kind)));
+        let Element::Text { animation, .. } = &template.elements[3] else {
+            panic!("fourth element is text");
+        };
+        assert_eq!(animation.intro.expect("an entrance").kind, kind);
+    }
+}
+
 #[test]
 fn a_title_can_arrive_and_leave() {
     use bettercut_timeline::MotionKind;
@@ -491,4 +591,74 @@ fn bundle_paths_cannot_leave_the_bundle() {
     ] {
         assert!(!is_bundle_relative(bad), "{bad:?}");
     }
+}
+
+/// A template can mirror a shot, and the two axes stay apart on the way in.
+///
+/// `deny_unknown_fields` means a field the format does not know is a hard
+/// refusal, so "the template says flip_h and the clip comes back mirrored" is
+/// two claims at once: the schema accepts the key, and the value reaches the
+/// transform rather than being read and dropped.
+#[test]
+fn a_template_can_mirror_a_shot() {
+    let mut value = good();
+    value["elements"][0]["transform"]["flip_h"] = json!(true);
+
+    let template = parse(&value.to_string()).expect("a mirrored template is valid");
+    let Element::Clip { transform, .. } = &template.elements[0] else {
+        panic!("first element is a clip");
+    };
+    assert!(transform.flip_h, "the mirror did not reach the transform");
+    assert!(
+        !transform.flip_v,
+        "a left-to-right mirror also turned the picture over"
+    );
+
+    // And unstated stays unmirrored, so every template written before the
+    // mirror existed still means what it said.
+    let plain = parse(&good().to_string()).expect("the fixture is valid");
+    let Element::Clip { transform, .. } = &plain.elements[0] else {
+        panic!("first element is a clip");
+    };
+    assert!(!transform.flip_h && !transform.flip_v);
+}
+
+/// A template can crop a shot, and an impossible crop is refused rather than
+/// quietly trimmed to fit.
+///
+/// Rejecting rather than clamping is this module's rule: the author is still
+/// writing the file and can be told, where a user dragging a slider is watching
+/// the result and should simply be stopped at the limit.
+#[test]
+fn a_template_can_crop_a_shot() {
+    let mut value = good();
+    value["elements"][0]["crop"] = json!([0.1, 0.2, 0.05, 0.0]);
+
+    let template = parse(&value.to_string()).expect("a cropped template is valid");
+    let Element::Clip { crop, .. } = &template.elements[0] else {
+        panic!("first element is a clip");
+    };
+    assert_eq!(crop.left, 0.1);
+    assert_eq!(crop.top, 0.2);
+    assert_eq!(crop.right, 0.05);
+    assert_eq!(crop.bottom, 0.0);
+
+    // Unstated is uncropped, so every template written before §22's crop
+    // existed still means what it said.
+    let plain = parse(&good().to_string()).expect("the fixture is valid");
+    let Element::Clip { crop, .. } = &plain.elements[0] else {
+        panic!("first element is a clip");
+    };
+    assert!(crop.is_none());
+}
+
+#[test]
+fn a_crop_that_leaves_nothing_is_refused() {
+    let mut value = good();
+    value["elements"][0]["crop"] = json!([0.6, 0.0, 0.6, 0.0]);
+    refused(&value, "crop");
+
+    let mut value = good();
+    value["elements"][0]["crop"] = json!([0.0, 0.0, 1.5, 0.0]);
+    refused(&value, "crop");
 }

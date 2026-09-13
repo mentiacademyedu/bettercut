@@ -23,11 +23,15 @@ pub mod blur;
 pub mod compositor;
 pub mod config;
 pub mod error;
+pub mod glitch;
 pub mod gpu;
 pub mod graph;
+pub mod lut;
+pub mod reflect;
+pub mod sharpen;
 
 pub use blur::BlurPlan;
-pub use compositor::{Compositor, Layer, fit_scale};
+pub use compositor::{Compositor, Grade, Layer, fit_scale};
 pub use config::{MediaSourceMode, PreviewQuality, QualityTier, RenderConfig, RenderTarget};
 pub use error::RenderError;
 pub use gpu::{GpuDescription, GpuKind};

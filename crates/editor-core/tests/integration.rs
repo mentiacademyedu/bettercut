@@ -1,4 +1,4 @@
-//! §51's integration list, end to end, against real media files.
+//! 's integration list, end to end, against real media files.
 //!
 //! ```text
 //! Import video · Create project · Add clip · Reload project

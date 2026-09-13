@@ -710,3 +710,122 @@ fn clearing_keyframes_on_an_unanimated_clip_does_nothing() {
         "an empty clear pushed something onto the undo stack"
     );
 }
+
+/// §24's easing, which the model has always had and nothing could reach: every
+/// key a user places is linear, and a whole move built from linear keys is what
+/// makes an animation look mechanical.
+mod easing {
+    use super::*;
+    use bettercut_editor_core::timeline::{AnimatedParameter, Interpolation};
+
+    /// A clip with a scale animated between two instants, playhead on the
+    /// first key.
+    fn editor_with_keys() -> (Editor, ClipId) {
+        let (mut editor, clip) = editor_with_clip();
+        editor
+            .set_clip_value(clip, ClipProperty::Scale { x: 1.0, y: 1.0 }, false)
+            .unwrap();
+        editor
+            .toggle_keyframe(clip, ClipProperty::Scale { x: 1.0, y: 1.0 })
+            .unwrap();
+        (editor, clip)
+    }
+
+    fn easing_at(editor: &Editor, clip: ClipId, parameter: AnimatedParameter) -> Interpolation {
+        let at = editor.source_time_at_playhead(clip).expect("on the clip");
+        editor
+            .video_clip(clip)
+            .expect("clip")
+            .keyframes
+            .get(parameter, at)
+            .expect("a key here")
+            .interpolation
+    }
+
+    /// Both halves of a scale, not one: easing X alone would let the shape
+    /// stretch as it moved.
+    #[test]
+    fn easing_covers_every_parameter_keyed_at_that_instant() {
+        let (mut editor, clip) = editor_with_keys();
+
+        assert_eq!(
+            editor
+                .set_keyframe_easing(clip, Interpolation::EaseInOut)
+                .expect("easing refused"),
+            2,
+            "expected both halves of the scale to move"
+        );
+        assert_eq!(
+            easing_at(&editor, clip, AnimatedParameter::ScaleX),
+            Interpolation::EaseInOut
+        );
+        assert_eq!(
+            easing_at(&editor, clip, AnimatedParameter::ScaleY),
+            Interpolation::EaseInOut
+        );
+    }
+
+    /// §79: one choice is one undo step, however many parameters it covered.
+    #[test]
+    fn changing_the_easing_is_one_undo_step() {
+        let (mut editor, clip) = editor_with_keys();
+        editor
+            .set_keyframe_easing(clip, Interpolation::EaseOut)
+            .unwrap();
+
+        editor.undo().unwrap();
+        assert_eq!(
+            easing_at(&editor, clip, AnimatedParameter::ScaleX),
+            Interpolation::Linear,
+            "one undo did not put both parameters back"
+        );
+        assert_eq!(
+            easing_at(&editor, clip, AnimatedParameter::ScaleY),
+            Interpolation::Linear
+        );
+    }
+
+    /// Choosing what a key already has must not leave a step in the history
+    /// that undoes nothing.
+    #[test]
+    fn choosing_the_easing_it_already_has_changes_nothing() {
+        let (mut editor, clip) = editor_with_keys();
+        let depth = editor.undo_depth();
+
+        assert_eq!(
+            editor
+                .set_keyframe_easing(clip, Interpolation::Linear)
+                .expect("easing refused"),
+            0
+        );
+        assert_eq!(editor.undo_depth(), depth, "an empty change made a step");
+    }
+
+    /// The value is what it was: this changes how a key is *approached*, not
+    /// what it holds.
+    #[test]
+    fn easing_leaves_the_keys_value_alone() {
+        let (mut editor, clip) = editor_with_keys();
+        let at = editor.source_time_at_playhead(clip).unwrap();
+        let before = editor
+            .video_clip(clip)
+            .unwrap()
+            .keyframes
+            .get(AnimatedParameter::ScaleX, at)
+            .unwrap()
+            .value;
+
+        editor
+            .set_keyframe_easing(clip, Interpolation::EaseIn)
+            .unwrap();
+
+        let after = editor
+            .video_clip(clip)
+            .unwrap()
+            .keyframes
+            .get(AnimatedParameter::ScaleX, at)
+            .unwrap()
+            .value;
+        assert_eq!(before, after, "easing a key moved its value");
+    }
+}

@@ -1,4 +1,4 @@
-//! Re-timing audio for §51's speed control.
+//! Re-timing audio for the speed control.
 //!
 //! Playing a clip at 2× means consuming twice as many source samples in the
 //! same stretch of time, which is a resampling problem: the output frame at

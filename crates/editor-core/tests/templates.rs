@@ -52,11 +52,13 @@ fn template() -> Template {
         ],
         "elements": [
             { "type": "clip", "slot": "shot_a", "start": 0, "duration": 3,
+              "animation": { "in": { "kind": "slide_right", "duration": 0.5 } },
               "transition_out": { "kind": "fade_through_black", "duration": 1 } },
             { "type": "clip", "slot": "shot_b", "start": 3, "duration": 3,
               "movement": "zoom_in" },
             { "type": "clip", "slot": "logo", "start": 0, "duration": 6, "track": 1,
-              "transform": { "position": [0.4, -0.4], "scale": 0.25 }, "opacity": 0.9 },
+              "transform": { "position": [0.4, -0.4], "scale": 0.25 },
+              "crop": [0.1, 0.2, 0.05, 0.0], "opacity": 0.9 },
             { "type": "text", "slot": "headline", "start": 1, "duration": 2 },
             { "type": "text", "text": "Out now", "start": 4, "duration": 2,
               "animation": { "in": { "kind": "pop", "duration": 0.5 } } },
@@ -435,4 +437,183 @@ fn an_applied_template_survives_a_crash() {
     let session = recover(RecoveryPaths::for_project(Some(&path), "x")).expect("recoverable");
     assert_eq!(session.failed, 0);
     assert_eq!(session.project.active().unwrap(), &expected);
+}
+
+/// A template's entrance has to reach the clip it is applied to, not just
+/// survive validation. The validator and the apply step are different code, and
+/// a template that parsed an animation and then dropped it would look exactly
+/// like a template that never asked for one.
+#[test]
+fn a_templates_clip_animation_reaches_the_clip() {
+    use bettercut_editor_core::timeline::MotionKind;
+
+    let Fixture { mut editor, fills } = fixture();
+    let applied = editor
+        .apply_template(&template(), &fills, TimelineTime::ZERO)
+        .expect("the template applies");
+
+    let first = applied.clips.first().expect("a clip was placed");
+    let clip = editor.video_clip(*first).expect("a picture clip");
+
+    assert_eq!(
+        clip.motion.intro.expect("an entrance").kind,
+        MotionKind::SlideRight,
+        "the template's animation did not reach the clip"
+    );
+    assert_eq!(clip.motion.outro, None, "an exit appeared from nowhere");
+}
+
+/// Every starter, applied for real.
+///
+/// The templates crate holds them to the validator, which says the file is
+/// well formed — not that it can be used. Applying is different code again:
+/// slots have to match the media they are filled with, elements have to fit
+/// the tracks they ask for, and a transition has to find room at its cut. A
+/// starter that validates and then fails on the button is the worst version of
+/// this, because it is the first thing a new user presses.
+#[test]
+fn every_starter_applies_to_a_project() {
+    use bettercut_editor_core::templates::{SlotKind, starters};
+
+    for template in starters() {
+        let (mut editor, _events) = Editor::new_project("Starters");
+        // Long media, so nothing is cut short for reasons that are about the
+        // fixture rather than the template.
+        let footage = video(&mut editor, "footage", 120);
+        let song = music(&mut editor, 120);
+        // A photo slot gets a photo. Filling one with video looks equivalent
+        // and is not: a still has handles without end — every instant outside
+        // its range is the same picture — while a video clip starting at its
+        // file's first frame has none before the in-point, so a dissolve on it
+        // has nowhere to go.
+        let photo = editor.import_media(MediaAsset::new(
+            MediaKind::Image,
+            "C:/media/photo.jpg",
+            MediaTime::ZERO,
+        ));
+
+        let fills: HashMap<String, SlotFill> = template
+            .slots
+            .iter()
+            .map(|slot| {
+                let fill = match slot.kind {
+                    SlotKind::Audio => SlotFill::Media(song),
+                    SlotKind::Text => SlotFill::Text("Words".to_owned()),
+                    SlotKind::Image | SlotKind::Logo => SlotFill::Media(photo),
+                    SlotKind::Video => SlotFill::Media(footage),
+                };
+                (slot.id.clone(), fill)
+            })
+            .collect();
+
+        let applied = editor
+            .apply_template(&template, &fills, TimelineTime::ZERO)
+            .unwrap_or_else(|err| panic!("the {} starter would not apply: {err}", template.id));
+
+        assert!(
+            !applied.clips.is_empty(),
+            "the {} starter placed nothing",
+            template.id
+        );
+        assert!(
+            applied.unfilled.is_empty(),
+            "the {} starter left slots unfilled: {:?}",
+            template.id,
+            applied.unfilled
+        );
+
+        // And what it asked for arrived. A template's cuts and entrances are
+        // the whole reason to pick one over an empty timeline, so "it applied
+        // without error" is not enough — placing the clips and dropping the
+        // effects on them would pass that.
+        let wanted_cuts = template
+            .elements
+            .iter()
+            .filter(|element| {
+                matches!(
+                    element,
+                    bettercut_editor_core::templates::Element::Clip {
+                        transition_out: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        let placed_cuts = applied
+            .clips
+            .iter()
+            .filter(|clip| {
+                editor
+                    .video_clip(**clip)
+                    .is_some_and(|clip| clip.transition_out.is_some())
+            })
+            .count();
+        assert_eq!(
+            placed_cuts, wanted_cuts,
+            "the {} starter asked for {wanted_cuts} transition(s) and got {placed_cuts}",
+            template.id
+        );
+
+        let wanted_moves = template
+            .elements
+            .iter()
+            .filter(|element| {
+                matches!(
+                    element,
+                    bettercut_editor_core::templates::Element::Clip { motion, .. }
+                        if !motion.is_none()
+                )
+            })
+            .count();
+        let placed_moves = applied
+            .clips
+            .iter()
+            .filter(|clip| {
+                editor
+                    .video_clip(**clip)
+                    .is_some_and(|clip| !clip.motion.is_none())
+            })
+            .count();
+        assert_eq!(
+            placed_moves, wanted_moves,
+            "the {} starter asked for {wanted_moves} animation(s) and got {placed_moves}",
+            template.id
+        );
+    }
+}
+
+/// §22's crop has to reach the clip too, for the same reason the animation
+/// above does: the validator and the apply step are different code, and a
+/// template that parsed a crop and then dropped it is indistinguishable from
+/// one that never asked for a crop at all.
+#[test]
+fn a_templates_crop_reaches_the_clip() {
+    let Fixture { mut editor, fills } = fixture();
+    let applied = editor
+        .apply_template(&template(), &fills, TimelineTime::ZERO)
+        .expect("the template applies");
+
+    // The logo is the element carrying the crop; the other two shots carry
+    // none, which is what makes this an assertion about that element rather
+    // than about clips in general.
+    let cropped = applied
+        .clips
+        .iter()
+        .filter_map(|id| editor.video_clip(*id))
+        .find(|clip| !clip.crop.is_none())
+        .expect("the template's crop did not reach any clip");
+
+    assert_eq!(cropped.crop.left, 0.1);
+    assert_eq!(cropped.crop.top, 0.2);
+    assert_eq!(cropped.crop.right, 0.05);
+    assert_eq!(cropped.crop.bottom, 0.0);
+
+    // And a clip the template did not crop is left alone.
+    let uncropped = applied
+        .clips
+        .iter()
+        .filter_map(|id| editor.video_clip(*id))
+        .filter(|clip| clip.crop.is_none())
+        .count();
+    assert!(uncropped > 0, "every clip came out cropped");
 }

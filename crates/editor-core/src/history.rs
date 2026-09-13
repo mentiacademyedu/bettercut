@@ -154,6 +154,21 @@ impl History {
         self.redo.last().map(|c| c.label())
     }
 
+    /// Every step Undo can reach, oldest first — the history panel's list.
+    pub fn undo_labels(&self) -> Vec<String> {
+        self.undo.iter().map(|c| c.label()).collect()
+    }
+
+    /// Every step Redo can reach, the next one first.
+    pub fn redo_labels(&self) -> Vec<String> {
+        self.redo.iter().rev().map(|c| c.label()).collect()
+    }
+
+    /// The most steps Undo keeps. Past it, the oldest are forgotten.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
     pub fn undo_depth(&self) -> usize {
         self.undo.len()
     }

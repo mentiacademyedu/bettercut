@@ -134,6 +134,32 @@ pub struct PlaybackStats {
     pub quality: &'static str,
 }
 
+/// Which end of a clip a fade handle belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeEdge {
+    In,
+    Out,
+}
+
+/// A fade handle in the middle of a drag.
+#[derive(Debug, Clone, Copy)]
+pub struct FadeDrag {
+    pub clip: ClipId,
+    pub edge: FadeEdge,
+    /// The clip's span when the drag began: the pointer is measured from its
+    /// edge, and the clip does not move while its fade is being dragged.
+    pub range: bettercut_editor_core::timeline::TimelineRange,
+    /// Set once the pointer moves, so the first change starts the undo step
+    /// and the rest of the drag joins it.
+    pub moved: bool,
+    /// How far, in ticks, the press was from where the fade actually ends.
+    ///
+    /// A handle at no fade sits a few pixels inside the corner so it can be
+    /// grabbed; measuring the fade from the pointer rather than from the grab
+    /// would jump it by those pixels the moment the drag began.
+    pub grab_offset: i64,
+}
+
 /// Dragging one point of a sound clip's volume envelope (§24).
 ///
 /// The whole envelope is carried, as it was when the drag started, because the
@@ -195,12 +221,95 @@ pub enum ContextTarget {
     },
     Empty {
         at: bettercut_editor_core::foundation::TimelineTime,
+        /// The lane the click landed on, when it landed on one — what "Close
+        /// Gap" closes a gap on.
+        track: Option<TrackId>,
     },
+}
+
+/// Which kind of file the media browser shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaFilter {
+    #[default]
+    All,
+    Video,
+    Sound,
+    Photos,
+}
+
+impl MediaFilter {
+    pub const ALL: [Self; 4] = [Self::All, Self::Video, Self::Sound, Self::Photos];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Video => "Video",
+            Self::Sound => "Sound",
+            Self::Photos => "Photos",
+        }
+    }
+
+    /// Whether a file of `kind` passes.
+    pub fn accepts(self, kind: bettercut_editor_core::media::MediaKind) -> bool {
+        use bettercut_editor_core::media::MediaKind;
+        match self {
+            Self::All => true,
+            Self::Video => kind == MediaKind::Video,
+            Self::Sound => kind == MediaKind::Audio,
+            Self::Photos => kind == MediaKind::Image,
+        }
+    }
+}
+
+/// Whether a file named `name` matches what was typed: every word of `query`
+/// somewhere in the name, in any order and any case. An empty query matches
+/// everything.
+pub fn media_name_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| name.contains(&word.to_lowercase()))
+}
+
+/// How tall the timeline's lanes are.
+///
+/// Compact fits a many-track edit on a laptop screen; tall gives waveforms and
+/// filmstrips room to be read. A view setting, not part of the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LaneHeight {
+    Compact,
+    #[default]
+    Normal,
+    Tall,
+}
+
+impl LaneHeight {
+    pub const ALL: [Self; 3] = [Self::Compact, Self::Normal, Self::Tall];
+
+    /// Pixels, not counting the gap between lanes.
+    pub fn pixels(self) -> f32 {
+        match self {
+            Self::Compact => 36.0,
+            Self::Normal => crate::theme::TRACK_HEIGHT,
+            Self::Tall => 100.0,
+        }
+    }
+
+    /// The button's letter and what it means.
+    pub fn label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Compact => ("S", "Short tracks: more of them on screen"),
+            Self::Normal => ("M", "Normal tracks"),
+            Self::Tall => ("L", "Tall tracks: bigger waveforms and pictures"),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct UiState {
     zoom_index: usize,
+    /// How tall the timeline's lanes are drawn.
+    pub lane_height: LaneHeight,
     /// Timeline tick at the left edge of the canvas.
     pub scroll_ticks: i64,
 
@@ -269,16 +378,87 @@ pub struct UiState {
 
     /// The Shortcuts window (`?` or F1).
     pub shortcuts_open: bool,
+    /// What is typed in its search box. Kept while the window is closed, so
+    /// reopening it to check the same key again needs no retyping.
+    pub shortcut_search: String,
 
     /// A volume point being dragged on the timeline (§24).
     pub envelope_drag: Option<EnvelopeDrag>,
 
+    /// A fade handle being dragged at a sound clip's corner.
+    pub fade_drag: Option<FadeDrag>,
+
     /// The Captions window: the list of captions, editable in place.
     pub captions_open: bool,
+    /// The Markers window (`crate::marker_list`).
+    pub markers_open: bool,
+    /// A clip note being typed in the Inspector, and which clip it is for —
+    /// applied when the field is left, or when another clip is selected.
+    pub note_draft: Option<(ClipId, String)>,
+    /// What the media browser is filtered to: typed words, and a kind.
+    pub media_search: String,
+    pub media_kind: MediaFilter,
+    /// A track name being typed in the track menu, and which track it is for —
+    /// applied when the field is left or the menu closes, as one undo step.
+    pub track_name_draft: Option<(TrackId, String)>,
+    /// The inset size last picked in "Picture in Picture", offered next time.
+    pub pip_size: bettercut_editor_core::PipSize,
+    /// A marker name being typed, and which marker it is for — applied when
+    /// the field is left, so a rename is one undo step.
+    pub marker_draft: Option<(bettercut_editor_core::foundation::TimelineTime, String)>,
+
+    /// A frame to save as a PNG, and the instant it was asked for at. Taken by
+    /// the shell, which owns the job scheduler the still renders on (§74).
+    pub still_request: Option<(std::path::PathBuf, TimelineTime)>,
+
+    /// Projects opened or saved lately, for the Open menu. In memory only
+    /// until the shell points it at the user's stored list.
+    pub recent: crate::recent::RecentProjects,
+
+    /// The History window (Ctrl+H): every step, and a click to return to one.
+    pub history_open: bool,
+    /// The undo depth the History window last drew, so it scrolls to the
+    /// current step only when that moves.
+    pub history_seen_depth: Option<usize>,
 
     /// Which caption is being typed into, so the keystrokes after the first
     /// join the same undo step and a different caption starts its own.
     pub caption_typing: Option<ClipId>,
+
+    /// Which clip the Effects tab is folded for.
+    ///
+    /// The sections open on what *this* clip is using, and egui remembers a
+    /// header's fold by its id rather than by what is selected — so without
+    /// this, choosing a masked clip and then a plain one would leave the mask
+    /// section hanging open over a clip that has none.
+    pub effects_for: Option<ClipId>,
+
+    /// The eyedropper is armed: the next click on the picture names the green
+    /// screen for this clip rather than moving anything (§45).
+    ///
+    /// Carries the clip so a click after the selection changed cannot key the
+    /// wrong one — arming it is about the clip whose key is being set up.
+    pub picking_key: Option<ClipId>,
+
+    /// Crop mode: the preview shows this clip's crop edges to drag, in place
+    /// of its move, scale and rotate handles (§22).
+    ///
+    /// A mode rather than always-on handles, because four more handles on
+    /// every selected clip would crowd the ones people use most, and a crop is
+    /// set once and left. Carries the clip for the reason `picking_key` does:
+    /// a selection that changed underneath must not crop the wrong shot.
+    pub cropping: Option<ClipId>,
+
+    /// How the next slideshow is made (§33): kept between uses, so someone who
+    /// prefers hard cuts and five seconds a photo sets that once.
+    pub slideshow: bettercut_editor_core::slideshow::Slideshow,
+
+    /// A look taken off a clip, waiting to be put onto others (§45).
+    ///
+    /// The values rather than the clip it came from, so deleting that clip
+    /// afterwards does not empty the clipboard — and so the paste is the same
+    /// edit whenever it happens.
+    pub copied_look: Option<Vec<bettercut_editor_core::ClipProperty>>,
 
     /// The Remove Silences window (§78), with its suggestion.
     pub silence: Option<crate::silence_dialog::SilenceDialog>,
@@ -340,6 +520,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             zoom_index: DEFAULT_ZOOM_INDEX,
+            lane_height: LaneHeight::Normal,
             scroll_ticks: 0,
             selected_clips: HashSet::new(),
             selected_track: None,
@@ -356,9 +537,27 @@ impl Default for UiState {
             export_dialog: crate::export_dialog::ExportDialog::default(),
             template_dialog: crate::template_dialog::TemplateDialog::default(),
             shortcuts_open: false,
+            shortcut_search: String::new(),
             envelope_drag: None,
+            fade_drag: None,
             captions_open: false,
+            markers_open: false,
+            pip_size: bettercut_editor_core::PipSize::Medium,
+            track_name_draft: None,
+            media_search: String::new(),
+            note_draft: None,
+            media_kind: MediaFilter::All,
+            marker_draft: None,
+            still_request: None,
+            recent: crate::recent::RecentProjects::default(),
+            history_open: false,
+            history_seen_depth: None,
             caption_typing: None,
+            effects_for: None,
+            picking_key: None,
+            cropping: None,
+            slideshow: bettercut_editor_core::slideshow::Slideshow::default(),
+            copied_look: None,
             silence: None,
             scenes: None,
             scene_request: None,

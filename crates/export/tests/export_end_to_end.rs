@@ -19,7 +19,7 @@ use bettercut_media::{FfmpegDecoder, FfmpegProber, MediaDecoder, MediaProber, Ne
 use bettercut_project_format::Project;
 use bettercut_timeline::{
     AnimatedParameter, AudioClip, Interpolation, Keyframe, Resolution, SourceRange, TimelineRange,
-    VideoClip,
+    Transition, TransitionKind, VideoClip,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -130,6 +130,8 @@ fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
         rate_control: bettercut_export::RateControl::Variable,
         range,
         threads: 2,
+        sound_only: false,
+        gif: false,
     }
 }
 
@@ -334,6 +336,319 @@ fn an_animated_fade_exports_as_a_fade() {
     );
 }
 
+/// §25's flash, all the way to the file.
+///
+/// The only layer in the editor with no source file behind it: the white is
+/// generated rather than decoded, and the export resolves it through its own
+/// arm. Everything else about the flash is covered without a GPU — this is the
+/// one part where "the export builds the layer too" is a separate claim from
+/// "`layer_requests` asked for it".
+#[test]
+fn a_flash_exports_as_a_flash() {
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let scratch = Scratch::new("flash");
+
+    let mut project = project_with_fixture();
+    {
+        let sequence = project.active_mut().expect("sequence");
+        // Cut the one clip in half and flash across the join, so both sides
+        // have the same footage and any brightening is the transition.
+        let id = sequence.video_tracks[0].clips()[0].id;
+        let whole = sequence.video_tracks[0].get(id).expect("clip").source;
+        let media = sequence.video_tracks[0].get(id).expect("clip").media_id;
+        let half = MediaTime::from_ticks(whole.duration().ticks() / 2);
+
+        let first = sequence.video_tracks[0].get_mut(id).expect("clip");
+        first.source = SourceRange::new(whole.start, half).expect("non-empty");
+        first.timeline =
+            TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_ticks(half.ticks()))
+                .expect("non-empty");
+        first.transition_out = Some(Transition::new(
+            TransitionKind::Flash,
+            TimelineTime::from_millis(600),
+        ));
+
+        let second = VideoClip::new(
+            media,
+            TimelineTime::from_ticks(half.ticks()),
+            SourceRange::new(half, whole.end).expect("non-empty"),
+        )
+        .expect("valid");
+        sequence.video_tracks[0].insert(second).expect("no overlap");
+    }
+
+    let cut = TimelineTime::from_ticks(
+        project.active().expect("sequence").video_tracks[0].clips()[1]
+            .timeline
+            .start
+            .ticks(),
+    );
+    let range = TimelineRange::new(
+        TimelineTime::from_ticks(cut.ticks() - TimelineTime::from_millis(300).ticks()),
+        TimelineTime::from_ticks(cut.ticks() + TimelineTime::from_millis(300).ticks()),
+    )
+    .expect("non-empty");
+
+    run(&project, &settings(scratch.path(), range));
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let mut decoder = FfmpegDecoder::new(2).expect("decoder");
+    decoder.open(&asset).expect("open");
+
+    let mut lumas = Vec::new();
+    while let Some(frame) = decoder.decode_frame(&NeverCancelled).expect("decode") {
+        lumas.push(frame_luma(&frame));
+    }
+    assert!(lumas.len() >= 10, "too few frames to judge a flash");
+
+    // The window is centred on the cut, so the brightest frame belongs in the
+    // middle of it and has to be close to white.
+    let (brightest_at, brightest) = lumas
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .expect("frames");
+    let edges = (lumas[0] + lumas[lumas.len() - 1]) / 2.0;
+
+    assert!(
+        *brightest > 240.0,
+        "the flash never reached white: peak {brightest:.1}"
+    );
+    assert!(
+        *brightest > edges + 40.0,
+        "no brighter in the middle than at the edges: {brightest:.1} against {edges:.1}"
+    );
+    let middle = lumas.len() / 2;
+    assert!(
+        brightest_at.abs_diff(middle) <= lumas.len() / 4,
+        "the flash peaked at frame {brightest_at} of {}, not near the cut",
+        lumas.len()
+    );
+}
+
+/// One edit with everything on it at once.
+///
+/// Every feature here has its own test, and each of those puts one thing on an
+/// otherwise plain project. What none of them covers is the combination: a cut
+/// carrying a flash while the shot either side of it is animating, a title over
+/// the top of both, a background showing through where the picture has been
+/// scaled away, a grade on one clip and a mask on the other.
+///
+/// This is the shape of an actual edit, and the failures worth finding now are
+/// interactions rather than features — an effect that works alone and blanks
+/// the frame beside another one.
+#[test]
+fn a_whole_edit_exports() {
+    use bettercut_timeline::{
+        BlendMode, ClipMotion, Mask, MaskShape, Motion, MotionKind, TextAnimation, TextClip,
+        Transform, Vec2,
+    };
+
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let scratch = Scratch::new("whole-edit");
+
+    let mut project = project_with_fixture();
+    {
+        let sequence = project.active_mut().expect("sequence");
+
+        // A background that can only show where the picture does not cover.
+        sequence.master.background = [0.1, 0.2, 0.5];
+
+        let first_id = sequence.video_tracks[0].clips()[0].id;
+        let whole = sequence.video_tracks[0].get(first_id).expect("clip").source;
+        let media = sequence.video_tracks[0]
+            .get(first_id)
+            .expect("clip")
+            .media_id;
+        let half = MediaTime::from_ticks(whole.duration().ticks() / 2);
+
+        // First half: scaled in so the background shows, graded, animating in,
+        // and flashing at the cut.
+        let first = sequence.video_tracks[0].get_mut(first_id).expect("clip");
+        first.source = SourceRange::new(whole.start, half).expect("non-empty");
+        first.timeline =
+            TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_ticks(half.ticks()))
+                .expect("non-empty");
+        first.transform = Transform {
+            scale: Vec2::new(0.8, 0.8),
+            ..Transform::default()
+        };
+        // Motion blur *and* a backdrop, together. Each is drawn from the same
+        // layer the other rewrites, and getting that wrong duplicates the shot
+        // behind itself — which is a picture, not an error, so only an actual
+        // frame catches it.
+        first.motion_blur = true;
+        first.backdrop = bettercut_timeline::Backdrop::Blur;
+        first.color.saturation = 1.4;
+        first.motion = ClipMotion {
+            intro: Some(Motion::new(
+                MotionKind::Fade,
+                TimelineTime::from_millis(300),
+            )),
+            outro: None,
+        };
+        first.transition_out = Some(Transition::new(
+            TransitionKind::Flash,
+            TimelineTime::from_millis(400),
+        ));
+
+        // Second half: masked and blended, animating out.
+        let mut second = VideoClip::new(
+            media,
+            TimelineTime::from_ticks(half.ticks()),
+            SourceRange::new(half, whole.end).expect("non-empty"),
+        )
+        .expect("valid");
+        second.mask = Some(Mask {
+            shape: MaskShape::Ellipse,
+            ..Mask::default()
+        });
+        second.blend = BlendMode::Screen;
+        second.motion = ClipMotion {
+            intro: None,
+            outro: Some(Motion::new(
+                MotionKind::SlideLeft,
+                TimelineTime::from_millis(300),
+            )),
+        };
+        sequence.video_tracks[0].insert(second).expect("no overlap");
+
+        // A title over the lot, with its own entrance.
+        // Shorter than the exported range on purpose: the tail check below
+        // has to see the *picture*, and a title across the whole film supplies
+        // enough variation on its own to hide the shot vanishing behind it.
+        let mut title = TextClip::with_duration(
+            "Everything",
+            TimelineTime::from_millis(600),
+            TimelineTime::from_millis(300),
+        )
+        .expect("valid title");
+        title.animation = TextAnimation {
+            intro: Some(Motion::new(MotionKind::Pop, TimelineTime::from_millis(300))),
+            outro: None,
+        };
+        sequence.text_tracks[0].insert(title).expect("empty track");
+    }
+
+    // Straddling the cut at 1 s, because that is where the interactions are:
+    // the flash, the end of one clip and the start of the other. The fixture
+    // is two seconds long, so an export of its first second would have shown
+    // the first clip alone and proved very little.
+    let across_the_cut = TimelineRange::new(
+        TimelineTime::from_millis(600),
+        TimelineTime::from_millis(1400),
+    )
+    .expect("non-empty");
+    let summary = run(&project, &settings(scratch.path(), across_the_cut));
+    assert!(summary.frames >= 20, "a frame went missing under load");
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    assert_eq!((asset.width, asset.height), (640, 360));
+    assert!(asset.video_codec.is_some());
+
+    // Nothing blanked: every frame has to carry some light, and none of them
+    // may be the flat background either — that would mean the picture stopped
+    // being drawn somewhere in the stack.
+    let mut decoder = FfmpegDecoder::new(2).expect("decoder");
+    decoder.open(&asset).expect("open");
+    let mut lumas = Vec::new();
+    while let Some(frame) = decoder.decode_frame(&NeverCancelled).expect("decode") {
+        lumas.push((frame_luma(&frame), frame_spread(&frame)));
+    }
+
+    assert!(
+        lumas.len() >= 18,
+        "too few frames came back: {}",
+        lumas.len()
+    );
+    let brightest = lumas.iter().map(|frame| frame.0).fold(0.0_f64, f64::max);
+    assert!(
+        brightest > 200.0,
+        "the flash never reached white with everything else on: {brightest:.1}"
+    );
+
+    // Picture, not just colour. A mean alone cannot tell a shot from a flat
+    // background — the background here is a mid blue, which passes any
+    // "not black" check while the film has quietly stopped being drawn. Spread
+    // can: a photograph varies across the frame and a flat fill does not.
+    //
+    // Measured over the last few frames, which is where the second clip is:
+    // the flash's own peak is legitimately flat white, so "every frame varies"
+    // would be false for the right reason.
+    let tail = &lumas[lumas.len() - 5..];
+    let flattest = tail.iter().map(|frame| frame.1).fold(f64::MAX, f64::min);
+    assert!(
+        flattest > 20.0,
+        "the end of the film is a flat colour — something stopped drawing: {tail:?}"
+    );
+}
+
+/// A mask has to survive the *export's* own layer building.
+///
+/// §46 is enforced by the golden frames, but only from the layer inwards: they
+/// hand both configurations the same `Layer` values and compare pixels. The
+/// step before that — turning a `LayerRequest` into a layer — is written out
+/// once in the preview and once in the export, and nothing compared the two.
+/// Dropping the mask from the export alone passed every test in the workspace.
+///
+/// So this checks the one thing a mask is for: the picture stops at its edge.
+#[test]
+fn a_mask_reaches_the_exported_file() {
+    use bettercut_timeline::{Mask, MaskShape};
+
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let scratch = Scratch::new("masked");
+
+    let mut project = project_with_fixture();
+    {
+        let sequence = project.active_mut().expect("sequence");
+        // A background nothing in the footage looks like, so "masked away" is
+        // a colour rather than an absence.
+        sequence.master.background = [1.0, 0.0, 0.0];
+        let id = sequence.video_tracks[0].clips()[0].id;
+        sequence.video_tracks[0].get_mut(id).expect("clip").mask = Some(Mask {
+            shape: MaskShape::Ellipse,
+            size: [0.25, 0.25],
+            ..Mask::default()
+        });
+    }
+
+    run(&project, &settings(scratch.path(), one_second()));
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let mut decoder = FfmpegDecoder::new(2).expect("decoder");
+    decoder.open(&asset).expect("open");
+    let frame = decoder
+        .decode_frame(&NeverCancelled)
+        .expect("decode")
+        .expect("a frame");
+
+    let bettercut_media::FrameStorage::System { data, stride } = &frame.storage else {
+        panic!("expected a system-memory frame");
+    };
+    let at = |x: u32, y: u32| {
+        let i = (y * stride + x * 4) as usize;
+        [data[i], data[i + 1], data[i + 2]]
+    };
+
+    // Outside a quarter-size ellipse in the middle: the background, which is
+    // red. Inside it: the shot, which is not.
+    let corner = at(4, 4);
+    assert!(
+        corner[0] > 180 && corner[1] < 80 && corner[2] < 80,
+        "the corner is not the background — the mask never reached the export: {corner:?}"
+    );
+
+    let middle = at(frame.width / 2, frame.height / 2);
+    assert!(
+        !(middle[0] > 180 && middle[1] < 80 && middle[2] < 80),
+        "the middle is background too — the mask removed everything: {middle:?}"
+    );
+}
+
 /// §14: export reads the original, never the proxy. A project whose proxy is a
 /// different resolution must still export at the sequence's resolution — and
 /// more importantly, from the full-quality source.
@@ -427,6 +742,28 @@ fn mean_luma(path: &Path) -> f64 {
 
 /// Mean of the green channel, sampled sparsely — enough to compare exposures
 /// without decoding into a full histogram.
+/// How much a frame varies across itself, as the range of its sampled luma.
+///
+/// The companion to [`frame_luma`], which cannot tell a photograph from a flat
+/// fill of the same average brightness — and a flat fill is exactly what a
+/// frame becomes when something in the stack stops drawing over a background.
+fn frame_spread(frame: &bettercut_media::VideoFrame) -> f64 {
+    let bettercut_media::FrameStorage::System { data, stride } = &frame.storage else {
+        panic!("expected a system-memory frame");
+    };
+
+    let (mut low, mut high) = (f64::MAX, 0.0_f64);
+    for y in (0..frame.height).step_by(4) {
+        for x in (0..frame.width).step_by(4) {
+            let at = (y * stride + x * 4) as usize;
+            let value = f64::from(data[at + 1]);
+            low = low.min(value);
+            high = high.max(value);
+        }
+    }
+    if low > high { 0.0 } else { high - low }
+}
+
 fn frame_luma(frame: &bettercut_media::VideoFrame) -> f64 {
     let bettercut_media::FrameStorage::System { data, stride } = &frame.storage else {
         panic!("expected a system-memory frame");
@@ -789,7 +1126,7 @@ fn difference(a: &[u8], b: &[u8]) -> f64 {
     f64::from(total) / a.len() as f64
 }
 
-/// The level of the first and last `edge` of a file's audio/// The level of the first and last `edge` of a file's audio, for judging a
+/// The level of the first and last `edge` of a file's audio, for judging a
 /// fade rather than an overall volume.
 fn audio_rms_ends(path: &Path, edge: TimelineTime) -> (f64, f64) {
     let asset = FfmpegProber.probe(path).expect("probe the export");

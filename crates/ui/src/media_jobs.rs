@@ -83,6 +83,14 @@ pub struct MediaJobs {
     /// waiting on: its progress and its result both need reporting, where a
     /// proxy's are background noise.
     exports: HashMap<JobId, Arc<std::sync::Mutex<Option<ExportOutcome>>>>,
+    /// Exports asked for together — one edit in several shapes — waiting for
+    /// the one before them to end. One at a time: each already uses the GPU,
+    /// a decoder pool and an encoder, and running three side by side makes all
+    /// three slower than running them in turn, on the laptops this is for.
+    waiting_exports: std::collections::VecDeque<ExportJob>,
+    /// Frames being saved as pictures, with where each goes, so the finish can
+    /// say where to find it.
+    stills: HashMap<JobId, std::path::PathBuf>,
     /// Assets already considered, so re-importing does not requeue.
     considered: std::collections::HashSet<MediaId>,
     /// True once §67's limit has been reported, so the warning appears once
@@ -104,6 +112,8 @@ impl MediaJobs {
             waveforms: HashMap::new(),
             progress: HashMap::new(),
             exports: HashMap::new(),
+            waiting_exports: std::collections::VecDeque::new(),
+            stills: HashMap::new(),
             considered: std::collections::HashSet::new(),
             warned_about_space: false,
         }
@@ -262,15 +272,44 @@ impl MediaJobs {
 
     /// Queue an export (§15, §74 — never block the UI while FFmpeg runs).
     ///
-    /// Returns the job id so a cancel button has something to name.
-    pub fn submit_export(&mut self, job: ExportJob) -> JobId {
+    /// Starts now when no export is running; otherwise it waits its turn and
+    /// starts when the one before it ends, however that one ends.
+    pub fn submit_export(&mut self, job: ExportJob) {
+        if self.exports.is_empty() {
+            self.start_export(job);
+        } else {
+            self.waiting_exports.push_back(job);
+        }
+    }
+
+    /// Save a frame as a PNG in the background (§74).
+    pub fn submit_still(&mut self, job: bettercut_export::StillJob) {
+        let path = job.path().to_path_buf();
+        let id = self.scheduler.submit(Box::new(job));
+        self.stills.insert(id, path);
+    }
+
+    /// How many exports are queued behind the running one.
+    pub fn exports_waiting(&self) -> usize {
+        self.waiting_exports.len()
+    }
+
+    fn start_export(&mut self, job: ExportJob) {
         let outcome = job.outcome();
         let id = self.scheduler.submit(Box::new(job));
         self.exports.insert(id, outcome);
-        id
     }
 
-    /// Queue a scene detection (§45). Its answer arrives in the `SceneReport`
+    /// The next waiting export, if the running one has ended.
+    fn start_next_export(&mut self) {
+        if self.exports.is_empty()
+            && let Some(job) = self.waiting_exports.pop_front()
+        {
+            self.start_export(job);
+        }
+    }
+
+    /// Queue a scene detection (Milestone 12). Its answer arrives in the `SceneReport`
     /// the caller kept, not through `poll`: nothing else in the interface needs
     /// to know a detection happened.
     pub fn submit_scene(&mut self, job: bettercut_playback::SceneJob) -> JobId {
@@ -302,8 +341,15 @@ impl MediaJobs {
                 }
                 JobEvent::Finished { id } => {
                     self.progress.remove(&id);
+                    if let Some(path) = self.stills.remove(&id) {
+                        update
+                            .messages
+                            .push(format!("Frame saved to {}", path.display()));
+                        continue;
+                    }
                     if let Some(slot) = self.exports.remove(&id) {
                         update.messages.push(describe_export(&slot));
+                        self.start_next_export();
                         continue;
                     }
                     if let Some(media) = self.thumbnails.remove(&id) {
@@ -323,10 +369,20 @@ impl MediaJobs {
                 }
                 JobEvent::Failed { id, message } => {
                     self.progress.remove(&id);
+                    if self.stills.remove(&id).is_some() {
+                        update
+                            .failures
+                            .push(format!("Could not save the frame: {message}"));
+                        continue;
+                    }
                     if self.exports.remove(&id).is_some() {
                         // Unlike a proxy, an export failing means the user did
                         // not get the thing they asked for. It is an error.
                         update.failures.push(format!("Export failed: {message}"));
+                        // One shape failing is no reason to withhold the others:
+                        // a vertical cut that hit a codec limit says nothing
+                        // about the square one.
+                        self.start_next_export();
                         continue;
                     }
                     if self.waveforms.remove(&id).is_some() {
@@ -351,8 +407,18 @@ impl MediaJobs {
                 }
                 JobEvent::Cancelled { id } => {
                     self.progress.remove(&id);
+                    self.stills.remove(&id);
                     if self.exports.remove(&id).is_some() {
-                        update.messages.push("Export cancelled".to_owned());
+                        // Stop means stop: the shapes still waiting were part
+                        // of the same request, and starting the next one the
+                        // moment the user cancelled would read as the button
+                        // not working.
+                        let dropped = self.waiting_exports.len();
+                        self.waiting_exports.clear();
+                        update.messages.push(match dropped {
+                            0 => "Export cancelled".to_owned(),
+                            n => format!("Export cancelled, with the {n} waiting behind it"),
+                        });
                     }
                     self.in_flight.remove(&id);
                     self.thumbnails.remove(&id);
@@ -374,7 +440,7 @@ impl MediaJobs {
 /// Turn a finished export's outcome into something to show the user.
 ///
 /// Names the encoder, because "why was that fast" and "why was that slow" have
-/// the same answer and §41 says the interface should explain itself.
+/// the same answer and an interface should explain itself.
 fn describe_export(slot: &Arc<std::sync::Mutex<Option<ExportOutcome>>>) -> String {
     match slot.lock().ok().and_then(|guard| guard.clone()) {
         Some(ExportOutcome::Finished {
@@ -387,6 +453,11 @@ fn describe_export(slot: &Arc<std::sync::Mutex<Option<ExportOutcome>>>) -> Strin
                 || path.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
             );
+            // Sound only writes no frames, and "0 frames" would read as a
+            // failure.
+            if frames == 0 {
+                return format!("Exported {name} — sound only, {encoder}");
+            }
             let how = if hardware { "hardware" } else { "software" };
             format!("Exported {name} — {frames} frames, {encoder} ({how})")
         }

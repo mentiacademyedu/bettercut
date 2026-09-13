@@ -25,7 +25,7 @@
 
 use bettercut_editor_core::ClipProperty;
 use bettercut_editor_core::foundation::ClipId;
-use bettercut_editor_core::timeline::{Transform, Vec2};
+use bettercut_editor_core::timeline::{Crop, MIN_CROP_REMAINING, Transform, Vec2};
 
 /// How close to a corner counts as grabbing it, in canvas pixels.
 const HANDLE_RADIUS: f32 = 7.0;
@@ -92,6 +92,117 @@ pub enum Gesture {
         /// Distance from the box centre to the pointer when the drag began.
         grab_distance: f32,
     },
+    /// Sliding a mask across the picture it was drawn on.
+    ///
+    /// The mask's own centre, not the clip's: a mask is in the clip's frame, so
+    /// moving the clip takes its mask along and this moves the mask *within*
+    /// it.
+    MaskMove {
+        /// Where the mask's centre was when the drag began, in the clip's own
+        /// 0–1 frame.
+        from: [f32; 2],
+        grab: egui::Pos2,
+    },
+    /// Resizing a mask from the handle at its edge.
+    MaskResize {
+        /// The mask's half-width and half-height when the drag began.
+        from: [f32; 2],
+        grab: egui::Pos2,
+    },
+    /// Dragging one edge of §22's crop.
+    ///
+    /// Everything is captured at the press, because the picture does not hold
+    /// still under the pointer: cropping changes its shape, and the renderer
+    /// re-fits it every frame. Worked out against the live picture, the edge
+    /// being dragged would run away from the hand. Against the picture as it was
+    /// when the drag began, a pointer position means one crop and only one.
+    Crop {
+        edge: CropEdge,
+        /// The crop when the drag began.
+        from: Crop,
+        /// The cropped picture's box when the drag began, unturned.
+        picture: egui::Rect,
+        /// The clip's rotation, which the picture turns about its own centre.
+        degrees: f32,
+    },
+}
+
+/// Which side of the crop is being dragged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CropEdge {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+impl CropEdge {
+    pub const ALL: [Self; 4] = [Self::Left, Self::Top, Self::Right, Self::Bottom];
+
+    /// Where this edge's handle sits, in the cropped picture's own 0–1 frame:
+    /// the middle of its side.
+    fn picture_uv(self) -> [f32; 2] {
+        match self {
+            Self::Left => [0.0, 0.5],
+            Self::Top => [0.5, 0.0],
+            Self::Right => [1.0, 0.5],
+            Self::Bottom => [0.5, 1.0],
+        }
+    }
+}
+
+/// Where a point of the clip's own frame lands on the canvas.
+///
+/// A mask is in the clip's frame — 0–1 across the picture — and the preview
+/// shows that picture as a box which may be moved, scaled and turned. So a
+/// mask's centre is found by walking into the box and then turning with it,
+/// which is why this takes the rotation separately: `box_on_canvas` is the
+/// *unturned* rectangle, as everything else in this module treats it.
+pub fn clip_point_on_canvas(uv: [f32; 2], box_on_canvas: egui::Rect, degrees: f32) -> egui::Pos2 {
+    let inside = egui::pos2(
+        box_on_canvas.left() + uv[0] * box_on_canvas.width(),
+        box_on_canvas.top() + uv[1] * box_on_canvas.height(),
+    );
+    rotate_about(inside, box_on_canvas.center(), degrees)
+}
+
+/// The inverse: where a point on the canvas falls in the clip's own frame.
+///
+/// Exact enough to round-trip, which is what a drag needs — a mask that drifted
+/// a little every time it was picked up would be worse than one that could not
+/// be dragged at all.
+pub fn canvas_point_in_clip(at: egui::Pos2, box_on_canvas: egui::Rect, degrees: f32) -> [f32; 2] {
+    let unturned = rotate_about(at, box_on_canvas.center(), -degrees);
+    let width = if box_on_canvas.width().abs() < f32::EPSILON {
+        1.0
+    } else {
+        box_on_canvas.width()
+    };
+    let height = if box_on_canvas.height().abs() < f32::EPSILON {
+        1.0
+    } else {
+        box_on_canvas.height()
+    };
+    [
+        (unturned.x - box_on_canvas.left()) / width,
+        (unturned.y - box_on_canvas.top()) / height,
+    ]
+}
+
+/// Where a mask's centre ends up after a drag.
+///
+/// Absolute from where the drag began rather than an accumulation of per-frame
+/// deltas, for the reason [`Gesture::Move`] gives: deltas drift.
+pub fn mask_moved(
+    from: [f32; 2],
+    grab: egui::Pos2,
+    now: egui::Pos2,
+    box_on_canvas: egui::Rect,
+    degrees: f32,
+) -> [f32; 2] {
+    let was = canvas_point_in_clip(grab, box_on_canvas, degrees);
+    let is = canvas_point_in_clip(now, box_on_canvas, degrees);
+    [from[0] + (is[0] - was[0]), from[1] + (is[1] - was[1])]
 }
 
 /// Where a *generated* layer's picture sits, in 0..1 frame units (§26).
@@ -148,6 +259,126 @@ pub fn layer_box(source_aspect: f32, output_aspect: f32, transform: Transform) -
     );
     let centre = egui::pos2(0.5 + transform.position.x, 0.5 + transform.position.y);
     egui::Rect::from_center_size(centre, half * 2.0)
+}
+
+/// A point of the cropped picture's own 0–1 frame, as a point of the *whole
+/// source*'s 0–1 frame.
+///
+/// The two frames the crop handles move between. The picture the user sees is
+/// only the part the crop kept, so its left edge is the source's `crop.left`,
+/// and its full width is the fraction the crop left across.
+pub fn picture_to_source_uv(picture_uv: [f32; 2], crop: Crop) -> [f32; 2] {
+    let (keep_x, keep_y) = crop.remaining();
+    [
+        crop.left + picture_uv[0] * keep_x,
+        crop.top + picture_uv[1] * keep_y,
+    ]
+}
+
+/// The inverse of [`picture_to_source_uv`].
+///
+/// Outside 0–1 for the parts of the source the crop removed, which is exactly
+/// what drawing the uncropped outline needs.
+pub fn source_to_picture_uv(source_uv: [f32; 2], crop: Crop) -> [f32; 2] {
+    let (keep_x, keep_y) = crop.remaining();
+    let along = |at: f32, from: f32, keep: f32| {
+        if keep <= f32::EPSILON {
+            0.0
+        } else {
+            (at - from) / keep
+        }
+    };
+    [
+        along(source_uv[0], crop.left, keep_x),
+        along(source_uv[1], crop.top, keep_y),
+    ]
+}
+
+/// Each crop edge's handle on the canvas: the middle of each side of the
+/// picture as drawn, turned with the clip.
+pub fn crop_edge_handles(picture: egui::Rect, degrees: f32) -> [(CropEdge, egui::Pos2); 4] {
+    CropEdge::ALL.map(|edge| {
+        (
+            edge,
+            clip_point_on_canvas(edge.picture_uv(), picture, degrees),
+        )
+    })
+}
+
+/// The crop edge whose handle is under `pointer`, if any.
+pub fn crop_edge_at(picture: egui::Rect, degrees: f32, pointer: egui::Pos2) -> Option<CropEdge> {
+    crop_edge_handles(picture, degrees)
+        .into_iter()
+        .find(|(_, at)| at.distance(pointer) <= HANDLE_RADIUS)
+        .map(|(edge, _)| edge)
+}
+
+/// The four corners of the whole, uncropped source, on the canvas.
+///
+/// What crop mode outlines, so the user can see what is being cut away and how
+/// far there is to go. Turned about the *picture's* centre, not the outline's
+/// own: the renderer turns the cropped quad, so an uneven crop leaves the
+/// outline off-centre from the thing that is rotating.
+pub fn uncropped_corners(picture: egui::Rect, crop: Crop, degrees: f32) -> [egui::Pos2; 4] {
+    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        .map(|corner| clip_point_on_canvas(source_to_picture_uv(corner, crop), picture, degrees))
+}
+
+/// The crop after dragging `edge` to `pointer`.
+///
+/// Absolute from the drag's start (see [`Gesture::Crop`]). The pointer is found
+/// in the picture as it was then, taken into the source's frame through the
+/// crop as it was then, and becomes the new position of the dragged edge — and
+/// only that edge.
+///
+/// Dragging an edge past the one opposite **stops** it, with
+/// [`MIN_CROP_REMAINING`] of the picture left between them. It does not push
+/// the other edge along, and it does not split the difference the way
+/// `Crop::clamped` does for a value read from a file: the hand is on one edge,
+/// and the other edge moving would be the crop doing something it was not
+/// asked to.
+pub fn crop_dragged(
+    edge: CropEdge,
+    from: Crop,
+    picture: egui::Rect,
+    degrees: f32,
+    pointer: egui::Pos2,
+) -> Crop {
+    let picture_uv = canvas_point_in_clip(pointer, picture, degrees);
+    let [u, v] = picture_to_source_uv(picture_uv, from);
+
+    // The furthest this edge may go: up to the opposite edge, less the least
+    // the crop must leave.
+    let room = |opposite: f32| (1.0 - opposite - MIN_CROP_REMAINING).max(0.0);
+    let mut crop = from;
+    match edge {
+        CropEdge::Left => crop.left = u.clamp(0.0, room(from.right)),
+        CropEdge::Right => crop.right = (1.0 - u).clamp(0.0, room(from.left)),
+        CropEdge::Top => crop.top = v.clamp(0.0, room(from.bottom)),
+        CropEdge::Bottom => crop.bottom = (1.0 - v).clamp(0.0, room(from.top)),
+    }
+    crop
+}
+
+/// Where a *clip's* picture sits, crop included: the box the handles belong on.
+///
+/// [`layer_box`] with §22's crop applied first, which is the order the renderer
+/// runs them in. Separate from it because `layer_box` takes an aspect and knows
+/// nothing about where that aspect came from — which is exactly how the preview
+/// came to pass the uncropped one, and draw every cropped clip's handles around
+/// a shape the picture no longer was. Taking the crop here makes that mistake a
+/// missing argument rather than a wrong number.
+pub fn clip_box(
+    source_aspect: f32,
+    output_aspect: f32,
+    crop: bettercut_editor_core::timeline::Crop,
+    transform: Transform,
+) -> egui::Rect {
+    layer_box(
+        crop.clamped().applied_to(source_aspect),
+        output_aspect,
+        transform,
+    )
 }
 
 /// Turn `point` about `centre` by `degrees`, clockwise on screen.
@@ -318,29 +549,221 @@ pub fn draw(painter: &egui::Painter, box_on_canvas: egui::Rect, degrees: f32, ac
     }
 }
 
+/// Crop mode's overlay: what is kept, what was cut, and an edge handle on each
+/// side.
+///
+/// The outline of the *whole* source is drawn dashed and faint, so it reads as
+/// "what used to be here" rather than as a second box to grab. The picture as
+/// cropped keeps the solid outline the move handles use, and its sides get
+/// bars rather than circles: a bar says "this slides one way", which is what a
+/// crop edge does, where a circle is a corner that goes anywhere.
+pub fn draw_crop(
+    painter: &egui::Painter,
+    picture: egui::Rect,
+    crop: Crop,
+    degrees: f32,
+    active: bool,
+) {
+    let colour = if active {
+        crate::theme::SELECTION
+    } else {
+        crate::theme::CLIP_TEXT
+    };
+
+    let whole = uncropped_corners(picture, crop, degrees);
+    let faint = egui::Stroke::new(1.0, colour.gamma_multiply(0.45));
+    for index in 0..4 {
+        painter.add(egui::Shape::dashed_line(
+            &[whole[index], whole[(index + 1) % 4]],
+            faint,
+            6.0,
+            4.0,
+        ));
+    }
+
+    let kept = corners(picture, degrees);
+    let stroke = egui::Stroke::new(1.5, colour);
+    for index in 0..4 {
+        painter.line_segment([kept[index], kept[(index + 1) % 4]], stroke);
+    }
+
+    for (edge, at) in crop_edge_handles(picture, degrees) {
+        // Along the edge it sits on, turned with the clip.
+        let along = match edge {
+            CropEdge::Left | CropEdge::Right => egui::vec2(0.0, 1.0),
+            CropEdge::Top | CropEdge::Bottom => egui::vec2(1.0, 0.0),
+        };
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let turned = egui::vec2(along.x * cos - along.y * sin, along.x * sin + along.y * cos);
+        let half = turned * (HANDLE_DRAW * 2.2);
+        // Dark underneath, for the reason the corner handles have one.
+        painter.line_segment(
+            [at - half, at + half],
+            egui::Stroke::new(7.0, egui::Color32::from_black_alpha(160)),
+        );
+        painter.line_segment([at - half, at + half], egui::Stroke::new(4.0, colour));
+    }
+}
+
 /// The command a gesture has produced this frame.
+/// The property a drag is writing, or `None` when this signature cannot say.
+///
+/// A mask drag is the `None`: moving a mask means writing a whole `Mask` back,
+/// and that needs the mask being moved — which the caller has and this does
+/// not. Returning some other property would be a wrong answer rather than an
+/// absent one, and the wrong answer available here is `Mask(None)`, which
+/// deletes the mask the user is dragging.
+/// Smallest a mask may be dragged to, in the clip's own frame.
+///
+/// Not zero: a mask dragged to nothing has no handle left to drag it back by,
+/// and the user would have to reach for the Inspector to undo their own
+/// gesture.
+pub const SMALLEST_MASK: f32 = 0.01;
+
+/// Where a mask's size handle sits, or `None` for a shape that has no size.
+///
+/// A linear mask is an edge, not an area — the Inspector hides its size for the
+/// same reason, and a handle offering to resize nothing would be worse than no
+/// handle.
+pub fn mask_size_handle(
+    mask: bettercut_editor_core::timeline::Mask,
+    box_on_canvas: egui::Rect,
+    clip_degrees: f32,
+) -> Option<egui::Pos2> {
+    if mask.shape == bettercut_editor_core::timeline::MaskShape::Linear {
+        return None;
+    }
+    // Out along the mask's own axes, which are turned by the mask's rotation
+    // *within* the clip's frame — the same order the shader applies them in.
+    let (sin, cos) = mask.rotation_degrees.to_radians().sin_cos();
+    let corner = [
+        mask.center[0] + mask.size[0] * cos - mask.size[1] * sin,
+        mask.center[1] + mask.size[0] * sin + mask.size[1] * cos,
+    ];
+    Some(clip_point_on_canvas(corner, box_on_canvas, clip_degrees))
+}
+
+/// The size a mask ends up after a resize drag.
+///
+/// Measured from where the drag began rather than from the pointer's absolute
+/// position, so grabbing the handle a few pixels off centre does not snap the
+/// shape to the pointer.
+pub fn mask_resized(
+    from: [f32; 2],
+    grab: egui::Pos2,
+    now: egui::Pos2,
+    mask_degrees: f32,
+    box_on_canvas: egui::Rect,
+    clip_degrees: f32,
+) -> [f32; 2] {
+    let local = |at: egui::Pos2| {
+        let point = canvas_point_in_clip(at, box_on_canvas, clip_degrees);
+        // Back out of the mask's own rotation, so dragging a turned mask's
+        // handle grows it along its own axes rather than the frame's.
+        let (sin, cos) = (-mask_degrees).to_radians().sin_cos();
+        [
+            point[0] * cos - point[1] * sin,
+            point[0] * sin + point[1] * cos,
+        ]
+    };
+    let was = local(grab);
+    let is = local(now);
+    [
+        (from[0] + (is[0] - was[0])).max(SMALLEST_MASK),
+        (from[1] + (is[1] - was[1])).max(SMALLEST_MASK),
+    ]
+}
+
+/// Which pixel of the rendered frame a point on the canvas lands on.
+///
+/// `None` outside the picture: the canvas is letterboxed into the panel, and a
+/// click on the black around it is pointing at nothing. For the eyedropper,
+/// where answering anyway would put a colour into the project that is not in
+/// the shot.
+///
+/// The frame fills the canvas exactly — it is drawn with UVs 0..1 across it —
+/// so this is a scale, not a fit. The right and bottom edges belong to the last
+/// pixel rather than to one past it, which is where an off-by-one would send
+/// the read out of the texture.
+pub fn frame_pixel_at(
+    at: egui::Pos2,
+    canvas: egui::Rect,
+    resolution: bettercut_editor_core::timeline::Resolution,
+) -> Option<(u32, u32)> {
+    if !canvas.contains(at) || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+        return None;
+    }
+    if resolution.width == 0 || resolution.height == 0 {
+        return None;
+    }
+
+    let u = (at.x - canvas.left()) / canvas.width();
+    let v = (at.y - canvas.top()) / canvas.height();
+    let x = (u * resolution.width as f32) as u32;
+    let y = (v * resolution.height as f32) as u32;
+    Some((x.min(resolution.width - 1), y.min(resolution.height - 1)))
+}
+
+/// How close to the mask's centre counts as grabbing it, in screen pixels.
+///
+/// The same generosity the timeline's volume points get: a drawn dot is smaller
+/// than a target anyone can hit.
+pub const MASK_GRAB_PIXELS: f32 = 9.0;
+
+/// Draw a mask's centre on the preview, so there is something to take hold of.
+///
+/// The shape itself is already visible — the picture outside it is gone — so
+/// this is a handle rather than an outline: drawing an ellipse over an ellipse
+/// that is already there would only make the edge harder to judge.
+pub fn draw_mask_handle(painter: &egui::Painter, at: egui::Pos2, active: bool) {
+    let colour = if active {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_white_alpha(200)
+    };
+    painter.circle_stroke(at, MASK_GRAB_PIXELS * 0.6, egui::Stroke::new(1.5, colour));
+    painter.circle_filled(at, 2.0, colour);
+}
+
+/// Whether the pointer is on a mask's centre handle.
+pub fn on_mask_handle(centre_on_canvas: egui::Pos2, pointer: egui::Pos2) -> bool {
+    centre_on_canvas.distance(pointer) <= MASK_GRAB_PIXELS
+}
+
 pub fn property_for(
     gesture: Gesture,
     canvas: egui::Rect,
     box_on_canvas: egui::Rect,
     now: egui::Pos2,
-) -> ClipProperty {
+) -> Option<ClipProperty> {
     match gesture {
         Gesture::Move { from, grab } => {
             let at = moved_position(from, grab, now, canvas);
-            ClipProperty::Position { x: at.x, y: at.y }
+            Some(ClipProperty::Position { x: at.x, y: at.y })
         }
-        Gesture::Rotate { from, grab_angle } => {
-            ClipProperty::Rotation(rotated(from, grab_angle, box_on_canvas.center(), now))
-        }
+        Gesture::Rotate { from, grab_angle } => Some(ClipProperty::Rotation(rotated(
+            from,
+            grab_angle,
+            box_on_canvas.center(),
+            now,
+        ))),
         Gesture::Scale {
             from,
             grab_distance,
             ..
         } => {
             let at = scaled(from, grab_distance, box_on_canvas.center(), now);
-            ClipProperty::Scale { x: at.x, y: at.y }
+            Some(ClipProperty::Scale { x: at.x, y: at.y })
         }
+        Gesture::Crop {
+            edge,
+            from,
+            picture,
+            degrees,
+        } => Some(ClipProperty::Crop(crop_dragged(
+            edge, from, picture, degrees, now,
+        ))),
+        Gesture::MaskMove { .. } | Gesture::MaskResize { .. } => None,
     }
 }
 
@@ -609,5 +1032,475 @@ mod tests {
         // Twenty: left alone.
         let free = rotate_about(egui::pos2(10.0, 0.0), centre, 20.0);
         assert!((rotated(0.0, grab, centre, free) - 20.0).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    fn box_at(left: f32, top: f32, width: f32, height: f32) -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height))
+    }
+
+    /// The middle of the clip's frame is the middle of its box, whatever the
+    /// box is doing.
+    #[test]
+    fn the_centre_of_the_frame_is_the_centre_of_the_box() {
+        let box_ = box_at(100.0, 50.0, 400.0, 200.0);
+        for degrees in [0.0, 30.0, -90.0, 180.0] {
+            let at = clip_point_on_canvas([0.5, 0.5], box_, degrees);
+            assert!(
+                at.distance(box_.center()) < 1e-3,
+                "at {degrees}° the centre landed at {at:?}"
+            );
+        }
+    }
+
+    /// Corners go to corners on an unturned box: 0,0 is the top left.
+    #[test]
+    fn the_corners_of_the_frame_are_the_corners_of_the_box() {
+        let box_ = box_at(100.0, 50.0, 400.0, 200.0);
+        assert!(clip_point_on_canvas([0.0, 0.0], box_, 0.0).distance(box_.left_top()) < 1e-3);
+        assert!(clip_point_on_canvas([1.0, 1.0], box_, 0.0).distance(box_.right_bottom()) < 1e-3);
+    }
+
+    /// A mask picked up and put down without moving must land exactly where it
+    /// was. One that drifted a little every time would be worse than one that
+    /// could not be dragged at all.
+    #[test]
+    fn a_point_survives_the_round_trip() {
+        let box_ = box_at(80.0, 40.0, 360.0, 180.0);
+        for degrees in [0.0, 17.0, -42.0, 155.0] {
+            for uv in [[0.5, 0.5], [0.1, 0.9], [0.73, 0.22], [0.0, 0.0]] {
+                let there = clip_point_on_canvas(uv, box_, degrees);
+                let back = canvas_point_in_clip(there, box_, degrees);
+                assert!(
+                    (back[0] - uv[0]).abs() < 1e-3 && (back[1] - uv[1]).abs() < 1e-3,
+                    "{uv:?} at {degrees}° came back as {back:?}"
+                );
+            }
+        }
+    }
+
+    /// A drag that does not move the pointer does not move the mask — the
+    /// property this needs for a click on the handle to be a click and not a
+    /// nudge.
+    #[test]
+    fn a_drag_that_goes_nowhere_changes_nothing() {
+        let box_ = box_at(0.0, 0.0, 320.0, 180.0);
+        let grab = egui::pos2(160.0, 90.0);
+        let moved = mask_moved([0.4, 0.6], grab, grab, box_, 25.0);
+        assert!((moved[0] - 0.4).abs() < 1e-4 && (moved[1] - 0.6).abs() < 1e-4);
+    }
+
+    /// Dragging half the box's width across moves the mask half a frame.
+    #[test]
+    fn a_drag_moves_the_mask_by_what_the_pointer_crossed() {
+        let box_ = box_at(0.0, 0.0, 400.0, 200.0);
+        let moved = mask_moved(
+            [0.25, 0.5],
+            egui::pos2(100.0, 100.0),
+            egui::pos2(300.0, 100.0),
+            box_,
+            0.0,
+        );
+        assert!((moved[0] - 0.75).abs() < 1e-3, "moved to {moved:?}");
+        assert!((moved[1] - 0.5).abs() < 1e-3, "it moved vertically too");
+    }
+
+    /// On a turned clip the mask follows the *picture*, not the screen: dragging
+    /// along the screen's x axis on a clip turned 90° moves the mask down its
+    /// own frame.
+    #[test]
+    fn a_drag_follows_the_turned_picture() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let moved = mask_moved(
+            [0.5, 0.5],
+            egui::pos2(100.0, 100.0),
+            egui::pos2(150.0, 100.0),
+            box_,
+            90.0,
+        );
+        assert!(
+            (moved[0] - 0.5).abs() < 1e-3,
+            "it moved across its own frame: {moved:?}"
+        );
+        assert!(
+            (moved[1] - 0.5).abs() > 0.1,
+            "it did not move down its own frame: {moved:?}"
+        );
+    }
+
+    /// The handle is a target with edges, like every other one.
+    #[test]
+    fn the_handle_has_a_reachable_size() {
+        let centre = egui::pos2(100.0, 100.0);
+        assert!(on_mask_handle(centre, centre));
+        assert!(on_mask_handle(centre, egui::pos2(105.0, 100.0)));
+        assert!(!on_mask_handle(centre, egui::pos2(140.0, 100.0)));
+    }
+
+    /// A mask drag is the one gesture `property_for` refuses: the answer needs
+    /// the mask being moved, and the only property it could return here is the
+    /// one that deletes it.
+    #[test]
+    fn property_for_refuses_a_mask_drag() {
+        let box_ = box_at(0.0, 0.0, 100.0, 100.0);
+        let gesture = Gesture::MaskMove {
+            from: [0.5, 0.5],
+            grab: egui::pos2(10.0, 10.0),
+        };
+        assert!(property_for(gesture, box_, box_, egui::pos2(20.0, 20.0)).is_none());
+    }
+
+    fn mask(size: [f32; 2], degrees: f32) -> bettercut_editor_core::timeline::Mask {
+        bettercut_editor_core::timeline::Mask {
+            shape: bettercut_editor_core::timeline::MaskShape::Ellipse,
+            center: [0.5, 0.5],
+            size,
+            feather: 0.0,
+            rotation_degrees: degrees,
+            invert: false,
+        }
+    }
+
+    /// A linear mask is an edge, not an area: there is nothing to resize, and a
+    /// handle offering to would be worse than none.
+    #[test]
+    fn a_linear_mask_has_no_size_handle() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let mut linear = mask([0.2, 0.2], 0.0);
+        linear.shape = bettercut_editor_core::timeline::MaskShape::Linear;
+        assert!(mask_size_handle(linear, box_, 0.0).is_none());
+        assert!(mask_size_handle(mask([0.2, 0.2], 0.0), box_, 0.0).is_some());
+    }
+
+    /// The handle sits on the shape's edge, out along its own axes.
+    #[test]
+    fn the_size_handle_sits_at_the_shapes_edge() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let at = mask_size_handle(mask([0.25, 0.25], 0.0), box_, 0.0).expect("a handle");
+        // Centre (0.5,0.5) plus a quarter each way, on a 200px box.
+        assert!((at.x - 150.0).abs() < 1e-3, "x at {}", at.x);
+        assert!((at.y - 150.0).abs() < 1e-3, "y at {}", at.y);
+    }
+
+    /// A turned mask's handle turns with it, or dragging it would grow the
+    /// shape along an axis it does not have.
+    #[test]
+    fn the_size_handle_turns_with_the_mask() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let straight = mask_size_handle(mask([0.25, 0.0], 0.0), box_, 0.0).expect("a handle");
+        let turned = mask_size_handle(mask([0.25, 0.0], 90.0), box_, 0.0).expect("a handle");
+        assert!((straight.x - 150.0).abs() < 1e-3 && (straight.y - 100.0).abs() < 1e-3);
+        assert!(
+            (turned.x - 100.0).abs() < 1e-3 && (turned.y - 150.0).abs() < 1e-3,
+            "a quarter turn should put it below the centre, not beside it: {turned:?}"
+        );
+    }
+
+    /// Grabbing the handle without moving leaves the size alone: a click is not
+    /// a resize.
+    #[test]
+    fn a_resize_that_goes_nowhere_changes_nothing() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let grab = egui::pos2(150.0, 150.0);
+        let size = mask_resized([0.25, 0.25], grab, grab, 0.0, box_, 0.0);
+        assert!((size[0] - 0.25).abs() < 1e-4 && (size[1] - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dragging_the_handle_out_grows_the_mask() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let size = mask_resized(
+            [0.25, 0.25],
+            egui::pos2(150.0, 150.0),
+            egui::pos2(190.0, 150.0),
+            0.0,
+            box_,
+            0.0,
+        );
+        assert!((size[0] - 0.45).abs() < 1e-3, "width came out {}", size[0]);
+        assert!((size[1] - 0.25).abs() < 1e-3, "the height changed too");
+    }
+
+    /// A turned mask grows along its *own* axes. On a mask at a quarter turn,
+    /// dragging down the screen widens it rather than making it taller —
+    /// because what is "down the screen" is its width.
+    #[test]
+    fn dragging_a_turned_mask_grows_its_own_axis() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let size = mask_resized(
+            [0.25, 0.1],
+            egui::pos2(100.0, 150.0),
+            egui::pos2(100.0, 190.0),
+            90.0,
+            box_,
+            0.0,
+        );
+        assert!(
+            (size[0] - 0.45).abs() < 1e-3,
+            "its own width did not grow: {size:?}"
+        );
+        assert!(
+            (size[1] - 0.1).abs() < 1e-3,
+            "its own height changed: {size:?}"
+        );
+    }
+
+    /// A mask dragged to nothing has no handle left to drag it back by, so the
+    /// gesture stops short of that.
+    #[test]
+    fn a_mask_cannot_be_dragged_away_to_nothing() {
+        let box_ = box_at(0.0, 0.0, 200.0, 200.0);
+        let size = mask_resized(
+            [0.25, 0.25],
+            egui::pos2(150.0, 150.0),
+            egui::pos2(-400.0, -400.0),
+            0.0,
+            box_,
+            0.0,
+        );
+        assert_eq!(size, [SMALLEST_MASK, SMALLEST_MASK]);
+    }
+}
+
+#[cfg(test)]
+mod eyedropper_tests {
+    use super::*;
+
+    fn hd() -> bettercut_editor_core::timeline::Resolution {
+        bettercut_editor_core::timeline::Resolution::new(1920, 1080)
+    }
+
+    /// A canvas that is not the frame's size and does not start at the origin,
+    /// so a mapping that forgot to subtract the offset or to scale cannot pass.
+    fn canvas() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(640.0, 360.0))
+    }
+
+    #[test]
+    fn the_corners_of_the_canvas_are_the_corners_of_the_frame() {
+        let canvas = canvas();
+        assert_eq!(
+            frame_pixel_at(canvas.left_top(), canvas, hd()),
+            Some((0, 0))
+        );
+        assert_eq!(
+            frame_pixel_at(canvas.center(), canvas, hd()),
+            Some((960, 540))
+        );
+    }
+
+    /// The far edges belong to the last pixel, not to one past it — that is
+    /// exactly where a read would fall off the end of the texture.
+    #[test]
+    fn the_far_edges_land_on_the_last_pixel() {
+        let canvas = canvas();
+        assert_eq!(
+            frame_pixel_at(canvas.right_bottom(), canvas, hd()),
+            Some((1919, 1079))
+        );
+    }
+
+    /// The canvas is letterboxed into the panel, so there is black around it.
+    /// Pointing at that is pointing at nothing, and answering anyway would put
+    /// a colour into the project that is not in the shot.
+    #[test]
+    fn a_point_outside_the_canvas_is_not_a_pixel() {
+        let canvas = canvas();
+        assert_eq!(frame_pixel_at(egui::pos2(50.0, 60.0), canvas, hd()), None);
+        assert_eq!(frame_pixel_at(egui::pos2(200.0, 10.0), canvas, hd()), None);
+        assert_eq!(
+            frame_pixel_at(
+                egui::pos2(canvas.right() + 1.0, canvas.center().y),
+                canvas,
+                hd()
+            ),
+            None
+        );
+    }
+
+    /// A vertical sequence, because a mapping that used one dimension for both
+    /// would still pass on a 16:9 frame roughly enough to look right.
+    #[test]
+    fn the_two_axes_scale_independently() {
+        let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(270.0, 480.0));
+        let vertical = bettercut_editor_core::timeline::Resolution::new(1080, 1920);
+
+        assert_eq!(
+            frame_pixel_at(egui::pos2(135.0, 120.0), canvas, vertical),
+            Some((540, 480))
+        );
+    }
+}
+
+#[cfg(test)]
+mod crop_handle_tests {
+    use super::*;
+
+    /// A picture box somewhere on the canvas, not at the origin and not
+    /// square, so no symmetry can hide an axis mistake.
+    fn picture() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(120.0, 80.0), egui::vec2(300.0, 170.0))
+    }
+
+    fn uneven() -> Crop {
+        Crop {
+            left: 0.2,
+            top: 0.05,
+            right: 0.1,
+            bottom: 0.3,
+        }
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    /// The two frames a crop handle moves between must round-trip, or a drag
+    /// would drift a little every time the edge was picked up.
+    #[test]
+    fn source_and_picture_coordinates_round_trip() {
+        for crop in [Crop::NONE, uneven()] {
+            for uv in [[0.0, 0.0], [1.0, 1.0], [0.3, 0.7], [-0.2, 1.4]] {
+                let back = source_to_picture_uv(picture_to_source_uv(uv, crop), crop);
+                assert!(
+                    near(back[0], uv[0]) && near(back[1], uv[1]),
+                    "{uv:?} came back as {back:?} through {crop:?}"
+                );
+            }
+        }
+    }
+
+    /// **Grabbing an edge must not move it.** Pressing a handle and releasing
+    /// without moving is the most common thing that happens to a handle, and a
+    /// crop that jumped on the press would be unusable. Checked turned and
+    /// unevenly cropped, which is where the frames are most likely to disagree.
+    #[test]
+    fn grabbing_an_edge_without_moving_changes_nothing() {
+        for crop in [Crop::NONE, uneven()] {
+            for degrees in [0.0, 23.0, -140.0] {
+                for (edge, handle) in crop_edge_handles(picture(), degrees) {
+                    let after = crop_dragged(edge, crop, picture(), degrees, handle);
+                    for (name, a, b) in [
+                        ("left", after.left, crop.left),
+                        ("top", after.top, crop.top),
+                        ("right", after.right, crop.right),
+                        ("bottom", after.bottom, crop.bottom),
+                    ] {
+                        assert!(
+                            near(a, b),
+                            "grabbing {edge:?} at {degrees}° moved {name} from {b} to {a}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dragging the left edge inwards crops more from the left, and touches no
+    /// other edge.
+    #[test]
+    fn dragging_an_edge_moves_that_edge_alone() {
+        let (edge, handle) = crop_edge_handles(picture(), 0.0)[0];
+        assert_eq!(edge, CropEdge::Left);
+
+        // A tenth of the picture's width to the right.
+        let inwards = handle + egui::vec2(picture().width() * 0.1, 0.0);
+        let after = crop_dragged(CropEdge::Left, Crop::NONE, picture(), 0.0, inwards);
+
+        assert!(
+            near(after.left, 0.1),
+            "expected a tenth taken off: {after:?}"
+        );
+        assert_eq!(after.top, 0.0);
+        assert_eq!(after.right, 0.0);
+        assert_eq!(after.bottom, 0.0);
+    }
+
+    /// Each edge reaches its own field. A handle wired to the wrong side would
+    /// crop the picture from the other end, and look as if something happened.
+    #[test]
+    fn each_edge_handle_crops_its_own_side() {
+        let centre = picture().center();
+        for (edge, _) in crop_edge_handles(picture(), 0.0) {
+            // Drag every handle to the centre: each should crop its own side
+            // by about half, and only its own side.
+            let after = crop_dragged(edge, Crop::NONE, picture(), 0.0, centre);
+            let moved = [
+                (CropEdge::Left, after.left),
+                (CropEdge::Top, after.top),
+                (CropEdge::Right, after.right),
+                (CropEdge::Bottom, after.bottom),
+            ];
+            for (side, value) in moved {
+                if side == edge {
+                    assert!(value > 0.4, "{edge:?} did not crop its own side: {after:?}");
+                } else {
+                    assert_eq!(value, 0.0, "{edge:?} cropped {side:?} as well: {after:?}");
+                }
+            }
+        }
+    }
+
+    /// Dragged past the opposite edge, the edge stops — and the opposite edge
+    /// does not move. The hand is on one edge; the other moving would be the
+    /// crop doing something it was not asked to.
+    #[test]
+    fn an_edge_stops_short_of_the_one_opposite() {
+        let from = Crop {
+            right: 0.3,
+            ..Crop::NONE
+        };
+        // Far past the right-hand side of the picture.
+        let beyond = egui::pos2(picture().right() + 500.0, picture().center().y);
+        let after = crop_dragged(CropEdge::Left, from, picture(), 0.0, beyond);
+
+        assert_eq!(after.right, 0.3, "the opposite edge was pushed along");
+        let (kept, _) = after.remaining();
+        assert!(
+            near(kept, MIN_CROP_REMAINING),
+            "the edge did not stop at the least the crop must leave: kept {kept}"
+        );
+    }
+
+    /// Dragged outwards past the source's own edge, the crop stops at nothing
+    /// taken off rather than going negative — there is no picture out there.
+    #[test]
+    fn an_edge_cannot_be_dragged_past_the_source() {
+        let from = Crop {
+            left: 0.2,
+            ..Crop::NONE
+        };
+        let far_left = egui::pos2(picture().left() - 1000.0, picture().center().y);
+        let after = crop_dragged(CropEdge::Left, from, picture(), 0.0, far_left);
+        assert_eq!(after.left, 0.0);
+    }
+
+    /// The uncropped outline sits exactly on the picture when nothing is
+    /// cropped, and extends past it by the cropped fractions when something is.
+    #[test]
+    fn the_uncropped_outline_extends_by_what_was_cut() {
+        let plain = uncropped_corners(picture(), Crop::NONE, 0.0);
+        assert!(near(plain[0].x, picture().left()) && near(plain[0].y, picture().top()));
+        assert!(near(plain[2].x, picture().right()) && near(plain[2].y, picture().bottom()));
+
+        let crop = Crop {
+            left: 0.25,
+            ..Crop::NONE
+        };
+        let outline = uncropped_corners(picture(), crop, 0.0);
+        // A quarter of the source is gone from the left, so the picture shown
+        // is three quarters of the source's width; the outline's left edge is
+        // a third of the picture's width further out.
+        let expected_left = picture().left() - picture().width() / 3.0;
+        assert!(
+            near(outline[0].x, expected_left),
+            "outline left at {}, expected {expected_left}",
+            outline[0].x
+        );
+        assert!(near(outline[1].x, picture().right()));
     }
 }

@@ -42,12 +42,14 @@ use crate::TimelineRange;
 
 /// What happens at the cut (§25's initial set).
 ///
-/// Five of §25's seven. The two it leaves out — Flash and Blur — both need
-/// something the compositor does not have: a generated white layer, and a blur
-/// applied to a *pair* of layers rather than to one clip. The five here are
-/// all expressible as opacity and transform on the two clips either side, which
-/// is why they are one `match` in `layer_requests` rather than five shaders
-/// (§46: preview and export draw from the same rule).
+/// All seven of §25's.
+///
+/// Five are expressible as opacity and transform on the two clips either side,
+/// which is why they are one `match` in `layer_requests` rather than five
+/// shaders. The other two needed a little more: a flash wanted a layer with no
+/// source file behind it, and a blur dissolve rides on the per-layer blur the
+/// compositor already applies. None of them is a shader of its own — preview
+/// and export draw every one from the same rule (§46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
@@ -66,15 +68,24 @@ pub enum TransitionKind {
     Push,
     /// The outgoing clip swells and fades, the incoming arriving behind it.
     Zoom,
+    /// The picture blows out to white at the cut and comes back on the next
+    /// shot. Needs no handles, for the same reason a fade through black does
+    /// not: only one clip is ever on screen.
+    Flash,
+    /// Both shots go soft, crossfade while they are softest, and come back
+    /// sharp on the next one.
+    Blur,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Crossfade,
         Self::FadeThroughBlack,
         Self::Slide,
         Self::Push,
         Self::Zoom,
+        Self::Flash,
+        Self::Blur,
     ];
 
     pub fn label(self) -> &'static str {
@@ -84,6 +95,8 @@ impl TransitionKind {
             Self::Slide => "Slide",
             Self::Push => "Push",
             Self::Zoom => "Zoom",
+            Self::Flash => "Flash",
+            Self::Blur => "Blur",
         }
     }
 
@@ -106,6 +119,12 @@ impl TransitionKind {
             Self::Zoom => {
                 "This shot swells and fades as the next arrives behind it. Needs spare footage either side of the cut."
             }
+            Self::Flash => {
+                "The picture blows out to white and comes back on the next shot. Works anywhere, including against the start or end of a file."
+            }
+            Self::Blur => {
+                "Both shots go soft, change over while they are softest, and come back sharp. Needs spare footage either side of the cut."
+            }
         }
     }
 
@@ -114,9 +133,10 @@ impl TransitionKind {
     /// Everything that shows both clips at once does: during the first half of
     /// the window the incoming clip must supply frames from before its
     /// in-point, and during the second half the outgoing one from after its
-    /// out-point. Only a fade through black shows one at a time.
+    /// out-point. A fade through black and a flash show one at a time: what
+    /// covers the cut is a colour rather than the other shot.
     pub fn needs_handles(self) -> bool {
-        !matches!(self, Self::FadeThroughBlack)
+        !matches!(self, Self::FadeThroughBlack | Self::Flash)
     }
 }
 

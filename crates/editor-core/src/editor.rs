@@ -358,6 +358,44 @@ impl Editor {
         Ok(())
     }
 
+    /// The history as the panel lists it: the steps done, oldest first, and
+    /// the steps undone that Redo would bring back, next first.
+    pub fn history_steps(&self) -> (Vec<String>, Vec<String>) {
+        (self.history.undo_labels(), self.history.redo_labels())
+    }
+
+    /// How many steps the history keeps before forgetting the oldest.
+    pub fn history_limit(&self) -> usize {
+        self.history.limit()
+    }
+
+    /// Go back or forward through the history until exactly `done` steps are
+    /// applied — what clicking a row of the history panel does.
+    ///
+    /// Made of ordinary undos and redos, one at a time, so a jump can never
+    /// reach a state that pressing Ctrl+Z that many times would not: nothing
+    /// about the project is snapshotted or restored wholesale. Clamped to the
+    /// steps that exist. If one step refuses, the jump stops there, with every
+    /// step before it applied and the error returned — the history still
+    /// describes the project exactly.
+    ///
+    /// Returns how many steps it moved.
+    pub fn jump_in_history(&mut self, done: usize) -> Result<usize, EditorError> {
+        let target = done.min(self.history.undo_depth() + self.history.redo_depth());
+        let mut moved = 0;
+        while self.history.undo_depth() > target {
+            self.history.undo(&mut self.project)?;
+            moved += 1;
+            self.mark_changed();
+        }
+        while self.history.undo_depth() < target {
+            self.history.redo(&mut self.project)?;
+            moved += 1;
+            self.mark_changed();
+        }
+        Ok(moved)
+    }
+
     /// `media.import` (§55) — probe a file and add it to the library (§12, §84).
     ///
     /// Probing is synchronous. It costs a few milliseconds per file because
@@ -393,6 +431,55 @@ impl Editor {
         self.events.emit(Event::MediaImported(id));
         self.events.emit(Event::ProjectChanged);
         id
+    }
+
+    /// Import a colour lookup table (a `.cube` file) so clips can use it.
+    ///
+    /// The file is read and checked now, so a broken one is refused with its
+    /// reason at the moment of import rather than drawing ungraded later with
+    /// no explanation. The project keeps the path, not the table. Importing a
+    /// file already imported returns the id it already has.
+    ///
+    /// Not a command, like importing media: it adds a choice to the project and
+    /// changes no clip, so it snapshots for recovery the same way.
+    pub fn import_lut(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<bettercut_foundation::LutId, EditorError> {
+        let path = path.as_ref();
+        let table = bettercut_timeline::load_cube_file(path).map_err(EditorError::Lut)?;
+        let same = |known: &Path| {
+            if cfg!(windows) {
+                known.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase()
+            } else {
+                known == path
+            }
+        };
+        if let Some(existing) = self.project.luts.iter().find(|lut| same(&lut.path)) {
+            return Ok(existing.id);
+        }
+
+        let name = table
+            .title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .map_or_else(|| "LUT".to_owned(), |s| s.to_string_lossy().into_owned())
+            });
+        let id = bettercut_foundation::LutId::new();
+        self.project.luts.push(bettercut_project_format::LutAsset {
+            id,
+            name,
+            path: path.to_path_buf(),
+        });
+        self.dirty = true;
+        if !self.journal.needs_baseline()
+            && let Err(err) = self.journal.snapshot(&self.project)
+        {
+            tracing::error!(%err, "could not snapshot after importing a LUT");
+        }
+        self.events.emit(Event::ProjectChanged);
+        Ok(id)
     }
 
     /// Match an empty sequence to the first video imported into it (§8).
@@ -728,9 +815,30 @@ impl Editor {
                 y: A::ScaleY.default_value(),
             },
             P::Rotation(_) => P::Rotation(A::Rotation.default_value()),
+            P::Backdrop(_) => P::Backdrop(bettercut_timeline::Backdrop::None),
+            P::ChromaKey(_) => P::ChromaKey(None),
+            P::Mask(_) => P::Mask(None),
+            P::Blend(_) => P::Blend(bettercut_timeline::BlendMode::Normal),
+            P::Motion(_) => P::Motion(bettercut_timeline::ClipMotion::default()),
+            P::MotionBlur(_) => P::MotionBlur(false),
+            P::Flip { axis, .. } => P::Flip { axis, on: false },
+            P::Crop(_) => P::Crop(bettercut_timeline::Crop::NONE),
+            // Black: what the frame was cleared to before the colour existed.
+            P::Background(_) => P::Background([0.0, 0.0, 0.0]),
+            P::Vignette(_) => P::Vignette(0.0),
+            P::Grain(_) => P::Grain(0.0),
+            P::Sharpen(_) => P::Sharpen(0.0),
+            P::Lut(_) => P::Lut(None),
+            P::Reverse(_) => P::Reverse(false),
+            P::RgbSplit(_) => P::RgbSplit(0.0),
+            P::Glitch(_) => P::Glitch(0.0),
+            P::Reflection(_) => P::Reflection(bettercut_timeline::Reflection::None),
+            P::Denoise(_) => P::Denoise(0.0),
             P::Brightness(_) => P::Brightness(A::Brightness.default_value()),
             P::Contrast(_) => P::Contrast(A::Contrast.default_value()),
             P::Saturation(_) => P::Saturation(A::Saturation.default_value()),
+            P::Temperature(_) => P::Temperature(A::Temperature.default_value()),
+            P::Tint(_) => P::Tint(A::Tint.default_value()),
             P::Blur(_) => P::Blur(A::Blur.default_value()),
         }
     }
@@ -905,6 +1013,84 @@ impl Editor {
         Ok(id)
     }
 
+    /// Put a shape on the title lane at the playhead, as one undo step — a
+    /// title clip that draws a rectangle or an ellipse instead of words.
+    pub fn add_shape(&mut self, kind: bettercut_text::ShapeKind) -> Result<ClipId, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_tracks.first().map(|t| t.id))
+            .ok_or(EditorError::NoTextTrack)?;
+        let start = self.free_text_slot(track, self.playhead);
+        let mut clip = bettercut_timeline::TextClip::new(kind.label(), start)?;
+        clip.shape = Some(bettercut_text::Shape::new(kind));
+        let id = clip.id;
+        self.dispatch(Command::AddText {
+            sequence: sequence_id,
+            track,
+            clip: Box::new(clip),
+        })?;
+        Ok(id)
+    }
+
+    /// Put a counter on the title lane at the playhead, as one undo step: a
+    /// ten-second countdown, or a stopwatch counting up for as long as a title
+    /// runs. Big and centred, like a headline.
+    pub fn add_counter(
+        &mut self,
+        direction: bettercut_timeline::CountDirection,
+    ) -> Result<ClipId, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_tracks.first().map(|t| t.id))
+            .ok_or(EditorError::NoTextTrack)?;
+        let start = self.free_text_slot(track, self.playhead);
+        let (name, length, counter) = match direction {
+            bettercut_timeline::CountDirection::Down => {
+                let length = TimelineTime::from_seconds(10);
+                (
+                    "Countdown",
+                    length,
+                    bettercut_timeline::Counter::countdown(length),
+                )
+            }
+            bettercut_timeline::CountDirection::Up => (
+                "Stopwatch",
+                TimelineTime::from_seconds(10),
+                bettercut_timeline::Counter::stopwatch(),
+            ),
+        };
+        let mut clip = bettercut_timeline::TextClip::with_duration(name, start, length)?;
+        clip.style = bettercut_text::TextStyle::title(bettercut_text::TitleLook::Headline);
+        clip.counter = Some(counter);
+        let id = clip.id;
+        // Placed where the room is, which for a ten-second clip may be later
+        // than a three-second title's slot: check the whole length fits.
+        let fits = self
+            .active_sequence()
+            .and_then(|s| s.text_track(track))
+            .is_some_and(|t| {
+                t.clips()
+                    .iter()
+                    .all(|c| !c.timeline.overlaps(clip.timeline))
+            });
+        if !fits {
+            let end = self
+                .active_sequence()
+                .and_then(|s| s.text_track(track))
+                .map_or(start, |t| t.duration());
+            clip.timeline =
+                bettercut_timeline::TimelineRange::new(end.max(start), end.max(start) + length)?;
+        }
+        self.dispatch(Command::AddText {
+            sequence: sequence_id,
+            track,
+            clip: Box::new(clip),
+        })?;
+        Ok(id)
+    }
+
     /// The first position at or after `from` where a title of the default
     /// length fits without overlapping.
     fn free_text_slot(&self, track: TrackId, from: TimelineTime) -> TimelineTime {
@@ -939,6 +1125,117 @@ impl Editor {
             .ok_or(EditorError::ClipNotFound(clip))?;
         self.dispatch(Command::RemoveText {
             sequence: sequence_id,
+            track,
+            clip,
+        })
+    }
+
+    // ---- adjustment layers (`bettercut_timeline::adjustment`) ----
+
+    /// Add an adjustment at the playhead, making the first adjustment lane if
+    /// the sequence has none.
+    ///
+    /// One undo step either way: a lane that appeared alongside the first
+    /// adjustment is part of adding it, and undoing the adjustment but leaving
+    /// an empty lane behind would be half an undo.
+    ///
+    /// Placed at the first instant from the playhead where it fits, for the
+    /// reason `add_text` gives. The new adjustment changes nothing until its
+    /// look is set, so adding one never visibly alters the edit on its own.
+    pub fn add_adjustment(&mut self) -> Result<ClipId, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let existing = self
+            .active_sequence()
+            .and_then(|s| s.adjustment_tracks.first().map(|t| t.id));
+
+        let (track, mut commands) = match existing {
+            Some(track) => (track, Vec::new()),
+            None => {
+                let track = TrackId::new();
+                (
+                    track,
+                    vec![Command::AddTrack {
+                        sequence,
+                        kind: crate::command::TrackKindRepr::Adjustment,
+                        name: "Adjust 1".to_owned(),
+                        id: track,
+                    }],
+                )
+            }
+        };
+
+        let start = self.free_adjustment_slot(existing, self.playhead);
+        let clip = bettercut_timeline::AdjustmentClip::new(start)?;
+        let id = clip.id;
+        commands.push(Command::AddAdjustment {
+            sequence,
+            track,
+            clip: Box::new(clip),
+        });
+        self.dispatch_group("Add Adjustment", commands)?;
+        Ok(id)
+    }
+
+    /// The first position at or after `from` where an adjustment of the default
+    /// length fits on `track` without overlapping. `None` is a lane about to be
+    /// made, which has room everywhere.
+    fn free_adjustment_slot(&self, track: Option<TrackId>, from: TimelineTime) -> TimelineTime {
+        let Some(track) =
+            track.and_then(|id| self.active_sequence().and_then(|s| s.adjustment_track(id)))
+        else {
+            return from;
+        };
+        let mut start = from;
+        loop {
+            let end = start + bettercut_timeline::DEFAULT_ADJUSTMENT_DURATION;
+            match track
+                .clips()
+                .iter()
+                .find(|c| c.timeline.start < end && c.timeline.end > start)
+            {
+                Some(clip) => start = clip.timeline.end,
+                None => return start,
+            }
+        }
+    }
+
+    /// The adjustment clip with this id, in the active sequence.
+    pub fn adjustment_clip(&self, clip: ClipId) -> Option<&bettercut_timeline::AdjustmentClip> {
+        self.active_sequence()?.adjustment_clip(clip)
+    }
+
+    /// Set how an adjustment grades what is beneath it.
+    ///
+    /// `continuing` collapses a slider drag into one undo step, as every other
+    /// control does (§11).
+    pub fn set_adjustment_look(
+        &mut self,
+        clip: ClipId,
+        look: bettercut_timeline::AdjustmentLook,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.adjustment_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let command = Command::SetAdjustmentLook {
+            sequence,
+            track,
+            clip,
+            look,
+        };
+        self.dispatch_gesture("Change Adjustment".to_owned(), vec![command], continuing)
+    }
+
+    pub fn remove_adjustment(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.adjustment_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        self.dispatch(Command::RemoveAdjustment {
+            sequence,
             track,
             clip,
         })
@@ -1141,6 +1438,45 @@ impl Editor {
         Ok(count)
     }
 
+    /// Dress one title, and put it where the look belongs (§26).
+    ///
+    /// Style and position in one undo step, because "lower third" is a position
+    /// as much as a style: applying half of it would leave the title somewhere
+    /// nobody chose.
+    ///
+    /// Captions are styled by the lane instead ([`Self::set_caption_look`]) —
+    /// a caption is one long thread of the same thing, a title is its own.
+    pub fn set_title_look(
+        &mut self,
+        clip: ClipId,
+        look: bettercut_text::TitleLook,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        let (x, y) = look.anchor();
+        let commands = vec![
+            Command::SetTextProperty {
+                sequence,
+                track,
+                clip,
+                property: crate::command::TextProperty::Style(Box::new(
+                    bettercut_text::TextStyle::title(look),
+                )),
+            },
+            Command::SetTextProperty {
+                sequence,
+                track,
+                clip,
+                property: crate::command::TextProperty::Position { x, y },
+            },
+        ];
+        self.dispatch_group(format!("{} Title", look.label()), commands)
+    }
+
     /// Dress every caption in the lane the same way (§27).
     ///
     /// A look belongs to the *lane*, not to a caption: subtitles that changed
@@ -1269,7 +1605,7 @@ impl Editor {
         Ok(id)
     }
 
-    /// Change how fast a clip plays (§51).
+    /// Change how fast a clip plays.
     ///
     /// Speeding up shortens the clip and slowing down lengthens it. Slowing
     /// down can fail for want of room on the track, which is reported rather
@@ -1309,6 +1645,112 @@ impl Editor {
             return Err(EditorError::ClipNotFound(clip));
         }
         self.dispatch_gesture("Change speed".to_owned(), commands, continuing)
+    }
+
+    /// Play a clip backwards, or forwards again — and whatever is linked to it,
+    /// so the sound runs backwards under its picture (§12). One undo step.
+    ///
+    /// Refused for a held frame or a photo, which have no motion to reverse.
+    pub fn set_reversed(&mut self, clip: ClipId, on: bool) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        if !self.can_retime(clip) {
+            return Err(EditorError::NoMotionToRetime);
+        }
+        let commands: Vec<Command> = self
+            .linked_with(clip)
+            .into_iter()
+            .filter_map(|clip| {
+                let track = self.track_of(clip)?;
+                Some(Command::SetClipProperty {
+                    sequence,
+                    track,
+                    clip,
+                    property: crate::command::ClipProperty::Reverse(on),
+                })
+            })
+            .collect();
+        if commands.is_empty() {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+        self.dispatch_group(
+            if on { "Reverse" } else { "Play Forwards" }.to_owned(),
+            commands,
+        )
+    }
+
+    /// Tag clips with a colour — and whatever is linked to them, since a
+    /// picture and its sound are one shot (§12). One undo step. Returns how
+    /// many clips were tagged.
+    pub fn set_color_label(
+        &mut self,
+        clips: &[ClipId],
+        label: bettercut_timeline::ColorLabel,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut targets: Vec<ClipId> = Vec::new();
+        for clip in clips {
+            for linked in self.linked_with(*clip) {
+                if !targets.contains(&linked) {
+                    targets.push(linked);
+                }
+            }
+        }
+        let commands: Vec<Command> = targets
+            .iter()
+            .filter_map(|clip| {
+                Some(Command::SetColorLabel {
+                    sequence,
+                    track: self.track_of(*clip)?,
+                    clip: *clip,
+                    label,
+                })
+            })
+            .collect();
+        let count = commands.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        self.dispatch_group(
+            match label {
+                bettercut_timeline::ColorLabel::None => "Clear Colour Label".to_owned(),
+                other => format!("Colour Label: {}", other.name()),
+            },
+            commands,
+        )?;
+        Ok(count)
+    }
+
+    /// A clip's colour tag, on any lane.
+    pub fn color_label(&self, clip: ClipId) -> Option<bettercut_timeline::ColorLabel> {
+        use bettercut_timeline::Clip;
+        let sequence = self.active_sequence()?;
+        let span = sequence.clip_span(clip)?;
+        sequence
+            .video_track(span.track)
+            .and_then(|t| t.get(clip).map(Clip::color_label))
+            .or_else(|| {
+                sequence
+                    .audio_track(span.track)
+                    .and_then(|t| t.get(clip).map(Clip::color_label))
+            })
+            .or_else(|| {
+                sequence
+                    .text_track(span.track)
+                    .and_then(|t| t.get(clip).map(Clip::color_label))
+            })
+            .or_else(|| {
+                sequence
+                    .adjustment_track(span.track)
+                    .and_then(|t| t.get(clip).map(Clip::color_label))
+            })
+    }
+
+    /// Whether a clip plays backwards.
+    pub fn is_reversed(&self, clip: ClipId) -> bool {
+        self.video_clip(clip)
+            .map(|c| c.reversed)
+            .or_else(|| self.audio_clip(clip).map(|c| c.reversed))
+            .unwrap_or(false)
     }
 
     /// A slow zoom across a clip — the "Ken Burns" move that keeps a photo
@@ -1368,6 +1810,119 @@ impl Editor {
         self.dispatch_group(format!("Movement: {}", movement.label()), commands)
     }
 
+    /// Shake a clip's picture, or take a shake off (`None`), as one undo step.
+    ///
+    /// Written as keys ([`ShakeStrength::keyframes`]): position every fifteenth
+    /// of a second, and a constant scale pair just big enough to keep the
+    /// frame's edges covered. Changing strength replaces the old shake.
+    ///
+    /// Refused, changing nothing, when the clip's position is animated by
+    /// hand, or when adding a shake to a clip whose scale is already animated —
+    /// a zoom movement — since the overscan would have to overwrite it.
+    pub fn set_shake(
+        &mut self,
+        clip: ClipId,
+        strength: Option<bettercut_timeline::ShakeStrength>,
+    ) -> Result<(), EditorError> {
+        use bettercut_timeline::{AnimatedParameter as A, ShakeStrength};
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let keys_of = |parameter| {
+            video
+                .keyframes
+                .track(parameter)
+                .map(|t| t.keys().to_vec())
+                .unwrap_or_default()
+        };
+
+        let mut remove: Vec<(A, bettercut_foundation::MediaTime)> = Vec::new();
+        for parameter in [A::PositionX, A::PositionY] {
+            let keys = keys_of(parameter);
+            if keys.is_empty() {
+                continue;
+            }
+            if !ShakeStrength::on_grid(&keys, video.source) {
+                return Err(EditorError::AlreadyAnimated("position"));
+            }
+            remove.extend(keys.iter().map(|key| (parameter, key.time)));
+        }
+        for parameter in [A::ScaleX, A::ScaleY] {
+            let keys = keys_of(parameter);
+            match keys.as_slice() {
+                [] => {}
+                // A constant pair is a shake's overscan.
+                [from, to] if from.value == to.value => {
+                    remove.extend(keys.iter().map(|key| (parameter, key.time)));
+                }
+                // A zoom stays. Taking a shake off leaves it be; putting one on
+                // would overwrite it.
+                _ if strength.is_some() => return Err(EditorError::AlreadyAnimated("scale")),
+                _ => {}
+            }
+        }
+
+        let mut commands: Vec<Command> = remove
+            .into_iter()
+            .map(|(parameter, time)| Command::RemoveKeyframe {
+                sequence,
+                track,
+                clip,
+                parameter,
+                time,
+            })
+            .collect();
+        if let Some(strength) = strength {
+            commands.extend(
+                strength
+                    .keyframes(
+                        video.transform.position,
+                        video.transform.scale,
+                        video.source,
+                    )
+                    .into_iter()
+                    .map(|(parameter, key)| Command::SetKeyframe {
+                        sequence,
+                        track,
+                        clip,
+                        parameter,
+                        key,
+                    }),
+            );
+        }
+
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let label = match strength {
+            Some(strength) => format!("Shake: {}", strength.label()),
+            None => "Remove Shake".to_owned(),
+        };
+        self.dispatch_group(label, commands)
+    }
+
+    /// The shake on a clip, if its keys are one this wrote.
+    pub fn shake_of(&self, clip: ClipId) -> Option<bettercut_timeline::ShakeStrength> {
+        use bettercut_timeline::AnimatedParameter as A;
+
+        let video = self.video_clip(clip)?;
+        let keys = |parameter| {
+            video
+                .keyframes
+                .track(parameter)
+                .map_or(&[][..], bettercut_timeline::KeyframeTrack::keys)
+        };
+        bettercut_timeline::ShakeStrength::recognise(
+            keys(A::PositionX),
+            keys(A::ScaleX),
+            video.transform.scale.x,
+            video.source,
+        )
+    }
+
     /// The movement on a clip, as far as it can be told from its keys.
     ///
     /// `None` for a clip whose scale is not animated, and for one animated in
@@ -1412,6 +1967,8 @@ impl Editor {
             ClipProperty::Brightness(color.brightness),
             ClipProperty::Contrast(color.contrast),
             ClipProperty::Saturation(color.saturation),
+            ClipProperty::Temperature(color.temperature),
+            ClipProperty::Tint(color.tint),
         ];
         let commands = match clip {
             Some(clip) => {
@@ -1432,6 +1989,121 @@ impl Editor {
                 .collect(),
         };
         self.dispatch_group("Apply Look", commands)
+    }
+
+    // ---- carrying a look from one clip to others ----
+
+    /// Everything about how a clip looks that is not about where or when it is.
+    ///
+    /// Deliberately a list of the same [`ClipProperty`] values the Inspector
+    /// writes rather than a new kind of edit. Pasting is then a handful of
+    /// ordinary property changes in one group (§79) — undo, redo and crash
+    /// replay all come free, through machinery that already exists and is
+    /// already tested.
+    ///
+    /// What is *not* in it matters as much as what is:
+    ///
+    /// * the transform — framing is a decision about this shot, and a wide
+    ///   landscape and a close-up do not want the same crop;
+    /// * keyframes — they are anchored to source time (§24), so the same keys
+    ///   on a clip of another length land somewhere else entirely;
+    /// * speed, timing and the sound — none of them is a look.
+    pub fn clip_look(&self, clip: ClipId) -> Option<Vec<crate::command::ClipProperty>> {
+        use crate::command::ClipProperty;
+
+        let clip = self.video_clip(clip)?;
+        Some(vec![
+            ClipProperty::Opacity(clip.opacity),
+            ClipProperty::Brightness(clip.color.brightness),
+            ClipProperty::Contrast(clip.color.contrast),
+            ClipProperty::Saturation(clip.color.saturation),
+            ClipProperty::Temperature(clip.color.temperature),
+            ClipProperty::Tint(clip.color.tint),
+            ClipProperty::Blur(clip.blur),
+            ClipProperty::Sharpen(clip.sharpen),
+            ClipProperty::Lut(clip.lut),
+            ClipProperty::RgbSplit(clip.rgb_split),
+            ClipProperty::Glitch(clip.glitch),
+            ClipProperty::Reflection(clip.reflection),
+            ClipProperty::Blend(clip.blend),
+            ClipProperty::Mask(clip.mask),
+            ClipProperty::ChromaKey(clip.chroma_key),
+            ClipProperty::Motion(clip.motion),
+            ClipProperty::MotionBlur(clip.motion_blur),
+            ClipProperty::Backdrop(clip.backdrop),
+        ])
+    }
+
+    /// A look with nothing on it: what a clip looks like before anyone has
+    /// touched it.
+    ///
+    /// Pasting this is how a clip is stripped back, so clearing and pasting are
+    /// the same edit with different values rather than two code paths that have
+    /// to agree about what a look contains.
+    pub fn plain_look() -> Vec<crate::command::ClipProperty> {
+        use crate::command::ClipProperty;
+        use bettercut_timeline::AnimatedParameter as A;
+
+        vec![
+            ClipProperty::Opacity(A::Opacity.default_value()),
+            ClipProperty::Brightness(A::Brightness.default_value()),
+            ClipProperty::Contrast(A::Contrast.default_value()),
+            ClipProperty::Saturation(A::Saturation.default_value()),
+            ClipProperty::Temperature(A::Temperature.default_value()),
+            ClipProperty::Tint(A::Tint.default_value()),
+            ClipProperty::Blur(A::Blur.default_value()),
+            ClipProperty::Sharpen(0.0),
+            ClipProperty::Lut(None),
+            ClipProperty::RgbSplit(0.0),
+            ClipProperty::Glitch(0.0),
+            ClipProperty::Reflection(bettercut_timeline::Reflection::None),
+            ClipProperty::Blend(bettercut_timeline::BlendMode::Normal),
+            ClipProperty::Mask(None),
+            ClipProperty::ChromaKey(None),
+            ClipProperty::Motion(bettercut_timeline::ClipMotion::default()),
+            ClipProperty::MotionBlur(false),
+            ClipProperty::Backdrop(bettercut_timeline::Backdrop::None),
+        ]
+    }
+
+    /// Put a copied look onto `targets`. Returns how many clips took it.
+    ///
+    /// Anything in `targets` that is not a picture is skipped rather than
+    /// refused: a selection made on the timeline usually carries the linked
+    /// sound with it (§12), and failing the whole paste because of that would
+    /// make the feature unusable exactly where it is most wanted.
+    pub fn paste_look(
+        &mut self,
+        look: &[crate::command::ClipProperty],
+        targets: impl IntoIterator<Item = ClipId>,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut commands = Vec::new();
+        let mut taken = 0;
+
+        for clip in targets {
+            let Some(track) = self.track_of(clip) else {
+                continue;
+            };
+            if self.video_clip(clip).is_none() {
+                continue;
+            }
+            taken += 1;
+            commands.extend(look.iter().map(|&property| Command::SetClipProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            }));
+        }
+
+        // No empty group: an undo step that undoes nothing is worse than no
+        // step, because the user presses undo and watches nothing happen.
+        if commands.is_empty() {
+            return Ok(0);
+        }
+        self.dispatch_group("Paste Look", commands)?;
+        Ok(taken)
     }
 
     // ---- markers (§10) ----
@@ -1482,6 +2154,60 @@ impl Editor {
         Ok(added)
     }
 
+    /// The longest name a marker keeps. Enough for "second chorus — cut to
+    /// the drone shot"; past it the ruler could not show the name anyway.
+    pub const MAX_MARKER_LABEL: usize = 80;
+
+    /// Name the marker at `at`, or clear its name with an empty `label`.
+    ///
+    /// Surrounding spaces are trimmed and the name is cut to
+    /// [`Self::MAX_MARKER_LABEL`] characters. Returns whether anything changed:
+    /// no marker there, or the same name again, is no undo step.
+    pub fn set_marker_label(&mut self, at: TimelineTime, label: &str) -> Result<bool, EditorError> {
+        let label: String = label.trim().chars().take(Self::MAX_MARKER_LABEL).collect();
+        let mut markers = self.markers().to_vec();
+        let Some(marker) = markers.iter_mut().find(|m| m.time == at) else {
+            return Ok(false);
+        };
+        if marker.label == label {
+            return Ok(false);
+        }
+        marker.label = label;
+        self.replace_markers(markers)?;
+        Ok(true)
+    }
+
+    /// Colour the marker at `at`, or take its colour off with
+    /// `ColorLabel::None`. One undo step; returns whether anything changed.
+    pub fn set_marker_color(
+        &mut self,
+        at: TimelineTime,
+        color: bettercut_timeline::ColorLabel,
+    ) -> Result<bool, EditorError> {
+        let mut markers = self.markers().to_vec();
+        let Some(marker) = markers.iter_mut().find(|m| m.time == at) else {
+            return Ok(false);
+        };
+        if marker.color == color {
+            return Ok(false);
+        }
+        marker.color = color;
+        self.replace_markers(markers)?;
+        Ok(true)
+    }
+
+    /// Take away the marker at `at`. Returns whether there was one.
+    pub fn remove_marker(&mut self, at: TimelineTime) -> Result<bool, EditorError> {
+        let mut markers = self.markers().to_vec();
+        let before = markers.len();
+        markers.retain(|m| m.time != at);
+        if markers.len() == before {
+            return Ok(false);
+        }
+        self.replace_markers(markers)?;
+        Ok(true)
+    }
+
     pub fn clear_markers(&mut self) -> Result<(), EditorError> {
         if self.markers().is_empty() {
             return Ok(());
@@ -1495,6 +2221,56 @@ impl Editor {
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
         self.dispatch(Command::SetMarkers { sequence, markers })
+    }
+
+    /// Mark the in point at `at` (snapped to a frame). An out mark at or
+    /// before it is cleared rather than left making an empty range.
+    pub fn set_mark_in(&mut self, at: TimelineTime) -> Result<(), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let at = sequence.snap_to_frame(at);
+        let out = sequence.mark_out.filter(|out| *out > at);
+        self.dispatch(Command::SetInOut {
+            sequence: sequence_id,
+            mark_in: Some(at),
+            mark_out: out,
+        })
+    }
+
+    /// Mark the out point at `at`. An in mark at or after it is cleared.
+    pub fn set_mark_out(&mut self, at: TimelineTime) -> Result<(), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let at = sequence.snap_to_frame(at);
+        let mark_in = sequence.mark_in.filter(|mark| *mark < at);
+        self.dispatch(Command::SetInOut {
+            sequence: sequence_id,
+            mark_in,
+            mark_out: Some(at),
+        })
+    }
+
+    /// Clear both marks. Nothing to clear is no step.
+    pub fn clear_marks(&mut self) -> Result<(), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        if sequence.mark_in.is_none() && sequence.mark_out.is_none() {
+            return Ok(());
+        }
+        self.dispatch(Command::SetInOut {
+            sequence: sequence_id,
+            mark_in: None,
+            mark_out: None,
+        })
     }
 
     /// Set an audio track's volume and pan (§20a.4).
@@ -1555,7 +2331,7 @@ impl Editor {
         self.dispatch_gesture("Change fade".to_owned(), commands, continuing)
     }
 
-    /// Whether a clip has motion to re-time (§51).
+    /// Whether a clip has motion to re-time.
     ///
     /// A held frame and a photo do not: both are one picture, and a speed
     /// change takes a clip's length from its source range — which would shrink
@@ -1689,7 +2465,7 @@ impl Editor {
     /// One button rather than the usual stopwatch-plus-diamond pair: the first
     /// click starts the animation from wherever the control is now, later
     /// clicks add or remove a key at the playhead, and there is no mode to be
-    /// in (§41 — the interface explains itself).
+    /// in: the interface explains itself.
     pub fn toggle_keyframe(
         &mut self,
         clip: ClipId,
@@ -1782,6 +2558,37 @@ impl Editor {
         self.dispatch(Command::RemoveMedia { media })
     }
 
+    /// Every asset no clip uses, in library order.
+    pub fn unused_media(&self) -> Vec<bettercut_foundation::MediaId> {
+        self.project
+            .media
+            .iter()
+            .map(|asset| asset.id)
+            .filter(|id| !self.project.media_is_used(*id))
+            .collect()
+    }
+
+    /// Take every asset no clip uses out of the library, as one undo step.
+    /// Returns how many went. The files stay on disk (§2).
+    pub fn remove_unused_media(&mut self) -> Result<usize, EditorError> {
+        let unused = self.unused_media();
+        let count = unused.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        let commands = unused
+            .into_iter()
+            .map(|media| Command::RemoveMedia { media })
+            .collect();
+        let label = if count == 1 {
+            "Remove Unused File".to_owned()
+        } else {
+            format!("Remove {count} Unused Files")
+        };
+        self.dispatch_group(label, commands)?;
+        Ok(count)
+    }
+
     /// Whether any clip still references this asset, so the interface can say
     /// why removing is unavailable before the user tries.
     pub fn media_is_used(&self, media: bettercut_foundation::MediaId) -> bool {
@@ -1817,6 +2624,52 @@ impl Editor {
         clip.timeline
             .contains(playhead)
             .then(|| clip.source_time_at(playhead))
+    }
+
+    /// Change how the keys at the playhead ease (§24). Returns how many moved.
+    ///
+    /// Every animated parameter that has a key there, not one — a scale is two
+    /// parameters and a position is two more, so easing one of a pair would
+    /// make the shape drift as it moved. One choice covers the control the user
+    /// is actually thinking about.
+    ///
+    /// Keys already on that curve are left out of the group rather than
+    /// rewritten, so choosing the easing something already has is not an undo
+    /// step that changes nothing.
+    pub fn set_keyframe_easing(
+        &mut self,
+        clip: ClipId,
+        easing: Interpolation,
+    ) -> Result<usize, EditorError> {
+        let at = self
+            .source_time_at_playhead(clip)
+            .ok_or(EditorError::PlayheadOffClip)?;
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+
+        let commands: Vec<Command> = bettercut_timeline::AnimatedParameter::ALL
+            .into_iter()
+            .filter_map(|parameter| {
+                let key = video.keyframes.get(parameter, at)?;
+                (key.interpolation != easing).then_some(Command::SetKeyframe {
+                    sequence,
+                    track,
+                    clip,
+                    parameter,
+                    key: Keyframe::new(at, key.value, easing),
+                })
+            })
+            .collect();
+
+        let changed = commands.len();
+        if commands.is_empty() {
+            return Ok(0);
+        }
+        self.dispatch_group("Keyframe Easing", commands)?;
+        Ok(changed)
     }
 
     /// Add or replace one keyframe (§24).
@@ -1985,9 +2838,161 @@ impl Editor {
         Ok(())
     }
 
+    /// Write the project to `path` and carry on editing the original.
+    ///
+    /// Save As moves the work to the new file; this leaves it where it is. The
+    /// copy is the project exactly as it stands, unsaved changes included, but
+    /// the editor's own file, its unsaved state and its recovery data are all
+    /// untouched: a version kept aside before trying something, not a new home
+    /// for the edit. Returns where the copy went, with the project extension
+    /// added when the name had none.
+    ///
+    /// Refused when `path` is the project's own file — that is Save, and doing
+    /// it here would mark nothing as saved while having saved over it.
+    pub fn save_copy(&self, path: impl AsRef<Path>) -> Result<std::path::PathBuf, EditorError> {
+        let mut path = path.as_ref().to_path_buf();
+        if path.extension().is_none() {
+            path.set_extension(PROJECT_EXTENSION);
+        }
+        if self.path.as_ref().is_some_and(|own| same_file(own, &path)) {
+            return Err(EditorError::CopyOverOriginal);
+        }
+        bettercut_project_format::save(&self.project, &path)?;
+        Ok(path)
+    }
+
+    /// The longest a track's name may be. Enough for "Interview — second
+    /// camera"; past it the header column cuts the name off anyway.
+    pub const MAX_TRACK_NAME: usize = 40;
+
+    /// Rename `track`, as one undo step. Surrounding spaces are trimmed and the
+    /// name is cut to [`Self::MAX_TRACK_NAME`] characters. Returns whether it
+    /// changed: the same name again is no step. An empty name is refused — a
+    /// lane with no name is one nobody can talk about.
+    pub fn rename_track(&mut self, track: TrackId, name: &str) -> Result<bool, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let name: String = name.trim().chars().take(Self::MAX_TRACK_NAME).collect();
+        if name.is_empty() {
+            return Err(EditorError::EmptyTrackName);
+        }
+        let current = self
+            .active_sequence()
+            .and_then(|s| s.track_name(track))
+            .ok_or(EditorError::TrackNotFound(track))?;
+        if current == name {
+            return Ok(false);
+        }
+        self.dispatch(Command::RenameTrack {
+            sequence,
+            track,
+            name,
+        })?;
+        Ok(true)
+    }
+
+    /// Duplicate `track` with every clip on it, placed straight after it among
+    /// the tracks of its kind, as one undo step. Returns the new track.
+    ///
+    /// The copies are new clips: new ids, not tied to the original's sound or
+    /// picture (§12) — a copied picture sharing its link would drag the
+    /// original's sound whenever it moved — and in no group. The copy is
+    /// unlocked, so it can be worked on straight away, and keeps the track's
+    /// visibility and mix.
+    pub fn duplicate_track(&mut self, track: TrackId) -> Result<TrackId, EditorError> {
+        use bettercut_timeline::{Clip, Track};
+
+        fn copy_of<C: Clip + Clone>(
+            original: &Track<C>,
+            unlink: impl Fn(&mut C),
+        ) -> Result<Track<C>, EditorError> {
+            let mut copy = Track::new(format!("{} copy", original.name));
+            copy.enabled = original.enabled;
+            copy.gain = original.gain;
+            copy.pan = original.pan;
+            for clip in original.clips() {
+                let mut clip = clip.clone();
+                clip.set_id(ClipId::new());
+                unlink(&mut clip);
+                copy.insert(clip)?;
+            }
+            Ok(copy)
+        }
+
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .active_sequence()
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let (index, payload) =
+            if let Some(i) = sequence.video_tracks.iter().position(|t| t.id == track) {
+                (
+                    i + 1,
+                    crate::command::TrackPayload::Video(Box::new(copy_of(
+                        &sequence.video_tracks[i],
+                        |c| c.link = None,
+                    )?)),
+                )
+            } else if let Some(i) = sequence.audio_tracks.iter().position(|t| t.id == track) {
+                (
+                    i + 1,
+                    crate::command::TrackPayload::Audio(Box::new(copy_of(
+                        &sequence.audio_tracks[i],
+                        |c| c.link = None,
+                    )?)),
+                )
+            } else if let Some(i) = sequence.text_tracks.iter().position(|t| t.id == track) {
+                (
+                    i + 1,
+                    crate::command::TrackPayload::Text(Box::new(copy_of(
+                        &sequence.text_tracks[i],
+                        |_| {},
+                    )?)),
+                )
+            } else if let Some(i) = sequence
+                .adjustment_tracks
+                .iter()
+                .position(|t| t.id == track)
+            {
+                (
+                    i + 1,
+                    crate::command::TrackPayload::Adjustment(Box::new(copy_of(
+                        &sequence.adjustment_tracks[i],
+                        |_| {},
+                    )?)),
+                )
+            } else {
+                return Err(EditorError::TrackNotFound(track));
+            };
+        let new_id = match &payload {
+            crate::command::TrackPayload::Video(t) => t.id,
+            crate::command::TrackPayload::Audio(t) => t.id,
+            crate::command::TrackPayload::Text(t) => t.id,
+            crate::command::TrackPayload::Adjustment(t) => t.id,
+        };
+        self.dispatch(Command::InsertTrack {
+            sequence: sequence_id,
+            index,
+            track: payload,
+        })?;
+        Ok(new_id)
+    }
+
     /// Discard recovery data on an orderly shutdown.
-    pub fn shutdown(&mut self) {
+    ///
+    /// Unsaved edits are the exception, and the important half. There is no
+    /// prompt on the close button yet, so quitting with changes outstanding
+    /// loses them unless the journal survives to be offered back on the next
+    /// launch. From the work's point of view that quit is indistinguishable
+    /// from a crash, which is the case §39 exists for — so it is treated as
+    /// one, and the caller does not have to know that.
+    ///
+    /// Returns whether the recovery data was removed.
+    pub fn shutdown(&mut self) -> bool {
+        if self.dirty {
+            tracing::info!("quit with unsaved changes; keeping recovery data");
+            return false;
+        }
         self.journal.discard();
+        true
     }
 
     // ---- internals ----
@@ -2118,6 +3123,36 @@ impl Editor {
                 )))
             }
 
+            Command::AddAdjustment {
+                sequence,
+                track,
+                clip,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::AddAdjustment::new(sequence, track, *clip)))
+            }
+
+            Command::RemoveAdjustment {
+                sequence,
+                track,
+                clip,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::RemoveAdjustment::new(sequence, track, clip)))
+            }
+
+            Command::SetAdjustmentLook {
+                sequence,
+                track,
+                clip,
+                look,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetAdjustmentLook::new(
+                    sequence, track, clip, look,
+                )))
+            }
+
             Command::Unlink { sequence, link } => {
                 self.require_sequence(sequence)?;
                 Ok(Box::new(ops::Unlink::new(sequence, link)))
@@ -2140,6 +3175,29 @@ impl Editor {
                 Ok(Box::new(ops::SetMarkers::new(sequence, markers)))
             }
 
+            Command::SetGroups { sequence, groups } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetGroups::new(sequence, groups)))
+            }
+
+            Command::SetClipNote {
+                sequence,
+                clip,
+                text,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetClipNote::new(sequence, clip, text)))
+            }
+
+            Command::SetInOut {
+                sequence,
+                mark_in,
+                mark_out,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetInOut::new(sequence, mark_in, mark_out)))
+            }
+
             Command::SetTrackMix {
                 sequence,
                 track,
@@ -2148,6 +3206,18 @@ impl Editor {
             } => {
                 self.require_track(sequence, track)?;
                 Ok(Box::new(ops::SetTrackMix::new(sequence, track, gain, pan)))
+            }
+
+            Command::SetColorLabel {
+                sequence,
+                track,
+                clip,
+                label,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetColorLabel::new(
+                    sequence, track, clip, label,
+                )))
             }
 
             Command::SetClipFades {
@@ -2234,6 +3304,24 @@ impl Editor {
                 Ok(Box::new(ops::RemoveTrack::new(sequence, track)))
             }
 
+            Command::InsertTrack {
+                sequence,
+                index,
+                track,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::InsertTrack::new(sequence, index, track)))
+            }
+
+            Command::RenameTrack {
+                sequence,
+                track,
+                name,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::RenameTrack::new(sequence, track, name)))
+            }
+
             Command::SetTrackFlag {
                 sequence,
                 track,
@@ -2267,6 +3355,21 @@ impl Editor {
             } => {
                 self.require_track(sequence, track)?;
                 Ok(Box::new(ops::RemoveClip::new(sequence, track, clip)))
+            }
+
+            Command::ReplaceClipMedia {
+                sequence,
+                track,
+                clip,
+                swap,
+            } => {
+                self.require_track(sequence, track)?;
+                if self.project.media_asset(swap.media).is_none() {
+                    return Err(EditorError::MediaNotFound(swap.media));
+                }
+                Ok(Box::new(ops::ReplaceClipMedia::new(
+                    sequence, track, clip, swap,
+                )))
             }
 
             Command::MoveClip {
@@ -2434,6 +3537,53 @@ impl Editor {
         })
     }
 
+    /// One of a track's flags, whichever lane it is in (§8, §20a.4).
+    ///
+    /// Asked by controls that toggle: a header button and a menu item both
+    /// need to know what the flag is *now* to say what pressing it will do.
+    /// False for a track that is not there, which is what a control drawn for
+    /// a track that has just been deleted should show.
+    pub fn track_flag(&self, track: TrackId, flag: TrackFlag) -> bool {
+        let read = |enabled: bool, locked: bool, solo: bool| match flag {
+            TrackFlag::Enabled => enabled,
+            TrackFlag::Locked => locked,
+            TrackFlag::Solo => solo,
+        };
+        self.active_sequence().is_some_and(|sequence| {
+            let video = sequence
+                .video_tracks
+                .iter()
+                .find(|t| t.id == track)
+                .map(|t| read(t.enabled, t.locked, t.solo));
+            let audio = || {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find(|t| t.id == track)
+                    .map(|t| read(t.enabled, t.locked, t.solo))
+            };
+            let text = || {
+                sequence
+                    .text_tracks
+                    .iter()
+                    .find(|t| t.id == track)
+                    .map(|t| read(t.enabled, t.locked, t.solo))
+            };
+            // Without this an adjustment lane reads as hidden, unlocked and
+            // unsoloed whatever it is — the header shows the wrong state.
+            let adjustment = || {
+                sequence
+                    .adjustment_track(track)
+                    .map(|t| read(t.enabled, t.locked, t.solo))
+            };
+            video
+                .or_else(audio)
+                .or_else(text)
+                .or_else(adjustment)
+                .unwrap_or(false)
+        })
+    }
+
     pub fn set_track_flag(
         &mut self,
         track: TrackId,
@@ -2503,26 +3653,180 @@ impl Editor {
         primary: Command,
         new_start: TimelineTime,
     ) -> Vec<Command> {
-        let mut commands = vec![primary];
         let Some(old_start) = self.clip_start(clip) else {
-            return commands;
+            return vec![primary];
         };
         let delta = new_start.ticks() - old_start.ticks();
 
-        for partner in self.linked_with(clip).into_iter().filter(|c| *c != clip) {
-            let (Some(track), Some(start)) = (self.track_of(partner), self.clip_start(partner))
+        // Its sound (§12), and everything grouped with it along with each of
+        // their sounds — all by the same amount, each on its own track.
+        let mut moving: Vec<(TimelineTime, Command)> = vec![(old_start, primary)];
+        for companion in self.moves_with(clip).into_iter().filter(|c| *c != clip) {
+            let (Some(track), Some(start)) = (self.track_of(companion), self.clip_start(companion))
             else {
                 continue;
             };
-            commands.push(Command::MoveClip {
-                sequence,
-                from_track: track,
-                to_track: track,
-                clip: partner,
-                new_start: TimelineTime::from_ticks(start.ticks() + delta),
-            });
+            moving.push((
+                start,
+                Command::MoveClip {
+                    sequence,
+                    from_track: track,
+                    to_track: track,
+                    clip: companion,
+                    new_start: TimelineTime::from_ticks(start.ticks() + delta),
+                },
+            ));
         }
-        commands
+        // A group can hold two clips on one track: the one moving into the
+        // other's old place has to wait until it has left. Leading edge first.
+        if delta > 0 {
+            moving.sort_by_key(|(start, _)| std::cmp::Reverse(*start));
+        } else {
+            moving.sort_by_key(|(start, _)| *start);
+        }
+        moving.into_iter().map(|(_, command)| command).collect()
+    }
+
+    // ---- notes ----
+
+    /// The longest a clip's note may be.
+    pub const MAX_CLIP_NOTE: usize = 500;
+
+    /// The note on `clip`, if it has one.
+    pub fn clip_note(&self, clip: ClipId) -> Option<&str> {
+        self.active_sequence()?
+            .notes
+            .iter()
+            .find(|note| note.clip == clip)
+            .map(|note| note.text.as_str())
+    }
+
+    /// Leave a note on `clip`, change it, or take it off with an empty or
+    /// blank `text`. Trimmed and cut to [`Self::MAX_CLIP_NOTE`] characters.
+    /// One undo step; returns whether anything changed.
+    pub fn set_clip_note(&mut self, clip: ClipId, text: &str) -> Result<bool, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        if self
+            .active_sequence()
+            .and_then(|s| s.clip_span(clip))
+            .is_none()
+        {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+        let text: String = text.trim().chars().take(Self::MAX_CLIP_NOTE).collect();
+        if self.clip_note(clip).unwrap_or("") == text {
+            return Ok(false);
+        }
+        self.dispatch(Command::SetClipNote {
+            sequence,
+            clip,
+            text,
+        })?;
+        Ok(true)
+    }
+
+    // ---- groups ----
+
+    /// The live members of the group `clip` is in — ids of clips since deleted
+    /// or split left out — or `None` when it is in none.
+    pub fn group_of(&self, clip: ClipId) -> Option<Vec<ClipId>> {
+        let sequence = self.active_sequence()?;
+        let group = sequence.groups.iter().find(|group| group.contains(&clip))?;
+        let live: Vec<ClipId> = group
+            .iter()
+            .copied()
+            .filter(|member| sequence.clip_span(*member).is_some())
+            .collect();
+        (live.len() > 1).then_some(live)
+    }
+
+    /// Everything that moves when `clip` does: its group, and every member's
+    /// linked partners. Always includes `clip`.
+    pub fn moves_with(&self, clip: ClipId) -> Vec<ClipId> {
+        let members = self.group_of(clip).unwrap_or_else(|| vec![clip]);
+        let mut all: Vec<ClipId> = Vec::new();
+        for member in members {
+            for linked in self.linked_with(member) {
+                if !all.contains(&linked) {
+                    all.push(linked);
+                }
+            }
+        }
+        if !all.contains(&clip) {
+            all.insert(0, clip);
+        }
+        all
+    }
+
+    /// Group `clips` so they move together, as one undo step. Any group one of
+    /// them was already in is folded into the new one, since a clip is in at
+    /// most one group. Returns the size of the group.
+    ///
+    /// Refused unless at least two clips — not counting a clip's own linked
+    /// sound, which moves with it anyway — are given.
+    pub fn group_clips(&mut self, clips: &[ClipId]) -> Result<usize, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .active_sequence()
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let mut members: Vec<ClipId> = Vec::new();
+        for clip in clips {
+            if sequence.clip_span(*clip).is_none() {
+                continue;
+            }
+            for member in self.group_of(*clip).unwrap_or_else(|| vec![*clip]) {
+                if !members.contains(&member) {
+                    members.push(member);
+                }
+            }
+        }
+        // Clips that are only one another's linked partners are one thing.
+        let mut units: Vec<Vec<ClipId>> = Vec::new();
+        for member in &members {
+            if !units.iter().any(|unit| unit.contains(member)) {
+                units.push(self.linked_with(*member));
+            }
+        }
+        if units.len() < 2 {
+            return Err(EditorError::NothingToGroup);
+        }
+        let mut groups: Vec<Vec<ClipId>> = sequence
+            .groups
+            .iter()
+            .filter(|group| !group.iter().any(|clip| members.contains(clip)))
+            .cloned()
+            .collect();
+        let count = members.len();
+        groups.push(members);
+        self.dispatch(Command::SetGroups {
+            sequence: sequence_id,
+            groups,
+        })?;
+        Ok(count)
+    }
+
+    /// Break up every group any of `clips` is in, as one undo step. Returns
+    /// how many groups went; none is no edit.
+    pub fn ungroup_clips(&mut self, clips: &[ClipId]) -> Result<usize, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let Some(sequence) = self.active_sequence() else {
+            return Ok(0);
+        };
+        let before = sequence.groups.len();
+        let groups: Vec<Vec<ClipId>> = sequence
+            .groups
+            .iter()
+            .filter(|group| !group.iter().any(|clip| clips.contains(clip)))
+            .cloned()
+            .collect();
+        let removed = before - groups.len();
+        if removed > 0 {
+            self.dispatch(Command::SetGroups {
+                sequence: sequence_id,
+                groups,
+            })?;
+        }
+        Ok(removed)
     }
 
     /// Nudge clips along the timeline by whole frames (§57).
@@ -2593,34 +3897,12 @@ impl Editor {
 
     /// Where a video or audio clip starts, for the linked edits above.
     fn clip_start(&self, clip: ClipId) -> Option<TimelineTime> {
-        let sequence = self.project.active()?;
-        sequence
-            .video_tracks
-            .iter()
-            .find_map(|t| t.get(clip).map(|c| c.timeline.start))
-            .or_else(|| {
-                sequence
-                    .audio_tracks
-                    .iter()
-                    .find_map(|t| t.get(clip).map(|c| c.timeline.start))
-            })
-            .or_else(|| sequence.text_clip(clip).map(|c| c.timeline.start))
+        Some(self.project.active()?.clip_span(clip)?.timeline.start)
     }
 
     /// The same, for the end.
     fn clip_end(&self, clip: ClipId) -> Option<TimelineTime> {
-        let sequence = self.project.active()?;
-        sequence
-            .video_tracks
-            .iter()
-            .find_map(|t| t.get(clip).map(|c| c.timeline.end))
-            .or_else(|| {
-                sequence
-                    .audio_tracks
-                    .iter()
-                    .find_map(|t| t.get(clip).map(|c| c.timeline.end))
-            })
-            .or_else(|| sequence.text_clip(clip).map(|c| c.timeline.end))
+        Some(self.project.active()?.clip_span(clip)?.timeline.end)
     }
 
     /// Detach a clip from whatever it is linked to (§12).
@@ -2862,9 +4144,33 @@ impl Editor {
         })
     }
 
+    /// Every clip that starts at or after `at`, on `track` or on every track —
+    /// what "select everything after here" selects. From zero, every clip.
+    ///
+    /// Clips on locked tracks are left out: a selection like this is made to
+    /// move or delete the rest of the edit, and a locked clip would refuse.
+    /// In time order, then track order, so the result is the same every call.
+    pub fn clips_starting_from(&self, at: TimelineTime, track: Option<TrackId>) -> Vec<ClipId> {
+        let Some(sequence) = self.project.active() else {
+            return Vec::new();
+        };
+        let mut found: Vec<(TimelineTime, usize, ClipId)> = sequence
+            .clip_spans()
+            .enumerate()
+            .filter(|(_, span)| {
+                span.timeline.start >= at
+                    && track.is_none_or(|track| span.track == track)
+                    && !crate::gaps::track_locked(sequence, span.track)
+            })
+            .map(|(order, span)| (span.timeline.start, order, span.clip))
+            .collect();
+        found.sort_unstable_by_key(|(start, order, _)| (*start, *order));
+        found.into_iter().map(|(_, _, clip)| clip).collect()
+    }
+
     /// Clips at or after `at` on every track — or, with `straddling`, only the
     /// ones the instant falls strictly inside.
-    fn clips_from(
+    pub(crate) fn clips_from(
         &self,
         at: TimelineTime,
         straddling: bool,
@@ -2880,23 +4186,11 @@ impl Editor {
             }
         };
 
-        let mut found = Vec::new();
-        for track in &sequence.video_tracks {
-            for clip in track.clips().iter().filter(|c| wanted(c.timeline)) {
-                found.push((track.id, clip.id, clip.timeline.start));
-            }
-        }
-        for track in &sequence.audio_tracks {
-            for clip in track.clips().iter().filter(|c| wanted(c.timeline)) {
-                found.push((track.id, clip.id, clip.timeline.start));
-            }
-        }
-        for track in &sequence.text_tracks {
-            for clip in track.clips().iter().filter(|c| wanted(c.timeline)) {
-                found.push((track.id, clip.id, clip.timeline.start));
-            }
-        }
-        found
+        sequence
+            .clip_spans()
+            .filter(|span| wanted(span.timeline))
+            .map(|span| (span.track, span.clip, span.timeline.start))
+            .collect()
     }
 
     /// Trim one edge of every selected clip to the playhead (§57).
@@ -3044,6 +4338,112 @@ impl Editor {
         Ok((count, animated))
     }
 
+    /// How many clips show bars at the sequence's current shape, having never
+    /// been framed for it.
+    ///
+    /// What the sequence panel says after a reshape, so the three buttons that
+    /// deal with it — fill, crop, fit — explain themselves: switching a
+    /// landscape edit to vertical silently pillarboxes every shot, and a user
+    /// who does not know to look for a fix will think the export is broken.
+    ///
+    /// Only clips still at the framing they were placed with: full size,
+    /// centred, upright, uncropped, and not animated in size or position. A
+    /// shot shrunk into a corner or cropped by hand shows bars *because someone
+    /// chose that*, and counting it would make this a nag that never goes away.
+    pub fn clips_showing_bars(&self) -> usize {
+        let Some(sequence) = self.active_sequence() else {
+            return 0;
+        };
+        let Some(output) = aspect_of(sequence.resolution.width, sequence.resolution.height) else {
+            return 0;
+        };
+
+        sequence
+            .video_tracks
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter(|clip| at_placed_framing(clip))
+            .filter(|clip| {
+                self.project
+                    .media_asset(clip.media_id)
+                    .and_then(|asset| aspect_of(asset.width, asset.height))
+                    // A percent either way is the same shape: 1920×1080 and
+                    // 1920×1088 are both 16:9 to anyone looking.
+                    .is_some_and(|source| (source / output - 1.0).abs() > 0.01)
+            })
+            .count()
+    }
+
+    /// §33's auto crop: take the frame's own shape out of every clip.
+    ///
+    /// The companion to [`Self::reframe_clips`], and usually the better answer
+    /// for the same problem. Filling scales a clip up until the bars are gone,
+    /// which costs resolution — landscape footage covering a vertical frame is
+    /// enlarged nearly twice. Cropping takes the frame's shape out of the
+    /// source at full size instead: nothing is enlarged, and what is lost was
+    /// never going to be on screen.
+    ///
+    /// A clip the user has already cropped is left alone. That crop is a
+    /// decision about *this* shot — a watermark trimmed off an edge, a subject
+    /// framed by hand — and replacing it with a centred one would throw away
+    /// work that cannot be guessed back. Counted separately so the interface
+    /// can say so, exactly as `reframe_clips` does for animated scale.
+    ///
+    /// Returns `(cropped, left alone)`.
+    pub fn auto_crop_clips(&mut self) -> Result<(usize, usize), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let output = aspect_of(sequence.resolution.width, sequence.resolution.height);
+
+        let mut wanted: Vec<(ClipId, bettercut_timeline::Crop)> = Vec::new();
+        let mut kept = 0;
+        for track in &sequence.video_tracks {
+            for clip in track.clips() {
+                if !clip.crop.is_none() {
+                    kept += 1;
+                    continue;
+                }
+                let Some(asset) = self.project.media_asset(clip.media_id) else {
+                    continue; // §66: media that has gone still has a clip
+                };
+                let (Some(source), Some(output)) = (aspect_of(asset.width, asset.height), output)
+                else {
+                    continue; // a file whose size we never learned
+                };
+                let crop = bettercut_timeline::crop_to_aspect(source, output);
+                // Already the frame's shape: a step in the history that
+                // changes nothing is worse than no step at all.
+                if crop.is_none() {
+                    continue;
+                }
+                wanted.push((clip.id, crop));
+            }
+        }
+
+        let count = wanted.len();
+        self.staged("Crop to the Frame", |editor, stage| {
+            for (clip, crop) in wanted {
+                let track = editor
+                    .track_of(clip)
+                    .ok_or(EditorError::ClipNotFound(clip))?;
+                editor.stage(
+                    stage,
+                    Command::SetClipProperty {
+                        sequence: sequence_id,
+                        track,
+                        clip,
+                        property: crate::command::ClipProperty::Crop(crop),
+                    },
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok((count, kept))
+    }
+
     /// Cut one clip at several instants at once, as one undo step (§79).
     ///
     /// What scene detection produces: a list of instants inside one clip. Doing
@@ -3116,7 +4516,7 @@ impl Editor {
     /// Separate from the dispatch so the same cuts can be made inside a larger
     /// edit — opening a gap splits whatever straddles it, and that has to land
     /// in the same undo step as the moves that follow.
-    fn split_commands(
+    pub(crate) fn split_commands(
         &self,
         sequence_id: SequenceId,
         at: TimelineTime,
@@ -3150,22 +4550,11 @@ impl Editor {
             }
         };
 
-        for track in &sequence.video_tracks {
-            for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline, clip.link);
-            }
-        }
-        for track in &sequence.audio_tracks {
-            for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline, clip.link);
-            }
-        }
-        // §26: a title splits like anything else, and leaving it out here is
-        // how a feature that works in the model never reaches the shortcut.
-        for track in &sequence.text_tracks {
-            for clip in track.clips() {
-                consider(track.id, clip.id, clip.timeline, None);
-            }
+        // Every lane kind: a title or an adjustment splits like anything else,
+        // and leaving one out here is how a feature that works in the model
+        // never reaches the shortcut — which happened to titles once.
+        for span in sequence.clip_spans() {
+            consider(span.track, span.clip, span.timeline, span.link);
         }
 
         // One pair of fresh links per linked group being cut: every left half
@@ -3217,6 +4606,131 @@ impl Editor {
         ranges: &[bettercut_timeline::TimelineRange],
     ) -> Result<usize, EditorError> {
         let sequence = self.active_sequence_id()?;
+        let ranges = self.prepared_ranges(sequence, ranges);
+        let members = self.members_of(clip);
+        if members.is_empty() {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+
+        let count = ranges.len();
+        let label = if count == 1 {
+            "Remove Silence".to_owned()
+        } else {
+            format!("Remove {count} Silences")
+        };
+        self.staged(label, |editor, stage| {
+            editor.stage_remove_ranges(stage, sequence, members, ranges)
+        })
+    }
+
+    /// Ripple trim to the playhead: take away the part of each clip before the
+    /// playhead (`TrimEdge::Start`) or after it (`TrimEdge::End`), and close the
+    /// gap it leaves — what Q and W do. One undo step.
+    ///
+    /// `clips` are the selection; empty means the clip under the playhead, on
+    /// the highest picture track that has one, or else the highest sound track.
+    /// Only clips the playhead is strictly inside are trimmed. Linked sound is
+    /// trimmed with its picture (§12), once however many of the pair are given.
+    ///
+    /// Trimming a start leaves the playhead where the cut now is — the join the
+    /// user wants to watch next. Returns how many clips were trimmed.
+    pub fn ripple_trim_to_playhead(
+        &mut self,
+        clips: &[ClipId],
+        edge: TrimEdge,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let at = self.playhead;
+        let inside = |editor: &Self, clip: ClipId| {
+            editor
+                .span_and_link(clip)
+                .filter(|(span, _)| span.start < at && at < span.end)
+                .map(|(span, _)| span)
+        };
+
+        let candidates: Vec<ClipId> = if clips.is_empty() {
+            let Some(active) = self.project.active() else {
+                return Ok(0);
+            };
+            let pictures = active
+                .video_tracks
+                .iter()
+                .rev()
+                .map(|t| t.clip_at(at).map(|c| c.id));
+            let sounds = active
+                .audio_tracks
+                .iter()
+                .map(|t| t.clip_at(at).map(|c| c.id));
+            pictures
+                .chain(sounds)
+                .flatten()
+                .find(|clip| inside(self, *clip).is_some())
+                .into_iter()
+                .collect()
+        } else {
+            clips.to_vec()
+        };
+
+        // One cut per linked group: the picture and its sound are one clip to
+        // the person pressing the key.
+        let mut seen: Vec<ClipId> = Vec::new();
+        let mut targets = Vec::new();
+        for clip in candidates {
+            if seen.contains(&clip) {
+                continue;
+            }
+            let Some(span) = inside(self, clip) else {
+                continue;
+            };
+            seen.extend(self.linked_with(clip));
+            let range = match edge {
+                TrimEdge::Start => bettercut_timeline::TimelineRange::new(span.start, at),
+                TrimEdge::End => bettercut_timeline::TimelineRange::new(at, span.end),
+            };
+            if let Ok(range) = range {
+                targets.push((self.members_of(clip), range));
+            }
+        }
+        if targets.is_empty() {
+            return Ok(0);
+        }
+
+        let count = targets.len();
+        let label = if count == 1 {
+            "Ripple Trim".to_owned()
+        } else {
+            format!("Ripple Trim {count} Clips")
+        };
+        let earliest = targets.iter().map(|(_, range)| range.start).min();
+        self.staged(label, |editor, stage| {
+            for (members, range) in targets {
+                let ranges = editor.prepared_ranges(sequence, &[range]);
+                editor.stage_remove_ranges(stage, sequence, members, ranges)?;
+            }
+            Ok(())
+        })?;
+        if edge == TrimEdge::Start
+            && let Some(start) = earliest
+        {
+            self.set_playhead(start);
+        }
+        Ok(count)
+    }
+
+    /// A clip and everything linked to it, each with its track.
+    fn members_of(&self, clip: ClipId) -> Vec<(TrackId, ClipId)> {
+        self.linked_with(clip)
+            .into_iter()
+            .filter_map(|c| Some((self.track_of(c)?, c)))
+            .collect()
+    }
+
+    /// Ranges snapped to the frame grid (§76), latest first, overlaps merged.
+    fn prepared_ranges(
+        &self,
+        sequence: SequenceId,
+        ranges: &[bettercut_timeline::TimelineRange],
+    ) -> Vec<bettercut_timeline::TimelineRange> {
         let mut ranges: Vec<bettercut_timeline::TimelineRange> = ranges
             .iter()
             .filter_map(|r| {
@@ -3241,99 +4755,94 @@ impl Editor {
                 false
             }
         });
-        let members: Vec<(TrackId, ClipId)> = self
-            .linked_with(clip)
-            .into_iter()
-            .filter_map(|c| Some((self.track_of(c)?, c)))
-            .collect();
-        if members.is_empty() {
-            return Err(EditorError::ClipNotFound(clip));
-        }
+        ranges
+    }
 
-        let count = ranges.len();
-        let label = if count == 1 {
-            "Remove Silence".to_owned()
-        } else {
-            format!("Remove {count} Silences")
-        };
-        self.staged(label, |editor, stage| {
-            let mut current = members;
-            let mut removed = 0;
-            for range in ranges {
-                // One pair of links per split, shared by every member cut
-                // there, so the pieces of the picture and of its sound stay
-                // tied to each other (§12).
-                let end_links = (
-                    bettercut_foundation::LinkId::new(),
-                    bettercut_foundation::LinkId::new(),
-                );
-                let start_links = (
-                    bettercut_foundation::LinkId::new(),
-                    bettercut_foundation::LinkId::new(),
-                );
-                let mut next = Vec::new();
-                let mut cut_any = false;
+    /// Split out and ripple-delete each range from a clip and its partners,
+    /// inside someone else's staged edit. Ranges must be latest first.
+    fn stage_remove_ranges(
+        &mut self,
+        stage: &mut Stage,
+        sequence: SequenceId,
+        members: Vec<(TrackId, ClipId)>,
+        ranges: Vec<bettercut_timeline::TimelineRange>,
+    ) -> Result<usize, EditorError> {
+        let mut current = members;
+        let mut removed = 0;
+        for range in ranges {
+            // One pair of links per split, shared by every member cut
+            // there, so the pieces of the picture and of its sound stay
+            // tied to each other (§12).
+            let end_links = (
+                bettercut_foundation::LinkId::new(),
+                bettercut_foundation::LinkId::new(),
+            );
+            let start_links = (
+                bettercut_foundation::LinkId::new(),
+                bettercut_foundation::LinkId::new(),
+            );
+            let mut next = Vec::new();
+            let mut cut_any = false;
 
-                for (track, id) in current {
-                    let Some((span, linked)) = editor.span_and_link(id) else {
-                        continue;
-                    };
-                    if range.end <= span.start || range.start >= span.end {
-                        next.push((track, id));
-                        continue;
-                    }
-                    let (from, to) = (range.start.max(span.start), range.end.min(span.end));
-                    let mut piece = id;
-                    if to < span.end {
-                        let left = ClipId::new();
-                        editor.stage(
-                            stage,
-                            Command::SplitClip {
-                                sequence,
-                                track,
-                                clip: piece,
-                                at: to,
-                                left,
-                                right: ClipId::new(),
-                                relink: linked.then_some(end_links),
-                            },
-                        )?;
-                        piece = left;
-                    }
-                    if from > span.start {
-                        let (left, right) = (ClipId::new(), ClipId::new());
-                        editor.stage(
-                            stage,
-                            Command::SplitClip {
-                                sequence,
-                                track,
-                                clip: piece,
-                                at: from,
-                                left,
-                                right,
-                                relink: linked.then_some(start_links),
-                            },
-                        )?;
-                        next.push((track, left));
-                        piece = right;
-                    }
-                    editor.stage(
+            for (track, id) in current {
+                let Some((span, linked)) = self.span_and_link(id) else {
+                    continue;
+                };
+                if range.end <= span.start || range.start >= span.end {
+                    next.push((track, id));
+                    continue;
+                }
+                let (from, to) = (range.start.max(span.start), range.end.min(span.end));
+                let mut piece = id;
+                if to < span.end {
+                    let left = ClipId::new();
+                    self.stage(
                         stage,
-                        Command::RippleDeleteClip {
+                        Command::SplitClip {
                             sequence,
                             track,
                             clip: piece,
+                            at: to,
+                            left,
+                            right: ClipId::new(),
+                            relink: linked.then_some(end_links),
                         },
                     )?;
-                    cut_any = true;
+                    piece = left;
                 }
-                if cut_any {
-                    removed += 1;
+                if from > span.start {
+                    let (left, right) = (ClipId::new(), ClipId::new());
+                    self.stage(
+                        stage,
+                        Command::SplitClip {
+                            sequence,
+                            track,
+                            clip: piece,
+                            at: from,
+                            left,
+                            right,
+                            relink: linked.then_some(start_links),
+                        },
+                    )?;
+                    next.push((track, left));
+                    piece = right;
                 }
-                current = next;
+                self.stage(
+                    stage,
+                    Command::RippleDeleteClip {
+                        sequence,
+                        track,
+                        clip: piece,
+                    },
+                )?;
+                cut_any = true;
             }
-            Ok(removed)
-        })
+            if cut_any {
+                removed += 1;
+            }
+            current = next;
+        }
+        Ok(removed)
     }
 
     /// A video or audio clip's span, and whether it is linked (§12).
@@ -3362,23 +4871,12 @@ impl Editor {
 
     /// Which track holds a clip. Linear over tracks, not over clips.
     pub fn track_of(&self, clip: ClipId) -> Option<TrackId> {
-        let sequence = self.project.active()?;
-        sequence
-            .video_tracks
-            .iter()
-            .find(|t| t.get(clip).is_some())
-            .map(|t| t.id)
-            .or_else(|| {
-                sequence
-                    .audio_tracks
-                    .iter()
-                    .find(|t| t.get(clip).is_some())
-                    .map(|t| t.id)
-            })
-            // §26: titles are clips on tracks like any other, and the
-            // operations that look a clip up by id — move, trim, split — have
-            // to find them or they silently do nothing.
-            .or_else(|| sequence.text_track_of(clip))
+        // Every lane kind, through the sequence's one list of them — see
+        // `Sequence::clip_spans` for the five lookups this used to be one of.
+        self.project
+            .active()?
+            .clip_span(clip)
+            .map(|span| span.track)
     }
 
     /// Look a clip up as a payload, for copy and duplicate.
@@ -3456,6 +4954,9 @@ impl Editor {
                 // The clipboard holds media clips; §26's titles have their own
                 // add and remove, and never reach a `ClipPayload`.
                 bettercut_timeline::TrackKind::Text => None,
+                // Nor adjustments: like a title, one is added through its own
+                // command, and never reaches the clipboard.
+                bettercut_timeline::TrackKind::Adjustment => None,
             };
             let Some(track) = track else { continue };
 
@@ -3495,6 +4996,7 @@ impl Editor {
             ClipPayload::Video(c) => c.timeline.end,
             ClipPayload::Audio(c) => c.timeline.end,
             ClipPayload::Text(c) => c.timeline.end,
+            ClipPayload::Adjustment(c) => c.timeline.end,
         };
 
         self.dispatch(Command::PasteClip {
@@ -3511,7 +5013,38 @@ impl Editor {
 ///
 /// Floats are fine here: §74 bans them in timeline *position* arithmetic, and
 /// this is geometry.
-fn aspect_of(width: u32, height: u32) -> Option<f32> {
+/// Whether a clip is still at the framing it was placed with: full size,
+/// centred, upright, uncropped, and not animated in size or position.
+///
+/// The line between a shot nobody has framed yet and one somebody has. Both
+/// the "shows bars" hint and the reshaped export copies draw it here, so what
+/// the hint counts is exactly what a copy re-frames.
+/// Whether two paths name the same file, allowing for one being relative or
+/// differently spelled — compared canonically when both exist.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+pub(crate) fn at_placed_framing(clip: &bettercut_timeline::VideoClip) -> bool {
+    use bettercut_timeline::AnimatedParameter as A;
+
+    let t = clip.transform;
+    let near = |a: f32, b: f32| (a - b).abs() < 0.001;
+    clip.crop.is_none()
+        && near(t.scale.x, 1.0)
+        && near(t.scale.y, 1.0)
+        && near(t.position.x, 0.0)
+        && near(t.position.y, 0.0)
+        && near(t.rotation_degrees, 0.0)
+        && ![A::ScaleX, A::ScaleY, A::PositionX, A::PositionY]
+            .into_iter()
+            .any(|parameter| clip.keyframes.is_animated(parameter))
+}
+
+pub(crate) fn aspect_of(width: u32, height: u32) -> Option<f32> {
     (width > 0 && height > 0).then(|| width as f32 / height as f32)
 }
 

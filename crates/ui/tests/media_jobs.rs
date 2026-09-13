@@ -281,3 +281,93 @@ fn a_failed_encode_is_reported() {
     );
     assert!(update.ready.is_empty(), "a failed encode reported success");
 }
+
+/// A frame that cannot be saved says so as a failure, rather than vanishing —
+/// the user pressed a button and is waiting for a file.
+///
+/// A sequence that is not in the project fails before any GPU or decoder is
+/// touched, so this runs anywhere.
+#[test]
+fn a_still_that_fails_is_reported() {
+    use bettercut_editor_core::foundation::{SequenceId, TimelineTime};
+    use bettercut_export::StillJob;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let (editor, _events) = Editor::new_project("Still");
+    manager.submit_still(StillJob::new(
+        editor.project().clone(),
+        SequenceId::new(),
+        TimelineTime::ZERO,
+        dir.path().join("frame.png"),
+    ));
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut failures = Vec::new();
+    while Instant::now() < deadline && failures.is_empty() {
+        failures.extend(manager.poll().failures);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].starts_with("Could not save the frame"),
+        "{failures:?}"
+    );
+}
+
+/// Exports asked for together — one edit in several shapes — run one after
+/// another, and a failure does not strand the ones behind it: a vertical cut
+/// that fails says nothing about the square one.
+///
+/// Empty sequences, so each export fails at once without touching a GPU or an
+/// encoder; what is under test is the queue, not the export.
+#[test]
+fn exports_asked_for_together_run_one_after_another() {
+    use bettercut_export::{ExportJob, ExportSettings};
+
+    let dir = tempfile::tempdir().unwrap();
+    // Room for several heavy jobs, so one-at-a-time is the queue's doing and
+    // not the scheduler's limit.
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 4, 1);
+    let (editor, _events) = Editor::new_project("Queue");
+    let sequence = editor.active_sequence().unwrap();
+
+    for name in ["main", "vertical", "square"] {
+        let settings =
+            ExportSettings::for_sequence(dir.path().join(format!("{name}.mp4")), sequence);
+        manager.submit_export(ExportJob::new(editor.project(), sequence.id, settings));
+    }
+    assert!(
+        manager.export_in_flight().is_some(),
+        "the first did not start"
+    );
+    assert_eq!(manager.exports_waiting(), 2, "the others did not wait");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut failures = Vec::new();
+    let mut waiting_seen = vec![manager.exports_waiting()];
+    while Instant::now() < deadline {
+        let update = manager.poll();
+        failures.extend(update.failures);
+        let waiting = manager.exports_waiting();
+        if waiting_seen.last() != Some(&waiting) {
+            waiting_seen.push(waiting);
+        }
+        if manager.export_in_flight().is_none() && waiting == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+        failures.len(),
+        3,
+        "every export should have run and reported: {failures:?}"
+    );
+    // Never more waiting than before: nothing re-queued or skipped ahead. (Two
+    // may leave in one poll — an empty export fails in well under a frame.)
+    assert!(
+        waiting_seen.windows(2).all(|pair| pair[1] < pair[0]) && waiting_seen.last() == Some(&0),
+        "the queue did not drain in order: {waiting_seen:?}"
+    );
+}

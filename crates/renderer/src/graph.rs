@@ -86,6 +86,17 @@ impl EffectTexture {
 pub struct EffectParams {
     /// §45's blur amount, 0–100.
     pub blur: f32,
+    /// Sharpening, 0–100 (`crate::sharpen`).
+    pub sharpen: f32,
+    /// A colour lookup table and its strength (`crate::lut`).
+    pub lut: Option<bettercut_timeline::ClipLut>,
+    /// RGB split and glitch, each 0–100 (`crate::glitch`).
+    pub rgb_split: f32,
+    pub glitch: f32,
+    /// A reflection (`crate::reflect`).
+    pub reflection: bettercut_timeline::Reflection,
+    /// The frame being drawn, for effects that change every frame.
+    pub seed: u32,
 }
 
 impl EffectParams {
@@ -93,6 +104,11 @@ impl EffectParams {
     /// and the intermediate textures it would need.
     pub fn is_identity(self) -> bool {
         self.blur <= 0.0
+            && self.sharpen <= 0.0
+            && self.lut.is_none_or(|lut| lut.clamped().strength <= 0.0)
+            && self.rgb_split <= 0.0
+            && self.glitch <= 0.0
+            && self.reflection == bettercut_timeline::Reflection::None
     }
 }
 

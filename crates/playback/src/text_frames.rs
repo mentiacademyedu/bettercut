@@ -68,7 +68,47 @@ impl TextFrames {
     /// `reveal` is how many characters to draw, for a title typing itself in
     /// (`timeline::motion`); `None`, or at least as many as there are, draws
     /// them all.
+    /// The picture for this clip `into_clip` after it starts — the same as
+    /// [`Self::frame_for`] except that a counter draws its number for that
+    /// instant. What the preview and the export both call.
+    pub fn frame_at(
+        &mut self,
+        clip: &TextClip,
+        reveal: Option<usize>,
+        into_clip: bettercut_foundation::TimelineTime,
+    ) -> Option<Arc<VideoFrame>> {
+        if clip.counter.is_some() && clip.shape.is_none() {
+            let mut shown = clip.clone();
+            shown.text = clip.shown_text(into_clip).into_owned();
+            // Each number is its own picture in the cache, drawn once however
+            // many frames show it.
+            return self.frame_for(&shown, reveal);
+        }
+        self.frame_for(clip, reveal)
+    }
+
     pub fn frame_for(&mut self, clip: &TextClip, reveal: Option<usize>) -> Option<Arc<VideoFrame>> {
+        // A shape is drawn, not typeset: no font, no reveal, and never empty.
+        if let Some(shape) = &clip.shape {
+            let key = shape.key();
+            if let Some(frame) = self.cache.get(&key) {
+                return Some(Arc::clone(frame));
+            }
+            let bitmap = shape.rasterize();
+            let frame = Arc::new(VideoFrame {
+                timestamp: MediaTime::ZERO,
+                width: bitmap.width,
+                height: bitmap.height,
+                color: ColorMetadata::srgb(),
+                storage: FrameStorage::System {
+                    stride: bitmap.width * 4,
+                    data: bitmap.pixels,
+                },
+            });
+            self.insert(key, Arc::clone(&frame));
+            return Some(frame);
+        }
+
         // A reveal of everything is the ordinary picture, and shares its entry.
         let reveal = reveal.filter(|&n| n < clip.text.chars().count());
         let key = match reveal {

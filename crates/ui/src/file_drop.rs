@@ -1,4 +1,4 @@
-//! Files dragged in from the desktop (§58, §41).
+//! Files dragged in from the desktop (§58).
 //!
 //! Dropping a file on the window is the first thing many people try, and an
 //! editor that ignores it looks broken. Anywhere on the window imports; onto

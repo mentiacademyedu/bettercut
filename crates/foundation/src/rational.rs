@@ -55,7 +55,7 @@ impl Rational {
     /// Build a ratio in a `const`, from parts already in lowest terms.
     ///
     /// [`Self::new`] cannot be `const` — it runs a gcd — so the constants that
-    /// bound §51's speed control need this. **Not normalized**: pass it
+    /// bound the speed control need this. **Not normalized**: pass it
     /// something like `2/4` and equality against `1/2` will be false. Every
     /// caller is a literal a reader can check, which is why this is acceptable
     /// here and why `new` remains the way to build one from computed values.
@@ -69,7 +69,7 @@ impl Rational {
 
     /// Multiply a tick count by this ratio, exactly.
     ///
-    /// The one operation §51's speed control needs and §74 forbids doing in
+    /// The one operation the speed control needs and §74 forbids doing in
     /// floating point: at 2× a clip advances two source ticks per timeline
     /// tick, and doing that through `as_f64` would drift across a long clip in
     /// exactly the way §9's timebase exists to prevent.

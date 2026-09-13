@@ -124,3 +124,196 @@ fn a_whole_sequence_reframes_as_one_undo_step() {
         "undo put back only some of it"
     );
 }
+
+// ---- §33's auto crop ------------------------------------------------------
+
+/// The third answer to the same problem, and the one that costs no resolution:
+/// take the frame's shape out of the source rather than enlarging the source
+/// until the bars are gone.
+mod auto_crop {
+    use super::*;
+
+    fn crop_of(
+        editor: &Editor,
+        clip: bettercut_editor_core::foundation::ClipId,
+    ) -> bettercut_editor_core::timeline::Crop {
+        editor.video_clip(clip).unwrap().crop
+    }
+
+    /// A wide shot in a vertical frame loses its sides, and what is left is the
+    /// frame's shape — so it needs no scaling at all.
+    #[test]
+    fn a_landscape_clip_in_a_vertical_sequence_loses_its_sides() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+        let (cropped, kept) = editor.auto_crop_clips().unwrap();
+        assert_eq!((cropped, kept), (1, 0));
+
+        let crop = crop_of(&editor, clip);
+        assert!(crop.left > 0.2 && crop.right > 0.2, "{crop:?}");
+        assert_eq!(crop.top, 0.0, "it lost height as well");
+
+        // And the scale is untouched: cropping is the alternative to scaling,
+        // not something done alongside it.
+        assert_eq!(scale_of(&editor, clip), (1.0, 1.0));
+    }
+
+    /// Nothing to do when the clip is already the frame's shape, and nothing in
+    /// the history either.
+    #[test]
+    fn a_clip_already_the_right_shape_is_left_alone() {
+        let (mut editor, clip) = landscape_in(1920, 1080);
+        let before = editor.undo_depth();
+
+        let (cropped, kept) = editor.auto_crop_clips().unwrap();
+        assert_eq!((cropped, kept), (0, 0));
+        assert!(crop_of(&editor, clip).is_none());
+        assert_eq!(
+            editor.undo_depth(),
+            before,
+            "a run that changed nothing still left a history entry"
+        );
+    }
+
+    /// A crop the user set by hand is theirs. Replacing it with a centred one
+    /// would throw away a watermark trimmed off an edge or a subject framed on
+    /// purpose — work that cannot be guessed back.
+    #[test]
+    fn a_crop_the_user_set_is_not_replaced() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+        let theirs = bettercut_editor_core::timeline::Crop {
+            left: 0.3,
+            ..bettercut_editor_core::timeline::Crop::NONE
+        };
+        editor
+            .set_clip_value(
+                clip,
+                bettercut_editor_core::ClipProperty::Crop(theirs),
+                false,
+            )
+            .unwrap();
+
+        let (cropped, kept) = editor.auto_crop_clips().unwrap();
+        assert_eq!(
+            (cropped, kept),
+            (0, 1),
+            "the user's own crop was counted as needing one"
+        );
+        assert_eq!(
+            crop_of(&editor, clip),
+            theirs,
+            "the user's crop was overwritten"
+        );
+    }
+
+    /// §79: one auto crop is one undo step, however many clips it touched.
+    #[test]
+    fn an_auto_crop_is_one_undo_step() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+
+        // A second shot on the same track, so there is more than one to undo.
+        let mut asset = MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/wide2.mp4",
+            MediaTime::from_seconds(10),
+        );
+        asset.width = 1920;
+        asset.height = 1080;
+        let media = editor.import_media(asset);
+        let second = editor.place_media(media).unwrap()[0];
+
+        let before = editor.undo_depth();
+        let (cropped, _) = editor.auto_crop_clips().unwrap();
+        assert_eq!(cropped, 2, "both shots should have been cropped");
+        assert_eq!(editor.undo_depth(), before + 1);
+
+        editor.undo().unwrap();
+        assert!(crop_of(&editor, clip).is_none(), "undo left the first crop");
+        assert!(
+            crop_of(&editor, second).is_none(),
+            "undo left the second crop"
+        );
+    }
+}
+
+// ---- the hint after a reshape ------------------------------------------------
+
+/// What the sequence panel says after the shape changes, so its fill, crop and
+/// fit buttons explain themselves. It has to count the real case, and it has to
+/// stop counting once something has been done about it — a hint that stays
+/// after the user acted on it is a nag.
+mod bars_hint {
+    use super::*;
+
+    #[test]
+    fn a_landscape_clip_in_a_vertical_sequence_shows_bars() {
+        let (editor, _) = landscape_in(1080, 1920);
+        assert_eq!(editor.clips_showing_bars(), 1);
+    }
+
+    #[test]
+    fn a_clip_the_frames_shape_shows_none() {
+        let (editor, _) = landscape_in(1920, 1080);
+        assert_eq!(editor.clips_showing_bars(), 0);
+    }
+
+    /// Acting on it clears it — by cropping or by filling, the two answers that
+    /// remove the bars.
+    #[test]
+    fn cropping_or_filling_to_the_frame_clears_it() {
+        let (mut editor, _) = landscape_in(1080, 1920);
+        editor.auto_crop_clips().unwrap();
+        assert_eq!(
+            editor.clips_showing_bars(),
+            0,
+            "still counted after cropping"
+        );
+
+        let (mut editor, _) = landscape_in(1080, 1920);
+        editor.reframe_clips(true).unwrap();
+        assert_eq!(
+            editor.clips_showing_bars(),
+            0,
+            "still counted after filling"
+        );
+    }
+
+    /// A shot shrunk into a corner shows bars because someone put it there. It
+    /// is a picture-in-picture, not a clip that was never framed.
+    #[test]
+    fn a_clip_scaled_down_on_purpose_is_not_counted() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+        editor
+            .set_clip_value(
+                clip,
+                bettercut_editor_core::ClipProperty::Scale { x: 0.4, y: 0.4 },
+                false,
+            )
+            .unwrap();
+        assert_eq!(editor.clips_showing_bars(), 0);
+    }
+
+    /// A crop set by hand is a decision too, even one that leaves bars.
+    #[test]
+    fn a_clip_cropped_by_hand_is_not_counted() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+        editor
+            .set_clip_value(
+                clip,
+                bettercut_editor_core::ClipProperty::Crop(bettercut_editor_core::timeline::Crop {
+                    top: 0.1,
+                    ..bettercut_editor_core::timeline::Crop::NONE
+                }),
+                false,
+            )
+            .unwrap();
+        assert_eq!(editor.clips_showing_bars(), 0);
+    }
+
+    /// A slow zoom is framing that moves, and its keys are the framing.
+    #[test]
+    fn a_clip_with_a_movement_is_not_counted() {
+        let (mut editor, clip) = landscape_in(1080, 1920);
+        editor.set_movement(clip, Movement::ZoomIn).unwrap();
+        assert_eq!(editor.clips_showing_bars(), 0);
+    }
+}

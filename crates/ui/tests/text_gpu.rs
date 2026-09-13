@@ -18,7 +18,8 @@
 use bettercut_editor_core::foundation::TimelineTime;
 use bettercut_editor_core::text::{Rgba, TextStyle};
 use bettercut_editor_core::timeline::{
-    ColorAdjust, MasterLook, Resolution, TextClip, Transform, Vec2, natural_size_transform,
+    ClipLook, ColorAdjust, MasterLook, Resolution, TextClip, Transform, Vec2,
+    natural_size_transform,
 };
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_playback::TextFrames;
@@ -28,17 +29,30 @@ use bettercut_renderer::{Compositor, Layer, RenderConfig};
 const OUT_W: u32 = 640;
 const OUT_H: u32 = 360;
 
+/// One GPU device for the whole binary, shared by every test in it.
+///
+/// libtest runs tests on parallel threads, and a device per test meant several
+/// being created at once — which deadlocks this machine's driver and hung the
+/// whole workspace run with no output. `pixel_read.rs` has the full account.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
             .ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("text composite test"),
-        ..Default::default()
-    }))
-    .ok()
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("text composite test"),
+                ..Default::default()
+            }))
+            .ok()
+        })
+        .clone()
 }
 
 macro_rules! gpu_or_skip {
@@ -110,24 +124,46 @@ fn render(
             &[
                 Layer {
                     frame: &back,
-                    transform: Transform::default(),
-                    opacity: 1.0,
-                    color: ColorAdjust::default(),
-                    blur: 0.0,
+                    look: ClipLook {
+                        sharpen: 0.0,
+                        lut: None,
+                        rgb_split: 0.0,
+                        glitch: 0.0,
+                        reflection: bettercut_editor_core::timeline::Reflection::None,
+                        crop: bettercut_editor_core::timeline::Crop::NONE,
+                        transform: Transform::default(),
+                        opacity: 1.0,
+                        color: ColorAdjust::default(),
+                        blur: 0.0,
+                        chroma_key: None,
+                        mask: None,
+                        blend: bettercut_editor_core::timeline::BlendMode::Normal,
+                    },
                 },
                 Layer {
                     frame: &text_frame,
-                    // The correction the preview and the export both apply.
-                    transform: natural_size_transform(
-                        transform,
-                        text_frame.width,
-                        text_frame.height,
-                        OUT_W,
-                        OUT_H,
-                    ),
-                    opacity: 1.0,
-                    color: ColorAdjust::default(),
-                    blur: 0.0,
+                    look: ClipLook {
+                        sharpen: 0.0,
+                        lut: None,
+                        rgb_split: 0.0,
+                        glitch: 0.0,
+                        reflection: bettercut_editor_core::timeline::Reflection::None,
+                        crop: bettercut_editor_core::timeline::Crop::NONE,
+                        // The correction the preview and the export both apply.
+                        transform: natural_size_transform(
+                            transform,
+                            text_frame.width,
+                            text_frame.height,
+                            OUT_W,
+                            OUT_H,
+                        ),
+                        opacity: 1.0,
+                        color: ColorAdjust::default(),
+                        blur: 0.0,
+                        chroma_key: None,
+                        mask: None,
+                        blend: bettercut_editor_core::timeline::BlendMode::Normal,
+                    },
                 },
             ],
             MasterLook::default(),
@@ -316,7 +352,7 @@ fn the_background_shows_through_around_the_letters() {
     );
 }
 
-/// The drag handles have to sit on the picture (§41, §54).
+/// The drag handles have to sit on the picture (§54).
 ///
 /// `layer_box` inverts the matrix the shader builds, and for a title that
 /// matrix has the natural-size correction folded into it. A sign flip or a

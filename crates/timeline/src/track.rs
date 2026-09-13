@@ -41,6 +41,20 @@ pub struct Track<C> {
     /// A locked track rejects edits (§10 "Lock track").
     pub locked: bool,
 
+    /// Soloed: while *any* track is soloed, only soloed tracks are heard and
+    /// seen (§20a.4).
+    ///
+    /// A separate flag from [`Self::enabled`] rather than a clever use of it,
+    /// because the two answer different questions and a user turns them on and
+    /// off for different reasons. Muting three tracks to hear the fourth means
+    /// putting three back afterwards and hoping you remember which; solo takes
+    /// itself off in one click and leaves what was muted muted.
+    ///
+    /// Absent from older projects, which load with nothing soloed — the state
+    /// they were saved in.
+    #[serde(default)]
+    pub solo: bool,
+
     /// §20a.4's track gain and pan: linear volume, and -1 (left) to +1
     /// (right). Mixed only on audio tracks; a picture has no volume. Absent
     /// from older projects, which load at unity and centred.
@@ -54,6 +68,19 @@ fn unity() -> f32 {
     1.0
 }
 
+/// Whether a track is heard and seen, given what else in its lane is soloed.
+///
+/// Solo wins over mute, both ways round. While anything is soloed only the
+/// soloed tracks play — that is the point of it — and a track that is *itself*
+/// soloed plays even though it is muted, because "let me hear just this one" is
+/// what the user asked for and silence would look like a broken button.
+///
+/// `any_soloed` is about the same lane: soloing a voice track has nothing to
+/// say about which pictures are on screen.
+pub fn track_plays(enabled: bool, solo: bool, any_soloed: bool) -> bool {
+    if any_soloed { solo } else { enabled }
+}
+
 /// The loudest a track may be turned up: the same ceiling as a clip's gain.
 pub const MAX_TRACK_GAIN: f32 = 4.0;
 
@@ -65,6 +92,7 @@ impl<C: Clip> Track<C> {
             clips: Vec::new(),
             enabled: true,
             locked: false,
+            solo: false,
             gain: 1.0,
             pan: 0.0,
         }
@@ -264,9 +292,14 @@ impl<C: Clip> Track<C> {
         }
 
         let index = self.index_of(id)?;
-        let (old_timeline, old_source, speed) = {
+        let (old_timeline, old_source, speed, reversed) = {
             let clip = &self.clips[index];
-            (clip.timeline(), clip.source(), clip.speed())
+            (
+                clip.timeline(),
+                clip.source(),
+                clip.speed(),
+                clip.reversed(),
+            )
         };
 
         if new_start >= old_timeline.end {
@@ -280,9 +313,22 @@ impl<C: Clip> Track<C> {
         //
         // Scaled by the clip's speed: dragging the edge a second along the
         // timeline consumes *two* seconds of source at 2×. Unscaled, a trimmed
-        // fast clip would run out of material before its own end (§51).
+        // fast clip would run out of material before its own end.
         let delta = speed.scale(new_start.ticks() - old_timeline.start.ticks());
-        let new_source_start = MediaTime::from_ticks(old_source.start.ticks() + delta);
+        // A reversed clip starts at the *end* of its material, so its start
+        // edge is the source's out-point: trimming inward pulls that back.
+        let new_source = if reversed {
+            SourceRange {
+                start: old_source.start,
+                end: MediaTime::from_ticks(old_source.end.ticks() - delta),
+            }
+        } else {
+            SourceRange {
+                start: MediaTime::from_ticks(old_source.start.ticks() + delta),
+                end: old_source.end,
+            }
+        };
+        let new_source_start = new_source.start;
 
         // Cannot extend past the beginning of the source media.
         if new_source_start.is_negative() {
@@ -308,10 +354,7 @@ impl<C: Clip> Track<C> {
 
         let mut clip = self.clips.remove(index);
         clip.set_timeline(timeline);
-        clip.set_source(SourceRange {
-            start: new_source_start,
-            end: old_source.end,
-        });
+        clip.set_source(new_source);
         self.reinsert(clip);
 
         Ok((old_timeline, old_source))
@@ -333,9 +376,14 @@ impl<C: Clip> Track<C> {
         }
 
         let index = self.index_of(id)?;
-        let (old_timeline, old_source, speed) = {
+        let (old_timeline, old_source, speed, reversed) = {
             let clip = &self.clips[index];
-            (clip.timeline(), clip.source(), clip.speed())
+            (
+                clip.timeline(),
+                clip.source(),
+                clip.speed(),
+                clip.reversed(),
+            )
         };
 
         if new_end <= old_timeline.start {
@@ -347,7 +395,26 @@ impl<C: Clip> Track<C> {
 
         // Scaled, for the reason given in `trim_start`.
         let delta = speed.scale(new_end.ticks() - old_timeline.end.ticks());
-        let new_source_end = MediaTime::from_ticks(old_source.end.ticks() + delta);
+        // Reversed, the end edge is the source's in-point: extending the clip
+        // reaches further back into the material.
+        let new_source = if reversed {
+            SourceRange {
+                start: MediaTime::from_ticks(old_source.start.ticks() - delta),
+                end: old_source.end,
+            }
+        } else {
+            SourceRange {
+                start: old_source.start,
+                end: MediaTime::from_ticks(old_source.end.ticks() + delta),
+            }
+        };
+        let new_source_end = new_source.end;
+        if new_source.start.is_negative() {
+            return Err(TimelineError::BeyondSourceStart {
+                clip: id,
+                by_ticks: -new_source.start.ticks(),
+            });
+        }
 
         if let Some(limit) = max_source_end
             && new_source_end > limit
@@ -374,10 +441,7 @@ impl<C: Clip> Track<C> {
 
         let mut clip = self.clips.remove(index);
         clip.set_timeline(timeline);
-        clip.set_source(SourceRange {
-            start: old_source.start,
-            end: new_source_end,
-        });
+        clip.set_source(new_source);
         self.reinsert(clip);
 
         Ok((old_timeline, old_source))
@@ -426,9 +490,40 @@ impl<C: Clip> Track<C> {
         }
 
         // Where the cut lands in the source, which is not where it lands on
-        // the timeline unless the clip plays at normal speed (§51).
+        // the timeline unless the clip plays at normal speed.
         let offset = original.speed().scale(at.ticks() - timeline.start.ticks());
-        let source_split = MediaTime::from_ticks(source.start.ticks() + offset);
+        // Reversed, the timeline runs from the material's end, so the cut sits
+        // that far back from it — and the left half, which plays first, holds
+        // the *later* material.
+        let reversed = original.reversed();
+        let source_split = if reversed {
+            MediaTime::from_ticks(source.end.ticks() - offset)
+        } else {
+            MediaTime::from_ticks(source.start.ticks() + offset)
+        };
+        let (left_source, right_source) = if reversed {
+            (
+                SourceRange {
+                    start: source_split,
+                    end: source.end,
+                },
+                SourceRange {
+                    start: source.start,
+                    end: source_split,
+                },
+            )
+        } else {
+            (
+                SourceRange {
+                    start: source.start,
+                    end: source_split,
+                },
+                SourceRange {
+                    start: source_split,
+                    end: source.end,
+                },
+            )
+        };
 
         let mut left = original.clone();
         left.set_id(left_id);
@@ -436,10 +531,7 @@ impl<C: Clip> Track<C> {
             start: timeline.start,
             end: at,
         });
-        left.set_source(SourceRange {
-            start: source.start,
-            end: source_split,
-        });
+        left.set_source(left_source);
         // §25: the transition was on the original clip's *end*, which is now
         // the right half's end. The left half's new end is the split, and
         // nobody asked for a dissolve there.
@@ -451,10 +543,7 @@ impl<C: Clip> Track<C> {
             start: at,
             end: timeline.end,
         });
-        right.set_source(SourceRange {
-            start: source_split,
-            end: source.end,
-        });
+        right.set_source(right_source);
         // And the mirror: whatever decorated the original's start stays with
         // the left half, which still has it.
         right.clear_transition_in();
@@ -502,7 +591,7 @@ impl<C: Clip> Track<C> {
     }
 
     /// Move a clip's end to `new_end`, pushing everything after it by the same
-    /// amount (§51).
+    /// amount.
     ///
     /// What re-timing needs. Changing a clip's speed changes how long it is,
     /// and neither of the two obvious alternatives works: leaving the
@@ -682,6 +771,50 @@ mod tests {
         let starts: Vec<i64> = visible.iter().map(|c| c.timeline.start.ticks()).collect();
         // 2000..2500 ends exactly at the range start, so it is excluded.
         assert_eq!(starts, vec![3000, 4000, 5000]);
+    }
+
+    /// §53's actual claim, at the size it is about: ten thousand clips on a
+    /// track, thirty on screen, thirty returned.
+    ///
+    /// The existing test uses ten clips, which cannot tell a binary search from
+    /// a scan — both give the right answer there. This one is still not a
+    /// benchmark (§52's is, and is deferred): it checks the *shape* of the
+    /// result, which is what makes the drawing cheap. A query that returned
+    /// everything and left the caller to filter would pass at ten and make a
+    /// real project unusable.
+    #[test]
+    fn a_viewport_over_ten_thousand_clips_returns_only_what_it_covers() {
+        let mut track = VideoTrack::new("V1");
+        for i in 0..10_000 {
+            track.insert(clip(i * 1000, 500)).expect("no overlap");
+        }
+
+        // Thirty clips' worth of timeline, somewhere in the middle.
+        let start = 5_000 * 1000;
+        let range = TimelineRange::new(
+            TimelineTime::from_ticks(start),
+            TimelineTime::from_ticks(start + 30 * 1000),
+        )
+        .expect("non-empty");
+
+        let visible = track.clips_in_range(range);
+        assert_eq!(
+            visible.len(),
+            30,
+            "a viewport covering thirty clips returned {}",
+            visible.len()
+        );
+        assert_eq!(visible[0].timeline.start.ticks(), start);
+
+        // And it is a window onto the track, not a copy of part of it: the
+        // slice points into the track's own storage.
+        let all = track.clips();
+        let offset = visible.as_ptr() as usize - all.as_ptr() as usize;
+        assert_eq!(
+            offset / std::mem::size_of::<VideoClip>(),
+            5_000,
+            "the query allocated rather than borrowing"
+        );
     }
 
     #[test]
@@ -1088,5 +1221,46 @@ mod tests {
         track.insert(clip(0, 100)).expect("no overlap");
         track.insert(clip(900, 100)).expect("no overlap");
         assert_eq!(track.duration().ticks(), 1000);
+    }
+}
+
+#[cfg(test)]
+mod solo_tests {
+    use super::track_plays;
+
+    /// With nothing soloed, solo has no opinion and mute decides — which is
+    /// every project that has never used it, including every one saved before
+    /// the flag existed.
+    #[test]
+    fn without_a_solo_anywhere_mute_decides() {
+        assert!(track_plays(true, false, false));
+        assert!(!track_plays(false, false, false));
+    }
+
+    /// The point of it: one track soloed silences the rest of the lane without
+    /// touching their mutes, so taking it off puts everything back exactly as
+    /// it was.
+    #[test]
+    fn a_solo_silences_everything_else_in_the_lane() {
+        assert!(track_plays(true, true, true), "the soloed track went quiet");
+        assert!(
+            !track_plays(true, false, true),
+            "an unsoloed track played through a solo"
+        );
+    }
+
+    /// Solo beats mute both ways round. Soloing a muted track plays it —
+    /// "let me hear just this one" is what was asked for, and silence would
+    /// look like a broken button.
+    #[test]
+    fn solo_wins_over_mute() {
+        assert!(
+            track_plays(false, true, true),
+            "soloing a muted track left it muted"
+        );
+        assert!(
+            !track_plays(false, false, true),
+            "a muted track played because something else was soloed"
+        );
     }
 }

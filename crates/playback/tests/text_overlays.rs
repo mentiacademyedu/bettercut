@@ -371,13 +371,13 @@ fn the_preview_path_sizes_a_title_naturally() {
         sequence.resolution.height,
     );
     assert!(
-        (layers[0].transform.scale.x - expected.scale.x).abs() < 1e-5,
+        (layers[0].look.transform.scale.x - expected.scale.x).abs() < 1e-5,
         "resolved at scale {} rather than its natural {}",
-        layers[0].transform.scale.x,
+        layers[0].look.transform.scale.x,
         expected.scale.x
     );
     assert!(
-        layers[0].transform.scale.x < 1.0,
+        layers[0].look.transform.scale.x < 1.0,
         "a title smaller than the frame did not shrink at all — it is being \
          fitted to the canvas"
     );
@@ -410,5 +410,134 @@ fn a_media_layer_is_left_fitted() {
     assert_eq!(
         transform, media.look.transform,
         "a media layer was rescaled"
+    );
+}
+
+/// A shape clip is drawn from its shape, at its own size, and the same shape
+/// comes from the cache rather than being drawn again.
+#[test]
+fn a_shape_clip_draws_its_shape() {
+    use bettercut_text::{Shape, ShapeKind};
+
+    let mut frames = bettercut_playback::TextFrames::new();
+    let mut clip =
+        bettercut_timeline::TextClip::new("Rectangle", bettercut_foundation::TimelineTime::ZERO)
+            .unwrap();
+    clip.shape = Some(Shape {
+        width: 320.0,
+        height: 90.0,
+        ..Shape::new(ShapeKind::Rectangle)
+    });
+
+    let first = frames.frame_for(&clip, None).expect("a shape always draws");
+    assert_eq!((first.width, first.height), (320, 90));
+    let again = frames.frame_for(&clip, None).unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &again),
+        "the same shape was drawn twice"
+    );
+
+    clip.shape.as_mut().unwrap().kind = ShapeKind::Ellipse;
+    let ellipse = frames.frame_for(&clip, None).unwrap();
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &ellipse),
+        "a changed shape reused the old picture"
+    );
+}
+
+/// A counter draws the number for the instant being drawn: the same picture
+/// through a whole second, a new one when the number changes — reached through
+/// the layer request's own source time, as the preview and the export ask.
+#[test]
+fn a_counter_draws_the_number_for_each_instant() {
+    use bettercut_timeline::Counter;
+
+    let (mut project, title) = project_with_a_title();
+    let sequence = project.active_mut().expect("sequence");
+    let track = sequence.text_tracks[0].id;
+    sequence
+        .text_track_mut(track)
+        .unwrap()
+        .get_mut(title)
+        .unwrap()
+        .counter = Some(Counter::countdown(seconds(3)));
+    let sequence = project.active().expect("sequence");
+    let clip = sequence.text_clip(title).expect("clip").clone();
+    assert_eq!(clip.shown_text(TimelineTime::from_millis(500)), "3");
+
+    let mut titles = TextFrames::new();
+    let mut frame_at = |at: TimelineTime| {
+        let requests = layer_requests(&project, sequence, at);
+        let request = requests
+            .iter()
+            .find(|r| matches!(r.source, LayerSource::Text(_)))
+            .expect("the counter is a layer");
+        let into = TimelineTime::from_ticks(request.source_time.ticks());
+        titles
+            .frame_at(&clip, request.reveal, into)
+            .expect("a picture")
+    };
+
+    let early = frame_at(TimelineTime::from_millis(100));
+    let later_same_second = frame_at(TimelineTime::from_millis(900));
+    assert!(
+        std::sync::Arc::ptr_eq(&early, &later_same_second),
+        "the same number was drawn twice"
+    );
+    // The title runs for one second, so a counter from 3 never reaches "2";
+    // move the count down instead and check the picture follows it.
+    let mut shorter = clip.clone();
+    shorter.counter = Some(Counter::countdown(TimelineTime::from_millis(500)));
+    let two_numbers = [
+        titles
+            .frame_at(&shorter, None, TimelineTime::from_millis(100))
+            .unwrap(),
+        titles
+            .frame_at(&shorter, None, TimelineTime::from_millis(700))
+            .unwrap(),
+    ];
+    assert!(!std::sync::Arc::ptr_eq(&two_numbers[0], &two_numbers[1]));
+    assert_eq!(shorter.shown_text(TimelineTime::from_millis(700)), "0");
+
+    // An ordinary title is untouched by the instant.
+    let plain = TextClip::with_duration("Hello", TimelineTime::ZERO, seconds(1)).unwrap();
+    let a = titles.frame_at(&plain, None, TimelineTime::ZERO).unwrap();
+    let b = titles
+        .frame_at(&plain, None, TimelineTime::from_millis(900))
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&a, &b));
+}
+
+/// The preview engine asks for a counter's number at the instant it resolves,
+/// not for the clip's name: two instants a second apart are two pictures.
+#[test]
+fn the_preview_engine_draws_a_counter_for_its_instant() {
+    use bettercut_playback::PlaybackEngine;
+    use bettercut_timeline::Counter;
+
+    let mut project = Project::new("Timer");
+    let sequence = project.active_mut().expect("sequence");
+    let mut timer = TextClip::with_duration("Timer", TimelineTime::ZERO, seconds(5)).unwrap();
+    timer.counter = Some(Counter::countdown(seconds(5)));
+    let id = timer.id;
+    sequence.text_tracks[0].insert(timer).expect("empty track");
+    let sequence = project.active().expect("sequence").clone();
+
+    let mut engine = PlaybackEngine::new(64 * 1024 * 1024, 1);
+    let mut frame_at = |at: TimelineTime| {
+        engine
+            .resolve_video(&project, &sequence, at)
+            .into_iter()
+            .find(|layer| layer.clip == id)
+            .expect("the timer is a layer")
+            .frame
+    };
+    let first = frame_at(TimelineTime::from_millis(200));
+    let same = frame_at(TimelineTime::from_millis(800));
+    let next = frame_at(TimelineTime::from_millis(1_200));
+    assert!(std::sync::Arc::ptr_eq(&first, &same));
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &next),
+        "the preview drew the same number a second later"
     );
 }

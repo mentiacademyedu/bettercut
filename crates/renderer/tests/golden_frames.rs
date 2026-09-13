@@ -55,8 +55,11 @@ use std::path::PathBuf;
 
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
-use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_timeline::{ColorAdjust, MasterLook, Resolution, Transform, Vec2};
+use bettercut_renderer::{Compositor, Grade, Layer, RenderConfig};
+use bettercut_timeline::{
+    BlendMode, ChromaKey, ClipLook, ColorAdjust, Mask, MaskShape, MasterLook, Resolution,
+    Transform, Vec2,
+};
 
 const SIZE: u32 = 256;
 /// Cells a side in a stored signature.
@@ -65,17 +68,30 @@ const CELLS: u32 = 4;
 /// driver. 8-bit rounding is about 0.004 in sRGB; this is several times that.
 const SIGNATURE_TOLERANCE: f32 = 0.02;
 
+/// One GPU device for the whole binary, shared by every test in it.
+///
+/// libtest runs tests on parallel threads, and a device per test meant several
+/// being created at once — which deadlocks this machine's driver and hung the
+/// whole workspace run with no output. `pixel_read.rs` has the full account.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
             .ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("golden frame test"),
-        ..Default::default()
-    }))
-    .ok()
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("golden frame test"),
+                ..Default::default()
+            }))
+            .ok()
+        })
+        .clone()
 }
 
 macro_rules! gpu_or_skip {
@@ -131,23 +147,95 @@ fn fixture_frame() -> VideoFrame {
 /// One case's layers, built fresh per render because a `Layer` borrows a frame.
 type Build = fn(&VideoFrame) -> Vec<Layer<'_>>;
 
+/// The white a §25 flash lays over the cut.
+///
+/// The frame the engine actually generates, not a copy of it — a copy would go
+/// on passing after the real one changed. `'static` because a case's layers
+/// borrow from the fixture frame's lifetime and this one outlives every case.
+fn flash_white() -> &'static VideoFrame {
+    static WHITE: std::sync::OnceLock<VideoFrame> = std::sync::OnceLock::new();
+    WHITE.get_or_init(|| bettercut_playback::solid_frame([255, 255, 255]))
+}
+
 fn plain(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         frame,
-        transform: Transform::default(),
-        opacity: 1.0,
-        color: ColorAdjust::default(),
-        blur: 0.0,
+        look: ClipLook {
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform::default(),
+            opacity: 1.0,
+            color: ColorAdjust::default(),
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: bettercut_timeline::BlendMode::Normal,
+        },
     }]
 }
 
 fn transformed(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
-        transform: Transform {
-            position: Vec2::new(0.15, -0.1),
-            scale: Vec2::new(0.7, 0.7),
-            rotation_degrees: 22.0,
-            anchor: Vec2::new(0.5, 0.5),
+        look: ClipLook {
+            transform: Transform {
+                position: Vec2::new(0.15, -0.1),
+                scale: Vec2::new(0.7, 0.7),
+                rotation_degrees: 22.0,
+                anchor: Vec2::new(0.5, 0.5),
+                flip_h: false,
+                flip_v: false,
+            },
+            ..plain(frame).remove(0).look
+        },
+        ..plain(frame).remove(0)
+    }]
+}
+
+/// Mirrored on both axes, off centre and turned, so the case exercises the
+/// mirror's interaction with the anchor and the rotation rather than the easy
+/// symmetric one — where a flip is invisible.
+fn mirrored(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![Layer {
+        look: ClipLook {
+            transform: Transform {
+                position: Vec2::new(-0.12, 0.08),
+                scale: Vec2::new(0.65, 0.65),
+                rotation_degrees: 18.0,
+                anchor: Vec2::new(0.25, 0.75),
+                flip_h: true,
+                flip_v: true,
+            },
+            ..plain(frame).remove(0).look
+        },
+        ..plain(frame).remove(0)
+    }]
+}
+
+/// §22's crop, uneven on all four edges so no symmetry can hide an axis being
+/// swapped — and combined with a transform, because the crop runs first and the
+/// two together are where an ordering mistake shows.
+fn cropped(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![Layer {
+        look: ClipLook {
+            crop: bettercut_timeline::Crop {
+                left: 0.12,
+                top: 0.3,
+                right: 0.25,
+                bottom: 0.05,
+            },
+            transform: Transform {
+                position: Vec2::new(0.08, -0.05),
+                scale: Vec2::new(0.8, 0.8),
+                rotation_degrees: -10.0,
+                anchor: Vec2::new(0.5, 0.5),
+                flip_h: false,
+                flip_v: false,
+            },
+            ..plain(frame).remove(0).look
         },
         ..plain(frame).remove(0)
     }]
@@ -155,10 +243,15 @@ fn transformed(frame: &VideoFrame) -> Vec<Layer<'_>> {
 
 fn colour_graded(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
-        color: ColorAdjust {
-            brightness: 1.3,
-            contrast: 1.4,
-            saturation: 0.6,
+        look: ClipLook {
+            color: ColorAdjust {
+                brightness: 1.3,
+                contrast: 1.4,
+                saturation: 0.6,
+                temperature: 0.5,
+                tint: -0.25,
+            },
+            ..plain(frame).remove(0).look
         },
         ..plain(frame).remove(0)
     }]
@@ -166,7 +259,38 @@ fn colour_graded(frame: &VideoFrame) -> Vec<Layer<'_>> {
 
 fn blurred(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
-        blur: 45.0,
+        look: ClipLook {
+            blur: 45.0,
+            ..plain(frame).remove(0).look
+        },
+        ..plain(frame).remove(0)
+    }]
+}
+
+/// A kaleidoscope: the one reflection that maps through angles, and so the one
+/// where preview and export could most plausibly round differently.
+fn kaleidoscoped(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![Layer {
+        look: ClipLook {
+            reflection: bettercut_timeline::Reflection::Kaleidoscope,
+            ..plain(frame).remove(0).look
+        },
+        ..plain(frame).remove(0)
+    }]
+}
+
+/// Sharpened, and on its own: the fixture's gradient and its hard white block
+/// give the mask both a smooth area to leave alone and edges to bring out.
+fn sharpened(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![Layer {
+        look: ClipLook {
+            sharpen: 70.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            ..plain(frame).remove(0).look
+        },
         ..plain(frame).remove(0)
     }]
 }
@@ -177,19 +301,233 @@ fn blurred(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn two_tracks(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         Layer {
-            color: ColorAdjust {
-                brightness: 0.4,
-                ..ColorAdjust::default()
+            look: ClipLook {
+                color: ColorAdjust {
+                    brightness: 0.4,
+                    ..ColorAdjust::default()
+                },
+                ..plain(frame).remove(0).look
             },
             ..plain(frame).remove(0)
         },
         Layer {
-            transform: Transform {
-                position: Vec2::new(-0.2, 0.15),
-                scale: Vec2::new(0.55, 0.55),
-                ..Transform::default()
+            look: ClipLook {
+                transform: Transform {
+                    position: Vec2::new(-0.2, 0.15),
+                    scale: Vec2::new(0.55, 0.55),
+                    ..Transform::default()
+                },
+                opacity: 0.5,
+                ..plain(frame).remove(0).look
             },
-            opacity: 0.5,
+            ..plain(frame).remove(0)
+        },
+    ]
+}
+
+/// The mask: half the picture kept behind a soft edge.
+///
+/// Here rather than only in `mask_gpu` because that test asks whether the shape
+/// is right, and this one asks whether the *export* draws the same shape as the
+/// preview — which is a different question, and the one §46 is about.
+fn masked(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![
+        Layer {
+            look: ClipLook {
+                color: ColorAdjust {
+                    brightness: 0.35,
+                    ..ColorAdjust::default()
+                },
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+        Layer {
+            look: ClipLook {
+                mask: Some(Mask {
+                    shape: MaskShape::Ellipse,
+                    center: [0.45, 0.55],
+                    size: [0.3, 0.22],
+                    feather: 0.12,
+                    rotation_degrees: 20.0,
+                    invert: false,
+                }),
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+    ]
+}
+
+/// The chroma key over a graded ground: the key's edge is where a
+/// colour-space mistake between the two configurations would show first.
+fn keyed(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![
+        Layer {
+            look: ClipLook {
+                color: ColorAdjust {
+                    brightness: 0.5,
+                    saturation: 1.4,
+                    ..ColorAdjust::default()
+                },
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+        Layer {
+            look: ClipLook {
+                chroma_key: Some(ChromaKey {
+                    // Keyed off a colour the fixture actually contains, so the
+                    // case has both kept and removed pixels in it.
+                    color: [0.2, 0.5, 0.3],
+                    tolerance: 0.18,
+                    softness: 0.1,
+                    spill: 0.5,
+                }),
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+    ]
+}
+
+/// §22's blend modes, two of them over one ground.
+/// §25's flash, part-way through: a one-pixel white layer stretched over the
+/// whole picture.
+///
+/// A generated layer is a shape nothing else in here has — every other case
+/// composites a 256×256 decoded frame, and this one asks the sampler to spread
+/// a single texel across the target. Edge sampling on a 1×1 texture is exactly
+/// the sort of thing that can differ between two pipeline configurations, which
+/// is what §51.1 is for.
+///
+/// Part-way rather than fully white: at full solidity the target is a flat
+/// field, and a signature of flat white would be the same whatever went wrong
+/// underneath it.
+///
+/// The target here is square, so covering it needs no correction — the case
+/// that would catch a botched cover transform is in the playback crate, where
+/// the frame can be any shape.
+fn flashed(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    let white = flash_white();
+    vec![
+        plain(frame).remove(0),
+        Layer {
+            frame: white,
+            look: ClipLook {
+                sharpen: 0.0,
+                lut: None,
+                rgb_split: 0.0,
+                glitch: 0.0,
+                reflection: bettercut_timeline::Reflection::None,
+                crop: bettercut_timeline::Crop::NONE,
+                transform: flash_transform(white),
+                opacity: 0.6,
+                color: ColorAdjust::default(),
+                blur: 0.0,
+                chroma_key: None,
+                mask: None,
+                blend: BlendMode::Normal,
+            },
+        },
+    ]
+}
+
+/// Where the engine puts a generated layer, asked of the engine.
+fn flash_transform(white: &VideoFrame) -> Transform {
+    use bettercut_playback::{LayerRequest, LayerSource};
+
+    let request = LayerRequest {
+        clip: bettercut_foundation::ClipId::new(),
+        track: bettercut_foundation::TrackId::new(),
+        source: LayerSource::Solid {
+            rgb: [255, 255, 255],
+        },
+        source_time: bettercut_foundation::MediaTime::ZERO,
+        look: bettercut_timeline::ClipLook {
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform::default(),
+            opacity: 1.0,
+            color: ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: BlendMode::Normal,
+        },
+        reveal: None,
+    };
+    bettercut_playback::layer_transform(&request, white, Resolution::new(SIZE, SIZE))
+}
+
+/// Motion blur: the same picture at the places it passed through.
+///
+/// Built the way the engine builds it — three copies along a path, each at a
+/// third of the opacity — so the case pins what a smear *looks* like, which the
+/// engine's own tests cannot: they count layers and check the shares add up,
+/// and a trail drawn in front of the picture instead of behind it would satisfy
+/// both.
+fn smeared(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    let plain = plain(frame).remove(0);
+    (0..3)
+        .map(|index| {
+            let t = index as f32 / 2.0;
+            Layer {
+                look: ClipLook {
+                    transform: Transform {
+                        position: Vec2::new(-0.18 + 0.18 * t, 0.0),
+                        scale: Vec2::new(0.6, 0.6),
+                        ..Transform::default()
+                    },
+                    opacity: 1.0 / 3.0,
+                    ..plain.look
+                },
+                ..plain
+            }
+        })
+        .collect()
+}
+
+fn blended(frame: &VideoFrame) -> Vec<Layer<'_>> {
+    vec![
+        Layer {
+            look: ClipLook {
+                color: ColorAdjust {
+                    brightness: 0.45,
+                    ..ColorAdjust::default()
+                },
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+        Layer {
+            look: ClipLook {
+                transform: Transform {
+                    position: Vec2::new(-0.15, 0.0),
+                    scale: Vec2::new(0.6, 0.6),
+                    ..Transform::default()
+                },
+                opacity: 0.8,
+                blend: BlendMode::Screen,
+                ..plain(frame).remove(0).look
+            },
+            ..plain(frame).remove(0)
+        },
+        Layer {
+            look: ClipLook {
+                transform: Transform {
+                    position: Vec2::new(0.15, 0.0),
+                    scale: Vec2::new(0.6, 0.6),
+                    ..Transform::default()
+                },
+                opacity: 0.7,
+                blend: BlendMode::Multiply,
+                ..plain(frame).remove(0).look
+            },
             ..plain(frame).remove(0)
         },
     ]
@@ -201,31 +539,138 @@ fn everything(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         two_tracks(frame).remove(0),
         Layer {
-            transform: Transform {
-                position: Vec2::new(-0.2, 0.15),
-                scale: Vec2::new(0.55, 0.55),
-                rotation_degrees: -15.0,
-                anchor: Vec2::new(0.5, 0.5),
+            look: ClipLook {
+                transform: Transform {
+                    position: Vec2::new(-0.2, 0.15),
+                    scale: Vec2::new(0.55, 0.55),
+                    rotation_degrees: -15.0,
+                    anchor: Vec2::new(0.5, 0.5),
+                    flip_h: false,
+                    flip_v: false,
+                },
+                opacity: 0.65,
+                color: ColorAdjust {
+                    brightness: 1.2,
+                    contrast: 0.8,
+                    saturation: 1.5,
+                    temperature: -0.35,
+                    tint: 0.2,
+                },
+                blur: 25.0,
+                ..plain(frame).remove(0).look
             },
-            opacity: 0.65,
-            color: ColorAdjust {
-                brightness: 1.2,
-                contrast: 0.8,
-                saturation: 1.5,
-            },
-            blur: 25.0,
             ..plain(frame).remove(0)
         },
     ]
 }
 
-const CASES: &[(&str, Build)] = &[
-    ("plain", plain),
-    ("transform", transformed),
-    ("colour", colour_graded),
-    ("blur", blurred),
-    ("two_tracks", two_tracks),
-    ("everything", everything),
+/// ## One deliberate change to these signatures
+///
+/// `everything` moved when §22's blend modes landed. The composite shader now
+/// emits **premultiplied** colour — it must, because screen, multiply and add
+/// are blend states that each need the source already weighted by its alpha —
+/// and that changes where the clamp falls.
+///
+/// Hardware clamps a fragment to the target's range *before* blending. The old
+/// path clamped the graded colour to 1.0 and then scaled it by the layer's
+/// opacity; the new one scales first and clamps after. They agree everywhere
+/// except where a grade pushes a channel past 1.0 *and* the layer is partly
+/// transparent — which is exactly this case, brightness 1.2 and saturation 1.5
+/// at 65% opacity, where a red detail went from 0.61 to 0.83.
+///
+/// The new number is the better one: the contribution 1.4 × 0.65 = 0.91 is
+/// representable, and the old path threw that range away.
+///
+/// `two_tracks` moved as well, by far less — up to about two 8-bit steps on a
+/// layer at 50% opacity. That is the other side of premultiplying on an 8-bit
+/// target: the shader's `colour × alpha` is quantised on write and *then*
+/// blended, where straight alpha quantised the colour and did the multiply at
+/// blend precision. It is a real loss of a fraction of a step, accepted
+/// knowingly — the alternative is a float target for every composite, which
+/// costs far more than it buys on §52.1's hardware.
+///
+/// Both signatures were regenerated once, on purpose, with that understood.
+/// An adjustment layer over the lower of two tracks (§22): graded, softened
+/// and at less than full strength, so the grade's colour, its blur and its
+/// strength are all in the picture being compared. The upper track is drawn
+/// above it and must come through ungraded.
+const ADJUSTMENT: &[Grade] = &[Grade {
+    beneath: 1,
+    look: bettercut_timeline::AdjustmentLook {
+        color: ColorAdjust {
+            brightness: 0.8,
+            contrast: 1.3,
+            saturation: 0.4,
+            temperature: -0.3,
+            tint: 0.0,
+        },
+        blur: 12.0,
+        strength: 0.85,
+        // Left out here, so this case keeps the signature it was stored with;
+        // the vignette has a case of its own below.
+        vignette: 0.0,
+        grain: 0.0,
+    },
+}];
+
+/// A vignette on its own, strong enough that the corners the signature grid
+/// samples are clearly darker than the middle.
+const VIGNETTE: &[Grade] = &[Grade {
+    beneath: 1,
+    look: bettercut_timeline::AdjustmentLook {
+        color: ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+        },
+        blur: 0.0,
+        strength: 1.0,
+        vignette: 0.9,
+        grain: 0.0,
+    },
+}];
+
+/// Heavy grain on its own. The signature grid averages a whole cell, so the
+/// noise mostly cancels in the stored numbers — what this pins is that preview
+/// and export draw the same grain for the same frame (§46), pixel for pixel.
+const GRAIN: &[Grade] = &[Grade {
+    beneath: 1,
+    look: bettercut_timeline::AdjustmentLook {
+        color: ColorAdjust {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+        },
+        blur: 0.0,
+        strength: 1.0,
+        vignette: 0.0,
+        grain: 1.0,
+    },
+}];
+
+const CASES: &[(&str, Build, &[Grade])] = &[
+    ("plain", plain, &[]),
+    ("transform", transformed, &[]),
+    ("mirrored", mirrored, &[]),
+    ("cropped", cropped, &[]),
+    ("colour", colour_graded, &[]),
+    ("blur", blurred, &[]),
+    ("sharpened", sharpened, &[]),
+    ("two_tracks", two_tracks, &[]),
+    ("everything", everything, &[]),
+    ("masked", masked, &[]),
+    ("keyed", keyed, &[]),
+    ("blended", blended, &[]),
+    ("flashed", flashed, &[]),
+    ("smeared", smeared, &[]),
+    ("adjusted", two_tracks, ADJUSTMENT),
+    ("vignetted", plain, VIGNETTE),
+    ("grained", plain, GRAIN),
+    ("kaleidoscope", kaleidoscoped, &[]),
 ];
 
 /// Render one case under one configuration and read it back as linear RGB.
@@ -233,13 +678,14 @@ fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     build: Build,
+    grades: &[Grade],
     config: RenderConfig,
 ) -> Vec<[f32; 3]> {
     let mut compositor =
         Compositor::new(device.clone(), queue.clone(), config).expect("compositor");
     let frame = fixture_frame();
     compositor
-        .composite(&build(&frame), MasterLook::default())
+        .composite_graded(&build(&frame), grades, MasterLook::default())
         .expect("composite");
     read_back(device, queue, compositor.target())
 }
@@ -410,17 +856,96 @@ fn read_golden(case: &str) -> Option<Vec<f32>> {
 /// under export — so this is not comparing a thing to itself. What it asserts
 /// is that the difference is confined to how finely the work is sampled and
 /// never reaches the picture.
+/// Each effect case has to actually *use* its effect.
+///
+/// A golden case that renders the same with the feature switched off passes
+/// forever and proves nothing — it would sit in the suite looking like cover
+/// for masks or keying while guarding neither. So each one is rendered again
+/// with only that feature removed, and the two have to differ.
+#[test]
+fn each_effect_case_would_notice_losing_its_effect() {
+    let (device, queue) = gpu_or_skip!();
+    let resolution = Resolution::new(SIZE, SIZE);
+    let config = RenderConfig::export_to_texture(resolution);
+
+    let without_mask: Build = |frame| {
+        let mut layers = masked(frame);
+        layers[1].look.mask = None;
+        layers
+    };
+    let without_key: Build = |frame| {
+        let mut layers = keyed(frame);
+        layers[1].look.chroma_key = None;
+        layers
+    };
+    let without_blend: Build = |frame| {
+        let mut layers = blended(frame);
+        layers[1].look.blend = BlendMode::Normal;
+        layers[2].look.blend = BlendMode::Normal;
+        layers
+    };
+
+    for (name, with, without) in [
+        ("masked", masked as Build, without_mask),
+        ("keyed", keyed as Build, without_key),
+        ("blended", blended as Build, without_blend),
+        // Without its reflection, a kaleidoscope is the shot as it was.
+        ("kaleidoscope", kaleidoscoped as Build, plain),
+        // Without its white, a flash is just the shot.
+        ("flashed", flashed as Build, plain),
+        // And without its trail, a smear is one copy at the end of the path.
+        ("smeared", smeared as Build, |frame| {
+            vec![Layer {
+                look: ClipLook {
+                    transform: Transform {
+                        scale: Vec2::new(0.6, 0.6),
+                        ..Transform::default()
+                    },
+                    ..plain(frame).remove(0).look
+                },
+                ..plain(frame).remove(0)
+            }]
+        }),
+    ] {
+        let on = render(&device, &queue, with, &[], config);
+        let off = render(&device, &queue, without, &[], config);
+
+        let moved = on
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| {
+                (0..3)
+                    .map(|channel| (a[channel] - b[channel]).abs())
+                    .fold(0.0_f32, f32::max)
+            })
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            moved > 0.05,
+            "the {name} case renders almost the same without its effect \
+             (worst channel moved {moved:.4}), so it guards nothing"
+        );
+    }
+}
+
 #[test]
 fn preview_and_export_render_the_same_picture() {
     let (device, queue) = gpu_or_skip!();
     let resolution = Resolution::new(SIZE, SIZE);
 
-    for (name, build) in CASES {
-        let preview = render(&device, &queue, *build, RenderConfig::preview(resolution));
+    for (name, build, grades) in CASES {
+        let preview = render(
+            &device,
+            &queue,
+            *build,
+            grades,
+            RenderConfig::preview(resolution),
+        );
         let export = render(
             &device,
             &queue,
             *build,
+            grades,
             RenderConfig::export_to_texture(resolution),
         );
 
@@ -459,11 +984,12 @@ fn each_case_still_matches_its_stored_signature() {
     let resolution = Resolution::new(SIZE, SIZE);
     let mut missing = Vec::new();
 
-    for (name, build) in CASES {
+    for (name, build, grades) in CASES {
         let rendered = signature(&render(
             &device,
             &queue,
             *build,
+            grades,
             RenderConfig::export_to_texture(resolution),
         ));
 
@@ -516,13 +1042,14 @@ fn the_signatures_tell_the_cases_apart() {
 
     let signatures: Vec<(&str, Vec<f32>)> = CASES
         .iter()
-        .map(|(name, build)| {
+        .map(|(name, build, grades)| {
             (
                 *name,
                 signature(&render(
                     &device,
                     &queue,
                     *build,
+                    grades,
                     RenderConfig::export_to_texture(resolution),
                 )),
             )

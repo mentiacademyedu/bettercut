@@ -337,3 +337,118 @@ fn clicking_beside_the_picture_clears_the_selection() {
 
     assert!(state.selected_clips.is_empty());
 }
+
+// ---- §22's crop, dragged on the picture ------------------------------------
+
+fn crop_of(editor: &Editor, clip: ClipId) -> bettercut_editor_core::timeline::Crop {
+    editor.video_clip(clip).unwrap().crop
+}
+
+/// The picture's left-edge handle, with the clip at half size: the box is a
+/// quarter of the canvas either side of the centre.
+fn left_edge_handle() -> Pos2 {
+    let canvas = canvas();
+    canvas.center() - vec2(canvas.width() / 4.0, 0.0)
+}
+
+/// In crop mode, dragging the left edge inwards crops the left of the shot —
+/// and only that. Nothing moves, nothing scales.
+#[test]
+fn dragging_a_crop_edge_crops_that_side() {
+    let (mut editor, clip) = editor_with_clip();
+    let mut state = UiState::default();
+    state.selected_clips.insert(clip);
+    shrink_to_half(&mut editor, clip);
+    state.cropping = Some(clip);
+
+    let from = left_edge_handle();
+    drag(&mut editor, &mut state, from, from + vec2(60.0, 0.0));
+
+    let crop = crop_of(&editor, clip);
+    assert!(crop.left > 0.05, "the left edge did not crop: {crop:?}");
+    assert_eq!(crop.right, 0.0, "the right edge moved too: {crop:?}");
+    assert_eq!(crop.top, 0.0);
+    assert_eq!(crop.bottom, 0.0);
+
+    assert_eq!(
+        position_of(&editor, clip),
+        (0.0, 0.0),
+        "the crop drag moved the clip"
+    );
+    assert!(
+        (scale_of(&editor, clip) - 0.5).abs() < 1e-4,
+        "the crop drag scaled the clip"
+    );
+}
+
+/// Crop mode is exclusive: a corner that would scale the picture normally does
+/// nothing while crop edges are out, because a drag meant for one handle
+/// landing on the other is exactly the surprise the mode exists to prevent.
+#[test]
+fn a_corner_does_not_scale_in_crop_mode() {
+    let (mut editor, clip) = editor_with_clip();
+    let mut state = UiState::default();
+    state.selected_clips.insert(clip);
+    shrink_to_half(&mut editor, clip);
+    state.cropping = Some(clip);
+
+    let canvas = canvas();
+    let corner = canvas.center() + vec2(canvas.width() / 4.0, canvas.height() / 4.0);
+    drag(&mut editor, &mut state, corner, corner + vec2(80.0, 80.0));
+
+    assert!(
+        (scale_of(&editor, clip) - 0.5).abs() < 1e-4,
+        "a corner scaled the picture while cropping"
+    );
+    assert!(
+        crop_of(&editor, clip).is_none(),
+        "a corner cropped the picture"
+    );
+}
+
+/// And out of crop mode, the same press on the edge's middle is a move, not a
+/// crop — the edge handles are only there when asked for.
+#[test]
+fn an_edge_does_not_crop_outside_crop_mode() {
+    let (mut editor, clip) = editor_with_clip();
+    let mut state = UiState::default();
+    state.selected_clips.insert(clip);
+    shrink_to_half(&mut editor, clip);
+
+    let from = left_edge_handle();
+    drag(&mut editor, &mut state, from, from + vec2(60.0, 0.0));
+
+    assert!(
+        crop_of(&editor, clip).is_none(),
+        "the picture was cropped without crop mode on"
+    );
+}
+
+/// §11: a crop drag is one undo step, however many frames it took.
+#[test]
+fn a_crop_drag_is_one_undo_step() {
+    let (mut editor, clip) = editor_with_clip();
+    let mut state = UiState::default();
+    state.selected_clips.insert(clip);
+    shrink_to_half(&mut editor, clip);
+    state.cropping = Some(clip);
+
+    let before = editor.undo_depth();
+    let from = left_edge_handle();
+    drag(&mut editor, &mut state, from, from + vec2(60.0, 0.0));
+    assert!(
+        !crop_of(&editor, clip).is_none(),
+        "nothing was cropped to undo"
+    );
+    assert_eq!(
+        editor.undo_depth(),
+        before + 1,
+        "the drag left several history entries"
+    );
+
+    editor.undo().unwrap();
+    assert!(
+        crop_of(&editor, clip).is_none(),
+        "undo did not take the crop back"
+    );
+}

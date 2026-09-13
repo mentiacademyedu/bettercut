@@ -178,6 +178,62 @@ impl Default for Background {
 pub const MAX_SIZE: f32 = 400.0;
 pub const MIN_SIZE: f32 = 4.0;
 
+/// A named look for a **title** (§26), as opposed to a caption lane.
+///
+/// Separate from [`CaptionLook`] because the two are different jobs. A caption
+/// is one long thread of the same thing, styled by the lane; a title is placed
+/// and dressed on its own. Each of these carries *where it sits* as well as how
+/// it looks, because "lower third" is a position as much as a style — a lower
+/// third in the middle of the frame is not a lower third.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TitleLook {
+    /// Big, bold and near the middle, with a heavy rim: an opening title.
+    Headline,
+    /// A boxed strip low on the left, where a name or a place goes.
+    LowerThird,
+    /// Light serif with room to breathe: a pull quote.
+    Quote,
+    /// Monospaced and letter-spaced. Pairs with the typewriter entrance.
+    Typewriter,
+}
+
+impl TitleLook {
+    /// Every look, in the order the interface offers them.
+    pub const ALL: [Self; 4] = [
+        Self::Headline,
+        Self::LowerThird,
+        Self::Quote,
+        Self::Typewriter,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Headline => "Headline",
+            Self::LowerThird => "Lower third",
+            Self::Quote => "Quote",
+            Self::Typewriter => "Typewriter",
+        }
+    }
+
+    /// Where the look puts the title: an offset from the centre of the frame in
+    /// normalized units, positive y downwards.
+    ///
+    /// Plain numbers rather than a `Vec2`, which belongs to the timeline — this
+    /// crate draws words and has no opinion about clips.
+    pub fn anchor(self) -> (f32, f32) {
+        match self {
+            // Slightly above centre: dead centre reads as low once there is
+            // anything else in the frame.
+            Self::Headline => (0.0, -0.05),
+            // Low and left, clear of the edge — phone players put their own
+            // controls along the bottom.
+            Self::LowerThird => (-0.18, 0.28),
+            Self::Quote => (0.0, 0.0),
+            Self::Typewriter => (0.0, 0.2),
+        }
+    }
+}
+
 /// A named caption look, for styling a whole lane at once (§27).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CaptionLook {
@@ -349,6 +405,74 @@ impl TextStyle {
         }
     }
 
+    /// The style half of a [`TitleLook`]; [`TitleLook::anchor`] is the other.
+    pub fn title(look: TitleLook) -> Self {
+        match look {
+            TitleLook::Headline => Self {
+                size: 96.0,
+                weight: FontWeight::Bold,
+                align: Alignment::Center,
+                stroke: Some(Stroke {
+                    width: 6.0,
+                    color: Rgba::BLACK,
+                }),
+                background: None,
+                shadow: None,
+                wrap_width: Some(1_400.0),
+                ..Self::default()
+            },
+            TitleLook::LowerThird => Self {
+                size: 48.0,
+                weight: FontWeight::Medium,
+                align: Alignment::Left,
+                stroke: None,
+                background: Some(Background {
+                    color: Rgba::new(0, 0, 0, 190),
+                    padding: 18.0,
+                    corner_radius: 3.0,
+                }),
+                shadow: None,
+                wrap_width: Some(900.0),
+                ..Self::default()
+            },
+            TitleLook::Quote => Self {
+                family: FontFamily::Serif,
+                size: 60.0,
+                weight: FontWeight::Light,
+                italic: true,
+                align: Alignment::Center,
+                line_height: 1.4,
+                stroke: None,
+                background: None,
+                shadow: Some(Shadow {
+                    offset_x: 0.0,
+                    offset_y: 4.0,
+                    blur: 14.0,
+                    color: Rgba::new(0, 0, 0, 210),
+                }),
+                wrap_width: Some(1_100.0),
+                ..Self::default()
+            },
+            TitleLook::Typewriter => Self {
+                family: FontFamily::Monospace,
+                size: 42.0,
+                weight: FontWeight::Medium,
+                align: Alignment::Center,
+                letter_spacing: 0.08,
+                stroke: None,
+                background: None,
+                shadow: Some(Shadow {
+                    offset_x: 0.0,
+                    offset_y: 2.0,
+                    blur: 8.0,
+                    color: Rgba::new(0, 0, 0, 220),
+                }),
+                wrap_width: Some(1_000.0),
+                ..Self::default()
+            },
+        }
+    }
+
     /// A key identifying the picture this style and text would produce.
     ///
     /// Two clips that say the same thing in the same way *are* the same
@@ -489,6 +613,82 @@ mod look_tests {
             assert!(
                 TextStyle::look(look).wrap_width.is_some(),
                 "{} runs off the frame",
+                look.label()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod title_look_tests {
+    use super::*;
+
+    /// The same rule the caption looks keep, and for the same reason: a title
+    /// is read over footage nobody controls, and plain letters vanish over a
+    /// bright shot.
+    #[test]
+    fn every_look_can_be_read_over_anything() {
+        for look in TitleLook::ALL {
+            let style = TextStyle::title(look);
+            assert!(
+                style.background.is_some() || style.stroke.is_some() || style.shadow.is_some(),
+                "{} is bare letters over the footage",
+                look.label()
+            );
+        }
+    }
+
+    #[test]
+    fn the_looks_differ_from_each_other() {
+        for (index, look) in TitleLook::ALL.into_iter().enumerate() {
+            for other in TitleLook::ALL.into_iter().skip(index + 1) {
+                assert_ne!(
+                    (TextStyle::title(look), look.anchor()),
+                    (TextStyle::title(other), other.anchor()),
+                    "{} and {} are the same look",
+                    look.label(),
+                    other.label()
+                );
+            }
+        }
+    }
+
+    /// A title that runs off the side of the frame is unreadable however it is
+    /// dressed.
+    #[test]
+    fn every_look_still_wraps() {
+        for look in TitleLook::ALL {
+            assert!(
+                TextStyle::title(look).wrap_width.is_some(),
+                "{} runs off the frame",
+                look.label()
+            );
+        }
+    }
+
+    /// A lower third is a position as much as a style: low, and to the left.
+    /// Put in the middle of the frame it is simply a title.
+    #[test]
+    fn a_lower_third_sits_low_and_left() {
+        let (x, y) = TitleLook::LowerThird.anchor();
+        assert!(y > 0.15, "it is not low in the frame: {y}");
+        assert!(x < 0.0, "it is not to the left: {x}");
+        assert_eq!(
+            TextStyle::title(TitleLook::LowerThird).align,
+            Alignment::Left,
+            "its words are not aligned the way it sits"
+        );
+    }
+
+    /// Every look stays inside the frame: an anchor of 0.5 would put the title
+    /// half off the edge, which is never what a preset should do.
+    #[test]
+    fn no_look_places_a_title_off_the_frame() {
+        for look in TitleLook::ALL {
+            let (x, y) = look.anchor();
+            assert!(
+                x.abs() < 0.4 && y.abs() < 0.4,
+                "{} sits at {x},{y}, which is off the frame",
                 look.label()
             );
         }

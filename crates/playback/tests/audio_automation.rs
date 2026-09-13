@@ -115,7 +115,7 @@ fn a_ramp_stops_at_the_clips_own_end() {
     );
 }
 
-/// §51: the envelope is anchored to source time, so a clip at double speed
+/// the envelope is anchored to source time, so a clip at double speed
 /// travels through it twice as fast.
 #[test]
 fn speed_carries_the_envelope() {

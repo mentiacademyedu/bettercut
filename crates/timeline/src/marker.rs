@@ -17,6 +17,11 @@ pub struct Marker {
     /// What it marks. Empty for a plain mark, which is most of them.
     #[serde(default)]
     pub label: String,
+    /// A colour, to tell kinds of mark apart at a glance — beats one colour,
+    /// "fix this" another. The same set a clip's label uses. Defaulted: older
+    /// projects' markers have none.
+    #[serde(default)]
+    pub color: crate::clip::ColorLabel,
 }
 
 impl Marker {
@@ -24,6 +29,7 @@ impl Marker {
         Self {
             time,
             label: String::new(),
+            color: crate::clip::ColorLabel::None,
         }
     }
 }
@@ -49,6 +55,9 @@ pub fn normalized(mut markers: Vec<Marker>) -> Vec<Marker> {
         }
         if earlier.label.is_empty() {
             earlier.label = std::mem::take(&mut later.label);
+        }
+        if earlier.color == crate::clip::ColorLabel::None {
+            earlier.color = later.color;
         }
         true
     });

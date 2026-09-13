@@ -317,7 +317,7 @@ pub struct EncodeTarget {
 /// Try every candidate and report what happened to each.
 ///
 /// Used by the export dialog, which shows the user what their machine offers
-/// rather than silently picking — §41: the interface explains itself, and
+/// rather than silently picking — the interface explains itself, and
 /// "why is my export slow" has an answer here.
 pub fn probe_all(target: EncodeTarget) -> Vec<EncoderProbe> {
     target

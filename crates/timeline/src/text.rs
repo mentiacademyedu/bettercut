@@ -55,6 +55,24 @@ pub struct TextClip {
     /// none.
     #[serde(default)]
     pub animation: TextAnimation,
+
+    /// Smear the title along the way it is moving, as a picture clip can be.
+    ///
+    /// The same switch for the same reason: an entrance that spins or slides
+    /// is a fast move, and a title is the thing most likely to be doing one.
+    #[serde(default)]
+    pub motion_blur: bool,
+    /// A colour tag for organising the edit.
+    #[serde(default)]
+    pub color_label: crate::clip::ColorLabel,
+    /// Draw a shape instead of the text (`bettercut_text::shape`). Everything
+    /// else about the clip — placement, animation, the lane — is a title's.
+    #[serde(default)]
+    pub shape: Option<bettercut_text::Shape>,
+    /// Draw a counting number instead of the text (`crate::counter`); the text
+    /// stays as the clip's name.
+    #[serde(default)]
+    pub counter: Option<crate::counter::Counter>,
 }
 
 fn one() -> f32 {
@@ -69,6 +87,15 @@ fn one() -> f32 {
 pub const DEFAULT_DURATION: TimelineTime = TimelineTime::from_ticks(2_880_000);
 
 impl TextClip {
+    /// The words drawn `into_clip` after the clip starts: a counter's number
+    /// when there is one, otherwise the text itself.
+    pub fn shown_text(&self, into_clip: TimelineTime) -> std::borrow::Cow<'_, str> {
+        match &self.counter {
+            Some(counter) => std::borrow::Cow::Owned(counter.text_at(into_clip)),
+            None => std::borrow::Cow::Borrowed(&self.text),
+        }
+    }
+
     /// Place `text` at `start` for [`DEFAULT_DURATION`].
     pub fn new(text: impl Into<String>, start: TimelineTime) -> Result<Self, TimelineError> {
         Self::with_duration(text, start, DEFAULT_DURATION)
@@ -93,6 +120,10 @@ impl TextClip {
             opacity: 1.0,
             enabled: true,
             animation: TextAnimation::default(),
+            motion_blur: false,
+            color_label: crate::clip::ColorLabel::None,
+            shape: None,
+            counter: None,
         })
     }
 

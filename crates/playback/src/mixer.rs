@@ -27,7 +27,7 @@
 //!
 //! [`AudioMixer::mix_block`] is what both the preview's thread and the export
 //! call (§46). Export used to carry its own copy of the loop, and the copies had
-//! already diverged: the preview resampled a sped-up clip (§51) and the export
+//! already diverged: the preview resampled a sped-up clip and the export
 //! did not, so an exported 2× clip played its sound at normal speed and cut it
 //! off half way. One function cannot disagree with itself.
 
@@ -38,7 +38,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use bettercut_foundation::{MediaId, TICKS_PER_AUDIO_SAMPLE, TimelineTime};
+use bettercut_foundation::{MediaId, MediaTime, TICKS_PER_AUDIO_SAMPLE, TimelineTime};
 use bettercut_media::{FfmpegDecoder, MediaAsset};
 use bettercut_project_format::Project;
 use bettercut_timeline::{AudioTrack, Sequence};
@@ -105,6 +105,11 @@ pub struct AudioMixer {
     /// (§66) is noticed — the id stays the same when the path changes.
     sources: HashMap<MediaId, (AudioSource, std::path::PathBuf)>,
     decoder_threads: u32,
+    /// Each cleaned clip's clean-up, with the amount it was made for and the
+    /// timeline tick its next sample belongs at. A jump — a seek, a scrub, a
+    /// loop — or a changed amount starts it afresh; continuous playback and an
+    /// export carry it on, sample for sample.
+    cleaners: HashMap<bettercut_foundation::ClipId, (bettercut_audio::VoiceCleaner, u32, i64)>,
 }
 
 impl AudioMixer {
@@ -112,6 +117,7 @@ impl AudioMixer {
         Self {
             sources: HashMap::new(),
             decoder_threads: decoder_threads.max(1),
+            cleaners: HashMap::new(),
         }
     }
 
@@ -162,7 +168,7 @@ impl AudioMixer {
                 continue;
             }
 
-            // §51: at 2× the block needs twice as many source frames,
+            // at 2× the block needs twice as many source frames,
             // resampled back down to the number asked for. `input_frames_needed`
             // includes the one extra frame the last interpolation reads.
             let rate = audible.speed.as_f64();
@@ -172,13 +178,48 @@ impl AudioMixer {
                 bettercut_audio::input_frames_needed(wanted, rate)
             };
 
-            match source.read(audible.source_start, to_read) {
-                Ok(planes) if !planes.is_empty() => {
-                    let planes = if audible.speed.is_one() {
+            // Backwards: the same number of frames, read from the window that
+            // *ends* where the span begins, then turned round — so the first
+            // sample played is the latest one, and it runs back from there.
+            let read_from = if audible.reversed {
+                MediaTime::from_ticks(
+                    (audible.source_start.ticks() - to_read as i64 * TICKS_PER_AUDIO_SAMPLE).max(0),
+                )
+            } else {
+                audible.source_start
+            };
+            match source.read(read_from, to_read) {
+                Ok(mut planes) if !planes.is_empty() => {
+                    if audible.reversed {
+                        for plane in &mut planes {
+                            plane.reverse();
+                        }
+                    }
+                    let mut planes = if audible.speed.is_one() {
                         planes
                     } else {
                         bettercut_audio::resample(&planes, wanted, rate)
                     };
+                    if audible.denoise > 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let bits = audible.denoise.to_bits();
+                        let fresh = match self.cleaners.get(&audible.clip) {
+                            Some((_, amount, next)) => *amount != bits || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh
+                            && let Some(cleaner) =
+                                bettercut_audio::VoiceCleaner::new(audible.denoise)
+                        {
+                            self.cleaners
+                                .insert(audible.clip, (cleaner, bits, starts_at));
+                        }
+                        if let Some((cleaner, _, next)) = self.cleaners.get_mut(&audible.clip) {
+                            cleaner.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
                     bettercut_audio::mix_into(
                         out,
                         channels,

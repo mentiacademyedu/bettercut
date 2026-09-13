@@ -232,11 +232,40 @@ impl Harness {
     /// everything, and the lane order on screen is the compositing order upside
     /// down — so the video lane sits one lane lower for each of them.
     fn video_lane_y(&self) -> f32 {
+        // Titles, then adjustments, then video: the compositing order upside
+        // down. Counting only the titles put every video press on the
+        // adjustment lane as soon as one existed.
+        let above =
+            self.editor
+                .active_sequence()
+                .map_or(0, |s| s.text_tracks.len() + s.adjustment_tracks.len()) as f32;
+        RULER_H + 2.0 + above * (TRACK_H + 2.0) + TRACK_H / 2.0
+    }
+
+    /// Vertical centre of the first adjustment lane: directly beneath the
+    /// title lanes, above the video.
+    fn adjustment_lane_y(&self) -> f32 {
         let text_lanes = self
             .editor
             .active_sequence()
             .map_or(0, |s| s.text_tracks.len()) as f32;
         RULER_H + 2.0 + text_lanes * (TRACK_H + 2.0) + TRACK_H / 2.0
+    }
+
+    /// An adjustment stretched to six seconds, so its body is wide enough to
+    /// press rather than a trim handle.
+    fn add_wide_adjustment(&mut self) -> ClipId {
+        let clip = self.editor.add_adjustment().unwrap();
+        let track = self.editor.active_sequence().unwrap().adjustment_tracks[0].id;
+        self.editor
+            .trim_clip(
+                track,
+                clip,
+                bettercut_editor_core::TrimEdge::End,
+                TimelineTime::from_seconds(6),
+            )
+            .unwrap();
+        clip
     }
 
     fn tpp(&self) -> i64 {
@@ -715,7 +744,9 @@ fn right_clicking_empty_canvas_records_the_instant() {
     h.right_click(Pos2::new(h.x_of(target), h.video_lane_y()));
 
     match h.state.context {
-        Some(bettercut_ui::state::ContextTarget::Empty { at }) => {
+        Some(bettercut_ui::state::ContextTarget::Empty { at, track }) => {
+            // On a lane, so "Close Gap" knows which track to close it on.
+            assert!(track.is_some(), "the lane under the click was not recorded");
             assert!(
                 (at.ticks() - target).abs() <= h.tpp() * 2,
                 "recorded {} for a click at {target}",
@@ -1183,4 +1214,544 @@ fn collect_text(shape: &egui::Shape, into: &mut String) {
         }
         _ => {}
     }
+}
+
+/// What a clip says about itself in the lane (§53).
+///
+/// A mask, a key, a blend, an entrance, an eased key — every one of them looks
+/// like an ordinary clip unless the timeline says otherwise, and a user left to
+/// wonder why the preview disagrees with the timeline is a user who distrusts
+/// both.
+///
+/// Some of it is drawn as words and some as shapes, so the tests reach for
+/// whichever the drawing actually produces: a badge is text, a ramp is a
+/// triangle, an eased key is a circle where a plain one is a diamond.
+mod clip_marks {
+    use super::*;
+    use bettercut_editor_core::timeline::{BlendMode, ChromaKey, Mask};
+
+    fn harness_with_clip() -> (Harness, ClipId) {
+        let mut h = Harness::new();
+        let clip = h.add_clip(0, 20);
+        h.state.select_only(clip);
+        (h, clip)
+    }
+
+    /// An ordinary clip carries none: a badge on everything is noise.
+    #[test]
+    fn an_ordinary_clip_has_no_badges() {
+        let (mut h, _clip) = harness_with_clip();
+        let words = h.drawn_text();
+        for badge in ["mask", "key", "Screen", "hold"] {
+            assert!(
+                !words.contains(badge),
+                "an untouched clip drew {badge}: {words}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_masked_clip_says_so() {
+        let (mut h, clip) = harness_with_clip();
+        h.editor
+            .set_clip_property(
+                clip,
+                bettercut_editor_core::ClipProperty::Mask(Some(Mask::default())),
+                false,
+            )
+            .unwrap();
+
+        assert!(h.drawn_text().contains("mask"), "no mask badge");
+    }
+
+    #[test]
+    fn a_keyed_clip_says_so() {
+        let (mut h, clip) = harness_with_clip();
+        h.editor
+            .set_clip_property(
+                clip,
+                bettercut_editor_core::ClipProperty::ChromaKey(Some(ChromaKey::default())),
+                false,
+            )
+            .unwrap();
+
+        assert!(h.drawn_text().contains("key"), "no key badge");
+    }
+
+    /// The blend badge names the mode: "not normal" is not enough to act on.
+    #[test]
+    fn a_blended_clip_names_its_mode() {
+        let (mut h, clip) = harness_with_clip();
+        h.editor
+            .set_clip_property(
+                clip,
+                bettercut_editor_core::ClipProperty::Blend(BlendMode::Screen),
+                false,
+            )
+            .unwrap();
+
+        let words = h.drawn_text();
+        assert!(words.contains("Screen"), "no blend badge: {words}");
+    }
+
+    /// Where each badge was drawn, so overlap can be seen rather than assumed.
+    ///
+    /// Text alone cannot show it: two badges drawn on top of each other still
+    /// put both their labels in the frame, and the user sees one smudge.
+    fn badge_positions(h: &mut Harness) -> Vec<(String, egui::Pos2)> {
+        let ctx = egui::Context::default();
+        let editor = &mut h.editor;
+        let state = &mut h.state;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            bettercut_ui::timeline::draw(ui, editor, state);
+        });
+        output.textures_delta.clear();
+
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push((text.galley.text().to_owned(), text.pos));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    /// Every triangle drawn anywhere on the timeline.
+    ///
+    /// A fade ramp is a three-point polygon and nothing else on a clip is, so
+    /// counting them is enough to tell a clip that is arriving from one that
+    /// merely says it is.
+    fn drawn_triangles(h: &mut Harness) -> usize {
+        let Harness {
+            ctx, editor, state, ..
+        } = h;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            bettercut_ui::timeline::draw(ui, editor, state);
+        });
+        output.textures_delta.clear();
+
+        fn walk(shape: &egui::Shape, count: &mut usize) {
+            match shape {
+                egui::Shape::Path(path) if path.points.len() == 3 => *count += 1,
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, count)),
+                _ => {}
+            }
+        }
+        let mut found = 0;
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    /// Every circle drawn on the timeline.
+    ///
+    /// §24's eased keys are drawn as circles where a plain ramp is a diamond,
+    /// so counting them says whether the curve reached the screen.
+    fn drawn_circles(h: &mut Harness) -> usize {
+        let Harness {
+            ctx, editor, state, ..
+        } = h;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            bettercut_ui::timeline::draw(ui, editor, state);
+        });
+        output.textures_delta.clear();
+
+        fn walk(shape: &egui::Shape, count: &mut usize) {
+            match shape {
+                egui::Shape::Circle(_) => *count += 1,
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, count)),
+                _ => {}
+            }
+        }
+        let mut found = 0;
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    /// §24: a key that eases is drawn differently from one that ramps. Without
+    /// that the easing is invisible — the user sets it, the row of diamonds
+    /// does not move, and there is no way to tell which keys carry it.
+    #[test]
+    fn an_eased_key_is_drawn_as_a_different_shape() {
+        use bettercut_editor_core::timeline::{AnimatedParameter, Interpolation, Keyframe};
+
+        let (mut h, clip) = harness_with_clip();
+        let at = bettercut_editor_core::foundation::MediaTime::from_seconds(61);
+
+        h.editor
+            .set_keyframe(
+                clip,
+                AnimatedParameter::Opacity,
+                Keyframe::new(at, 0.5, Interpolation::Linear),
+            )
+            .unwrap();
+        let ramped = drawn_circles(&mut h);
+
+        h.editor
+            .set_keyframe(
+                clip,
+                AnimatedParameter::Opacity,
+                Keyframe::new(at, 0.5, Interpolation::EaseInOut),
+            )
+            .unwrap();
+
+        assert_eq!(
+            drawn_circles(&mut h),
+            ramped + 1,
+            "easing a key did not change how it is drawn"
+        );
+    }
+
+    /// Where a lane sits, counted the way the draw pass lays them out.
+    ///
+    /// Titles first — they composite over every video track, and the lane
+    /// order on screen is the compositing order upside down — so the video
+    /// lane of a default sequence is the second one, not the first.
+    fn lane_rect(index: usize) -> Rect {
+        let step = bettercut_ui::theme::TRACK_HEIGHT + bettercut_ui::theme::TRACK_GAP;
+        let top = bettercut_ui::theme::RULER_HEIGHT
+            + bettercut_ui::theme::TRACK_GAP
+            + step * index as f32;
+        Rect::from_min_size(
+            Pos2::new(0.0, top),
+            egui::vec2(
+                bettercut_ui::theme::TRACK_HEADER_WIDTH,
+                bettercut_ui::theme::TRACK_HEIGHT,
+            ),
+        )
+    }
+
+    /// The two buttons the mixer needs most, reachable without a right-click.
+    ///
+    /// Clicked through the real interaction path rather than by calling the
+    /// handler, because the thing worth proving is that a press at the
+    /// button's *drawn* position reaches it.
+    #[test]
+    fn the_header_buttons_mute_and_solo_the_track() {
+        use bettercut_editor_core::TrackFlag;
+
+        let mut h = Harness::new();
+        let _clip = h.add_clip(0, 20);
+        let track = h.video_track();
+        let [mute, solo] = bettercut_ui::timeline::header_buttons(lane_rect(1));
+
+        assert!(h.editor.track_flag(track, TrackFlag::Enabled));
+        h.click(mute.center());
+        assert!(
+            !h.editor.track_flag(track, TrackFlag::Enabled),
+            "pressing M did not mute the track"
+        );
+
+        assert!(!h.editor.track_flag(track, TrackFlag::Solo));
+        h.click(solo.center());
+        assert!(
+            h.editor.track_flag(track, TrackFlag::Solo),
+            "pressing S did not solo the track"
+        );
+    }
+
+    /// And the rest of the header is still not a control: a press beside the
+    /// buttons must change nothing, which is what the column's early return
+    /// has always been for.
+    #[test]
+    fn a_press_elsewhere_on_the_header_still_changes_nothing() {
+        use bettercut_editor_core::TrackFlag;
+
+        let mut h = Harness::new();
+        let _clip = h.add_clip(0, 20);
+        let track = h.video_track();
+
+        let lane = lane_rect(1);
+        h.click(Pos2::new(lane.left() + 8.0, lane.center().y));
+
+        assert!(h.editor.track_flag(track, TrackFlag::Enabled));
+        assert!(!h.editor.track_flag(track, TrackFlag::Solo));
+    }
+
+    /// §20a.4: a solo left on is why every other lane has gone quiet. If the
+    /// header does not say so, the only clue is a menu the user has no reason
+    /// to open — so this is not decoration, it is the explanation.
+    #[test]
+    fn a_soloed_track_says_so_on_its_header() {
+        let mut h = Harness::new();
+        let _clip = h.add_clip(0, 20);
+        assert!(
+            !h.drawn_text().contains("SOLO"),
+            "an ordinary track claimed to be soloed"
+        );
+
+        let track = h.video_track();
+        h.editor
+            .set_track_flag(track, bettercut_editor_core::TrackFlag::Solo, true)
+            .unwrap();
+
+        assert!(
+            h.drawn_text().contains("SOLO"),
+            "a soloed track gave no sign of it: {}",
+            h.drawn_text()
+        );
+    }
+
+    /// A clip that is arriving should *look* like it, the same way a
+    /// sound's fades and a title's entrance do. The badge says an animation is
+    /// there; the ramp says where it starts and how long it takes.
+    #[test]
+    fn an_animated_clip_draws_its_entrance_and_exit() {
+        use bettercut_editor_core::timeline::{ClipMotion, Motion, MotionKind};
+
+        let (mut h, clip) = harness_with_clip();
+        let plain = drawn_triangles(&mut h);
+
+        h.editor
+            .set_clip_property(
+                clip,
+                bettercut_editor_core::ClipProperty::Motion(ClipMotion {
+                    intro: Some(Motion::new(
+                        MotionKind::Fade,
+                        bettercut_editor_core::foundation::TimelineTime::from_seconds(1),
+                    )),
+                    outro: Some(Motion::new(
+                        MotionKind::Fade,
+                        bettercut_editor_core::foundation::TimelineTime::from_seconds(1),
+                    )),
+                }),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            drawn_triangles(&mut h),
+            plain + 2,
+            "an entrance and an exit should have drawn a ramp each"
+        );
+    }
+
+    /// All three at once, side by side. The old layout drew every badge at one
+    /// anchor, so a second would have sat on top of the first.
+    #[test]
+    fn three_effects_all_fit() {
+        let (mut h, clip) = harness_with_clip();
+        for property in [
+            bettercut_editor_core::ClipProperty::Mask(Some(Mask::default())),
+            bettercut_editor_core::ClipProperty::ChromaKey(Some(ChromaKey::default())),
+            bettercut_editor_core::ClipProperty::Blend(BlendMode::Multiply),
+        ] {
+            h.editor.set_clip_property(clip, property, false).unwrap();
+        }
+
+        let words = h.drawn_text();
+        for badge in ["mask", "key", "Multiply"] {
+            assert!(words.contains(badge), "{badge} was crowded out: {words}");
+        }
+
+        // And each is somewhere of its own.
+        let drawn = badge_positions(&mut h);
+        let mut places: Vec<f32> = ["mask", "key", "Multiply"]
+            .into_iter()
+            .map(|badge| {
+                drawn
+                    .iter()
+                    .find(|(text, _)| text == badge)
+                    .unwrap_or_else(|| panic!("{badge} was not drawn"))
+                    .1
+                    .x
+            })
+            .collect();
+        places.sort_by(f32::total_cmp);
+        for pair in places.windows(2) {
+            assert!(
+                pair[1] - pair[0] > 12.0,
+                "two badges were drawn on top of each other at {:?}",
+                places
+            );
+        }
+    }
+}
+
+// ---- adjustment clips -------------------------------------------------------
+
+/// An adjustment is a clip on its own lane, so it is selected and moved on the
+/// timeline like any other. Each of those depends on a lookup that has to know
+/// about adjustment lanes, which the compiler does not check.
+#[test]
+fn clicking_an_adjustment_selects_it() {
+    let mut h = Harness::new();
+    let clip = h.add_wide_adjustment();
+
+    let y = h.adjustment_lane_y();
+    h.click(Pos2::new(h.x_of(secs(3)), y));
+
+    assert!(
+        h.state.selected_clips.contains(&clip),
+        "clicking the adjustment did not select it"
+    );
+}
+
+#[test]
+fn dragging_an_adjustment_moves_it() {
+    let mut h = Harness::new();
+    let clip = h.add_wide_adjustment();
+    let before = h.editor.adjustment_clip(clip).unwrap().timeline.start;
+
+    let y = h.adjustment_lane_y();
+    h.press(Pos2::new(h.x_of(secs(3)), y));
+    h.drag_to(Pos2::new(h.x_of(secs(9)), y));
+    h.release(Pos2::new(h.x_of(secs(9)), y));
+
+    assert_ne!(
+        h.editor.adjustment_clip(clip).unwrap().timeline.start,
+        before,
+        "dragging the adjustment did not move it"
+    );
+}
+
+/// With an adjustment lane in place the video lane has moved down a row, and a
+/// drag aimed at a video clip must still land on it.
+#[test]
+fn a_video_clip_still_drags_beneath_an_adjustment_lane() {
+    let mut h = Harness::new();
+    h.editor.add_adjustment().unwrap();
+    let clip = h.add_clip(2, 4);
+    let before = h.clip_start(clip);
+
+    let y = h.video_lane_y();
+    h.press(Pos2::new(h.x_of(secs(4)), y));
+    h.drag_to(Pos2::new(h.x_of(secs(8)), y));
+    h.release(Pos2::new(h.x_of(secs(8)), y));
+
+    assert_ne!(h.clip_start(clip), before, "the video clip did not move");
+}
+
+/// Clicking one clip of a group selects the whole group, and grouped clips
+/// say so with a badge.
+#[test]
+fn clicking_a_grouped_clip_selects_its_group() {
+    let mut h = Harness::new();
+    let first = h.add_clip(0, 4);
+    let second = h.add_clip(6, 4);
+    let loose = h.add_clip(12, 4);
+    h.editor.group_clips(&[first, second]).unwrap();
+
+    let y = h.video_lane_y();
+    h.click(Pos2::new(h.x_of(secs(8)), y));
+    h.frame(vec![]);
+    assert!(
+        h.state.selected_clips.contains(&first),
+        "the rest of the group was not selected"
+    );
+    assert!(h.state.selected_clips.contains(&second));
+    assert!(!h.state.selected_clips.contains(&loose));
+    assert!(
+        h.drawn_text().contains("group"),
+        "grouped clips are not marked"
+    );
+}
+
+/// Every lane height is laid out and hit-tested alike: a click in the middle
+/// of the video lane at that height selects the clip there, and the lanes the
+/// canvas reports are that tall.
+#[test]
+fn every_lane_height_lays_out_and_clicks_the_same() {
+    use bettercut_ui::state::LaneHeight;
+
+    for height in LaneHeight::ALL {
+        let mut h = Harness::new();
+        h.state.lane_height = height;
+        let clip = h.add_clip(0, 10);
+        let above =
+            h.editor
+                .active_sequence()
+                .map_or(0, |s| s.text_tracks.len() + s.adjustment_tracks.len()) as f32;
+        let lane = height.pixels();
+        let y = RULER_H + 2.0 + above * (lane + 2.0) + lane / 2.0;
+
+        h.click(Pos2::new(h.x_of(secs(5)), y));
+        assert!(
+            h.state.selected_clips.contains(&clip),
+            "{height:?}: a click in the middle of the video lane missed the clip"
+        );
+
+        // Half a lane lower is the gap-and-next-lane side: not this clip.
+        h.state.clear_selection();
+        h.click(Pos2::new(h.x_of(secs(5)), y + lane / 2.0 + 6.0));
+        assert!(
+            !h.state.selected_clips.contains(&clip),
+            "{height:?}: the clip answered a click below its lane"
+        );
+    }
+    assert!(LaneHeight::Compact.pixels() < LaneHeight::Normal.pixels());
+    assert!(LaneHeight::Normal.pixels() < LaneHeight::Tall.pixels());
+}
+
+/// A title lane's header has a menu too — hide, lock, rename, duplicate —
+/// where it used to open empty.
+#[test]
+fn a_title_lane_header_has_a_menu() {
+    let mut h = Harness::new();
+    // The title lane is the first lane under the ruler.
+    let y = RULER_H + 2.0 + TRACK_H / 2.0;
+    h.right_click(Pos2::new(HEADER_W / 2.0, y));
+    let words = h.drawn_text();
+    assert!(words.contains("Duplicate Track"), "{words}");
+    assert!(words.contains("Hide Track"), "{words}");
+}
+
+/// A name typed into the track menu is applied when the menu closes, as one
+/// undo step.
+#[test]
+fn a_track_name_typed_in_the_menu_is_kept_when_it_closes() {
+    let mut h = Harness::new();
+    h.add_clip(2, 4);
+    let track = h.video_track();
+    h.right_click(Pos2::new(HEADER_W / 2.0, h.video_lane_y()));
+    h.frame(vec![]);
+    assert!(egui::Popup::is_any_open(&h.ctx), "setup: menu open");
+
+    // What typing into the field leaves behind.
+    h.state.track_name_draft = Some((track, "  Interview  ".to_owned()));
+    h.click(Pos2::new(h.x_of(secs(25)), h.video_lane_y()));
+    h.frame(vec![]);
+
+    let name = h
+        .editor
+        .active_sequence()
+        .unwrap()
+        .track_name(track)
+        .unwrap()
+        .to_owned();
+    assert_eq!(name, "Interview");
+    assert!(h.state.track_name_draft.is_none());
+    assert_eq!(h.editor.undo_label().as_deref(), Some("Rename Track"));
+}
+
+/// A clip with a note says so on the timeline.
+#[test]
+fn a_clip_with_a_note_is_badged() {
+    let mut h = Harness::new();
+    let clip = h.add_clip(0, 10);
+    assert!(!h.drawn_text().contains("note"));
+    h.editor.set_clip_note(clip, "swap for take 3").unwrap();
+    assert!(h.drawn_text().contains("note"), "the note is not shown");
 }

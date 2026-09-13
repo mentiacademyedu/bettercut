@@ -432,3 +432,107 @@ fn a_titles_animation_is_set_clamped_and_undone() {
     editor.undo().unwrap();
     assert!(text_of(&editor, clip).animation.is_none());
 }
+
+/// §26's title looks: a whole preset in one step.
+mod looks {
+    use bettercut_editor_core::foundation::TimelineTime;
+    use bettercut_editor_core::text::{TextStyle, TitleLook};
+    use bettercut_editor_core::{Editor, EditorError};
+
+    fn editor_with_a_title() -> (Editor, bettercut_editor_core::foundation::ClipId) {
+        let (mut editor, _events) = Editor::new_project("Titles");
+        editor.set_playhead(TimelineTime::from_seconds(1));
+        let title = editor.add_text("A NAME").expect("a title");
+        (editor, title)
+    }
+
+    fn title(
+        editor: &Editor,
+        clip: bettercut_editor_core::foundation::ClipId,
+    ) -> (TextStyle, f32, f32) {
+        let sequence = editor.active_sequence().expect("sequence");
+        let clip = sequence
+            .text_tracks
+            .iter()
+            .find_map(|track| track.get(clip))
+            .expect("the title");
+        (
+            clip.style.clone(),
+            clip.transform.position.x,
+            clip.transform.position.y,
+        )
+    }
+
+    /// The style *and* the position: a lower third in the middle of the frame
+    /// is not a lower third.
+    #[test]
+    fn a_look_dresses_a_title_and_places_it() {
+        let (mut editor, clip) = editor_with_a_title();
+        let (_, x, y) = title(&editor, clip);
+        assert_eq!((x, y), (0.0, 0.0), "a new title starts centred");
+
+        editor
+            .set_title_look(clip, TitleLook::LowerThird)
+            .expect("a title takes a look");
+
+        let (style, x, y) = title(&editor, clip);
+        assert_eq!(style, TextStyle::title(TitleLook::LowerThird));
+        assert_eq!((x, y), TitleLook::LowerThird.anchor());
+        assert!(y > 0.15 && x < 0.0, "it was not put low and left: {x},{y}");
+    }
+
+    /// One decision, one step — and undo puts back both halves of it.
+    #[test]
+    fn a_look_is_one_undo_step() {
+        let (mut editor, clip) = editor_with_a_title();
+        let (before_style, before_x, before_y) = title(&editor, clip);
+        let depth = editor.undo_depth();
+
+        editor.set_title_look(clip, TitleLook::Headline).unwrap();
+        assert_eq!(editor.undo_depth(), depth + 1);
+
+        editor.undo().unwrap();
+        let (style, x, y) = title(&editor, clip);
+        assert_eq!(style, before_style, "the style stayed changed");
+        assert_eq!(
+            (x, y),
+            (before_x, before_y),
+            "undo put back the style but left the title where the look moved it"
+        );
+    }
+
+    /// Trying the looks does not have to be done in order: each replaces the
+    /// last completely, position included.
+    #[test]
+    fn a_second_look_replaces_the_first() {
+        let (mut editor, clip) = editor_with_a_title();
+        editor.set_title_look(clip, TitleLook::LowerThird).unwrap();
+        editor.set_title_look(clip, TitleLook::Quote).unwrap();
+
+        let (style, x, y) = title(&editor, clip);
+        assert_eq!(style, TextStyle::title(TitleLook::Quote));
+        assert_eq!(
+            (x, y),
+            TitleLook::Quote.anchor(),
+            "it kept the old position"
+        );
+    }
+
+    /// Footage is not a title.
+    #[test]
+    fn a_video_clip_has_no_title_look() {
+        let (mut editor, _events) = Editor::new_project("Titles");
+        let media = editor.import_media(bettercut_editor_core::media::MediaAsset::new(
+            bettercut_editor_core::media::MediaKind::Video,
+            "C:/media/shot.mp4",
+            bettercut_editor_core::foundation::MediaTime::from_seconds(10),
+        ));
+        let clip = editor.place_media(media).unwrap()[0];
+
+        let refused = editor.set_title_look(clip, TitleLook::Headline);
+        assert!(
+            matches!(refused, Err(EditorError::ClipNotFound(_))),
+            "{refused:?}"
+        );
+    }
+}

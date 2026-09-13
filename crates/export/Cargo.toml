@@ -21,6 +21,11 @@ tracing.workspace = true
 # `request_adapter` and `request_device` are async, and this is the smallest
 # way to await them without pulling in a runtime for two calls.
 pollster = "0.4"
+# Stills (`still.rs`). Already linked by the windowing stack, so this adds no
+# crate to the build — only a direct dependency on one it has.
+png = "0.18"
+# LZW for GIF frames; already in the lock file through the image stack.
+weezl = "0.1"
 
 [lints]
 workspace = true

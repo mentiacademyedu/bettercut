@@ -17,12 +17,16 @@
 
 pub mod error;
 pub mod mask;
+pub mod preset;
 pub mod raster;
+pub mod shape;
 pub mod style;
 
 pub use error::TextError;
+pub use preset::TextPreset;
 pub use raster::{TextBitmap, TextRenderer};
+pub use shape::{MAX_SHAPE_SIDE, Shape, ShapeKind};
 pub use style::{
     Alignment, Background, CaptionLook, FontFamily, FontWeight, MAX_SIZE, MIN_SIZE, Rgba, Shadow,
-    Stroke, TextStyle,
+    Stroke, TextStyle, TitleLook,
 };

@@ -99,10 +99,12 @@ impl Editor {
                         slot,
                         track,
                         transform,
+                        crop,
                         opacity,
                         speed,
                         transition_out,
                         movement,
+                        motion,
                         ..
                     } => {
                         let Some(SlotFill::Media(media)) = fills.get(slot) else {
@@ -127,8 +129,12 @@ impl Editor {
                                     *speed,
                                 )),
                         )?;
+                        clip.crop = *crop;
                         clip.transform = *transform;
                         clip.opacity = *opacity;
+                        // The same entrance the Inspector sets, so a
+                        // template's animation and a user's are one thing.
+                        clip.motion = *motion;
                         // The same keys the Movement buttons write (§24), from
                         // the same place, so a template's zoom and a user's are
                         // one thing.
@@ -370,6 +376,9 @@ impl Editor {
                 (Some(s), TrackKind::Video) => s.video_tracks.iter().map(|t| t.id).collect(),
                 (Some(s), TrackKind::Audio) => s.audio_tracks.iter().map(|t| t.id).collect(),
                 (Some(s), TrackKind::Text) => s.text_tracks.iter().map(|t| t.id).collect(),
+                (Some(s), TrackKind::Adjustment) => {
+                    s.adjustment_tracks.iter().map(|t| t.id).collect()
+                }
                 (None, _) => return Err(EditorError::SequenceNotFound(sequence)),
             };
             if let Some(id) = tracks.get(index) {
@@ -422,6 +431,7 @@ impl Editor {
             TrackKind::Video => (TrackKindRepr::Video, 'V'),
             TrackKind::Audio => (TrackKindRepr::Audio, 'A'),
             TrackKind::Text => (TrackKindRepr::Text, 'T'),
+            TrackKind::Adjustment => (TrackKindRepr::Adjustment, 'F'),
         };
         let id = TrackId::new();
         self.stage(

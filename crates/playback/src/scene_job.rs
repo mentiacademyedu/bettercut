@@ -6,7 +6,7 @@
 //! its answer in a [`SceneReport`] the interface reads when the job finishes.
 //!
 //! The answer is *source* instants. Turning them into timeline instants is the
-//! caller's job, because that mapping goes through the clip's speed (§51) and
+//! caller's job, because that mapping goes through the clip's speed and
 //! this does not know which clip asked.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use crate::scenes::{FrameDigest, SceneSettings, digest, scene_cuts};
 /// Where a file's cuts fall on the timeline, for one clip that plays it.
 ///
 /// The same translation [`crate::beat_markers`] does for sound: from an instant
-/// in the file to an instant on the timeline, through the clip's speed (§51) —
+/// in the file to an instant on the timeline, through the clip's speed —
 /// so a cut in footage slowed to half speed is offered at the place it is
 /// actually seen, not at the place it was shot.
 ///
@@ -32,22 +32,31 @@ pub fn timeline_cuts(
     clip: &bettercut_timeline::VideoClip,
     cuts: &[MediaTime],
 ) -> Vec<TimelineTime> {
-    // A held frame shows one instant for its whole length (§51's
+    // A held frame shows one instant for its whole length ('s
     // `NoMotionToRetime` case): there is no cut inside one picture.
     if clip.frozen {
         return Vec::new();
     }
-    cuts.iter()
+    let mut found: Vec<TimelineTime> = cuts
+        .iter()
         .filter(|at| **at > clip.source.start && **at < clip.source.end)
         .map(|at| {
-            clip.timeline.start
+            let forwards = clip.timeline.start
                 + TimelineTime::from_ticks(bettercut_timeline::timeline_ticks_for(
                     *at - clip.source.start,
                     clip.speed,
-                ))
+                ));
+            // A reversed clip meets the file's cuts in the opposite order.
+            if clip.reversed {
+                bettercut_timeline::mirror_in(clip.timeline, forwards)
+            } else {
+                forwards
+            }
         })
         .filter(|at| *at > clip.timeline.start && *at < clip.timeline.end)
-        .collect()
+        .collect();
+    found.sort_unstable();
+    found
 }
 
 struct JobCancellation {
@@ -226,7 +235,7 @@ mod tests {
         );
     }
 
-    /// §51: at half speed the footage takes twice as long to reach the cut, so
+    /// at half speed the footage takes twice as long to reach the cut, so
     /// the offered split is twice as far into the clip.
     #[test]
     fn speed_moves_the_cut() {
