@@ -109,6 +109,18 @@ pub enum Gesture {
         from: [f32; 2],
         grab: egui::Pos2,
     },
+    /// Dragging one corner of §45's pin: the picture's corner follows the
+    /// pointer, and the other three stay where they are.
+    ///
+    /// The whole pin is captured at the press, so every frame of the drag is
+    /// worked out from where it started rather than added to the last one —
+    /// the same reasoning `Crop` gives.
+    Pin {
+        corner: Corner,
+        from: bettercut_editor_core::timeline::CornerPin,
+        /// Where that corner sat on the canvas before the drag, unpinned.
+        origin: egui::Pos2,
+    },
     /// Dragging one edge of §22's crop.
     ///
     /// Everything is captured at the press, because the picture does not hold
@@ -158,6 +170,136 @@ impl CropEdge {
 /// mask's centre is found by walking into the box and then turning with it,
 /// which is why this takes the rotation separately: `box_on_canvas` is the
 /// *unturned* rectangle, as everything else in this module treats it.
+/// Where the picture is drawn inside the preview's `area`.
+///
+/// Fit letterboxes it with a margin, as large as fits. A scale draws the
+/// sequence's pixels at that many screen pixels each (`points_per_pixel`
+/// screen points per frame pixel at 100%), centred and moved by `pan` — held
+/// so the picture never slides entirely out of view: some of it always
+/// covers the middle of the area. Returns the canvas and the pan actually
+/// used.
+pub fn preview_canvas(
+    area: egui::Rect,
+    resolution: (u32, u32),
+    zoom: crate::state::PreviewZoom,
+    pan: egui::Vec2,
+    points_per_pixel: f32,
+) -> (egui::Rect, egui::Vec2) {
+    let aspect = (resolution.0.max(1) as f32 / resolution.1.max(1) as f32).max(0.01);
+    match zoom {
+        crate::state::PreviewZoom::Fit => {
+            let mut size = egui::vec2(area.width() - 24.0, (area.width() - 24.0) / aspect);
+            if size.y > area.height() - 24.0 {
+                size = egui::vec2((area.height() - 24.0) * aspect, area.height() - 24.0);
+            }
+            (
+                egui::Rect::from_center_size(area.center(), size),
+                egui::Vec2::ZERO,
+            )
+        }
+        crate::state::PreviewZoom::Scale(scale) => {
+            let size = egui::vec2(resolution.0 as f32, resolution.1 as f32)
+                * scale.max(0.01)
+                * points_per_pixel;
+            // The middle of the area stays over the picture.
+            let limit = size / 2.0;
+            let pan = egui::vec2(
+                pan.x.clamp(-limit.x, limit.x),
+                pan.y.clamp(-limit.y, limit.y),
+            );
+            (egui::Rect::from_center_size(area.center() + pan, size), pan)
+        }
+    }
+}
+
+/// One thing a preview guide draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuideShape {
+    Line(egui::Pos2, egui::Pos2),
+    /// An outline.
+    Frame(egui::Rect),
+    /// A part of the picture to keep clear, drawn darkened.
+    Shade(egui::Rect),
+}
+
+/// The share of a vertical frame each phone app covers: the header along the
+/// top, the caption and name along the bottom, and the column of buttons down
+/// the right. Taken from the common safe-zone templates, rounded outwards.
+pub const SOCIAL_TOP: f32 = 0.08;
+pub const SOCIAL_BOTTOM: f32 = 0.2;
+pub const SOCIAL_RIGHT: f32 = 0.13;
+/// Where the button column starts and ends, down the frame.
+pub const SOCIAL_BUTTONS: (f32, f32) = (0.35, 0.8);
+
+/// What `guide` draws over a picture shown in `canvas`.
+pub fn guide_shapes(guide: crate::state::PreviewGuide, canvas: egui::Rect) -> Vec<GuideShape> {
+    use crate::state::PreviewGuide;
+    let at = |x: f32, y: f32| {
+        egui::pos2(
+            canvas.left() + canvas.width() * x,
+            canvas.top() + canvas.height() * y,
+        )
+    };
+    let inset =
+        |share: f32| egui::Rect::from_min_max(at(share, share), at(1.0 - share, 1.0 - share));
+    match guide {
+        PreviewGuide::Off => Vec::new(),
+        PreviewGuide::Thirds => [1.0 / 3.0, 2.0 / 3.0]
+            .into_iter()
+            .flat_map(|t| {
+                [
+                    GuideShape::Line(at(t, 0.0), at(t, 1.0)),
+                    GuideShape::Line(at(0.0, t), at(1.0, t)),
+                ]
+            })
+            .collect(),
+        PreviewGuide::TitleSafe => vec![
+            GuideShape::Frame(inset(0.05)),
+            GuideShape::Frame(inset(0.1)),
+        ],
+        // A tenth of the frame each way, centred: long enough to line a shot
+        // up against, short enough to stay out of the picture.
+        PreviewGuide::Centre => vec![
+            GuideShape::Line(at(0.45, 0.5), at(0.55, 0.5)),
+            GuideShape::Line(at(0.5, 0.45), at(0.5, 0.55)),
+        ],
+        PreviewGuide::Social => vec![
+            GuideShape::Shade(egui::Rect::from_min_max(at(0.0, 0.0), at(1.0, SOCIAL_TOP))),
+            GuideShape::Shade(egui::Rect::from_min_max(
+                at(0.0, 1.0 - SOCIAL_BOTTOM),
+                at(1.0, 1.0),
+            )),
+            GuideShape::Shade(egui::Rect::from_min_max(
+                at(1.0 - SOCIAL_RIGHT, SOCIAL_BUTTONS.0),
+                at(1.0, SOCIAL_BUTTONS.1),
+            )),
+            // The part that is always seen.
+            GuideShape::Frame(egui::Rect::from_min_max(
+                at(0.0, SOCIAL_TOP),
+                at(1.0 - SOCIAL_RIGHT, 1.0 - SOCIAL_BOTTOM),
+            )),
+        ],
+    }
+}
+
+/// Paint `guide` over the picture.
+pub fn draw_guides(painter: &egui::Painter, guide: crate::state::PreviewGuide, canvas: egui::Rect) {
+    let line = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(140));
+    for shape in guide_shapes(guide, canvas) {
+        match shape {
+            GuideShape::Line(from, to) => {
+                painter.line_segment([from, to], line);
+            }
+            GuideShape::Frame(rect) => {
+                painter.rect_stroke(rect, 0, line, egui::StrokeKind::Inside);
+            }
+            GuideShape::Shade(rect) => {
+                painter.rect_filled(rect, 0, egui::Color32::from_black_alpha(110));
+            }
+        }
+    }
+}
+
 pub fn clip_point_on_canvas(uv: [f32; 2], box_on_canvas: egui::Rect, degrees: f32) -> egui::Pos2 {
     let inside = egui::pos2(
         box_on_canvas.left() + uv[0] * box_on_canvas.width(),
@@ -311,6 +453,61 @@ pub fn crop_edge_at(picture: egui::Rect, degrees: f32, pointer: egui::Pos2) -> O
         .into_iter()
         .find(|(_, at)| at.distance(pointer) <= HANDLE_RADIUS)
         .map(|(edge, _)| edge)
+}
+
+/// Where a clip's four corners are on the canvas once the pin has moved them.
+///
+/// The corners the plain box has, each shifted by its own offset — the same
+/// arithmetic the shader does, so the handles sit on the picture rather than
+/// near it.
+pub fn pinned_corners(
+    box_on_canvas: egui::Rect,
+    canvas: egui::Rect,
+    pin: bettercut_editor_core::timeline::CornerPin,
+) -> [egui::Pos2; 4] {
+    let plain = [
+        box_on_canvas.left_top(),
+        box_on_canvas.right_top(),
+        box_on_canvas.right_bottom(),
+        box_on_canvas.left_bottom(),
+    ];
+    let mut out = plain;
+    for (index, corner) in out.iter_mut().enumerate() {
+        let offset = pin.clamped().offsets[index];
+        *corner = egui::pos2(
+            corner.x + offset[0] * canvas.width(),
+            corner.y + offset[1] * canvas.height(),
+        );
+    }
+    out
+}
+
+/// Which pinned corner's handle is under `pointer`, if any.
+pub fn pinned_corner_at(
+    box_on_canvas: egui::Rect,
+    canvas: egui::Rect,
+    pin: bettercut_editor_core::timeline::CornerPin,
+    pointer: egui::Pos2,
+) -> Option<Corner> {
+    pinned_corners(box_on_canvas, canvas, pin)
+        .into_iter()
+        .zip(Corner::ALL)
+        .find(|(at, _)| at.distance(pointer) <= HANDLE_RADIUS)
+        .map(|(_, corner)| corner)
+}
+
+/// The pinned quad and a handle at each of its corners.
+pub fn draw_pin(painter: &egui::Painter, corners: [egui::Pos2; 4]) {
+    for pair in 0..4 {
+        painter.line_segment(
+            [corners[pair], corners[(pair + 1) % 4]],
+            egui::Stroke::new(1.5, crate::theme::SELECTION),
+        );
+    }
+    for at in corners {
+        painter.circle_filled(at, HANDLE_DRAW + 1.0, egui::Color32::from_black_alpha(160));
+        painter.circle_filled(at, HANDLE_DRAW, crate::theme::SELECTION);
+    }
 }
 
 /// The four corners of the whole, uncropped source, on the canvas.
@@ -489,6 +686,74 @@ pub fn moved_position(from: Vec2, grab: egui::Pos2, now: egui::Pos2, canvas: egu
     let dx = (now.x - grab.x) / canvas.width().max(1.0);
     let dy = (now.y - grab.y) / canvas.height().max(1.0);
     Vec2::new(from.x + dx, from.y + dy)
+}
+
+/// How close, in screen pixels, a moved picture must come to a centre line or
+/// a frame edge to snap to it.
+pub const SNAP_PIXELS: f32 = 8.0;
+
+/// Where a snapped move landed, and the guide lines it snapped to, in the
+/// frame's own units (-0.5 to 0.5 from the middle): a vertical line at `x`,
+/// a horizontal one at `y`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Snapped {
+    pub position: Vec2,
+    pub vertical: Option<f32>,
+    pub horizontal: Option<f32>,
+}
+
+/// Snap a moved position so the picture's middle lands on the frame's middle,
+/// or one of its edges on the frame's edge, when within [`SNAP_PIXELS`].
+///
+/// `half` is half the picture's size in frame units; each axis snaps on its
+/// own, to whichever line is nearest.
+pub fn snap_position(at: Vec2, half: [f32; 2], canvas: egui::Rect) -> Snapped {
+    let reach = [
+        SNAP_PIXELS / canvas.width().max(1.0),
+        SNAP_PIXELS / canvas.height().max(1.0),
+    ];
+    let axis = |value: f32, half: f32, reach: f32| -> (f32, Option<f32>) {
+        // (where the position would go, the line it touches)
+        let candidates = [(0.0, 0.0), (half - 0.5, -0.5), (0.5 - half, 0.5)];
+        candidates
+            .into_iter()
+            .map(|(target, line)| ((value - target).abs(), target, line))
+            .filter(|(distance, _, _)| *distance <= reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map_or((value, None), |(_, target, line)| (target, Some(line)))
+    };
+    let (x, vertical) = axis(at.x, half[0], reach[0]);
+    let (y, horizontal) = axis(at.y, half[1], reach[1]);
+    Snapped {
+        position: Vec2::new(x, y),
+        vertical,
+        horizontal,
+    }
+}
+
+/// Draw the guide lines a snapped move touched.
+pub fn draw_snap_guides(painter: &egui::Painter, snapped: Snapped, canvas: egui::Rect) {
+    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 80, 160));
+    if let Some(x) = snapped.vertical {
+        let px = canvas.center().x + x * canvas.width();
+        painter.line_segment(
+            [
+                egui::pos2(px, canvas.top()),
+                egui::pos2(px, canvas.bottom()),
+            ],
+            stroke,
+        );
+    }
+    if let Some(y) = snapped.horizontal {
+        let py = canvas.center().y + y * canvas.height();
+        painter.line_segment(
+            [
+                egui::pos2(canvas.left(), py),
+                egui::pos2(canvas.right(), py),
+            ],
+            stroke,
+        );
+    }
 }
 
 /// The scale a corner drag has reached.
@@ -754,6 +1019,26 @@ pub fn property_for(
         } => {
             let at = scaled(from, grab_distance, box_on_canvas.center(), now);
             Some(ClipProperty::Scale { x: at.x, y: at.y })
+        }
+        Gesture::Pin {
+            corner,
+            from,
+            origin,
+        } => {
+            // The offset is in frames, so the distance on the canvas is
+            // divided by the canvas — which is what keeps a pin the same shape
+            // when the preview is resized.
+            let offset = [
+                (now.x - origin.x) / canvas.width().max(1.0),
+                (now.y - origin.y) / canvas.height().max(1.0),
+            ];
+            let index = match corner {
+                Corner::TopLeft => 0,
+                Corner::TopRight => 1,
+                Corner::BottomRight => 2,
+                Corner::BottomLeft => 3,
+            };
+            Some(ClipProperty::CornerPin(from.with_corner(index, offset)))
         }
         Gesture::Crop {
             edge,

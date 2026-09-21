@@ -21,9 +21,11 @@
 //! was a decision, and there is no way to guess what the same decision would
 //! be at another shape.
 
-use bettercut_foundation::SequenceId;
+use bettercut_foundation::{MediaId, SequenceId};
 use bettercut_project_format::Project;
-use bettercut_timeline::Resolution;
+use bettercut_timeline::{Resolution, Sequence};
+
+use crate::command::Command;
 
 use crate::editor::{Editor, aspect_of, at_placed_framing};
 use crate::error::EditorError;
@@ -120,46 +122,98 @@ impl Editor {
     ///
     /// Returns the copy and the sequence in it to export.
     pub fn export_copy(&self, shape: Option<Shape>) -> Result<(Project, SequenceId), EditorError> {
-        let sequence_id = self.active_sequence_id()?;
+        self.export_copy_of(None, shape)
+    }
+
+    /// [`Self::export_copy`] for any sequence in the project: `None` is the
+    /// one on screen.
+    pub fn export_copy_of(
+        &self,
+        sequence: Option<SequenceId>,
+        shape: Option<Shape>,
+    ) -> Result<(Project, SequenceId), EditorError> {
+        let sequence_id = match sequence {
+            Some(id) => {
+                self.project()
+                    .sequence(id)
+                    .ok_or(EditorError::SequenceNotFound(id))?;
+                id
+            }
+            None => self.active_sequence_id()?,
+        };
         let mut project = self.project().clone();
         let Some(shape) = shape else {
             return Ok((project, sequence_id));
         };
-        let media: Vec<(bettercut_foundation::MediaId, Option<f32>)> = project
-            .media
-            .iter()
-            .map(|asset| (asset.id, aspect_of(asset.width, asset.height)))
-            .collect();
-
+        let media = media_aspects(&project);
         let sequence = project
             .sequence_mut(sequence_id)
             .ok_or(EditorError::SequenceNotFound(sequence_id))?;
-        sequence.resolution = shape.applied_to(sequence.resolution);
-        let Some(output) = aspect_of(sequence.resolution.width, sequence.resolution.height) else {
-            return Ok((project, sequence_id));
-        };
-
-        for track in &mut sequence.video_tracks {
-            // By id: a track hands out its clips mutably one at a time, so its
-            // ordering cannot be broken from outside. A crop does not move one.
-            let ids: Vec<_> = track.clips().iter().map(|clip| clip.id).collect();
-            for id in ids {
-                let Some(clip) = track.get_mut(id) else {
-                    continue;
-                };
-                if !at_placed_framing(clip) {
-                    continue;
-                }
-                let Some(source) = media
-                    .iter()
-                    .find(|(id, _)| *id == clip.media_id)
-                    .and_then(|(_, aspect)| *aspect)
-                else {
-                    continue; // missing media, or a size never learned
-                };
-                clip.crop = bettercut_timeline::crop_to_aspect(source, output);
-            }
-        }
+        reshape(sequence, &media, shape);
         Ok((project, sequence_id))
+    }
+
+    /// Copy `sequence` at another shape — a vertical cut of a landscape edit —
+    /// right after it, and switch to the copy. One undo step.
+    ///
+    /// Framed the way an export's extra shapes are: shots still at their
+    /// placed framing are cropped to fill the new frame, anything framed by
+    /// hand is left as it was. The original is untouched.
+    pub fn copy_sequence_as(
+        &mut self,
+        sequence: SequenceId,
+        shape: Shape,
+    ) -> Result<SequenceId, EditorError> {
+        let (mut copy, index) = self.sequence_copy(sequence)?;
+        let name = &self.project().sequences[index].name;
+        copy.name = format!("{name} {}", shape.label);
+        reshape(&mut copy, &media_aspects(self.project()), shape);
+        let id = copy.id;
+        self.dispatch(Command::AddSequence {
+            sequence: Box::new(copy),
+            index: index + 1,
+        })?;
+        self.switch_sequence(id);
+        Ok(id)
+    }
+}
+
+/// Every file's width over height, where it is known.
+fn media_aspects(project: &Project) -> Vec<(MediaId, Option<f32>)> {
+    project
+        .media
+        .iter()
+        .map(|asset| (asset.id, aspect_of(asset.width, asset.height)))
+        .collect()
+}
+
+/// Give `sequence` the shape `shape`, cropping every shot still at its placed
+/// framing to fill it.
+fn reshape(sequence: &mut Sequence, media: &[(MediaId, Option<f32>)], shape: Shape) {
+    sequence.resolution = shape.applied_to(sequence.resolution);
+    let Some(output) = aspect_of(sequence.resolution.width, sequence.resolution.height) else {
+        return;
+    };
+
+    for track in &mut sequence.video_tracks {
+        // By id: a track hands out its clips mutably one at a time, so its
+        // ordering cannot be broken from outside. A crop does not move one.
+        let ids: Vec<_> = track.clips().iter().map(|clip| clip.id).collect();
+        for id in ids {
+            let Some(clip) = track.get_mut(id) else {
+                continue;
+            };
+            if !at_placed_framing(clip) {
+                continue;
+            }
+            let Some(source) = media
+                .iter()
+                .find(|(id, _)| *id == clip.media_id)
+                .and_then(|(_, aspect)| *aspect)
+            else {
+                continue; // missing media, or a size never learned
+            };
+            clip.crop = bettercut_timeline::crop_to_aspect(source, output);
+        }
     }
 }

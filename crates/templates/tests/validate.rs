@@ -270,7 +270,7 @@ fn numbers_outside_the_editors_own_ranges_are_rejected_not_clamped() {
             json!(0.001),
             "shortest transition",
         ),
-        ("/elements/0/transition_out/kind", json!("spin"), "`spin`"),
+        ("/elements/0/transition_out/kind", json!("cube"), "`cube`"),
         ("/elements/3/style/size", json!(4000.0), "style"),
         ("/elements/3/style/line_height", json!(10.0), "style"),
     ];

@@ -85,12 +85,34 @@ fn render(
     seed: u32,
     pixels: &[(u32, u32)],
 ) -> Vec<[f32; 3]> {
+    render_effects(
+        compositor, frame, rgb_split, glitch, 0.0, 0.0, 0.0, seed, pixels,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_effects(
+    compositor: &mut Compositor,
+    frame: &VideoFrame,
+    rgb_split: f32,
+    glitch: f32,
+    pixelate: f32,
+    zoom_blur: f32,
+    glow: f32,
+    seed: u32,
+    pixels: &[(u32, u32)],
+) -> Vec<[f32; 3]> {
     compositor.set_grain_seed(seed);
     compositor
         .composite(
             &[Layer {
                 frame,
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     crop: Crop::NONE,
                     transform: Transform::default(),
                     opacity: 1.0,
@@ -100,6 +122,55 @@ fn render(
                     lut: None,
                     rgb_split,
                     glitch,
+                    pixelate,
+                    zoom_blur,
+                    vignette: 0.0,
+                    reflection: bettercut_timeline::Reflection::None,
+                    chroma_key: None,
+                    mask: None,
+                    blend: bettercut_timeline::BlendMode::Normal,
+                },
+            }],
+            MasterLook::default(),
+        )
+        .expect("composite");
+    pixels
+        .iter()
+        .map(|(x, y)| compositor.read_pixel(*x, *y).unwrap())
+        .collect()
+}
+
+/// Composite `frame` with only an old-film amount, and read back `pixels`.
+fn render_old_film(
+    compositor: &mut Compositor,
+    frame: &VideoFrame,
+    old_film: f32,
+    seed: u32,
+    pixels: &[(u32, u32)],
+) -> Vec<[f32; 3]> {
+    compositor.set_grain_seed(seed);
+    compositor
+        .composite(
+            &[Layer {
+                frame,
+                look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
+                    crop: Crop::NONE,
+                    transform: Transform::default(),
+                    opacity: 1.0,
+                    color: ColorAdjust::default(),
+                    blur: 0.0,
+                    sharpen: 0.0,
+                    lut: None,
+                    rgb_split: 0.0,
+                    glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     chroma_key: None,
                     mask: None,
@@ -245,4 +316,180 @@ fn none_changes_nothing() {
     assert_eq!(compositor.intermediate_count(), 0);
     let b = render(&mut compositor, &ramp, 0.0, 0.0, 2, &grid);
     assert_eq!(a, b);
+}
+
+/// Pixelate shows the picture as square blocks: across a smooth ramp, every
+/// pixel inside one block is the same colour, and neighbouring blocks differ.
+/// At full the block is 8% of the longer side: about twenty pixels here.
+#[test]
+fn pixelate_shows_square_blocks() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let ramp = frame(|x, y| [(x * 255 / (SIZE.width - 1)) as u8, (y * 2) as u8, 60]);
+    let row: Vec<(u32, u32)> = (0..SIZE.width).map(|x| (x, 50)).collect();
+    let plain = render(&mut compositor, &ramp, 0.0, 0.0, 1, &row);
+    let blocks = render_effects(&mut compositor, &ramp, 0.0, 0.0, 100.0, 0.0, 0.0, 1, &row);
+
+    // Runs of equal colour along the row.
+    let mut runs = Vec::new();
+    let mut length = 1;
+    for x in 1..blocks.len() {
+        if (blocks[x][0] - blocks[x - 1][0]).abs() < 1e-4 {
+            length += 1;
+        } else {
+            runs.push(length);
+            length = 1;
+        }
+    }
+    runs.push(length);
+    let block = (0.08 * SIZE.width as f32) as usize;
+    let whole: Vec<usize> = runs[1..runs.len() - 1].to_vec();
+    assert!(!whole.is_empty(), "no blocks at all: {runs:?}");
+    assert!(
+        whole.iter().all(|r| r.abs_diff(block) <= 1),
+        "blocks are not about {block} wide: {runs:?}"
+    );
+    assert_ne!(plain, blocks, "pixelate changed nothing");
+    assert!(
+        plain.windows(2).all(|w| (w[0][0] - w[1][0]).abs() < 0.05),
+        "setup: the ramp is not smooth"
+    );
+}
+
+/// Zoom blur is a rush forward: each point takes in the picture between it
+/// and the middle, so a bright spot right of centre streaks outwards — to its
+/// right, away from the middle — and not inwards; the middle stays put.
+#[test]
+fn zoom_blur_streaks_away_from_the_middle() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    // A bright square three quarters of the way across, on the middle row.
+    let spot_x = SIZE.width * 3 / 4;
+    let spot = frame(|x, y| {
+        if x.abs_diff(spot_x) <= 3 && y.abs_diff(cy) <= 3 {
+            [255, 255, 255]
+        } else {
+            [0, 0, 0]
+        }
+    });
+    // Just outside the spot on each side, and the middle.
+    let inside = (spot_x - 10, cy);
+    let outside = (spot_x + 10, cy);
+    let pixels = [inside, outside, (cx, cy)];
+    let plain = render(&mut compositor, &spot, 0.0, 0.0, 1, &pixels);
+    let zoomed = render_effects(
+        &mut compositor,
+        &spot,
+        0.0,
+        0.0,
+        0.0,
+        100.0,
+        0.0,
+        1,
+        &pixels,
+    );
+
+    assert!(
+        plain[0][0] < 0.01 && plain[1][0] < 0.01,
+        "setup: the spot is too big"
+    );
+    assert!(
+        zoomed[1][0] > 0.02,
+        "nothing streaked outwards: {:?}",
+        zoomed[1]
+    );
+    assert!(
+        zoomed[0][0] < 0.01,
+        "the streak ran inwards: {:?}",
+        zoomed[0]
+    );
+    assert!(zoomed[2][0] < 0.01, "the middle picked up the spot");
+}
+
+/// A bright square on black: with a glow, light bleeds onto the black just
+/// outside it, while black far away stays black and a dim picture does not
+/// bloom at all.
+#[test]
+fn glow_bleeds_light_around_bright_parts() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    let spot = frame(|x, y| {
+        if x.abs_diff(cx) <= 4 && y.abs_diff(cy) <= 4 {
+            [255, 255, 255]
+        } else {
+            [0, 0, 0]
+        }
+    });
+    let near = (cx + 7, cy);
+    let far = (2, 2);
+    let pixels = [near, far, (cx, cy)];
+    let plain = render(&mut compositor, &spot, 0.0, 0.0, 1, &pixels);
+    let glowing = render_effects(
+        &mut compositor,
+        &spot,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        100.0,
+        1,
+        &pixels,
+    );
+    assert!(plain[0][1] < 0.01, "setup: the spot is too big");
+    assert!(glowing[0][1] > 0.02, "no light bled out: {:?}", glowing[0]);
+    assert!(glowing[1][1] < 0.01, "the glow reached the corner");
+    assert!(glowing[2][1] >= plain[2][1], "the spot got darker");
+
+    // A dim grey picture is under the threshold: nothing to bloom.
+    let grey = frame(|_, _| [90, 90, 90]);
+    let flat = render(&mut compositor, &grey, 0.0, 0.0, 1, &[(cx, cy)]);
+    let dim = render_effects(
+        &mut compositor,
+        &grey,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        100.0,
+        1,
+        &[(cx, cy)],
+    );
+    assert!(
+        (flat[0][1] - dim[0][1]).abs() < 0.01,
+        "a dim picture bloomed"
+    );
+}
+
+/// An old print: the exposure wavers from frame to frame, and scratches or
+/// dust mark the picture somewhere along a row.
+#[test]
+fn old_film_flickers_and_marks_the_picture() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let grey = frame(|_, _| [128, 128, 128]);
+    let cy = SIZE.height / 2;
+    let row: Vec<(u32, u32)> = (0..SIZE.width).map(|x| (x, cy)).collect();
+    let plain = render(&mut compositor, &grey, 0.0, 0.0, 1, &[(0, cy)])[0][1];
+
+    let mut typicals = Vec::new();
+    let mut marked = false;
+    for seed in [1, 4, 7, 10, 13, 16] {
+        let pixels = render_old_film(&mut compositor, &grey, 100.0, seed, &row);
+        let mut greens: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
+        greens.sort_by(f32::total_cmp);
+        let typical = greens[greens.len() / 2];
+        typicals.push(typical);
+        marked |= pixels.iter().any(|p| (p[1] - typical).abs() > 0.1);
+    }
+    let (low, high) = typicals
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+    assert!(high - low > 0.005, "no flicker: {typicals:?}");
+    assert!(marked, "no scratch or speck along the row in six frames");
+    assert!(
+        (low - plain).abs() < 0.2 && (high - plain).abs() < 0.2,
+        "the exposure swung too far"
+    );
 }

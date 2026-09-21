@@ -48,6 +48,15 @@ pub struct Preview {
     /// Last position actually composited, so a still frame is not re-rendered
     /// sixty times a second while paused (§81's idle target).
     last_rendered: Option<TimelineTime>,
+    /// Drawing every clip without its grade, for a before/after compare.
+    compare_original: bool,
+    /// Showing the graded picture and the original side by side: the frame is
+    /// composited twice, and the ungraded one is kept for the panel to draw on
+    /// the other side of the divider.
+    compare_split: bool,
+    /// The kept frame, registered with egui. Made the first time a split is
+    /// asked for.
+    snapshot_id: Option<egui::TextureId>,
     /// Consecutive dropped frames, feeding §17's quality reduction.
     consecutive_drops: u32,
     /// Consecutive frames presented on time, feeding §17's recovery.
@@ -74,6 +83,10 @@ pub struct Preview {
     /// the rate, and when the playhead was last moved for it. Silent, and
     /// driven from here rather than by the audio clock.
     shuttle: Option<(i32, std::time::Instant)>,
+
+    /// Normal playback repeats the in-to-out range — or the whole sequence,
+    /// without marks — instead of stopping at its end.
+    looping: bool,
 }
 
 impl Preview {
@@ -142,6 +155,9 @@ impl Preview {
             gpu,
             proxy_height: None,
             last_rendered: None,
+            compare_original: false,
+            compare_split: false,
+            snapshot_id: None,
             consecutive_drops: 0,
             consecutive_on_time: 0,
             last_quality_change: std::time::Instant::now(),
@@ -150,6 +166,7 @@ impl Preview {
             was_playing: false,
             layer_sizes: Vec::new(),
             shuttle: None,
+            looping: false,
         })
     }
 
@@ -186,6 +203,13 @@ impl Preview {
     }
 
     /// The font families available for §26's text overlays.
+    /// Make an imported font available to the titles on screen, and redraw.
+    pub fn add_font_file(&mut self, path: &std::path::Path) -> Result<Vec<String>, String> {
+        let families = self.engine.add_font_file(path).map_err(|e| e.to_string())?;
+        self.last_rendered = None;
+        Ok(families)
+    }
+
     pub fn font_families(&self) -> Vec<String> {
         self.engine.font_families()
     }
@@ -213,6 +237,7 @@ impl Preview {
             underruns: self.clock.clock().underruns(),
             limited_samples: self.mixer.as_ref().map_or(0, |m| m.limited_samples()),
             peaks: self.mixer.as_ref().map_or((0.0, 0.0), |m| m.peaks()),
+            loudness: self.mixer.as_ref().map_or((None, None), |m| m.loudness()),
             prefetch_hits: self.engine.prefetch_hits(),
             ring_frames: self.engine.prefetched_frames(),
             quality: match self.render_quality() {
@@ -224,8 +249,27 @@ impl Preview {
         }
     }
 
+    /// What each sound lane is putting into the mix right now, per side, in
+    /// lane order (`bettercut_playback::lane_meters`). Empty without a mixer,
+    /// and all silence while playback is stopped.
+    pub fn lane_levels(&self) -> Vec<(f32, f32)> {
+        self.mixer
+            .as_ref()
+            .map(|m| m.lane_peaks())
+            .unwrap_or_default()
+    }
+
     pub fn audio_description(&self) -> String {
         self.clock.describe()
+    }
+
+    /// Whether playback loops (`crate::shuttle::loop_range`).
+    pub fn is_looping(&self) -> bool {
+        self.looping
+    }
+
+    pub fn set_looping(&mut self, looping: bool) {
+        self.looping = looping;
     }
 
     /// How fast and which way the playhead is moving: 0 stopped, 1 normal
@@ -332,6 +376,40 @@ impl Preview {
         self.last_rendered = None;
     }
 
+    /// Show every clip without its grade and effects, to compare with the
+    /// original — or with them again. Redraws when it changes.
+    pub fn set_compare_original(&mut self, on: bool) {
+        if self.compare_original != on {
+            self.compare_original = on;
+            self.last_rendered = None;
+        }
+    }
+
+    /// Play a short burst of the mix from `at` — what makes dragging the
+    /// playhead audible. Does nothing while playing, or with no sound device.
+    pub fn scrub_audio(&self, at: TimelineTime) {
+        if self.clock.is_playing() {
+            return;
+        }
+        if let Some(mixer) = self.mixer.as_ref() {
+            mixer.scrub(at);
+        }
+    }
+
+    /// Show the original beside the graded picture rather than instead of it.
+    pub fn set_compare_split(&mut self, on: bool) {
+        if self.compare_split != on {
+            self.compare_split = on;
+            self.last_rendered = None;
+        }
+    }
+
+    /// The kept, ungraded frame, for the panel to draw beside the live one.
+    /// `None` until a split has actually been composited.
+    pub fn snapshot_id(&self) -> Option<egui::TextureId> {
+        self.snapshot_id
+    }
+
     /// One frame of playback work. Returns whether a repaint is needed.
     pub fn update(&mut self, editor: &mut Editor) -> bool {
         self.clock.tick();
@@ -356,10 +434,25 @@ impl Preview {
             let position = self.clock.position();
             editor.set_playhead(position);
 
-            if let Some(end) = editor.active_sequence().map(|s| s.duration())
-                && position >= end
-            {
-                self.clock.set_playing(false);
+            let range = editor
+                .active_sequence()
+                .and_then(crate::shuttle::loop_range);
+            match range {
+                // Round again: the clock and the sound jump back together,
+                // and playback carries on.
+                Some(range) if self.looping => {
+                    if let Some(start) = crate::shuttle::loop_restart(position, range) {
+                        editor.set_playhead(start);
+                        self.seek_to(start);
+                    }
+                }
+                _ => {
+                    if let Some(end) = editor.active_sequence().map(|s| s.duration())
+                        && position >= end
+                    {
+                        self.clock.set_playing(false);
+                    }
+                }
             }
         }
 
@@ -440,7 +533,6 @@ impl Preview {
         let Some(sequence) = editor.active_sequence() else {
             return;
         };
-        let master = sequence.master;
 
         // Keep the preview's aspect matched to the sequence, scaled by §17's
         // quality setting while playing and full while paused.
@@ -500,11 +592,50 @@ impl Preview {
             }
         }
 
+        // Side by side: the original first, kept, and then the graded frame
+        // over it — two composites of the same instant.
+        if self.compare_split && !self.compare_original {
+            self.composite(editor, sequence, position, &resolved, true);
+            if let Err(err) = self.compositor.keep_snapshot() {
+                tracing::warn!(%err, "could not keep the frame to compare against");
+            } else if self.snapshot_id.is_none()
+                && let Some(view) = self.compositor.snapshot_view()
+            {
+                self.snapshot_id =
+                    Some(self.render_state.renderer.write().register_native_texture(
+                        &self.render_state.device,
+                        view,
+                        bettercut_renderer::wgpu::FilterMode::Linear,
+                    ));
+            }
+        }
+
+        self.composite(editor, sequence, position, &resolved, self.compare_original);
+        self.last_rendered = Some(position);
+    }
+
+    /// Composite one frame, graded or as the footage came.
+    ///
+    /// Split out so the same instant can be drawn twice — once each way — for
+    /// the side-by-side comparison.
+    fn composite(
+        &mut self,
+        editor: &Editor,
+        sequence: &bettercut_editor_core::timeline::Sequence,
+        position: TimelineTime,
+        resolved: &[bettercut_playback::engine::ResolvedLayer],
+        original: bool,
+    ) {
+        let master = sequence.master;
         let layers: Vec<Layer<'_>> = resolved
             .iter()
             .map(|resolved| Layer {
                 frame: &resolved.frame,
-                look: resolved.look,
+                look: if original {
+                    resolved.look.ungraded()
+                } else {
+                    resolved.look
+                },
             })
             .collect();
 
@@ -525,11 +656,23 @@ impl Preview {
         bettercut_playback::load_luts(editor.project(), &mut self.tried_luts, |id, lut| {
             compositor.load_lut(id, lut);
         });
+        // The original has no adjustment grades and no master grade either.
+        let (grades, master) = if original {
+            (
+                Vec::new(),
+                bettercut_editor_core::timeline::MasterLook {
+                    background: master.background,
+                    transform: master.transform,
+                    opacity: master.opacity,
+                    ..bettercut_editor_core::timeline::MasterLook::default()
+                },
+            )
+        } else {
+            (grades, master)
+        };
         if let Err(err) = self.compositor.composite_graded(&layers, &grades, master) {
             tracing::warn!(%err, "compositing failed");
-            return;
         }
-        self.last_rendered = Some(position);
     }
 
     /// §17: step down a quality level, at most one step at a time.

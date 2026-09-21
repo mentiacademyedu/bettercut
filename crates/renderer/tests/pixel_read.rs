@@ -101,10 +101,18 @@ fn composite(compositor: &mut Compositor, shot: &VideoFrame) {
                 frame: shot,
 
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform: Transform::default(),
@@ -138,10 +146,18 @@ fn composite_transform(compositor: &mut Compositor, shot: &VideoFrame, transform
             &[Layer {
                 frame: shot,
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform,
@@ -486,10 +502,18 @@ fn the_background_shows_where_no_picture_does() {
                 frame: &shot,
 
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform: Transform {
@@ -537,10 +561,18 @@ fn the_background_is_black_unless_asked_otherwise() {
                 frame: &shot,
 
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform: Transform {
@@ -581,10 +613,18 @@ fn the_background_is_the_srgb_colour_it_was_given() {
                 frame: &shot,
 
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform: Transform {
@@ -631,10 +671,18 @@ mod white_balance {
                 &[Layer {
                     frame: &grey,
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
                         transform: Transform::default(),
@@ -748,10 +796,18 @@ mod white_balance {
                 &[Layer {
                     frame: &black,
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
                         transform: Transform::default(),
@@ -777,4 +833,33 @@ mod white_balance {
             "the white balance lifted black off the floor: {pixel:?}"
         );
     }
+}
+
+/// The kept frame is the frame that was composited when it was kept — what a
+/// side-by-side comparison draws on the other side of the divider.
+#[test]
+fn a_kept_frame_survives_the_next_composite() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+
+    // A red frame, kept; then a green one composited over the top.
+    let red = MasterLook {
+        background: [1.0, 0.0, 0.0],
+        ..MasterLook::default()
+    };
+    let green = MasterLook {
+        background: [0.0, 1.0, 0.0],
+        ..MasterLook::default()
+    };
+    compositor.composite(&[], red).expect("composite");
+    compositor.keep_snapshot().expect("keep");
+    compositor.composite(&[], green).expect("composite");
+
+    // The live frame is the green one.
+    let live = compositor.read_pixel(4, 4).expect("in frame");
+    assert!(live[1] > 0.5 && live[0] < 0.5, "the live frame is {live:?}");
+    // And the kept one is still there, its own size, ready to be drawn.
+    let kept = compositor.snapshot_texture().expect("a kept frame");
+    assert_eq!(kept.size(), compositor.target().size());
+    assert!(compositor.snapshot_view().is_some());
 }

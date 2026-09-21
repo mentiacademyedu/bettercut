@@ -126,6 +126,7 @@ impl Project {
                 || s.audio_tracks
                     .iter()
                     .any(|t| t.clips().iter().any(|c| c.media_id == id))
+                || s.watermark.is_some_and(|w| w.media == id)
         })
     }
 

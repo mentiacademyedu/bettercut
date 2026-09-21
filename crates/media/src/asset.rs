@@ -88,6 +88,46 @@ pub struct MediaAsset {
     /// unavailable and the session continues (§50, §66).
     #[serde(default)]
     pub missing: bool,
+
+    /// A name given to it in the project — "Interview, wide" rather than
+    /// `C0042.MP4`. `None` shows the file name. Never renames the file.
+    #[serde(default)]
+    pub label: Option<String>,
+
+    /// The bin this file is filed in, in the media browser: "B-roll",
+    /// "Interviews". `None` is unfiled.
+    #[serde(default)]
+    pub bin: Option<String>,
+
+    /// Set for a picture made rather than read — a colour clip. There is no
+    /// file behind it: nothing decodes, probes or proxies it.
+    #[serde(default)]
+    pub generated: Option<crate::Generated>,
+
+    /// Set for *sound* made rather than read — a line-up tone, a sync beep, a
+    /// stretch of silence (`crate::generated_sound`). No file behind it
+    /// either: the mixer works the samples out instead of opening a decoder.
+    #[serde(default)]
+    pub generated_sound: Option<crate::GeneratedSound>,
+
+    /// Set for a file this program wrote from the edit itself: a baked
+    /// stretch of the timeline (`bettercut_timeline::render`).
+    ///
+    /// It is media, and decodes like any other media, but it is not something
+    /// the user imported — so the media browser does not list it and no proxy
+    /// is made of it. Hiding it is not tidiness: a file called
+    /// `render-00000000-00028800.mp4` in the library is a file someone will
+    /// try to edit with, and it holds one stretch of their own edit.
+    #[serde(default)]
+    pub baked: bool,
+
+    /// What the editor thought of this take, 0–5, and zero for "not judged".
+    ///
+    /// The first pass through a shoot is not editing, it is *choosing*: three
+    /// takes of the same line, one of which is the one. A star on the good one
+    /// and a filter that shows only those is the whole of that job.
+    #[serde(default)]
+    pub rating: u8,
 }
 
 impl MediaAsset {
@@ -119,7 +159,50 @@ impl MediaAsset {
             color: ColorMetadata::default(),
             proxy: None,
             missing: false,
+            label: None,
+            bin: None,
+            generated: None,
+            generated_sound: None,
+            baked: false,
+            rating: 0,
         }
+    }
+
+    /// A made picture the shape of `width` × `height` — a colour clip for a
+    /// sequence that size. A still, so it runs as long as it is placed for.
+    pub fn generated(generated: crate::Generated, width: u32, height: u32) -> Self {
+        let mut asset = Self::new(MediaKind::Image, PathBuf::new(), MediaTime::ZERO);
+        asset.file_name = generated.name();
+        asset.width = width.max(1);
+        asset.height = height.max(1);
+        asset.generated = Some(generated);
+        asset
+    }
+
+    /// Made sound, as long as `duration`: a tone, a beep, silence.
+    ///
+    /// Given a long duration by the caller rather than a natural one, because
+    /// a made sound has no length of its own — a clip of it is as long as it
+    /// is placed for, and trimming it out further is not running past the end
+    /// of anything.
+    pub fn generated_sound(sound: crate::GeneratedSound, duration: MediaTime) -> Self {
+        let mut asset = Self::new(MediaKind::Audio, PathBuf::new(), duration);
+        asset.file_name = sound.name();
+        asset.generated_sound = Some(sound.clamped());
+        asset.audio_sample_rate = Some(bettercut_foundation::AUDIO_SAMPLE_RATE as u32);
+        asset.audio_channels = Some(2);
+        asset
+    }
+
+    /// The frame a generated entry draws; `None` for a real file.
+    pub fn generated_frame(&self) -> Option<crate::VideoFrame> {
+        self.generated
+            .map(|generated| generated.frame(self.width, self.height))
+    }
+
+    /// What the project calls this file: its given name, or the file name.
+    pub fn display_name(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.file_name)
     }
 
     pub fn with_video(mut self, width: u32, height: u32, frame_rate: FrameRate) -> Self {
@@ -166,8 +249,14 @@ impl MediaAsset {
     /// How long a clip of this runs when first put on the timeline: the whole
     /// file, or [`STILL_DURATION`] for a picture.
     pub fn placement_duration(&self) -> MediaTime {
+        self.placement_duration_with(STILL_DURATION)
+    }
+
+    /// [`Self::placement_duration`], with a picture running `still` — the
+    /// project's photo length.
+    pub fn placement_duration_with(&self, still: MediaTime) -> MediaTime {
         if self.is_still() {
-            STILL_DURATION
+            still
         } else {
             self.duration
         }
@@ -199,7 +288,8 @@ impl MediaAsset {
 
     /// Does the file still exist where we last saw it? (§66)
     pub fn exists(&self) -> bool {
-        self.path.exists()
+        // A made picture has no file to lose.
+        self.generated.is_some() || self.path.exists()
     }
 
     /// A candidate relink target: same file name, matching size (§66).

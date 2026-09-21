@@ -415,11 +415,13 @@ fn a_titles_animation_is_set_clamped_and_undone() {
     let mut editor = editor();
     let clip = editor.add_text("Hello").unwrap();
     let wanted = TextAnimation {
+        scroll: None,
         intro: Some(Motion {
             kind: MotionKind::Pop,
             duration: TimelineTime::ZERO,
         }),
         outro: None,
+        looping: None,
     };
 
     editor

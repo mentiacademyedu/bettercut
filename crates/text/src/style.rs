@@ -297,6 +297,15 @@ pub struct TextStyle {
     /// and the caller is responsible for the text fitting.
     #[serde(default)]
     pub wrap_width: Option<f32>,
+    /// A second fill colour: the letters shade from [`Self::color`] at the
+    /// top of the text to this at the bottom. `None` is a flat fill.
+    #[serde(default)]
+    pub gradient: Option<Rgba>,
+    /// How far the text bends round a circle, -1–1: positive arches it up
+    /// like a rainbow, negative sags it like a smile, and 1 wraps it half way
+    /// round. Zero is straight.
+    #[serde(default)]
+    pub curve: f32,
 }
 
 impl Default for TextStyle {
@@ -319,6 +328,8 @@ impl Default for TextStyle {
             shadow: None,
             background: None,
             wrap_width: None,
+            gradient: None,
+            curve: 0.0,
         }
     }
 }
@@ -499,6 +510,7 @@ impl TextStyle {
             self.letter_spacing,
             self.line_height,
             self.wrap_width.unwrap_or(f32::NAN),
+            self.curve,
         ] {
             value.to_bits().hash(&mut hasher);
         }
@@ -528,6 +540,10 @@ impl TextStyle {
             }
             None => 2u8.hash(&mut hasher),
         }
+        match self.gradient {
+            Some(colour) => colour.hash(&mut hasher),
+            None => 3u8.hash(&mut hasher),
+        }
 
         hasher.finish()
     }
@@ -555,6 +571,11 @@ impl TextStyle {
             background.corner_radius = background.corner_radius.clamp(0.0, style.size);
         }
         style.wrap_width = style.wrap_width.map(|w| w.clamp(style.size, 16_384.0));
+        style.curve = if style.curve.is_finite() {
+            style.curve.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         style
     }
 }

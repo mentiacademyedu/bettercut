@@ -1,6 +1,6 @@
 //! View state. None of this is project data and none of it is saved.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bettercut_editor_core::foundation::{ClipId, TimelineTime, TrackId};
 use bettercut_editor_core::timeline::{SnapTarget, TimelineRange};
@@ -11,6 +11,25 @@ pub enum DragMode {
     Move,
     TrimStart,
     TrimEnd,
+    /// Ctrl+Alt: the clip stays put and plays a different part of its file.
+    Slip,
+    /// Ctrl+Alt on a cut between two touching clips: the cut moves, one clip
+    /// growing as the other shrinks.
+    Roll,
+    /// Ctrl+Shift: the clip moves and its neighbours give way, so nothing
+    /// after it moves at all.
+    Slide,
+}
+
+/// A roll in progress: which cut, and where it is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RollDrag {
+    /// The clip before the cut.
+    pub left: ClipId,
+    /// Where the cut was when the drag began.
+    pub cut: TimelineTime,
+    /// Where it will be, already held to what both files allow.
+    pub to: TimelineTime,
 }
 
 /// A drag in progress.
@@ -52,6 +71,17 @@ pub struct DragState {
     /// in the meantime. Without it the sound jumps when the mouse is let go,
     /// which reads as a glitch rather than as a link.
     pub partners: Vec<(TrackId, TimelineRange)>,
+    /// A slip so far, in ticks of source (later when positive), already held
+    /// inside the file. Zero for every other kind of drag.
+    pub slip: i64,
+    /// Set for a roll; `None` for every other kind of drag.
+    pub roll: Option<RollDrag>,
+    /// Shift held on a move: the drop pushes whatever is there along rather
+    /// than having to land in free space.
+    pub insert: bool,
+    /// Shift held on a trim: this edge moves alone, leaving its linked partner
+    /// where it is — the J and L cuts (`editor_core::split_edit`).
+    pub alone: bool,
 }
 
 impl DragState {
@@ -84,6 +114,18 @@ impl DragState {
                     self.preview.end.ticks() - self.original.end.ticks(),
                 ),
             },
+            // A slip moves nothing on the timeline, the partner included.
+            // The partners' own ends roll too, but the ghost of the clip
+            // being held already shows the cut; theirs stay where they are.
+            DragMode::Slip | DragMode::Roll => partner,
+            // A slide carries its partner along, exactly as a move does.
+            DragMode::Slide => {
+                let by = self.preview.start.ticks() - self.original.start.ticks();
+                TimelineRange {
+                    start: shift(partner.start, by),
+                    end: shift(partner.end, by),
+                }
+            }
         }
     }
 }
@@ -125,6 +167,10 @@ pub struct PlaybackStats {
     pub limited_samples: u64,
     /// §20a: the last block's peak level per side, 0.0 to 1.0 or beyond.
     pub peaks: (f32, f32),
+    /// What the mix measures while it plays: the last three seconds and the
+    /// last 400 ms, in LUFS (`bettercut_audio::loudness`). `None` where there
+    /// is nothing to report — stopped, or below the silence gate.
+    pub loudness: (Option<f32>, Option<f32>),
     /// §47a.3: frames served from the decode-ahead ring rather than decoded
     /// inline. Zero while playing means decode-ahead is not helping.
     pub prefetch_hits: u64,
@@ -132,6 +178,36 @@ pub struct PlaybackStats {
     pub ring_frames: usize,
     /// §16's preview scale in force right now.
     pub quality: &'static str,
+}
+
+/// How long a lane meter takes to fall by a factor of e, in seconds.
+///
+/// Fast enough to follow a line ending, slow enough that the eye reads a level
+/// rather than a flicker. Rise is instant: a meter that lags the sound is
+/// worse than none, because it points at the wrong word.
+pub const METER_FALL_SECONDS: f32 = 0.35;
+
+/// One meter's next reading: the live level if it is louder, otherwise the
+/// old one on its way down.
+///
+/// `seconds` is the time since the last frame, so the fall is the same however
+/// fast the interface is drawing.
+pub fn fallen(shown: f32, live: f32, seconds: f32) -> f32 {
+    if !live.is_finite() || !shown.is_finite() {
+        return 0.0;
+    }
+    if live >= shown {
+        return live.max(0.0);
+    }
+    let decay = (-seconds.max(0.0) / METER_FALL_SECONDS).exp();
+    let next = shown * decay;
+    // Below this nothing is drawn anyway, and a level that never quite reaches
+    // zero is a meter that never quite goes out.
+    if next < 1e-4 {
+        live.max(0.0)
+    } else {
+        next.max(live)
+    }
 }
 
 /// Which end of a clip a fade handle belongs to.
@@ -160,6 +236,21 @@ pub struct FadeDrag {
     pub grab_offset: i64,
 }
 
+/// Dragging one point of a track's volume line.
+#[derive(Debug, Clone)]
+pub struct TrackEnvelopeDrag {
+    pub track: bettercut_editor_core::foundation::TrackId,
+    /// Which point of the line is being moved.
+    pub index: usize,
+    /// The line as it is now, which each frame of the drag rewrites.
+    pub points: Vec<bettercut_editor_core::timeline::VolumePoint>,
+    /// The lane the line is drawn across, which says what a height means.
+    pub rect: egui::Rect,
+    /// Whether anything has moved yet, so the first write opens an undo step
+    /// and the rest join it.
+    pub moved: bool,
+}
+
 /// Dragging one point of a sound clip's volume envelope (§24).
 ///
 /// The whole envelope is carried, as it was when the drag started, because the
@@ -181,6 +272,23 @@ pub struct EnvelopeDrag {
     pub rect: egui::Rect,
     /// Set once the pointer moves, so the first frame starts the undo step and
     /// the rest join it. A press that never moves is not an edit at all.
+    pub moved: bool,
+}
+
+/// A keyframe being dragged on the animation graph (`panels::keyframe_graph`).
+///
+/// The edit is dispatched on release, like every other drag, so moving a key
+/// across the graph is one undo step rather than one per frame.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyframeDrag {
+    pub clip: ClipId,
+    pub parameter: bettercut_editor_core::timeline::AnimatedParameter,
+    /// Where the key was when the drag began — how it is found again.
+    pub from: bettercut_editor_core::foundation::MediaTime,
+    /// Where it is being dragged to, and what value it will hold.
+    pub to: bettercut_editor_core::foundation::MediaTime,
+    pub value: f32,
+    /// Set once the pointer moves: a press that never moves is a click.
     pub moved: bool,
 }
 
@@ -225,6 +333,53 @@ pub enum ContextTarget {
         /// Gap" closes a gap on.
         track: Option<TrackId>,
     },
+}
+
+/// What the media browser sorts its files by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaSort {
+    /// The order they were imported in — what the browser has always shown,
+    /// and the one that keeps a shoot in the order it was shot.
+    #[default]
+    Added,
+    Name,
+    Duration,
+    /// Video, then sound, then photos: the files for one job in the order they
+    /// are usually reached for.
+    Kind,
+}
+
+impl MediaSort {
+    pub const ALL: [Self; 4] = [Self::Added, Self::Name, Self::Duration, Self::Kind];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Added => "Added",
+            Self::Name => "Name",
+            Self::Duration => "Length",
+            Self::Kind => "Kind",
+        }
+    }
+}
+
+/// How the media browser lays its files out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaView {
+    /// A card each, with a thumbnail to skim through.
+    #[default]
+    Cards,
+    /// One line each: more files on screen at once, which is what a long
+    /// import needs.
+    List,
+}
+
+impl MediaView {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cards => "Cards",
+            Self::List => "List",
+        }
+    }
 }
 
 /// Which kind of file the media browser shows.
@@ -305,9 +460,120 @@ impl LaneHeight {
     }
 }
 
+/// How big the preview draws the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum PreviewZoom {
+    /// As large as fits, the whole frame in view.
+    #[default]
+    Fit,
+    /// A share of the sequence's own pixels: 1.0 is one frame pixel to one
+    /// screen pixel.
+    Scale(f32),
+}
+
+impl PreviewZoom {
+    /// What the menu offers, in order.
+    pub const CHOICES: [Self; 4] = [
+        Self::Fit,
+        Self::Scale(0.5),
+        Self::Scale(1.0),
+        Self::Scale(2.0),
+    ];
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Fit => "Fit".to_owned(),
+            Self::Scale(scale) => format!("{:.0}%", scale * 100.0),
+        }
+    }
+
+    /// The next step in or out from here, for Ctrl + scroll. From Fit, in
+    /// goes to 100% and out stays at Fit.
+    pub fn step(self, inwards: bool) -> Self {
+        let scales = [0.25_f32, 0.5, 1.0, 2.0, 4.0];
+        match (self, inwards) {
+            (Self::Fit, true) => Self::Scale(1.0),
+            (Self::Fit, false) => Self::Fit,
+            (Self::Scale(now), true) => scales
+                .iter()
+                .find(|s| **s > now + 1e-3)
+                .map_or(self, |s| Self::Scale(*s)),
+            (Self::Scale(now), false) => scales
+                .iter()
+                .rev()
+                .find(|s| **s < now - 1e-3)
+                .map_or(Self::Fit, |s| Self::Scale(*s)),
+        }
+    }
+}
+
+/// Lines drawn over the preview to help place things. A view setting, never
+/// in the picture or the export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewGuide {
+    #[default]
+    Off,
+    /// The rule of thirds.
+    Thirds,
+    /// Action- and title-safe margins: 90% and 80% of the frame.
+    TitleSafe,
+    /// Where a phone app draws its own buttons and captions over a vertical
+    /// video: keep words and faces out of the shaded parts.
+    Social,
+    /// A small cross in the middle of the frame, for eyelines, symmetry and
+    /// lining a shot up with the one before it.
+    ///
+    /// A cross rather than two lines across the whole picture: the middle is
+    /// what is being looked at, and lines through the subject's face are in
+    /// the way of the thing they are meant to help place.
+    Centre,
+}
+
+impl PreviewGuide {
+    pub const ALL: [Self; 5] = [
+        Self::Off,
+        Self::Thirds,
+        Self::TitleSafe,
+        Self::Social,
+        Self::Centre,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "No guides",
+            Self::Thirds => "Thirds",
+            Self::TitleSafe => "Title safe",
+            Self::Social => "Phone app UI",
+            Self::Centre => "Centre",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Off => "Just the picture",
+            Self::Thirds => "Lines at a third and two thirds, for placing faces and horizons",
+            Self::TitleSafe => "Keep action inside the outer box and words inside the inner one",
+            Self::Social => "Shades where TikTok, Reels and Shorts put their buttons and captions",
+            Self::Centre => "A cross through the middle, for eyelines and symmetry",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UiState {
     zoom_index: usize,
+    /// How far a movement travels when one is given
+    /// (`bettercut_timeline::MovementStrength`), and whether a montage
+    /// alternates its direction. Both are choices about the *next* movement,
+    /// not state of the edit, so they live here.
+    pub movement_strength: bettercut_editor_core::timeline::MovementStrength,
+    pub movement_alternates: bool,
+    /// Guide lines over the preview.
+    pub preview_guide: PreviewGuide,
+    /// How big the preview draws the picture, and how far it has been panned
+    /// from the middle, in screen points.
+    pub preview_zoom: PreviewZoom,
+    pub preview_pan: egui::Vec2,
     /// How tall the timeline's lanes are drawn.
     pub lane_height: LaneHeight,
     /// Timeline tick at the left edge of the canvas.
@@ -326,6 +592,10 @@ pub struct UiState {
     /// which leaves the picker with the three generic names — still usable,
     /// and it fills in on the next launch.
     pub font_families: Vec<String>,
+    /// A font file picked with Import Font, waiting to be copied in and loaded.
+    pub font_import: Option<std::path::PathBuf>,
+    /// A font just imported, to set on the title being edited.
+    pub font_imported: Option<String>,
 
     /// What has been typed into the family picker's filter.
     ///
@@ -340,6 +610,13 @@ pub struct UiState {
     /// these on screen. They are counted either way; showing them costs a few
     /// lines and turns an adjective into evidence.
     pub playback: Option<PlaybackStats>,
+    /// What the meters in the sound track heads show, per lane, per side.
+    ///
+    /// Not the live reading but a falling one: a peak meter that followed the
+    /// mix exactly would flicker at sixty frames a second and read as noise.
+    /// It rises the instant the sound does and falls back over a moment, which
+    /// is what makes a level readable (`settle_lane_levels`).
+    pub lane_levels: Vec<(f32, f32)>,
 
     /// §10 "Snapping". On by default; hold Alt during a drag to bypass it,
     /// which is the convention every editor uses and the fastest way to place
@@ -384,6 +661,20 @@ pub struct UiState {
 
     /// A volume point being dragged on the timeline (§24).
     pub envelope_drag: Option<EnvelopeDrag>,
+    /// Dragging one point of a *track's* volume line
+    /// (`bettercut_timeline::track_volume`). The line is carried as it was
+    /// when the drag began, for the reason [`EnvelopeDrag`] gives.
+    pub track_envelope_drag: Option<TrackEnvelopeDrag>,
+
+    /// A press on the overview strip is panning the view; the timeline itself
+    /// must ignore that drag.
+    pub overview_drag: bool,
+
+    /// Which parameter the Animation tab's graph is showing. `None` means the
+    /// first one the clip animates, so the graph always has something in it.
+    pub graph_parameter: Option<bettercut_editor_core::timeline::AnimatedParameter>,
+    /// A key being dragged on that graph.
+    pub graph_drag: Option<KeyframeDrag>,
 
     /// A fade handle being dragged at a sound clip's corner.
     pub fade_drag: Option<FadeDrag>,
@@ -392,12 +683,44 @@ pub struct UiState {
     pub captions_open: bool,
     /// The Markers window (`crate::marker_list`).
     pub markers_open: bool,
+    /// A sequence name being typed in its tab's menu, applied when the menu
+    /// closes or the field is left.
+    pub sequence_name_draft: Option<(bettercut_editor_core::foundation::SequenceId, String)>,
     /// A clip note being typed in the Inspector, and which clip it is for —
     /// applied when the field is left, or when another clip is selected.
     pub note_draft: Option<(ClipId, String)>,
     /// What the media browser is filtered to: typed words, and a kind.
     pub media_search: String,
     pub media_kind: MediaFilter,
+    /// Show only files with at least this many stars. Zero shows them all.
+    pub media_stars: u8,
+
+    /// What the browser sorts by, and whether that order is reversed.
+    pub media_sort: MediaSort,
+    pub media_sort_reversed: bool,
+    /// Cards with thumbnails, or one line per file.
+    pub media_view: MediaView,
+    /// The part of each file marked in the browser: where the in-point is,
+    /// and the out-point once a second click has set one (`Editor::
+    /// place_media_range`). Session state — a mark is a way of looking at a
+    /// file, not a change to the project.
+    pub media_marks: HashMap<
+        bettercut_editor_core::foundation::MediaId,
+        (
+            bettercut_editor_core::foundation::MediaTime,
+            Option<bettercut_editor_core::foundation::MediaTime>,
+        ),
+    >,
+
+    /// A file to point out in the browser — "find this clip's file" (§66's
+    /// relink is the other way round: this one starts from the timeline).
+    /// Drawn with a frame around it and scrolled to, until the search changes.
+    pub media_reveal: Option<bettercut_editor_core::foundation::MediaId>,
+    /// Which bin the media browser shows: `None` every file, `Some(None)`
+    /// the unfiled ones, `Some(Some(name))` one bin.
+    pub media_bin: Option<Option<String>>,
+    /// A new bin's name being typed in a file's menu.
+    pub new_bin_draft: String,
     /// A track name being typed in the track menu, and which track it is for —
     /// applied when the field is left or the menu closes, as one undo step.
     pub track_name_draft: Option<(TrackId, String)>,
@@ -410,10 +733,103 @@ pub struct UiState {
     /// A frame to save as a PNG, and the instant it was asked for at. Taken by
     /// the shell, which owns the job scheduler the still renders on (§74).
     pub still_request: Option<(std::path::PathBuf, TimelineTime)>,
+    /// A contact sheet to render (`bettercut_export::contact_sheet`), taken by
+    /// the shell like a still.
+    pub contact_sheet_request: Option<std::path::PathBuf>,
+    /// The sound-in-detail window (`crate::waveform_view`).
+    pub waveform_view: crate::waveform_view::WaveformView,
+    /// The storyboard window (`crate::storyboard`).
+    pub storyboard_open: bool,
+    /// What changed since an earlier save (`crate::version_changes`).
+    pub version_changes: crate::version_changes::ChangesView,
+    /// The trim window (`crate::trim_view`).
+    pub trim: crate::trim_view::TrimView,
+    /// A frame to render and put on the clipboard, asked for by "Copy Frame".
+    pub copy_frame_request: Option<TimelineTime>,
+    /// A stretch to bake (`editor_core::render_in_place`). Taken by the shell,
+    /// which owns the scheduler the bake runs on, exactly as a still is.
+    pub render_request: Option<bettercut_editor_core::timeline::TimelineRange>,
+    /// A sound lane to mix down to one clip (`editor_core::bounce`), taken by
+    /// the shell for the same reason.
+    pub bounce_request: Option<TrackId>,
+    /// What the timeline's find box holds.
+    pub find_query: String,
+    /// The preview shows every clip without its grade and effects.
+    pub compare_original: bool,
+    /// Hearing the sound while the playhead is dragged (§10's scrub). On by
+    /// default: finding the moment a word lands is what scrubbing is for.
+    pub audio_scrub: bool,
+
+    /// What the mix last measured, to show beside the targets
+    /// (`crate::loudness`).
+    pub loudness_measured: Option<f32>,
+    /// The delivery target the live meter is read against, in LUFS. Set by
+    /// choosing one in the master row; -14 to begin with, which is what the
+    /// sites most of this is made for turn everything down to.
+    pub loudness_target: f32,
+
+    /// Dragging the four corners of the selected clip (§45's corner pin)
+    /// rather than scaling it.
+    pub corner_pin_mode: bool,
+
+    /// Showing the original and the graded picture at once, split down the
+    /// frame, and where that divider sits (0–1 across the picture).
+    pub compare_split: bool,
+    pub compare_split_at: f32,
+    /// The preview fills the screen, with every panel hidden (F, Escape out).
+    pub fullscreen: bool,
+    /// The Lower Third menu's name, role and bar colour, kept while typing.
+    pub lower_third: (String, String, [u8; 3]),
+    /// Words to read aloud, waiting for the app to start the voice.
+    pub speech_request: Option<crate::speech::SpeechRequest>,
+    /// The voices installed on this machine, once they have been listed.
+    pub speech_voices: Option<Vec<String>>,
+    /// The Read Aloud menu has been opened, so the voices are worth listing.
+    pub speech_voices_wanted: bool,
+    /// The Record Voice button was pressed: start or stop recording.
+    pub voiceover_toggle: bool,
+    /// While recording: seconds so far and the latest level, 0–1.
+    pub voiceover_live: Option<(f64, f32)>,
+    /// What the window was last told, so the fullscreen request is sent once
+    /// per change rather than every frame.
+    pub fullscreen_applied: bool,
+    /// A file's name being typed in the media browser, not yet applied.
+    pub media_name_draft: Option<(bettercut_editor_core::foundation::MediaId, String)>,
+    /// The Scopes window: open or not, what it last measured, what it wants.
+    pub scopes: crate::scopes::ScopesState,
+    /// A clip to colour match to the frame at the given time, asked for by
+    /// "Match Colour to Playhead".
+    pub colour_match_request: Option<(bettercut_editor_core::foundation::ClipId, TimelineTime)>,
 
     /// Projects opened or saved lately, for the Open menu. In memory only
     /// until the shell points it at the user's stored list.
     pub recent: crate::recent::RecentProjects,
+    /// The user's own keys for the shortcuts.
+    pub keymap: crate::keymap::Keymap,
+    /// The speed curve being drawn in the Speed tab, and how many pieces it
+    /// is cut into when applied. Kept across clips, because the curve someone
+    /// drew is usually the curve they want on the next shot too.
+    pub speed_curve: bettercut_editor_core::SpeedCurve,
+    pub speed_curve_pieces: usize,
+    /// The point being dragged on that curve.
+    pub speed_curve_drag: Option<usize>,
+
+    /// Grades the user saved to reuse (`crate::looks`).
+    pub user_looks: crate::looks::UserLooks,
+    /// Title styles of this user's own (`crate::title_styles`), and the name
+    /// being typed for the next one.
+    pub title_styles: crate::title_styles::UserTitleStyles,
+    pub title_style_name_draft: String,
+    /// Export settings of this user's own (`crate::export_presets`), and the
+    /// name being typed for the next one.
+    pub export_presets: crate::export_presets::UserExports,
+    pub export_preset_draft: String,
+    /// What is typed in the "save this look" box, while it is open.
+    pub look_name_draft: String,
+    /// A shortcut waiting for its new key, from the Shortcuts window.
+    pub rebinding: Option<egui::Key>,
+    /// The Shortcuts window shows a key button on every row, to change it.
+    pub editing_keys: bool,
 
     /// The History window (Ctrl+H): every step, and a click to return to one.
     pub history_open: bool,
@@ -459,6 +875,8 @@ pub struct UiState {
     /// afterwards does not empty the clipboard — and so the paste is the same
     /// edit whenever it happens.
     pub copied_look: Option<Vec<bettercut_editor_core::ClipProperty>>,
+    /// A clip's keyframes, copied to paste onto others.
+    pub copied_animation: Option<bettercut_editor_core::animation_copy::CopiedAnimation>,
 
     /// The Remove Silences window (§78), with its suggestion.
     pub silence: Option<crate::silence_dialog::SilenceDialog>,
@@ -514,6 +932,8 @@ pub struct UiState {
     /// the shell acts on it.
     pub export_progress: Option<f32>,
     pub export_stop_requested: bool,
+    /// The export queue window and what it shows.
+    pub export_queue: crate::export_queue::ExportQueueState,
 }
 
 impl Default for UiState {
@@ -521,13 +941,21 @@ impl Default for UiState {
         Self {
             zoom_index: DEFAULT_ZOOM_INDEX,
             lane_height: LaneHeight::Normal,
+            movement_strength: bettercut_editor_core::timeline::MovementStrength::default(),
+            movement_alternates: true,
+            preview_guide: PreviewGuide::Off,
+            preview_zoom: PreviewZoom::Fit,
+            preview_pan: egui::Vec2::ZERO,
             scroll_ticks: 0,
             selected_clips: HashSet::new(),
             selected_track: None,
             status: None,
             font_families: Vec::new(),
+            font_import: None,
+            font_imported: None,
             font_filter: String::new(),
             playback: None,
+            lane_levels: Vec::new(),
             snapping: true,
             drag: None,
             inspector_tab: crate::panels::InspectorTab::default(),
@@ -539,6 +967,10 @@ impl Default for UiState {
             shortcuts_open: false,
             shortcut_search: String::new(),
             envelope_drag: None,
+            track_envelope_drag: None,
+            overview_drag: false,
+            graph_parameter: None,
+            graph_drag: None,
             fade_drag: None,
             captions_open: false,
             markers_open: false,
@@ -546,10 +978,62 @@ impl Default for UiState {
             track_name_draft: None,
             media_search: String::new(),
             note_draft: None,
+            sequence_name_draft: None,
             media_kind: MediaFilter::All,
+            media_stars: 0,
+            media_sort: MediaSort::default(),
+            media_sort_reversed: false,
+            media_view: MediaView::default(),
+            media_reveal: None,
+            media_marks: HashMap::new(),
+            media_bin: None,
+            new_bin_draft: String::new(),
             marker_draft: None,
             still_request: None,
+            contact_sheet_request: None,
+            waveform_view: crate::waveform_view::WaveformView::default(),
+            storyboard_open: false,
+            version_changes: crate::version_changes::ChangesView::default(),
+            trim: crate::trim_view::TrimView::default(),
+            render_request: None,
+            bounce_request: None,
+            copy_frame_request: None,
+            find_query: String::new(),
+            compare_original: false,
+            audio_scrub: true,
+            loudness_measured: None,
+            loudness_target: -14.0,
+            corner_pin_mode: false,
+            compare_split: false,
+            compare_split_at: 0.5,
+            fullscreen: false,
+            voiceover_toggle: false,
+            speech_request: None,
+            lower_third: (
+                String::new(),
+                String::new(),
+                bettercut_editor_core::lower_third::LOWER_THIRD_ACCENT,
+            ),
+            speech_voices: None,
+            speech_voices_wanted: false,
+            voiceover_live: None,
+            fullscreen_applied: false,
+            media_name_draft: None,
+            scopes: crate::scopes::ScopesState::default(),
+            colour_match_request: None,
             recent: crate::recent::RecentProjects::default(),
+            keymap: crate::keymap::Keymap::default(),
+            speed_curve: bettercut_editor_core::SpeedCurve::default(),
+            speed_curve_pieces: 6,
+            speed_curve_drag: None,
+            user_looks: crate::looks::UserLooks::default(),
+            title_styles: crate::title_styles::UserTitleStyles::default(),
+            title_style_name_draft: String::new(),
+            export_presets: crate::export_presets::UserExports::default(),
+            export_preset_draft: String::new(),
+            look_name_draft: String::new(),
+            rebinding: None,
+            editing_keys: false,
             history_open: false,
             history_seen_depth: None,
             caption_typing: None,
@@ -558,6 +1042,7 @@ impl Default for UiState {
             cropping: None,
             slideshow: bettercut_editor_core::slideshow::Slideshow::default(),
             copied_look: None,
+            copied_animation: None,
             silence: None,
             scenes: None,
             scene_request: None,
@@ -571,6 +1056,7 @@ impl Default for UiState {
             proxy_progress: None,
             export_progress: None,
             export_stop_requested: false,
+            export_queue: crate::export_queue::ExportQueueState::default(),
         }
     }
 }
@@ -622,6 +1108,37 @@ impl UiState {
         self.needs_repaint = true;
     }
 
+    /// Zoom and scroll so `range` fills the `width`-pixel lanes, with a tenth
+    /// of its length spare either side so its edges are not on the frame.
+    /// The nearest ladder step that fits, as [`Self::zoom_to_fit`] picks.
+    pub fn zoom_to_range(&mut self, range: TimelineRange, width: f32) {
+        let length = range.duration().ticks();
+        if length <= 0 || width <= 1.0 {
+            return;
+        }
+        let margin = length / 10;
+        let wanted = ((length + 2 * margin) as f32 / width).ceil() as i64;
+        self.zoom_index = ZOOM_LEVELS
+            .iter()
+            .position(|&level| level >= wanted)
+            .unwrap_or(ZOOM_LEVELS.len() - 1);
+        self.scroll_ticks = (range.start.ticks() - margin).max(0);
+        self.needs_repaint = true;
+    }
+
+    /// The span the selected clips cover, first start to last end.
+    pub fn selection_range(&self, editor: &bettercut_editor_core::Editor) -> Option<TimelineRange> {
+        let sequence = editor.active_sequence()?;
+        let spans: Vec<TimelineRange> = self
+            .selected_clips
+            .iter()
+            .filter_map(|clip| sequence.clip_span(*clip).map(|span| span.timeline))
+            .collect();
+        let start = spans.iter().map(|s| s.start).min()?;
+        let end = spans.iter().map(|s| s.end).max()?;
+        TimelineRange::new(start, end).ok()
+    }
+
     /// Horizontal scroll, in pixels. Clamped at the start of the timeline.
     pub fn scroll_by_pixels(&mut self, pixels: f32) {
         let delta = (pixels as i64).saturating_mul(self.ticks_per_pixel());
@@ -648,6 +1165,18 @@ impl UiState {
         }
     }
 
+    /// Put `t` in the middle of the view — what clicking the overview strip
+    /// does. Clamped at the start, so a click near zero shows the beginning
+    /// rather than scrolling to a negative tick.
+    pub fn center_view_on(&mut self, t: TimelineTime, width_pixels: f32) {
+        let span = (width_pixels as i64).saturating_mul(self.ticks_per_pixel());
+        let next = (t.ticks() - span / 2).max(0);
+        if next != self.scroll_ticks {
+            self.scroll_ticks = next;
+            self.needs_repaint = true;
+        }
+    }
+
     /// Keep the playhead on screen while playing, a page at a time.
     ///
     /// Not the same as [`Self::scroll_to_reveal`], which brings a point just
@@ -668,6 +1197,71 @@ impl UiState {
 
         if t.ticks() < left || t.ticks() >= trigger {
             self.scroll_ticks = (t.ticks() - margin).max(0);
+            self.needs_repaint = true;
+        }
+    }
+
+    /// Show `media` in the browser: the filters are cleared and the search set
+    /// to its name, so the file is on screen whatever was being looked at, and
+    /// it is marked until the search is changed.
+    ///
+    /// The name rather than the id, because the search is what the user can
+    /// see and then edit — a hidden "only this file" filter would leave them
+    /// with a browser that will not show anything else and no clue why.
+    pub fn reveal_media(&mut self, media: bettercut_editor_core::foundation::MediaId, name: &str) {
+        self.media_search = name.to_owned();
+        self.media_kind = MediaFilter::All;
+        self.media_bin = None;
+        self.media_reveal = Some(media);
+        self.needs_repaint = true;
+    }
+
+    /// Mark a file at `at`: the in-point first, the out-point next, and a
+    /// third click starts again. Returns the marked part, when there is one.
+    ///
+    /// Two clicks rather than two buttons because the thumbnail is already
+    /// being skimmed through with the pointer — the mark belongs where the eye
+    /// is, not in a row of controls underneath.
+    pub fn mark_media(
+        &mut self,
+        media: bettercut_editor_core::foundation::MediaId,
+        at: bettercut_editor_core::foundation::MediaTime,
+    ) -> Option<(
+        bettercut_editor_core::foundation::MediaTime,
+        bettercut_editor_core::foundation::MediaTime,
+    )> {
+        self.needs_repaint = true;
+        match self.media_marks.get(&media).copied() {
+            // A fresh in-point, or starting again after a part was marked.
+            None | Some((_, Some(_))) => {
+                self.media_marks.insert(media, (at, None));
+                None
+            }
+            Some((from, None)) => {
+                let (from, to) = if at < from { (at, from) } else { (from, at) };
+                self.media_marks.insert(media, (from, Some(to)));
+                Some((from, to))
+            }
+        }
+    }
+
+    /// The part of `media` marked, once both ends are set.
+    pub fn marked_part(
+        &self,
+        media: bettercut_editor_core::foundation::MediaId,
+    ) -> Option<(
+        bettercut_editor_core::foundation::MediaTime,
+        bettercut_editor_core::foundation::MediaTime,
+    )> {
+        match self.media_marks.get(&media).copied() {
+            Some((from, Some(to))) if to > from => Some((from, to)),
+            _ => None,
+        }
+    }
+
+    /// Forget a file's marks, so the whole of it is placed again.
+    pub fn clear_media_marks(&mut self, media: bettercut_editor_core::foundation::MediaId) {
+        if self.media_marks.remove(&media).is_some() {
             self.needs_repaint = true;
         }
     }
@@ -709,6 +1303,26 @@ impl UiState {
         TimelineTime::from_ticks(GRAB_PIXELS * self.ticks_per_pixel())
     }
 
+    /// Take this frame's lane levels, letting the old ones fall towards them
+    /// (`fallen`). `seconds` is the time since the last frame.
+    pub fn settle_lane_levels(&mut self, live: &[(f32, f32)], seconds: f32) {
+        if self.lane_levels.len() < live.len() {
+            self.lane_levels.resize(live.len(), (0.0, 0.0));
+        }
+        for (lane, shown) in self.lane_levels.iter_mut().enumerate() {
+            let (left, right) = live.get(lane).copied().unwrap_or((0.0, 0.0));
+            *shown = (
+                fallen(shown.0, left, seconds),
+                fallen(shown.1, right, seconds),
+            );
+        }
+    }
+
+    /// One lane's meter reading, per side. Silence for a lane that has none.
+    pub fn lane_level(&self, lane: usize) -> (f32, f32) {
+        self.lane_levels.get(lane).copied().unwrap_or((0.0, 0.0))
+    }
+
     pub fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         tracing::warn!(%text, "ui error");
@@ -744,11 +1358,83 @@ mod tests {
             target_invalid: false,
             snapped_to: None,
             partners: Vec::new(),
+            slip: 0,
+            roll: None,
+            insert: false,
+            alone: false,
         }
     }
 
     /// §12: the partner's ghost has to land where the editor will put it, by
     /// the same delta. A ghost somewhere else would be worse than none.
+    /// A meter rises the instant the sound does: lagging it would point at the
+    /// wrong word.
+    #[test]
+    fn a_meter_rises_at_once() {
+        assert_eq!(fallen(0.0, 0.8, 1.0 / 60.0), 0.8);
+        assert_eq!(fallen(0.4, 0.4, 1.0 / 60.0), 0.4);
+    }
+
+    /// And falls back over a moment, by the same amount however fast the
+    /// interface is drawing.
+    #[test]
+    fn a_meter_falls_at_the_same_rate_whatever_the_frame_rate() {
+        let slow = fallen(1.0, 0.0, 0.1);
+        let mut fast = 1.0;
+        for _ in 0..10 {
+            fast = fallen(fast, 0.0, 0.01);
+        }
+        assert!((slow - fast).abs() < 1e-4, "{slow} then {fast}");
+        // One time constant is a fall to about a third.
+        let one = fallen(1.0, 0.0, METER_FALL_SECONDS);
+        assert!((one - 0.368).abs() < 0.01, "{one}");
+    }
+
+    /// It reaches nothing rather than creeping towards it forever: a bar that
+    /// never quite goes out reads as sound that is not there.
+    #[test]
+    fn a_meter_reaches_silence() {
+        let mut level = 1.0;
+        for _ in 0..200 {
+            level = fallen(level, 0.0, 1.0 / 60.0);
+        }
+        assert_eq!(level, 0.0);
+    }
+
+    /// Nonsense in is silence out, never a bar drawn off the top of the head.
+    #[test]
+    fn a_meter_ignores_what_is_not_a_level() {
+        assert_eq!(fallen(0.5, f32::NAN, 0.016), 0.0);
+        assert_eq!(fallen(f32::INFINITY, 0.5, 0.016), 0.0);
+        assert_eq!(
+            fallen(0.5, -1.0, 0.016),
+            0.5 * (-0.016_f32 / METER_FALL_SECONDS).exp()
+        );
+    }
+
+    /// The lanes are kept lane by lane, and one that falls silent falls rather
+    /// than sticking where it was.
+    #[test]
+    fn lane_levels_are_kept_per_lane() {
+        let mut state = UiState::default();
+        state.settle_lane_levels(&[(0.9, 0.1), (0.2, 0.2)], 0.016);
+        assert_eq!(state.lane_level(0), (0.9, 0.1));
+        assert_eq!(state.lane_level(1), (0.2, 0.2));
+        // A lane nobody reported is silence, not a panic.
+        assert_eq!(state.lane_level(7), (0.0, 0.0));
+
+        state.settle_lane_levels(&[(0.0, 0.0)], 0.016);
+        let (left, _) = state.lane_level(0);
+        assert!(
+            left < 0.9 && left > 0.0,
+            "the first lane did not fall: {left}"
+        );
+        assert!(
+            state.lane_level(1).0 < 0.2,
+            "a lane that stopped being reported held its level"
+        );
+    }
+
     #[test]
     fn a_moved_partner_lands_by_the_same_delta() {
         let d = drag(DragMode::Move, range(0, 10), range(4, 14));
@@ -764,6 +1450,13 @@ mod tests {
 
         let end = drag(DragMode::TrimEnd, range(0, 10), range(0, 6));
         assert_eq!(end.partner_preview(range(0, 10)), range(0, 6));
+    }
+
+    #[test]
+    fn a_slipped_partner_stays_where_it_is() {
+        let mut slip = drag(DragMode::Slip, range(2, 6), range(2, 6));
+        slip.slip = 48_000;
+        assert_eq!(slip.partner_preview(range(2, 6)), range(2, 6));
     }
 
     #[test]

@@ -9,6 +9,9 @@ pub enum AudioError {
     #[error("no audio output device")]
     NoOutputDevice,
 
+    #[error("no microphone found")]
+    NoInputDevice,
+
     #[error("audio device configuration is unusable: {0}")]
     DeviceConfig(String),
 

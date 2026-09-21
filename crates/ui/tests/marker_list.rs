@@ -212,3 +212,84 @@ fn copy_chapters_puts_the_list_on_the_clipboard() {
     assert!(status.text.contains("Copied 4 chapters"), "{}", status.text);
     assert!(status.text.contains("under 10 seconds"), "{}", status.text);
 }
+
+/// Each row's colour menu colours its marker: a real click on "colour", then
+/// on "Red".
+#[test]
+fn a_marker_is_coloured_from_its_row() {
+    use bettercut_editor_core::timeline::ColorLabel;
+
+    let (mut editor, mut state, ctx) = setup();
+    let input = |events| RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 900.0))),
+        events,
+        ..Default::default()
+    };
+    // Every frame, and where each word was drawn.
+    let run = |editor: &mut Editor, state: &mut UiState, events: Vec<Event>| {
+        let mut output = ctx.run_ui(input(events), |ui| {
+            bettercut_ui::marker_list::show(ui.ctx(), editor, state);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.pos + text.galley.rect.center().to_vec2(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let click = |at: Pos2| {
+        vec![
+            vec![Event::PointerMoved(at)],
+            vec![Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            vec![Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ]
+    };
+
+    run(&mut editor, &mut state, Vec::new());
+    let words = run(&mut editor, &mut state, Vec::new());
+    // The first row's colour menu: the topmost "colour".
+    let menu = words
+        .iter()
+        .filter(|(word, _)| word == "colour")
+        .map(|(_, at)| *at)
+        .min_by(|a, b| a.y.total_cmp(&b.y))
+        .expect("no colour menu");
+    let mut words = Vec::new();
+    for events in click(menu) {
+        words = run(&mut editor, &mut state, events);
+    }
+    words = run(&mut editor, &mut state, Vec::new())
+        .into_iter()
+        .chain(words)
+        .collect();
+    let red = words
+        .iter()
+        .find(|(word, _)| word == "Red")
+        .map(|(_, at)| *at)
+        .expect("the colour menu did not open");
+    for events in click(red) {
+        run(&mut editor, &mut state, events);
+    }
+    assert_eq!(editor.markers()[0].color, ColorLabel::Red);
+    assert_eq!(
+        editor.markers()[1].color,
+        ColorLabel::None,
+        "the wrong marker was coloured"
+    );
+}

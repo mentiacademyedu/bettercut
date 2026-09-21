@@ -78,10 +78,18 @@ fn frame(width: u32, height: u32, paint: impl Fn(u32, u32) -> [u8; 4]) -> VideoF
 
 fn look(transform: Transform, blur: f32) -> ClipLook {
     ClipLook {
+        corner_pin: Default::default(),
+        old_film: 0.0,
+        glow: 0.0,
+        shadow: Default::default(),
+        border: Default::default(),
         sharpen: 0.0,
         lut: None,
         rgb_split: 0.0,
         glitch: 0.0,
+        pixelate: 0.0,
+        zoom_blur: 0.0,
+        vignette: 0.0,
         reflection: bettercut_timeline::Reflection::None,
         crop: Crop::NONE,
         transform,
@@ -559,4 +567,111 @@ fn no_vignette_changes_nothing() {
             "a zero vignette changed the picture: {a:?} vs {b:?}"
         );
     }
+}
+
+/// A clip's own vignette darkens the corners of its picture and leaves the
+/// middle alone; without one, corner and middle match.
+#[test]
+fn a_clip_vignette_darkens_its_own_corners() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+    let grey = frame(OUTPUT.width, OUTPUT.height, |_, _| [180, 180, 180, 255]);
+
+    let mut render = |vignette: f32| {
+        let look = ClipLook {
+            corner_pin: Default::default(),
+            vignette,
+            ..look(Transform::default(), 0.0)
+        };
+        compositor
+            .composite(&[Layer { frame: &grey, look }], MasterLook::default())
+            .expect("composite");
+        (
+            compositor.read_pixel(1, 1).unwrap()[0],
+            compositor
+                .read_pixel(OUTPUT.width / 2, OUTPUT.height / 2)
+                .unwrap()[0],
+        )
+    };
+    let (plain_corner, plain_middle) = render(0.0);
+    assert!(
+        (plain_corner - plain_middle).abs() < 0.01,
+        "setup: an even frame is not even"
+    );
+    let (corner, middle) = render(1.0);
+    assert!(
+        corner < plain_corner * 0.6,
+        "the corner was not darkened: {corner} of {plain_corner}"
+    );
+    assert!(
+        (middle - plain_middle).abs() < 0.02,
+        "the middle changed: {middle} of {plain_middle}"
+    );
+}
+
+/// **Vibrance's defining claim.** It pushes the colours that have least of it
+/// hardest: a nearly grey patch gains far more saturation than an already
+/// vivid one, which is what keeps skin from going orange while a flat sky
+/// comes back.
+#[test]
+fn vibrance_lifts_a_dull_colour_further_than_a_vivid_one() {
+    let (device, queue) = gpu_or_skip!();
+    let mut compositor = compositor(&device, &queue);
+
+    // Left half nearly grey with a red lean, right half strongly red.
+    let picture = frame(OUTPUT.width, OUTPUT.height, |x, _| {
+        if x < OUTPUT.width / 2 {
+            [150, 130, 130, 255]
+        } else {
+            [230, 40, 40, 255]
+        }
+    });
+    let dull = (OUTPUT.width / 4, OUTPUT.height / 2);
+    let vivid = (OUTPUT.width * 3 / 4, OUTPUT.height / 2);
+
+    // How far each half's colour spreads, with and without vibrance.
+    let spread = |compositor: &Compositor, at: (u32, u32)| {
+        let pixel = compositor.read_pixel(at.0, at.1).expect("in frame");
+        let high = pixel[0].max(pixel[1]).max(pixel[2]);
+        let low = pixel[0].min(pixel[1]).min(pixel[2]);
+        high - low
+    };
+
+    let plain = look(Transform::default(), 0.0);
+    compositor
+        .composite(
+            &[Layer {
+                frame: &picture,
+                look: plain,
+            }],
+            MasterLook::default(),
+        )
+        .expect("composite");
+    let (dull_before, vivid_before) = (spread(&compositor, dull), spread(&compositor, vivid));
+
+    let mut vibrant = plain;
+    vibrant.color.vibrance = 1.0;
+    compositor
+        .composite(
+            &[Layer {
+                frame: &picture,
+                look: vibrant,
+            }],
+            MasterLook::default(),
+        )
+        .expect("composite");
+    let (dull_after, vivid_after) = (spread(&compositor, dull), spread(&compositor, vivid));
+
+    assert!(
+        dull_after > dull_before * 1.2,
+        "the dull half gained almost nothing: {dull_before} → {dull_after}"
+    );
+    // In proportion to what each already had: a vivid half has so much colour
+    // that even a small push is a large number, and it is the proportion that
+    // says which one vibrance favoured.
+    assert!(
+        dull_after / dull_before > vivid_after / vivid_before,
+        "the vivid half gained proportionally as much as the dull one: \
+         dull {dull_before} → {dull_after}, vivid {vivid_before} → {vivid_after}"
+    );
 }

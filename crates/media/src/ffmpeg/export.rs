@@ -32,7 +32,7 @@ use bettercut_foundation::FrameRate;
 use super::INTERNAL_SAMPLE_RATE;
 use super::encode::{Muxer, drain_encoder};
 use super::encoders::{
-    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best,
+    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best, open_vp9_alpha,
 };
 use super::raii::{CodecContext, Frame, Scaler};
 
@@ -52,6 +52,10 @@ pub struct ExportFormat {
     pub channels: usize,
     /// §15.1: FFmpeg never gets every core, not even for the last job running.
     pub threads: u32,
+    /// A see-through background: VP9 with an alpha plane (write to a `.webm`
+    /// path), no sound — WebM carries no AAC. The frames pushed must then be
+    /// straight, not premultiplied, alpha.
+    pub transparent: bool,
 }
 
 /// An open output file, accepting frames until [`Self::finish`].
@@ -123,9 +127,18 @@ impl VideoWriter {
             threads: format.threads,
             global_header,
         };
-        let (encoder, video) = open_best(target)?;
+        let (encoder, video) = if format.transparent {
+            open_vp9_alpha(target)?
+        } else {
+            open_best(target)?
+        };
+        let picture_format = if format.transparent {
+            ffi::AV_PIX_FMT_YUVA420P
+        } else {
+            ffi::AV_PIX_FMT_YUV420P
+        };
 
-        let audio = if format.channels > 0 {
+        let audio = if format.channels > 0 && !format.transparent {
             Some(AudioTrack::open(
                 format.channels,
                 format.threads,
@@ -136,6 +149,9 @@ impl VideoWriter {
         };
 
         muxer.add_video(video.as_ptr())?;
+        if format.transparent {
+            muxer.mark_video_alpha()?;
+        }
         if let Some(track) = &audio {
             muxer.add_audio(track.encoder.as_ptr())?;
         }
@@ -143,7 +159,7 @@ impl VideoWriter {
 
         let width = format.width as i32;
         let height = format.height as i32;
-        let scaler = Scaler::to_yuv420p(
+        let scaler = Scaler::to_yuv(
             width,
             height,
             ffi::AV_PIX_FMT_RGBA,
@@ -153,6 +169,7 @@ impl VideoWriter {
             ffi::SWS_CS_ITU709 as i32,
             width,
             height,
+            picture_format,
         )?;
 
         Ok(Self {
@@ -161,7 +178,7 @@ impl VideoWriter {
             audio,
             scaler,
             source: Frame::video(width, height, ffi::AV_PIX_FMT_RGBA)?,
-            picture: Frame::video(width, height, ffi::AV_PIX_FMT_YUV420P)?,
+            picture: Frame::video(width, height, picture_format)?,
             frames: 0,
             frame_rate: av_rational(format.frame_rate),
             encoder,

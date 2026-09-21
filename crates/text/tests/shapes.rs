@@ -149,3 +149,80 @@ fn the_key_changes_with_the_picture() {
         );
     }
 }
+
+/// An arrow points right: its tip is solid at the right edge's middle, the
+/// right corners are empty, and the shaft runs out to the left edge but not up
+/// to its corners.
+#[test]
+fn an_arrow_points_right() {
+    let bitmap = shape(ShapeKind::Arrow, 300.0, 100.0).rasterize();
+    assert_eq!(alpha(&bitmap, 290, 50), 255, "the tip is missing");
+    assert_eq!(alpha(&bitmap, 299, 2), 0, "the head fills the corner");
+    assert_eq!(alpha(&bitmap, 299, 97), 0);
+    assert_eq!(
+        alpha(&bitmap, 3, 50),
+        255,
+        "the shaft does not reach the left"
+    );
+    assert_eq!(alpha(&bitmap, 3, 5), 0, "the shaft is as tall as the head");
+    let share = coverage(&bitmap);
+    assert!((0.3..0.7).contains(&share), "covers {share}");
+}
+
+/// A star: solid in the middle and at the top point, empty in the corners and
+/// between the two top points, and well under half its box.
+#[test]
+fn a_star_has_points() {
+    let bitmap = shape(ShapeKind::Star, 200.0, 200.0).rasterize();
+    assert_eq!(alpha(&bitmap, 100, 100), 255);
+    assert_eq!(alpha(&bitmap, 100, 4), 255, "no top point");
+    assert_eq!(alpha(&bitmap, 0, 0), 0);
+    assert_eq!(alpha(&bitmap, 160, 20), 0, "filled between the points");
+    let share = coverage(&bitmap);
+    assert!((0.2..0.45).contains(&share), "covers {share}");
+}
+
+/// A speech bubble: a body across the top, and a tail reaching the bottom
+/// edge on the left — the rest of the bottom edge is empty.
+#[test]
+fn a_speech_bubble_has_a_tail_on_the_left() {
+    let bitmap = shape(ShapeKind::SpeechBubble, 200.0, 160.0).rasterize();
+    assert_eq!(alpha(&bitmap, 100, 40), 255, "no body");
+    let bottom = bitmap.height - 3;
+    let tail_x = (0..bitmap.width)
+        .filter(|x| alpha(&bitmap, *x, bottom) > 128)
+        .collect::<Vec<_>>();
+    assert!(!tail_x.is_empty(), "the tail does not reach down");
+    assert!(
+        tail_x.iter().all(|x| *x < bitmap.width / 2),
+        "the tail is not on the left: {tail_x:?}"
+    );
+    // The body and the tail are one piece: solid where they meet.
+    assert_eq!(alpha(&bitmap, 55, 118), 255, "a seam between body and tail");
+}
+
+/// Every kind draws something solid in its middle band and has an outline
+/// when asked, and stays inside its box.
+#[test]
+fn every_kind_draws_and_takes_an_outline() {
+    for kind in ShapeKind::ALL {
+        let plain = shape(kind, 240.0, 160.0).rasterize();
+        assert!(coverage(&plain) > 0.2, "{} barely draws", kind.label());
+        let outlined = Shape {
+            outline: Some(Stroke {
+                width: 6.0,
+                color: Rgba::opaque(0, 0, 255),
+            }),
+            ..shape(kind, 240.0, 160.0)
+        }
+        .rasterize();
+        assert!(
+            outlined
+                .pixels
+                .chunks_exact(4)
+                .any(|p| p[2] == 255 && p[3] == 255),
+            "{} has no outline",
+            kind.label()
+        );
+    }
+}

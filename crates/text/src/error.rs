@@ -2,6 +2,10 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum TextError {
+    /// A font file that could not be read or is not a font.
+    #[error("{0}")]
+    Font(String),
+
     /// The text laid out to nothing at all — every character was whitespace,
     /// or the string was empty. Not a failure the user needs telling about;
     /// the caller draws no layer.

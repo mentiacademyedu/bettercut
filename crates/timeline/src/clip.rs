@@ -238,6 +238,17 @@ pub struct ColorAdjust {
     /// White balance, green/magenta, on -1..1.
     #[serde(default)]
     pub tint: f32,
+    /// Saturation for the colours that have least of it, -1..1, zero for no
+    /// change (§45).
+    ///
+    /// A plain saturation pushes every colour by the same amount, so the sky
+    /// comes good long after the faces have gone orange. This weighs the push
+    /// by how grey a pixel already is: a washed-out sky moves, skin barely
+    /// does. Separate from `saturation` rather than replacing it, because
+    /// "everything, evenly" is still what a black-and-white or a heavy stylised
+    /// grade wants.
+    #[serde(default)]
+    pub vibrance: f32,
 }
 
 impl Default for ColorAdjust {
@@ -248,6 +259,7 @@ impl Default for ColorAdjust {
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         }
     }
 }
@@ -260,6 +272,7 @@ impl ColorAdjust {
         saturation: 1.0,
         temperature: 0.0,
         tint: 0.0,
+        vibrance: 0.0,
     };
 
     /// Part of the way from this adjustment to another.
@@ -277,6 +290,7 @@ impl ColorAdjust {
             saturation: mix(self.saturation, other.saturation),
             temperature: mix(self.temperature, other.temperature),
             tint: mix(self.tint, other.tint),
+            vibrance: mix(self.vibrance, other.vibrance),
         }
     }
 
@@ -301,6 +315,7 @@ impl ColorAdjust {
             (self.saturation, look.saturation, 1.0),
             (self.temperature, look.temperature, 0.0),
             (self.tint, look.tint, 0.0),
+            (self.vibrance, look.vibrance, 0.0),
         ];
         let (value, target, identity) = axes
             .into_iter()
@@ -323,6 +338,13 @@ impl ColorAdjust {
     }
 
     /// Whether two adjustments are the same to within what a control can set.
+    ///
+    /// Public as [`Self::near_enough`]: the interface asks it to decide which
+    /// saved look a clip is currently wearing, which is the same question.
+    pub fn near_enough(self, other: Self) -> bool {
+        self.near(other)
+    }
+
     fn near(self, other: Self) -> bool {
         let near = |a: f32, b: f32| (a - b).abs() < 0.005;
         near(self.brightness, other.brightness)
@@ -330,6 +352,7 @@ impl ColorAdjust {
             && near(self.saturation, other.saturation)
             && near(self.temperature, other.temperature)
             && near(self.tint, other.tint)
+            && near(self.vibrance, other.vibrance)
     }
 
     /// True when this does nothing, so the shader can take the cheap path.
@@ -339,6 +362,7 @@ impl ColorAdjust {
             && self.saturation == 1.0
             && self.temperature == 0.0
             && self.tint == 0.0
+            && self.vibrance == 0.0
     }
 }
 
@@ -390,16 +414,28 @@ pub enum MaskShape {
     Linear,
     Rectangle,
     Ellipse,
+    /// A five-pointed star, point up.
+    Star,
+    /// A heart.
+    Heart,
 }
 
 impl MaskShape {
-    pub const ALL: [Self; 3] = [Self::Linear, Self::Rectangle, Self::Ellipse];
+    pub const ALL: [Self; 5] = [
+        Self::Linear,
+        Self::Rectangle,
+        Self::Ellipse,
+        Self::Star,
+        Self::Heart,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Linear => "Linear",
             Self::Rectangle => "Rectangle",
             Self::Ellipse => "Ellipse",
+            Self::Star => "Star",
+            Self::Heart => "Heart",
         }
     }
 }
@@ -700,6 +736,68 @@ pub struct VideoClip {
     #[serde(default)]
     pub glitch: f32,
 
+    /// Pixelate, 0–100: the picture in square blocks, the censor look. With a
+    /// mask it covers one part of the frame. Not animated.
+    #[serde(default)]
+    pub pixelate: f32,
+
+    /// Zoom blur, 0–100: the picture streaked outwards from the middle, a
+    /// rush forward. Not animated.
+    #[serde(default)]
+    pub zoom_blur: f32,
+
+    /// Glow, 0–100: the bright parts of the picture bleed soft light around
+    /// themselves, a dreamy bloom. Not animated.
+    #[serde(default)]
+    pub glow: f32,
+
+    /// Old film, 0–100: scratches, dust and a flickering exposure, the look of
+    /// a worn print. Not animated — it moves by itself.
+    #[serde(default)]
+    pub old_film: f32,
+
+    /// How much the edges of this clip's own picture are darkened, 0–1 (see
+    /// [`MAX_VIGNETTE`]): a frame around one shot, where the master's
+    /// vignette frames the whole picture. Not animated.
+    #[serde(default)]
+    pub vignette: f32,
+
+    /// Rounded corners and a border around this clip's picture — the framed
+    /// look of a picture-in-picture. Not animated.
+    #[serde(default)]
+    pub border: Border,
+
+    /// A drop shadow under this clip's picture, following its corners. Not
+    /// animated.
+    #[serde(default)]
+    pub shadow: Shadow,
+
+    /// §45's corner pin: the four corners moved, to set this picture into a
+    /// screen or a wall in the shot beneath it (`crate::corner_pin`).
+    #[serde(default)]
+    pub corner_pin: crate::corner_pin::CornerPin,
+
+    /// Light leak, 0–100: a warm glow drifting across the frame while the clip
+    /// plays, the look of light spilling into an old camera. Not animated by
+    /// hand — it moves by itself.
+    #[serde(default)]
+    pub light_leak: f32,
+
+    /// Smooth slow motion: a slowed clip blends each frame into the next
+    /// rather than repeating it, so the motion glides instead of stepping.
+    #[serde(default)]
+    pub smooth_motion: bool,
+
+    /// Beat pulse, 0–100: the picture punches in a little at every marker
+    /// and eases back, the way a cut to music hits the beat.
+    #[serde(default)]
+    pub beat_pulse: f32,
+
+    /// Colour curves (`crate::curves`), drawn as a generated LUT over the
+    /// clip's own. Straight lines by default. Not animated.
+    #[serde(default)]
+    pub curves: crate::curves::ColourCurves,
+
     /// The picture folded onto itself: mirrored halves, four-way, or a
     /// kaleidoscope (`crate::reflection`). Not animated.
     #[serde(default)]
@@ -810,6 +908,16 @@ pub struct VideoClip {
     pub frozen: bool,
     #[serde(default)]
     pub enabled: bool,
+    /// Which angle of a multicam clip is on screen: an index into the video
+    /// lanes of the sequence inside it (`editor_core::compound`).
+    ///
+    /// `None` on every ordinary clip, and on a compound that plays all of its
+    /// lanes at once the way it was built. Cutting between cameras is this
+    /// number changing at a cut, which is why it lives on the clip rather than
+    /// on the sequence inside it — two pieces of the same multicam show two
+    /// different angles, and they share that sequence.
+    #[serde(default)]
+    pub angle: Option<usize>,
 }
 
 /// Adjustments applied to the finished picture, not to any one clip (§22).
@@ -853,6 +961,316 @@ pub struct MasterLook {
     /// every frame, as real grain does. Defaulted, so older projects have none.
     #[serde(default)]
     pub grain: f32,
+
+    /// Cinematic bars: black bands top and bottom cutting the picture to this
+    /// width-to-height shape (2.39 is widescreen cinema), over everything,
+    /// titles included. Zero is none, and so is any shape no wider than the
+    /// frame. Defaulted, so older projects have none.
+    #[serde(default)]
+    pub bars: f32,
+
+    /// A bar across the top or bottom of the frame that fills as the video
+    /// plays, over everything. Defaulted, so older projects have none.
+    #[serde(default)]
+    pub progress_bar: ProgressBar,
+
+    /// The timecode and file name drawn over the picture, for a copy sent out
+    /// for notes (`crate::burn_in`). Off by default, and defaulted so older
+    /// projects have none.
+    #[serde(default)]
+    pub burn_in: crate::burn_in::BurnIn,
+}
+
+/// The thickest progress bar, as a share of the frame's height.
+pub const MAX_PROGRESS_BAR: f32 = 0.05;
+
+/// A bar that grows across the frame as the video plays: how far through the
+/// viewer is, the way short videos show it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProgressBar {
+    /// How thick, 0–[`MAX_PROGRESS_BAR`] of the frame's height; zero is none.
+    #[serde(default)]
+    pub height: f32,
+    /// Its colour, sRGB.
+    #[serde(default = "ProgressBar::red")]
+    pub colour: [u8; 3],
+    /// Along the top rather than the bottom.
+    #[serde(default)]
+    pub top: bool,
+}
+
+impl ProgressBar {
+    pub const NONE: Self = Self {
+        height: 0.0,
+        colour: [255, 60, 60],
+        top: false,
+    };
+
+    fn red() -> [u8; 3] {
+        Self::NONE.colour
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.height > 0.0
+    }
+
+    /// Brought into range, as every value a project file can carry is.
+    pub fn clamped(self) -> Self {
+        Self {
+            height: if self.height.is_finite() {
+                self.height.clamp(0.0, MAX_PROGRESS_BAR)
+            } else {
+                0.0
+            },
+            ..self
+        }
+    }
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// The widest shape cinematic bars cut to. Past this the picture is a strip.
+pub const MAX_BARS_ASPECT: f32 = 4.0;
+
+/// The bar shapes offered, as (label, width over height).
+pub const BAR_PRESETS: [(&str, f32); 4] = [
+    ("1.85 : 1", 1.85),
+    ("2 : 1", 2.0),
+    ("2.39 : 1", 2.39),
+    ("2.76 : 1", 2.76),
+];
+
+/// How much of the frame's height each bar covers, 0–0.5, for a frame of
+/// `frame_aspect` (width over height) cut to `bars`.
+pub fn bar_height(frame_aspect: f32, bars: f32) -> f32 {
+    if !(bars.is_finite() && frame_aspect.is_finite()) || bars <= 0.0 || frame_aspect <= 0.0 {
+        return 0.0;
+    }
+    ((1.0 - frame_aspect / bars) / 2.0).clamp(0.0, 0.5)
+}
+
+/// The highest a low cut may go: past 400 Hz it takes the body out of a voice.
+pub const EQ_LOW_CUT_MAX: f32 = 400.0;
+/// The lowest a low cut may be set, when it is on.
+pub const EQ_LOW_CUT_MIN: f32 = 20.0;
+/// The lowest a high cut may go: below 2 kHz speech stops being clear.
+pub const EQ_HIGH_CUT_MIN: f32 = 2_000.0;
+/// At or past this a high cut does nothing anyone can hear, and is off.
+pub const EQ_HIGH_CUT_MAX: f32 = 20_000.0;
+/// The most the presence band lifts or dips, in decibels.
+pub const EQ_PRESENCE_MAX: f32 = 12.0;
+
+/// Which of a recording's channels a sound clip plays, and where.
+///
+/// A lavalier mic plugged into one side of a camera records a voice in the
+/// left channel and nothing in the right; played as recorded, it is heard in
+/// one ear only. Copying the good side across fixes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelMode {
+    /// As recorded.
+    #[default]
+    Stereo,
+    /// The left channel, in both ears.
+    LeftToBoth,
+    /// The right channel, in both ears.
+    RightToBoth,
+    /// Both channels mixed into one, in both ears.
+    Mono,
+}
+
+impl ChannelMode {
+    pub const ALL: [Self; 4] = [
+        Self::Stereo,
+        Self::LeftToBoth,
+        Self::RightToBoth,
+        Self::Mono,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stereo => "Stereo",
+            Self::LeftToBoth => "Left only",
+            Self::RightToBoth => "Right only",
+            Self::Mono => "Mono",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Stereo => "Both channels, as recorded",
+            Self::LeftToBoth => {
+                "Use the left channel in both ears: for a mic recorded on the left side only"
+            }
+            Self::RightToBoth => {
+                "Use the right channel in both ears: for a mic recorded on the right side only"
+            }
+            Self::Mono => "Mix both channels into one, heard in both ears",
+        }
+    }
+
+    /// Rearrange a block of planar sound in place. A one-channel recording
+    /// has nothing to rearrange.
+    pub fn apply(self, planes: &mut [Vec<f32>]) {
+        if planes.len() < 2 {
+            return;
+        }
+        match self {
+            Self::Stereo => {}
+            Self::LeftToBoth => {
+                let (left, rest) = planes.split_at_mut(1);
+                rest[0].clone_from(&left[0]);
+            }
+            Self::RightToBoth => {
+                let (left, rest) = planes.split_at_mut(1);
+                left[0].clone_from(&rest[0]);
+            }
+            Self::Mono => {
+                let (left, rest) = planes.split_at_mut(1);
+                for (l, r) in left[0].iter_mut().zip(rest[0].iter_mut()) {
+                    let mixed = (*l + *r) * 0.5;
+                    *l = mixed;
+                    *r = mixed;
+                }
+            }
+        }
+    }
+}
+
+/// Where a sound clip is put: dry, an echo, a small room or a big hall
+/// (`bettercut_audio::space`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceKind {
+    #[default]
+    Dry,
+    Echo,
+    Room,
+    Hall,
+}
+
+impl SpaceKind {
+    /// Every choice, in the order the interface offers them.
+    pub const ALL: [Self; 4] = [Self::Dry, Self::Echo, Self::Room, Self::Hall];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dry => "Dry",
+            Self::Echo => "Echo",
+            Self::Room => "Room",
+            Self::Hall => "Hall",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Dry => "As recorded",
+            Self::Echo => "The sound coming back a few times, quieter each time",
+            Self::Room => "A small, close space: takes the dryness off a phone recording",
+            Self::Hall => "A big space with a long tail",
+        }
+    }
+}
+
+/// A sound clip's echo or reverb, and how much of it is blended in (0–1).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClipSpace {
+    #[serde(default)]
+    pub kind: SpaceKind,
+    #[serde(default)]
+    pub mix: f32,
+}
+
+impl ClipSpace {
+    /// The blend held to 0–1; a dry kind or no blend is the default.
+    pub fn clamped(self) -> Self {
+        let mix = if self.mix.is_finite() {
+            self.mix.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if self.kind == SpaceKind::Dry || mix <= 0.0 {
+            return Self::default();
+        }
+        Self {
+            kind: self.kind,
+            mix,
+        }
+    }
+
+    /// Whether it changes nothing.
+    pub fn is_dry(self) -> bool {
+        self.clamped() == Self::default()
+    }
+}
+
+/// A sound clip's equaliser (`bettercut_audio::eq`): three controls, each off
+/// at zero. Not animated.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClipEq {
+    /// Cut below this many hertz; 0 is off.
+    #[serde(default)]
+    pub low_cut: f32,
+    /// Cut above this many hertz; 0 is off.
+    #[serde(default)]
+    pub high_cut: f32,
+    /// Lift (positive) or dip (negative) around 3 kHz, in decibels.
+    #[serde(default)]
+    pub presence: f32,
+    /// Notch out mains hum at this many hertz and its harmonics; 0 is off.
+    ///
+    /// Only 50 and 60 mean anything — the two mains rates in the world — and
+    /// anything else is read as off: a notch at a number somebody typed by
+    /// mistake would take a hole out of a voice for no reason.
+    #[serde(default)]
+    pub hum: f32,
+}
+
+impl ClipEq {
+    /// Whether it changes nothing.
+    pub fn is_flat(self) -> bool {
+        self.clamped() == Self::default()
+    }
+
+    /// Every control held to its range; a value that means "off" becomes 0.
+    pub fn clamped(self) -> Self {
+        let low_cut = if self.low_cut.is_finite() && self.low_cut >= EQ_LOW_CUT_MIN {
+            self.low_cut.min(EQ_LOW_CUT_MAX)
+        } else {
+            0.0
+        };
+        let high_cut = if self.high_cut.is_finite()
+            && self.high_cut > 0.0
+            && self.high_cut < EQ_HIGH_CUT_MAX
+        {
+            self.high_cut.max(EQ_HIGH_CUT_MIN)
+        } else {
+            0.0
+        };
+        let presence = if self.presence.is_finite() {
+            self.presence.clamp(-EQ_PRESENCE_MAX, EQ_PRESENCE_MAX)
+        } else {
+            0.0
+        };
+        // The two mains rates, and nothing else.
+        let hum = if (self.hum - 50.0).abs() < 0.5 {
+            50.0
+        } else if (self.hum - 60.0).abs() < 0.5 {
+            60.0
+        } else {
+            0.0
+        };
+        Self {
+            low_cut,
+            high_cut,
+            presence,
+            hum,
+        }
+    }
 }
 
 /// The top of the voice clean-up slider (`bettercut_audio::voice`).
@@ -869,9 +1287,147 @@ pub const MAX_GRAIN: f32 = 1.0;
 /// frame and starts being a spotlight.
 pub const MAX_VIGNETTE: f32 = 1.0;
 
+/// The thickest border, as a share of the picture's shorter side. Past a
+/// quarter the frame is more border than picture.
+pub const MAX_BORDER_WIDTH: f32 = 0.25;
+
+/// Rounded corners and a border around a picture clip.
+///
+/// Both measured against the picture's **shorter side**, so they keep their
+/// look whatever the clip's size, shape or the export resolution: a shot shrunk
+/// into a corner has a border in proportion to it, and a 4K export has the
+/// same frame as the 1080p preview.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Border {
+    /// How round the corners are, 0–1: 1 turns the shorter side into a half
+    /// circle, so a square picture becomes a circle.
+    #[serde(default)]
+    pub radius: f32,
+    /// How thick the border is, 0–[`MAX_BORDER_WIDTH`] of the shorter side;
+    /// zero is no border.
+    #[serde(default)]
+    pub width: f32,
+    /// The border's colour, sRGB.
+    #[serde(default = "Border::white")]
+    pub colour: [u8; 3],
+}
+
+impl Border {
+    pub const NONE: Self = Self {
+        radius: 0.0,
+        width: 0.0,
+        colour: [255, 255, 255],
+    };
+
+    fn white() -> [u8; 3] {
+        [255, 255, 255]
+    }
+
+    /// Square corners and no border: nothing to draw.
+    pub fn is_none(&self) -> bool {
+        self.radius <= 0.0 && self.width <= 0.0
+    }
+
+    /// Brought into range, as every value a project file can carry is.
+    pub fn clamped(self) -> Self {
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        Self {
+            radius: finite(self.radius).clamp(0.0, 1.0),
+            width: finite(self.width).clamp(0.0, MAX_BORDER_WIDTH),
+            colour: self.colour,
+        }
+    }
+}
+
+impl Default for Border {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// The softest shadow, as a share of the picture's shorter side.
+pub const MAX_SHADOW_SOFTNESS: f32 = 0.25;
+
+/// The furthest a shadow falls from its picture, as a share of the frame's
+/// height.
+pub const MAX_SHADOW_DISTANCE: f32 = 0.1;
+
+/// A drop shadow under a picture clip: a soft copy of its shape, offset and
+/// darkened, drawn beneath it — what lifts a picture-in-picture off the shot
+/// behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Shadow {
+    /// How dark, 0–1; zero is no shadow.
+    #[serde(default)]
+    pub opacity: f32,
+    /// How soft its edge is, 0–[`MAX_SHADOW_SOFTNESS`] of the picture's
+    /// shorter side.
+    #[serde(default)]
+    pub softness: f32,
+    /// How far it falls, 0–[`MAX_SHADOW_DISTANCE`] of the frame's height.
+    #[serde(default)]
+    pub distance: f32,
+    /// Which way it falls, in degrees: 0 is to the right, 90 straight down.
+    #[serde(default)]
+    pub angle_degrees: f32,
+    /// Its colour, sRGB.
+    #[serde(default)]
+    pub colour: [u8; 3],
+}
+
+impl Shadow {
+    /// No shadow — but the rest set to a soft shadow falling down and to the
+    /// right, so raising the opacity alone gives one that looks right.
+    pub const NONE: Self = Self {
+        opacity: 0.0,
+        softness: 0.06,
+        distance: 0.02,
+        angle_degrees: 45.0,
+        colour: [0, 0, 0],
+    };
+
+    /// Whether there is anything to draw.
+    pub fn is_visible(&self) -> bool {
+        self.opacity > 0.0
+    }
+
+    /// Brought into range, as every value a project file can carry is.
+    pub fn clamped(self) -> Self {
+        let finite = |v: f32, fallback: f32| if v.is_finite() { v } else { fallback };
+        Self {
+            opacity: finite(self.opacity, 0.0).clamp(0.0, 1.0),
+            softness: finite(self.softness, 0.0).clamp(0.0, MAX_SHADOW_SOFTNESS),
+            distance: finite(self.distance, 0.0).clamp(0.0, MAX_SHADOW_DISTANCE),
+            angle_degrees: finite(self.angle_degrees, 0.0).rem_euclid(360.0),
+            colour: self.colour,
+        }
+    }
+
+    /// How far the shadow's layer moves from its picture, in the transform's
+    /// position units (one is the frame's width across, its height down) for
+    /// a frame of `width` × `height`.
+    pub fn offset(&self, width: u32, height: u32) -> (f32, f32) {
+        let radians = self.angle_degrees.to_radians();
+        let across = height.max(1) as f32 / width.max(1) as f32;
+        (
+            self.distance * radians.cos() * across,
+            self.distance * radians.sin(),
+        )
+    }
+}
+
+impl Default for Shadow {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 impl Default for MasterLook {
     fn default() -> Self {
         Self {
+            progress_bar: Default::default(),
+            burn_in: crate::burn_in::BurnIn::default(),
+            bars: 0.0,
             transform: Transform::default(),
             opacity: 1.0,
             color: ColorAdjust::default(),
@@ -897,6 +1453,7 @@ impl MasterLook {
             && self.blur == 0.0
             && self.vignette == 0.0
             && self.grain == 0.0
+            && self.bars == 0.0
     }
 }
 
@@ -917,9 +1474,26 @@ pub struct ClipLook {
     pub sharpen: f32,
     /// A colour lookup table, run as the first effect-graph node.
     pub lut: Option<crate::lut::ClipLut>,
-    /// RGB split, 0–100, and glitch, 0–100: the effect graph's last node.
+    /// RGB split, 0–100, glitch, 0–100, and pixelate, 0–100: the effect
+    /// graph's last node.
     pub rgb_split: f32,
     pub glitch: f32,
+    pub pixelate: f32,
+    pub zoom_blur: f32,
+    /// Glow, 0–100: the effect graph's last node, with the glitches.
+    pub glow: f32,
+    /// Old film, 0–100, with the glitches too.
+    pub old_film: f32,
+    /// Darkened edges on this layer's own picture, 0–1.
+    pub vignette: f32,
+    /// Rounded corners and a border on this layer's own picture.
+    pub border: Border,
+    /// §45's corner pin, in output-frame units.
+    pub corner_pin: crate::corner_pin::CornerPin,
+    /// A drop shadow. On a clip's look it says the clip has one; the frame
+    /// plan turns that into a layer of its own beneath the picture, which is
+    /// the one layer the compositor draws *as* the shadow.
+    pub shadow: Shadow,
     /// A reflection (`crate::reflection`): the effect graph's first node.
     pub reflection: crate::reflection::Reflection,
     /// The chroma key. Not animated — it is a choice about the footage, not
@@ -929,6 +1503,58 @@ pub struct ClipLook {
     pub mask: Option<Mask>,
     /// §22's blend mode.
     pub blend: BlendMode,
+}
+
+impl ClipLook {
+    /// This look with the grade and the effects taken off — what the shot
+    /// looked like before it was graded — keeping everything that says where
+    /// it is and how it is layered: framing, crop, opacity, mask, key and
+    /// blend. What "compare with the original" shows.
+    pub fn ungraded(self) -> Self {
+        Self {
+            color: ColorAdjust::IDENTITY,
+            blur: 0.0,
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            glow: 0.0,
+            old_film: 0.0,
+            vignette: 0.0,
+            reflection: crate::Reflection::None,
+            ..self
+        }
+    }
+}
+
+/// The shape of a sound clip's fades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FadeShape {
+    /// Even to the ear: the default.
+    #[default]
+    Smooth,
+    /// A straight line of level.
+    Linear,
+    /// Most of the change at once.
+    Fast,
+    /// Most of the change at the end.
+    Slow,
+}
+
+impl FadeShape {
+    pub const ALL: [Self; 4] = [Self::Smooth, Self::Linear, Self::Fast, Self::Slow];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smooth => "Smooth",
+            Self::Linear => "Linear",
+            Self::Fast => "Fast",
+            Self::Slow => "Slow",
+        }
+    }
 }
 
 /// An audio clip on an audio track (§8).
@@ -970,6 +1596,50 @@ pub struct AudioClip {
     /// the background pulled down between words. Not animated.
     #[serde(default)]
     pub denoise: f32,
+
+    /// Low cut, high cut and presence ([`ClipEq`]). Flat by default.
+    #[serde(default)]
+    pub eq: ClipEq,
+    /// An echo or a reverb. Dry by default.
+    #[serde(default)]
+    pub space: ClipSpace,
+    /// Which channels play where. As recorded by default.
+    #[serde(default)]
+    pub channels: ChannelMode,
+    /// Hold the pitch where it was when this clip's speed changes.
+    ///
+    /// Re-timing sound means resampling it, which moves the pitch with the
+    /// speed — the chipmunk at 2×. With this on, the mixer shifts the pitch
+    /// back by as much as the speed moved it (`bettercut_audio::pitch`), so a
+    /// sped-up voice stays the voice it was. Off by default, because the
+    /// chipmunk is sometimes the point.
+    #[serde(default)]
+    pub keep_pitch: bool,
+
+    /// The voice changer: the pitch moved this many semitones without
+    /// changing the speed, ±12. Zero is the voice as recorded.
+    #[serde(default)]
+    pub pitch: f32,
+    /// The leveller, 0–100 (`bettercut_audio::leveller`): loud and quiet words
+    /// brought closer together. Zero is off.
+    #[serde(default)]
+    pub leveller: f32,
+    /// The de-esser, 0–100 (`bettercut_audio::deesser`): the hiss on "s" and
+    /// "t" dipped while it happens. Zero is off.
+    ///
+    /// Separate from the equaliser's high cut on purpose: a cut takes the top
+    /// off the whole voice, and this only moves while an ess does.
+    #[serde(default)]
+    pub de_ess: f32,
+
+    /// How the fade in and fade out curve. Defaulted to the smooth fade
+    /// every older project had.
+    #[serde(default)]
+    pub fade_shape: FadeShape,
+    /// Silent where it stands: kept on the timeline, in place and in sync,
+    /// but not heard. Off by default, and in every older project.
+    #[serde(default)]
+    pub muted: bool,
     #[serde(default)]
     pub enabled: bool,
 
@@ -980,6 +1650,11 @@ pub struct AudioClip {
     pub fade_in: TimelineTime,
     #[serde(default)]
     pub fade_out: TimelineTime,
+
+    /// A crossfade into the clip that follows on the track, this long,
+    /// centred on the cut ([`crossfade_halves`]). Zero is a plain cut.
+    #[serde(default)]
+    pub crossfade_out: TimelineTime,
 
     /// Volume over the clip (§24), for ducking music under a voice and for
     /// riding a level by hand.
@@ -1007,6 +1682,30 @@ fn normal_speed() -> Rational {
 /// far between frames that every one of them is a seek — both are still
 /// *correct*, and neither is something anyone wants to discover by accident.
 pub const MIN_SPEED: Rational = Rational::from_parts(1, 10);
+
+/// The speeds a clip's menu offers in one click, slowest first: the ones
+/// people reach for, from quarter-speed slow motion to four times as fast.
+pub const SPEED_PRESETS: [Rational; 8] = [
+    Rational::from_parts(1, 4),
+    Rational::from_parts(1, 2),
+    Rational::from_parts(3, 4),
+    Rational::from_parts(1, 1),
+    Rational::from_parts(3, 2),
+    Rational::from_parts(2, 1),
+    Rational::from_parts(3, 1),
+    Rational::from_parts(4, 1),
+];
+
+/// A speed as a menu names it: "0.5×", "2×", "1.5×".
+pub fn speed_label(speed: Rational) -> String {
+    let value = speed.as_f64();
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{value:.0}×")
+    } else {
+        let text = format!("{value:.2}");
+        format!("{}×", text.trim_end_matches('0'))
+    }
+}
 pub const MAX_SPEED: Rational = Rational::from_parts(10, 1);
 
 /// How much of the frame a source fills when fitted inside it, per axis.
@@ -1193,6 +1892,21 @@ pub trait Clip {
     fn color_label(&self) -> ColorLabel;
     fn set_color_label(&mut self, label: ColorLabel);
 
+    /// Which multicam angle this clip shows, and a way to change it.
+    ///
+    /// On the trait rather than on `VideoClip` alone because the command that
+    /// sets it works through whichever lane holds the clip, exactly as the
+    /// colour tag does. Every other kind of clip has no angle: setting one is
+    /// ignored, and reading one gives `None`.
+    fn angle(&self) -> Option<usize> {
+        None
+    }
+
+    /// Set it, and hand back what it was.
+    fn set_angle(&mut self, _angle: Option<usize>) -> Option<usize> {
+        None
+    }
+
     /// What this clip is linked to, if anything (§12).
     fn link(&self) -> Option<LinkId> {
         None
@@ -1354,6 +2068,13 @@ impl_clip!(
     fn clear_transition_out(&mut self) {
         self.transition_out = None;
     },
+    // A multicam angle belongs to the picture; see the trait.
+    fn angle(&self) -> Option<usize> {
+        self.angle
+    },
+    fn set_angle(&mut self, angle: Option<usize>) -> Option<usize> {
+        std::mem::replace(&mut self.angle, angle)
+    },
     // And the only kind with a speed control; see the trait.
     fn speed(&self) -> Rational {
         self.speed
@@ -1377,6 +2098,7 @@ impl_clip!(
     // the left half and the fade out on the right (§25's rule for transitions).
     fn clear_transition_out(&mut self) {
         self.fade_out = TimelineTime::ZERO;
+        self.crossfade_out = TimelineTime::ZERO;
     },
     fn clear_transition_in(&mut self) {
         self.fade_in = TimelineTime::ZERO;
@@ -1411,10 +2133,21 @@ impl VideoClip {
     ) -> Result<Self, TimelineError> {
         let end = start + TimelineTime::from_ticks(source.duration().ticks());
         Ok(Self {
+            old_film: 0.0,
+            glow: 0.0,
             sharpen: 0.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            curves: crate::curves::ColourCurves::default(),
+            light_leak: 0.0,
+            beat_pulse: 0.0,
+            smooth_motion: false,
+            vignette: 0.0,
+            border: Border::NONE,
+            shadow: Shadow::NONE,
             reflection: crate::Reflection::None,
             id: ClipId::new(),
             media_id,
@@ -1439,6 +2172,8 @@ impl VideoClip {
             transition_out: None,
             enabled: true,
             frozen: false,
+            angle: None,
+            corner_pin: crate::corner_pin::CornerPin::NONE,
         })
     }
 
@@ -1451,6 +2186,19 @@ impl VideoClip {
     ///
     /// The time is in the *source* media, which is where keys are anchored: see
     /// [`crate::keyframe`].
+    /// The table this clip is drawn through: its curves baked over its file
+    /// LUT when it has curves, otherwise the file LUT alone.
+    pub fn effective_lut(&self) -> Option<crate::lut::ClipLut> {
+        let file = self.lut.map(crate::lut::ClipLut::clamped);
+        if self.curves.is_identity() {
+            return file;
+        }
+        Some(crate::lut::ClipLut {
+            lut: self.curves.clamped().lut_id(file),
+            strength: 1.0,
+        })
+    }
+
     pub fn look_at(&self, source_time: MediaTime) -> ClipLook {
         let mut look = ClipLook {
             // Not animated: a crop that moved through a shot is a pan, and a
@@ -1461,9 +2209,17 @@ impl VideoClip {
             color: self.color,
             blur: self.blur,
             sharpen: self.sharpen,
-            lut: self.lut.map(crate::lut::ClipLut::clamped),
+            lut: self.effective_lut(),
             rgb_split: self.rgb_split,
             glitch: self.glitch,
+            pixelate: self.pixelate,
+            zoom_blur: self.zoom_blur,
+            glow: self.glow,
+            old_film: self.old_film,
+            vignette: self.vignette,
+            border: self.border,
+            corner_pin: self.corner_pin,
+            shadow: self.shadow,
             reflection: self.reflection,
             chroma_key: self.chroma_key,
             mask: self.mask,
@@ -1648,6 +2404,15 @@ impl AudioClip {
             source,
             gain: 1.0,
             denoise: 0.0,
+            eq: ClipEq::default(),
+            space: ClipSpace::default(),
+            channels: ChannelMode::default(),
+            pitch: 0.0,
+            keep_pitch: false,
+            leveller: 0.0,
+            de_ess: 0.0,
+            fade_shape: FadeShape::Smooth,
+            muted: false,
             link: None,
             speed: Rational::ONE,
             reversed: false,
@@ -1655,6 +2420,7 @@ impl AudioClip {
             enabled: true,
             fade_in: TimelineTime::ZERO,
             fade_out: TimelineTime::ZERO,
+            crossfade_out: TimelineTime::ZERO,
             keyframes: Keyframes::default(),
         })
     }
@@ -1704,12 +2470,99 @@ impl AudioClip {
     }
 }
 
+/// The longest crossfade between two sound clips. Past a couple of seconds two
+/// recordings are simply playing over each other.
+pub const MAX_CROSSFADE: TimelineTime = TimelineTime::from_seconds(2);
+
+/// How far each clip on a sound track reaches past its edges for crossfades:
+/// `(before its start, after its end)`, in ticks, one pair per clip.
+///
+/// A crossfade sits across a cut, half its length either side: the outgoing
+/// clip plays on past its end, reading the material after it, while the
+/// incoming one starts early, reading the material before its start — and
+/// the two fade across each other. So each half is held to what both clips
+/// can give: the incoming clip's material before its in-point, and neither
+/// clip's own length. The outgoing clip's material past its out-point is the
+/// file's to know, and is held when the crossfade is set.
+///
+/// Only between clips that touch: across a gap there is nothing to fade to.
+/// And not into or out of a reversed clip, whose "before" runs the other way.
+pub fn crossfade_halves(clips: &[AudioClip]) -> Vec<(i64, i64)> {
+    let mut halves = vec![(0_i64, 0_i64); clips.len()];
+    for index in 0..clips.len().saturating_sub(1) {
+        let (out, into) = (&clips[index], &clips[index + 1]);
+        if out.crossfade_out <= TimelineTime::ZERO
+            || out.timeline.end != into.timeline.start
+            || out.reversed
+            || into.reversed
+        {
+            continue;
+        }
+        let half = (out.crossfade_out.ticks().min(MAX_CROSSFADE.ticks()) / 2)
+            .min(timeline_ticks_for(into.source.start, into.speed))
+            .min(out.timeline.duration().ticks())
+            .min(into.timeline.duration().ticks());
+        if half > 0 {
+            halves[index].1 = half;
+            halves[index + 1].0 = half;
+        }
+    }
+    halves
+}
+
 /// The longest fade a clip may have. Longer is a volume change, which the
 /// gain control is for.
 pub const MAX_FADE: TimelineTime = TimelineTime::from_seconds(30);
 
 #[cfg(test)]
 mod gain_tests {
+    #[test]
+    fn crossfades_reach_across_touching_clips_only_as_far_as_they_can() {
+        use super::{AudioClip, MAX_CROSSFADE, crossfade_halves};
+        let clip = |start: i64, len: i64, in_point_ms: i64| {
+            AudioClip::new(
+                bettercut_foundation::MediaId::new(),
+                TimelineTime::from_seconds(start),
+                SourceRange::new(
+                    MediaTime::from_millis(in_point_ms),
+                    MediaTime::from_millis(in_point_ms + len * 1_000),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let ms = |v: i64| TimelineTime::from_millis(v).ticks();
+
+        let mut a = clip(0, 4, 0);
+        a.crossfade_out = TimelineTime::from_seconds(1);
+        let b = clip(4, 4, 2_000);
+        assert_eq!(
+            crossfade_halves(&[a.clone(), b.clone()]),
+            vec![(0, ms(500)), (ms(500), 0)]
+        );
+
+        // Only 200 ms of material before the next clip's in-point.
+        let short = clip(4, 4, 200);
+        assert_eq!(
+            crossfade_halves(&[a.clone(), short]),
+            vec![(0, ms(200)), (ms(200), 0)]
+        );
+
+        // A gap is not a cut; reversed clips do not crossfade.
+        let apart = clip(5, 4, 2_000);
+        assert_eq!(crossfade_halves(&[a.clone(), apart]), vec![(0, 0), (0, 0)]);
+        let mut backwards = b.clone();
+        backwards.reversed = true;
+        assert_eq!(
+            crossfade_halves(&[a.clone(), backwards]),
+            vec![(0, 0), (0, 0)]
+        );
+
+        // Held to the ceiling however long it is set.
+        a.crossfade_out = TimelineTime::from_seconds(60);
+        assert_eq!(crossfade_halves(&[a, b])[0].1, MAX_CROSSFADE.ticks() / 2);
+    }
+
     use super::*;
     use crate::keyframe::{Interpolation, Keyframe};
     use bettercut_foundation::MediaId;
@@ -1803,6 +2656,40 @@ mod gain_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_eq_is_held_to_its_ranges_and_off_means_zero() {
+        use super::{ClipEq, EQ_HIGH_CUT_MIN, EQ_LOW_CUT_MAX, EQ_PRESENCE_MAX};
+        assert!(ClipEq::default().is_flat());
+        let wild = ClipEq {
+            low_cut: 9_000.0,
+            high_cut: 500.0,
+            presence: -40.0,
+            hum: 0.0,
+        }
+        .clamped();
+        assert_eq!(wild.low_cut, EQ_LOW_CUT_MAX);
+        assert_eq!(wild.high_cut, EQ_HIGH_CUT_MIN);
+        assert_eq!(wild.presence, -EQ_PRESENCE_MAX);
+        let off = ClipEq {
+            low_cut: 5.0,
+            high_cut: 25_000.0,
+            presence: f32::NAN,
+            hum: 47.0,
+        };
+        assert!(off.is_flat(), "{:?}", off.clamped());
+
+        // The two mains rates, and nothing else: a number somebody typed by
+        // mistake is off rather than a hole in a voice.
+        for (asked, expected) in [(50.0, 50.0), (60.0, 60.0), (55.0, 0.0), (0.0, 0.0)] {
+            let eq = ClipEq {
+                hum: asked,
+                ..ClipEq::default()
+            }
+            .clamped();
+            assert_eq!(eq.hum, expected, "hum at {asked}");
+        }
+    }
+
     use super::*;
 
     fn range(start: i64, end: i64) -> TimelineRange {
@@ -2251,6 +3138,7 @@ mod look_strength_tests {
         saturation: 1.25,
         temperature: 0.0,
         tint: 0.0,
+        vibrance: 0.0,
     };
 
     /// A look whose largest move is on the white balance, where "no change" is
@@ -2266,6 +3154,7 @@ mod look_strength_tests {
         saturation: 1.08,
         temperature: 0.45,
         tint: 0.05,
+        vibrance: 0.0,
     };
 
     #[test]
@@ -2313,6 +3202,7 @@ mod look_strength_tests {
             saturation: 1.9,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         };
         assert_eq!(hand_made.strength_towards(PUNCHY), None);
     }
@@ -2328,6 +3218,7 @@ mod look_strength_tests {
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         };
         assert_eq!(coincidence.strength_towards(PUNCHY), None);
     }
@@ -2342,6 +3233,7 @@ mod look_strength_tests {
             saturation: 0.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         };
         let half = ColorAdjust::IDENTITY.lerp(mono, 0.5);
         assert!((half.saturation - 0.5).abs() < 1e-5);
@@ -2492,5 +3384,63 @@ mod key_navigation_tests {
         .expect("clip");
         assert_eq!(clip.key_beside(secs(105), true), None);
         assert_eq!(clip.key_beside(secs(105), false), None);
+    }
+}
+
+#[cfg(test)]
+mod channel_mode_tests {
+    use super::ChannelMode;
+
+    #[test]
+    fn channels_are_rearranged_in_place() {
+        let block = || vec![vec![1.0, 0.5], vec![0.0, -0.5]];
+        let mut planes = block();
+        ChannelMode::Stereo.apply(&mut planes);
+        assert_eq!(planes, block());
+        ChannelMode::LeftToBoth.apply(&mut planes);
+        assert_eq!(planes, vec![vec![1.0, 0.5], vec![1.0, 0.5]]);
+        let mut planes = block();
+        ChannelMode::RightToBoth.apply(&mut planes);
+        assert_eq!(planes, vec![vec![0.0, -0.5], vec![0.0, -0.5]]);
+        let mut planes = block();
+        ChannelMode::Mono.apply(&mut planes);
+        assert_eq!(planes, vec![vec![0.5, 0.0], vec![0.5, 0.0]]);
+        let mut mono = vec![vec![0.3]];
+        ChannelMode::LeftToBoth.apply(&mut mono);
+        assert_eq!(mono, vec![vec![0.3]], "a one-channel recording changed");
+    }
+}
+
+#[cfg(test)]
+mod ungraded_tests {
+    use super::*;
+
+    /// Taking the grade off keeps where a shot is and how it is layered, and
+    /// drops every colour and effect setting.
+    #[test]
+    fn ungraded_keeps_framing_and_drops_the_grade() {
+        let clip = VideoClip::new(
+            bettercut_foundation::MediaId::new(),
+            TimelineTime::ZERO,
+            SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(1)).unwrap(),
+        )
+        .unwrap();
+        let mut look = clip.look_at(MediaTime::ZERO);
+        look.transform.position = Vec2::new(0.2, -0.1);
+        look.opacity = 0.7;
+        look.blend = BlendMode::Screen;
+        look.color.saturation = 0.0;
+        look.blur = 30.0;
+        look.pixelate = 50.0;
+        look.vignette = 0.5;
+        let plain = look.ungraded();
+        assert_eq!(plain.transform, look.transform);
+        assert_eq!(plain.opacity, 0.7);
+        assert_eq!(plain.blend, BlendMode::Screen);
+        assert!(plain.color.is_identity());
+        assert_eq!(
+            (plain.blur, plain.pixelate, plain.vignette),
+            (0.0, 0.0, 0.0)
+        );
     }
 }

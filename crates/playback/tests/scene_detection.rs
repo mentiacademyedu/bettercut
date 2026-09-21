@@ -68,6 +68,7 @@ fn three_shots(path: &Path, shots: &[u8], seconds: i64) {
     let mut writer = VideoWriter::create(
         path,
         ExportFormat {
+            transparent: false,
             width: WIDTH,
             height: HEIGHT,
             frame_rate: FrameRate::FPS_30,

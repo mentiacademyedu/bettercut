@@ -477,7 +477,12 @@ fn animation_of(
     raw: Option<&crate::format::AnimationFile>,
 ) -> TextAnimation {
     let (intro, outro) = motions_of(problems, at, raw, &MotionKind::FOR_TEXT);
-    TextAnimation { intro, outro }
+    TextAnimation {
+        scroll: None,
+        intro,
+        outro,
+        looping: None,
+    }
 }
 
 /// A picture clip's entrance and exit.

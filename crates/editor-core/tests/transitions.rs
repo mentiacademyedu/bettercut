@@ -311,7 +311,7 @@ fn only_the_handle_free_kinds_are_offered_at_a_cut_with_nothing_to_spare() {
     let works_anywhere = |kind| {
         matches!(
             kind,
-            TransitionKind::FadeThroughBlack | TransitionKind::Flash
+            TransitionKind::FadeThroughBlack | TransitionKind::Flash | TransitionKind::Glitch
         )
     };
 

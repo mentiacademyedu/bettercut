@@ -133,7 +133,11 @@ fn every_moving_transition_lands_the_next_shot_square() {
 /// is a crossfade underneath and both shots are on screen.
 #[test]
 fn the_moving_kinds_need_handles() {
-    for kind in [TransitionKind::FadeThroughBlack, TransitionKind::Flash] {
+    for kind in [
+        TransitionKind::FadeThroughBlack,
+        TransitionKind::Flash,
+        TransitionKind::Glitch,
+    ] {
         assert!(
             !kind.needs_handles(),
             "{} claims to need footage it never reads",
@@ -146,6 +150,9 @@ fn the_moving_kinds_need_handles() {
         TransitionKind::Push,
         TransitionKind::Zoom,
         TransitionKind::Blur,
+        TransitionKind::Wipe,
+        TransitionKind::Iris,
+        TransitionKind::Spin,
     ] {
         assert!(kind.needs_handles(), "{} claims to need none", kind.label());
     }
@@ -157,7 +164,7 @@ fn the_moving_kinds_need_handles() {
 fn every_kind_is_accounted_for_above() {
     assert_eq!(
         TransitionKind::ALL.len(),
-        7,
+        11,
         "a transition kind was added or removed; say which side of the handle rule it is on in `the_moving_kinds_need_handles`"
     );
 }

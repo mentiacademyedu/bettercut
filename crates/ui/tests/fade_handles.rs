@@ -243,9 +243,10 @@ fn a_fade_drag_is_one_step_and_leaves_the_clip_in_place() {
     );
 }
 
-/// Pictures have no fade to drag: no handles on a video clip.
+/// A picture has handles too: dragging its left one in gives it a fade-in
+/// entrance about as long as the drag, in one undo step.
 #[test]
-fn a_picture_has_no_fade_handles() {
+fn a_picture_fade_handle_sets_its_entrance() {
     let (mut editor, _events) = Editor::new_project("Fades");
     let media = editor.import_media(MediaAsset::new(
         MediaKind::Video,
@@ -260,7 +261,37 @@ fn a_picture_has_no_fade_handles() {
     };
     harness.state.select_only(picture);
 
-    assert!(harness.handles().is_empty());
+    let handles = harness.handles();
+    assert_eq!(handles.len(), 2, "a selected picture has no handles");
+    let depth = harness.editor.undo_depth();
+    let start = handles[0];
+    harness.drag(start, Pos2::new(start.x + PX_PER_SECOND, start.y));
+
+    let intro = harness.editor.video_clip(picture).unwrap().motion.intro;
+    let intro = intro.expect("the drag gave no entrance");
+    assert_eq!(
+        intro.kind,
+        bettercut_editor_core::timeline::MotionKind::Fade
+    );
+    let seconds = intro.duration.ticks() as f32 / TimelineTime::from_seconds(1).ticks() as f32;
+    assert!((0.7..1.3).contains(&seconds), "the fade is {seconds} s");
+    assert_eq!(
+        harness.editor.undo_depth(),
+        depth + 1,
+        "the drag was not one step"
+    );
+    assert_eq!(
+        harness
+            .editor
+            .active_sequence()
+            .unwrap()
+            .clip_span(picture)
+            .unwrap()
+            .timeline
+            .start,
+        TimelineTime::ZERO,
+        "grabbing the handle moved the clip"
+    );
 }
 
 /// A tagged clip shows its colour on the timeline: its top strip takes the

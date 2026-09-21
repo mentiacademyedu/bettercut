@@ -1162,6 +1162,7 @@ fn the_view_follows_the_playhead_while_playing() {
         underruns: 0,
         limited_samples: 0,
         peaks: (0.0, 0.0),
+        loudness: (None, None),
         prefetch_hits: 0,
         ring_frames: 0,
         quality: "full",
@@ -1455,7 +1456,7 @@ mod clip_marks {
         let mut h = Harness::new();
         let _clip = h.add_clip(0, 20);
         let track = h.video_track();
-        let [mute, solo] = bettercut_ui::timeline::header_buttons(lane_rect(1));
+        let [_target, mute, solo] = bettercut_ui::timeline::header_buttons(lane_rect(1));
 
         assert!(h.editor.track_flag(track, TrackFlag::Enabled));
         h.click(mute.center());

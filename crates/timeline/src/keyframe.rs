@@ -510,6 +510,20 @@ impl Keyframes {
         previous
     }
 
+    /// Move every key `ticks` later in the source (earlier when negative).
+    ///
+    /// What a slip edit does to a clip's animation: the clip now plays a
+    /// different stretch of its file, and its keys move by the same amount so
+    /// the animation stays where it was on the timeline. Every key moves
+    /// together, so the order holds.
+    pub fn shift(&mut self, ticks: i64) {
+        for track in &mut self.tracks {
+            for key in &mut track.keys {
+                key.time = MediaTime::from_ticks(key.time.ticks() + ticks);
+            }
+        }
+    }
+
     /// Put a whole parameter's keys back, as [`Self::replace`] took them.
     pub fn restore(&mut self, parameter: AnimatedParameter, track: Option<KeyframeTrack>) {
         if let Some(index) = self.tracks.iter().position(|t| t.parameter == parameter) {
@@ -597,21 +611,89 @@ pub enum Movement {
     None,
     ZoomIn,
     ZoomOut,
+    /// The picture slides slowly to the left across the frame.
+    PanLeft,
+    PanRight,
+    /// The picture slides slowly up.
+    PanUp,
+    PanDown,
 }
+
+/// How far a movement travels, as a multiple of the ordinary amount.
+///
+/// The ordinary amount is chosen to be noticed and not felt — but what is
+/// right depends on the shot and on the cut around it. A four-second photo in
+/// a fast montage wants more than a fifteen-second one under a voiceover, and
+/// a picture already cropped in has less room to move before its edges show.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MovementStrength {
+    /// Half the travel: barely there, which on a long shot is the point.
+    Gentle,
+    #[default]
+    Normal,
+    /// Nearly twice: for a short clip that has to move to register.
+    Strong,
+}
+
+impl MovementStrength {
+    pub const ALL: [Self; 3] = [Self::Gentle, Self::Normal, Self::Strong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Gentle => "Gentle",
+            Self::Normal => "Normal",
+            Self::Strong => "Strong",
+        }
+    }
+
+    /// What the travel is multiplied by.
+    pub fn factor(self) -> f32 {
+        match self {
+            Self::Gentle => 0.5,
+            Self::Normal => 1.0,
+            Self::Strong => 1.8,
+        }
+    }
+}
+
+/// How much bigger a panned picture is drawn, so it has room to slide without
+/// showing the frame's edges.
+pub const PAN_SCALE: f32 = 1.15;
 
 /// How far a movement travels: 18% across the clip, whatever its length.
 /// Enough to notice on a five-second photo, not enough to feel like a push-in.
 pub const ZOOM_AMOUNT: f32 = 1.18;
 
 impl Movement {
-    pub const ALL: [Self; 3] = [Self::None, Self::ZoomIn, Self::ZoomOut];
+    pub const ALL: [Self; 7] = [
+        Self::None,
+        Self::ZoomIn,
+        Self::ZoomOut,
+        Self::PanLeft,
+        Self::PanRight,
+        Self::PanUp,
+        Self::PanDown,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "None",
             Self::ZoomIn => "Zoom in",
             Self::ZoomOut => "Zoom out",
+            Self::PanLeft => "Pan left",
+            Self::PanRight => "Pan right",
+            Self::PanUp => "Pan up",
+            Self::PanDown => "Pan down",
         }
+    }
+
+    /// Whether this slides the picture rather than zooming it.
+    pub fn is_pan(self) -> bool {
+        matches!(
+            self,
+            Self::PanLeft | Self::PanRight | Self::PanUp | Self::PanDown
+        )
     }
 
     /// The name a template file uses.
@@ -620,17 +702,76 @@ impl Movement {
             "none" => Self::None,
             "zoom_in" => Self::ZoomIn,
             "zoom_out" => Self::ZoomOut,
+            "pan_left" => Self::PanLeft,
+            "pan_right" => Self::PanRight,
+            "pan_up" => Self::PanUp,
+            "pan_down" => Self::PanDown,
             _ => return None,
         })
+    }
+
+    /// The same move the other way: what a montage alternates with, so
+    /// twenty photos do not all drift in one direction.
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::ZoomIn => Self::ZoomOut,
+            Self::ZoomOut => Self::ZoomIn,
+            Self::PanLeft => Self::PanRight,
+            Self::PanRight => Self::PanLeft,
+            Self::PanUp => Self::PanDown,
+            Self::PanDown => Self::PanUp,
+        }
     }
 
     /// The scale at the clip's first and last instants, as a multiple of
     /// whatever scale it already has.
     pub fn scales(self) -> Option<(f32, f32)> {
+        self.scales_at(MovementStrength::Normal)
+    }
+
+    /// The same, at a chosen strength: the *travel* scales, not the picture —
+    /// a gentle zoom ends less far in, and a gentle pan is drawn less enlarged
+    /// because it needs less room to slide in.
+    pub fn scales_at(self, strength: MovementStrength) -> Option<(f32, f32)> {
+        let grown = |amount: f32| 1.0 + (amount - 1.0) * strength.factor();
         match self {
             Self::None => None,
-            Self::ZoomIn => Some((1.0, ZOOM_AMOUNT)),
-            Self::ZoomOut => Some((ZOOM_AMOUNT, 1.0)),
+            Self::ZoomIn => Some((1.0, grown(ZOOM_AMOUNT))),
+            Self::ZoomOut => Some((grown(ZOOM_AMOUNT), 1.0)),
+            Self::PanLeft | Self::PanRight | Self::PanUp | Self::PanDown => {
+                let scale = grown(PAN_SCALE);
+                Some((scale, scale))
+            }
+        }
+    }
+
+    /// For a pan, the parameter it slides and how far from the clip's own
+    /// position it starts and ends, in the transform's units (a frame's width
+    /// across, its height down) — for a picture at `base` scale, so a clip
+    /// already enlarged slides as far as its extra size allows.
+    pub fn slide(self, base: crate::clip::Vec2) -> Option<(AnimatedParameter, f32, f32)> {
+        self.slide_at(base, MovementStrength::Normal)
+    }
+
+    /// The same, at a chosen strength. The picture is enlarged by exactly what
+    /// the slide needs, so the two stay in step: a gentler pan is a smaller
+    /// picture moving a shorter way, and no edge shows either way.
+    pub fn slide_at(
+        self,
+        base: crate::clip::Vec2,
+        strength: MovementStrength,
+    ) -> Option<(AnimatedParameter, f32, f32)> {
+        // Half the extra size on each side: as far as the edges stay covered.
+        let grown = 1.0 + (PAN_SCALE - 1.0) * strength.factor();
+        let room = |scale: f32| (grown - 1.0) / 2.0 * scale.abs();
+        let (x, y) = (room(base.x), room(base.y));
+        match self {
+            Self::PanLeft => Some((AnimatedParameter::PositionX, x, -x)),
+            Self::PanRight => Some((AnimatedParameter::PositionX, -x, x)),
+            Self::PanUp => Some((AnimatedParameter::PositionY, y, -y)),
+            Self::PanDown => Some((AnimatedParameter::PositionY, -y, y)),
+            Self::None | Self::ZoomIn | Self::ZoomOut => None,
         }
     }
 
@@ -643,9 +784,21 @@ impl Movement {
     pub fn keyframes(
         self,
         base: crate::clip::Vec2,
+        position: crate::clip::Vec2,
         source: crate::clip::SourceRange,
     ) -> Vec<(AnimatedParameter, Keyframe)> {
-        let Some((from, to)) = self.scales() else {
+        self.keyframes_at(base, position, source, MovementStrength::Normal)
+    }
+
+    /// [`Self::keyframes`] at a chosen strength.
+    pub fn keyframes_at(
+        self,
+        base: crate::clip::Vec2,
+        position: crate::clip::Vec2,
+        source: crate::clip::SourceRange,
+        strength: MovementStrength,
+    ) -> Vec<(AnimatedParameter, Keyframe)> {
+        let Some((from, to)) = self.scales_at(strength) else {
             return Vec::new();
         };
         // The source range is half-open, so a key at the very end would never
@@ -661,6 +814,18 @@ impl Movement {
                 keys.push((
                     parameter,
                     Keyframe::new(time, base * factor, Interpolation::EaseInOut),
+                ));
+            }
+        }
+        if let Some((parameter, from, to)) = self.slide_at(base, strength) {
+            let at = match parameter {
+                AnimatedParameter::PositionY => position.y,
+                _ => position.x,
+            };
+            for (time, offset) in [(first, from), (last, to)] {
+                keys.push((
+                    parameter,
+                    Keyframe::new(time, at + offset, Interpolation::EaseInOut),
                 ));
             }
         }
@@ -1045,10 +1210,18 @@ mod default_tests {
     #[test]
     fn the_defaults_are_the_identity_look() {
         let look = ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
             sharpen: 0.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
             reflection: crate::Reflection::None,
             crop: crate::Crop::NONE,
             chroma_key: None,

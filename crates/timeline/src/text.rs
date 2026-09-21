@@ -73,6 +73,10 @@ pub struct TextClip {
     /// stays as the clip's name.
     #[serde(default)]
     pub counter: Option<crate::counter::Counter>,
+    /// Light up each word in this colour as it comes (`crate::karaoke`), or
+    /// none for plain text.
+    #[serde(default)]
+    pub highlight: Option<bettercut_text::Rgba>,
 }
 
 fn one() -> f32 {
@@ -124,6 +128,7 @@ impl TextClip {
             color_label: crate::clip::ColorLabel::None,
             shape: None,
             counter: None,
+            highlight: None,
         })
     }
 
@@ -248,8 +253,10 @@ mod tests {
         let mut clip =
             TextClip::with_duration("Hello", TimelineTime::ZERO, seconds(4)).expect("ok");
         clip.animation = TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(MotionKind::Pop, seconds(1))),
             outro: Some(Motion::new(MotionKind::Fade, seconds(1))),
+            looping: None,
         };
         let id = clip.id;
         track.insert(clip).expect("empty track");

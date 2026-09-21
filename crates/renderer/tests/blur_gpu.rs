@@ -116,10 +116,18 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, blur: f32, tier: QualityTi
                 frame: &frame,
 
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,
                     transform: Transform::default(),

@@ -78,7 +78,44 @@ const USED: &[(char, FontFamily, &str)] = &[
         FontFamily::Monospace,
         "inspector: the System diagnostics block",
     ),
+    (
+        '★',
+        FontFamily::Proportional,
+        "media browser: a star a file has been given",
+    ),
+    (
+        '☆',
+        FontFamily::Proportional,
+        "media browser: a star it has not",
+    ),
 ];
+
+/// The sticker picker's own symbols, held to the same rule.
+///
+/// Listed from the editor core rather than copied, so a sticker added there
+/// and unavailable here fails this test instead of drawing a box in the
+/// picker. What the *video* draws them with is a different font stack
+/// entirely — the system's, through `bettercut_text` — and this says nothing
+/// about that.
+#[test]
+fn every_sticker_in_the_picker_has_a_glyph() {
+    let missing: Vec<String> = bettercut_editor_core::stickers::STICKERS
+        .iter()
+        .flat_map(|(sticker, name)| sticker.chars().map(move |c| (c, *name)))
+        .filter(|(c, _)| !is_drawable(*c, &FontFamily::Proportional))
+        .map(|(c, name)| format!("U+{:04X} ({name})", c as u32))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these stickers would draw as empty boxes in the picker:
+  {}",
+        missing.join(
+            "
+  "
+        )
+    );
+}
 
 /// Whether any font in `family` can draw `c`.
 ///

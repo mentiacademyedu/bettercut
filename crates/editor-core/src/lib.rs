@@ -4,24 +4,74 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod animation_copy;
+pub mod beat_photos;
+pub mod boomerang;
+pub mod bounce;
+pub mod censor;
+pub mod collect;
+pub mod colour_clips;
 pub mod command;
+pub mod compare;
+pub mod compound;
+pub mod cover;
+pub mod crop_shape;
 pub mod editor;
 pub mod error;
 pub mod event;
+pub mod every_cut;
+pub mod fade_selection;
+pub mod filters;
+pub mod find;
+pub mod fit_fill;
+pub mod fit_music;
+pub mod freeze_punch;
 pub mod gaps;
 pub mod hardware;
 pub mod history;
+pub mod insert_drag;
 pub mod journal;
+pub mod keyframe_edit;
+pub mod lift;
+pub mod loop_clip;
+pub mod lower_third;
+pub mod magnetic;
+pub mod match_frame;
+pub mod multicam;
 pub mod ops;
 pub mod pip;
+pub mod rate_stretch;
 pub mod recovery;
+pub mod render_in_place;
 pub mod replace;
 pub mod reshape;
+pub mod rewind;
+pub mod roll;
+pub mod rotate;
+pub mod save_template;
+pub mod shuffle;
+pub mod slide;
 pub mod slideshow;
+pub mod slip;
+pub mod speed_curve;
 pub mod speed_ramp;
+pub mod split_edit;
+pub mod split_even;
+pub mod split_markers;
 pub mod split_screen;
+pub mod stabilise;
+pub mod stickers;
+pub mod storyboard;
 pub mod swap;
+pub mod sync_lock;
+pub mod sync_sound;
 pub mod template_apply;
+pub mod three_point;
+pub mod tone;
+pub mod track_motion;
+pub mod trim_window;
+pub mod versions;
+pub mod voiceover;
 
 pub use bettercut_timeline::{Movement, ZOOM_AMOUNT};
 pub use command::{
@@ -40,6 +90,7 @@ pub use recovery::{
     scan_unsaved, stale_sessions, unsaved_sessions,
 };
 pub use reshape::{SHAPES, Shape};
+pub use speed_curve::SpeedCurve;
 pub use speed_ramp::SpeedRamp;
 pub use split_screen::SplitLayout;
 pub use swap::Neighbour;

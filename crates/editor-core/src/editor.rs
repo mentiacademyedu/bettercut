@@ -67,6 +67,10 @@ pub struct Editor {
     /// a crash costs at most the one command in flight.
     journal: Journal,
 
+    /// Where the playhead was left in each sequence that is not on screen, so
+    /// coming back to one finds it as it was.
+    sequence_playheads: std::collections::HashMap<SequenceId, TimelineTime>,
+
     events: EventSender,
 }
 
@@ -109,6 +113,7 @@ impl Editor {
             hardware: HardwareProfile::detect(),
             clipboard: Vec::new(),
             journal,
+            sequence_playheads: std::collections::HashMap::new(),
             events,
         };
         editor.events.emit(Event::ProjectLoaded);
@@ -145,6 +150,7 @@ impl Editor {
             hardware: HardwareProfile::detect(),
             clipboard: Vec::new(),
             journal,
+            sequence_playheads: std::collections::HashMap::new(),
             events,
         };
         editor.events.emit(Event::ProjectLoaded);
@@ -155,6 +161,28 @@ impl Editor {
 
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// The project, to change from outside the command path.
+    ///
+    /// Only for state that is not part of the edit — an import, a bake. Every
+    /// caller has to follow it with [`Self::recorded_outside_a_command`], or a
+    /// recovered session quietly loses the change (§38.2).
+    pub(crate) fn project_mut(&mut self) -> &mut Project {
+        &mut self.project
+    }
+
+    /// Note a change made outside the command path: the project is dirty, the
+    /// journal takes a fresh snapshot (nothing can replay what was not a
+    /// command), and the interface is told.
+    pub(crate) fn recorded_outside_a_command(&mut self, what: &'static str) {
+        self.dirty = true;
+        if !self.journal.needs_baseline()
+            && let Err(err) = self.journal.snapshot(&self.project)
+        {
+            tracing::error!(%err, "could not snapshot after {what}");
+        }
+        self.events.emit(Event::ProjectChanged);
     }
 
     pub fn active_sequence(&self) -> Option<&Sequence> {
@@ -572,7 +600,7 @@ impl Editor {
     /// on it, and a group of one carries it just as a bare command does, so a
     /// drag that starts as a static slider edit and a drag that writes two
     /// keyframes coalesce by exactly the same rule.
-    fn dispatch_gesture(
+    pub(crate) fn dispatch_gesture(
         &mut self,
         label: String,
         commands: Vec<Command>,
@@ -828,6 +856,32 @@ impl Editor {
             P::Vignette(_) => P::Vignette(0.0),
             P::Grain(_) => P::Grain(0.0),
             P::Sharpen(_) => P::Sharpen(0.0),
+            P::Vibrance(_) => P::Vibrance(0.0),
+            P::SmoothMotion(_) => P::SmoothMotion(false),
+            P::Border(_) => P::Border(bettercut_timeline::Border::NONE),
+            P::Shadow(_) => P::Shadow(bettercut_timeline::Shadow::default()),
+            P::CornerPin(_) => P::CornerPin(bettercut_timeline::CornerPin::NONE),
+            P::KeepPitch(_) => P::KeepPitch(false),
+            P::Bars(_) => P::Bars(0.0),
+            P::ProgressBar(_) => P::ProgressBar(bettercut_timeline::ProgressBar::default()),
+            P::BurnIn(_) => P::BurnIn(bettercut_timeline::BurnIn::default()),
+            P::Pixelate(_) => P::Pixelate(0.0),
+            P::ZoomBlur(_) => P::ZoomBlur(0.0),
+            P::Glow(_) => P::Glow(0.0),
+            P::OldFilm(_) => P::OldFilm(0.0),
+            P::Tone(_) => P::Tone(bettercut_timeline::curves::Tone::default()),
+            P::Curves(_) => P::Curves(bettercut_timeline::curves::ColourCurves::default()),
+            P::LightLeak(_) => P::LightLeak(0.0),
+            P::BeatPulse(_) => P::BeatPulse(0.0),
+            P::Eq(_) => P::Eq(bettercut_timeline::ClipEq::default()),
+            P::Space(_) => P::Space(bettercut_timeline::ClipSpace::default()),
+            P::Channels(_) => P::Channels(bettercut_timeline::ChannelMode::Stereo),
+            P::Pitch(_) => P::Pitch(0.0),
+            P::Leveller(_) => P::Leveller(0.0),
+            P::DeEss(_) => P::DeEss(0.0),
+            P::FadeShape(_) => P::FadeShape(bettercut_timeline::FadeShape::Smooth),
+            P::Mute(_) => P::Mute(false),
+            P::Crossfade(_) => P::Crossfade(TimelineTime::ZERO),
             P::Lut(_) => P::Lut(None),
             P::Reverse(_) => P::Reverse(false),
             P::RgbSplit(_) => P::RgbSplit(0.0),
@@ -916,6 +970,25 @@ impl Editor {
         &mut self,
         media: bettercut_foundation::MediaId,
     ) -> Result<Vec<ClipId>, EditorError> {
+        self.place_media_range(media, None)
+    }
+
+    /// [`Self::place_media`] with only part of the file: a subclip.
+    ///
+    /// The part is marked on the file in the media browser rather than trimmed
+    /// on the timeline afterwards — the same edit in the end, but made before
+    /// the shot is ever in the way of anything, and made once for a file that
+    /// is going to be used four times.
+    ///
+    /// The range is held inside the file and to at least a frame; one the
+    /// wrong way round is read as the span between the two instants, because
+    /// that is plainly what was meant. A photo has no range to take: one
+    /// picture is all there is, however long it is held.
+    pub fn place_media_range(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        range: Option<(MediaTime, MediaTime)>,
+    ) -> Result<Vec<ClipId>, EditorError> {
         let sequence_id = self.active_sequence_id()?;
         let asset = self
             .project
@@ -925,14 +998,22 @@ impl Editor {
         let wants_video = asset.kind.has_video();
         let wants_audio = asset.audio_codec.is_some();
         // A photo has no length of its own; it gets `STILL_DURATION`.
-        let duration = asset.placement_duration();
+        let duration = asset.placement_duration_with(self.project.settings.photo_length);
 
         let sequence = self
             .project
             .sequence(sequence_id)
             .ok_or(EditorError::SequenceNotFound(sequence_id))?;
-        let video_track = sequence.video_tracks.first().map(|t| (t.id, t.duration()));
-        let audio_track = sequence.audio_tracks.first().map(|t| (t.id, t.duration()));
+        // The targeted lane, or the first of its kind (§10's track
+        // targeting) — and how far along it already runs.
+        let video_track = sequence
+            .target_track(bettercut_timeline::TrackKind::Video)
+            .and_then(|id| sequence.video_track(id))
+            .map(|t| (t.id, t.duration()));
+        let audio_track = sequence
+            .target_track(bettercut_timeline::TrackKind::Audio)
+            .and_then(|id| sequence.audio_track(id))
+            .map(|t| (t.id, t.duration()));
 
         if (!wants_video || video_track.is_none()) && (!wants_audio || audio_track.is_none()) {
             return Err(EditorError::NoTrackForMedia);
@@ -951,7 +1032,20 @@ impl Editor {
         .flatten()
         .fold(TimelineTime::ZERO, TimelineTime::max);
 
-        let source = bettercut_timeline::SourceRange::new(MediaTime::ZERO, duration)?;
+        let still = asset.is_still();
+        let source = match range.filter(|_| !still) {
+            None => bettercut_timeline::SourceRange::new(MediaTime::ZERO, duration)?,
+            Some((from, to)) => {
+                let (from, to) = if to < from { (to, from) } else { (from, to) };
+                let limit = duration.ticks().max(1);
+                let from = from.ticks().clamp(0, limit - 1);
+                let to = to.ticks().clamp(from + 1, limit);
+                bettercut_timeline::SourceRange::new(
+                    MediaTime::from_ticks(from),
+                    MediaTime::from_ticks(to),
+                )?
+            }
+        };
         let mut commands = Vec::new();
         let mut placed = Vec::new();
 
@@ -984,6 +1078,883 @@ impl Editor {
 
         self.dispatch_group("Add Clip".to_owned(), commands)?;
         Ok(placed)
+    }
+
+    // ---- sequences (§30) ----
+
+    /// The longest a sequence's name may be.
+    pub const MAX_SEQUENCE_NAME: usize = 60;
+
+    /// Every sequence in the project, in order, with its name — the tabs above
+    /// the timeline.
+    pub fn sequence_list(&self) -> Vec<(SequenceId, String)> {
+        self.project
+            .sequences
+            .iter()
+            .map(|sequence| (sequence.id, sequence.name.clone()))
+            .collect()
+    }
+
+    /// Work on another sequence. Returns whether the view actually changed.
+    ///
+    /// Not an edit: switching makes no undo step, because nothing about the
+    /// project changed. Each sequence keeps its own playhead, so coming back to
+    /// one finds it where it was left — which is what makes two sequences feel
+    /// like two edits rather than one timeline with its contents swapped.
+    pub fn switch_sequence(&mut self, sequence: SequenceId) -> bool {
+        let Some(current) = self.project.active().map(|s| s.id) else {
+            return false;
+        };
+        if current == sequence || self.project.sequence(sequence).is_none() {
+            return false;
+        }
+        self.sequence_playheads.insert(current, self.playhead);
+        self.project.active_sequence = Some(sequence);
+        self.playhead = self
+            .sequence_playheads
+            .get(&sequence)
+            .copied()
+            .unwrap_or(TimelineTime::ZERO);
+        self.events.emit(Event::ActiveSequenceChanged(sequence));
+        true
+    }
+
+    /// Add an empty sequence in the project's format, after the others, and
+    /// show it. One undo step.
+    pub fn add_sequence(&mut self) -> Result<SequenceId, EditorError> {
+        let (resolution, frame_rate) = self.project.active().map_or(
+            (
+                bettercut_timeline::Resolution::HD_1080,
+                bettercut_foundation::FrameRate::FPS_30,
+            ),
+            |s| (s.resolution, s.frame_rate),
+        );
+        let taken: Vec<String> = self
+            .project
+            .sequences
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let name = (self.project.sequences.len() + 1..)
+            .map(|n| format!("Sequence {n}"))
+            .find(|name| !taken.contains(name))
+            .unwrap_or_else(|| "Sequence".to_owned());
+        let mut sequence = bettercut_timeline::Sequence::new(name, resolution, frame_rate)?;
+        sequence
+            .video_tracks
+            .push(bettercut_timeline::VideoTrack::new("V1"));
+        sequence
+            .audio_tracks
+            .push(bettercut_timeline::AudioTrack::new("A1"));
+        sequence
+            .text_tracks
+            .push(bettercut_timeline::TextTrack::new("T1"));
+        let id = sequence.id;
+        let index = self.project.sequences.len();
+        self.dispatch(Command::AddSequence {
+            sequence: Box::new(sequence),
+            index,
+        })?;
+        self.switch_sequence(id);
+        Ok(id)
+    }
+
+    /// Copy `sequence` — every track and clip, its marks, groups and notes —
+    /// as a new sequence right after it, and switch to the copy. One undo step.
+    ///
+    /// Every id in the copy is new, so an edit to one can never reach the
+    /// other; a picture and its sound stay tied to each other in the copy, and
+    /// its groups and notes follow its clips.
+    pub fn duplicate_sequence(&mut self, sequence: SequenceId) -> Result<SequenceId, EditorError> {
+        let (copy, index) = self.sequence_copy(sequence)?;
+        let id = copy.id;
+        self.dispatch(Command::AddSequence {
+            sequence: Box::new(copy),
+            index: index + 1,
+        })?;
+        self.switch_sequence(id);
+        Ok(id)
+    }
+
+    /// A copy of `sequence` with fresh ids for it, its clips and their links,
+    /// named "… copy", and where the original sits in the project's list.
+    ///
+    /// Shared with the reshaping copy (`crate::reshape`), which takes the same
+    /// copy and then reframes it — one place decides what "a copy" means.
+    pub(crate) fn sequence_copy(
+        &self,
+        sequence: SequenceId,
+    ) -> Result<(bettercut_timeline::Sequence, usize), EditorError> {
+        let index = self
+            .project
+            .sequences
+            .iter()
+            .position(|s| s.id == sequence)
+            .ok_or(EditorError::SequenceNotFound(sequence))?;
+        let mut copy = self.project.sequences[index].clone();
+        copy.id = SequenceId::new();
+        copy.name = format!("{} copy", copy.name);
+
+        // New identities throughout, remembering what each one was so links,
+        // groups and notes can be rewritten to match.
+        let mut clips: std::collections::HashMap<ClipId, ClipId> = std::collections::HashMap::new();
+        let mut links: std::collections::HashMap<
+            bettercut_foundation::LinkId,
+            bettercut_foundation::LinkId,
+        > = std::collections::HashMap::new();
+        let fresh_link = |link: Option<bettercut_foundation::LinkId>,
+                          links: &mut std::collections::HashMap<
+            bettercut_foundation::LinkId,
+            bettercut_foundation::LinkId,
+        >| {
+            link.map(|link| {
+                *links
+                    .entry(link)
+                    .or_insert_with(bettercut_foundation::LinkId::new)
+            })
+        };
+        for track in &mut copy.video_tracks {
+            track.id = TrackId::new();
+            for old in track.clips().iter().map(|clip| clip.id).collect::<Vec<_>>() {
+                let new = ClipId::new();
+                clips.insert(old, new);
+                if let Some(clip) = track.get_mut(old) {
+                    clip.id = new;
+                    clip.link = fresh_link(clip.link, &mut links);
+                }
+            }
+        }
+        for track in &mut copy.audio_tracks {
+            track.id = TrackId::new();
+            for old in track.clips().iter().map(|clip| clip.id).collect::<Vec<_>>() {
+                let new = ClipId::new();
+                clips.insert(old, new);
+                if let Some(clip) = track.get_mut(old) {
+                    clip.id = new;
+                    clip.link = fresh_link(clip.link, &mut links);
+                }
+            }
+        }
+        for track in &mut copy.text_tracks {
+            track.id = TrackId::new();
+            for old in track.clips().iter().map(|clip| clip.id).collect::<Vec<_>>() {
+                let new = ClipId::new();
+                clips.insert(old, new);
+                if let Some(clip) = track.get_mut(old) {
+                    clip.id = new;
+                }
+            }
+        }
+        for track in &mut copy.adjustment_tracks {
+            track.id = TrackId::new();
+            for old in track.clips().iter().map(|clip| clip.id).collect::<Vec<_>>() {
+                let new = ClipId::new();
+                clips.insert(old, new);
+                if let Some(clip) = track.get_mut(old) {
+                    clip.id = new;
+                }
+            }
+        }
+
+        // What the clips carry with them: which are grouped, and what was
+        // written about each.
+        for group in &mut copy.groups {
+            *group = group
+                .iter()
+                .filter_map(|clip| clips.get(clip).copied())
+                .collect();
+        }
+        copy.groups.retain(|group| group.len() > 1);
+        copy.notes.retain_mut(|note| match clips.get(&note.clip) {
+            Some(clip) => {
+                note.clip = *clip;
+                true
+            }
+            None => false,
+        });
+        Ok((copy, index))
+    }
+
+    /// Take a sequence out of the project. The last one cannot go — a project
+    /// with no sequence has nothing to show.
+    pub fn remove_sequence(&mut self, sequence: SequenceId) -> Result<(), EditorError> {
+        if self.project.sequences.len() <= 1 {
+            return Err(EditorError::LastSequence);
+        }
+        self.sequence_playheads.remove(&sequence);
+        self.dispatch(Command::RemoveSequence { sequence })?;
+        if let Some(shown) = self.project.active().map(|s| s.id) {
+            self.playhead = self
+                .sequence_playheads
+                .get(&shown)
+                .copied()
+                .unwrap_or(TimelineTime::ZERO);
+        }
+        Ok(())
+    }
+
+    /// Rename a sequence. Returns whether the name actually changed.
+    pub fn rename_sequence(
+        &mut self,
+        sequence: SequenceId,
+        name: &str,
+    ) -> Result<bool, EditorError> {
+        let name: String = name.trim().chars().take(Self::MAX_SEQUENCE_NAME).collect();
+        if name.is_empty() {
+            return Err(EditorError::EmptySequenceName);
+        }
+        let current = self
+            .project
+            .sequence(sequence)
+            .ok_or(EditorError::SequenceNotFound(sequence))?
+            .name
+            .clone();
+        if current == name {
+            return Ok(false);
+        }
+        self.dispatch(Command::RenameSequence { sequence, name })?;
+        Ok(true)
+    }
+
+    /// [`Self::free_text_slot`] at the playhead, for the sticker picker.
+    pub(crate) fn free_sticker_slot(&self, track: TrackId) -> TimelineTime {
+        self.free_text_slot(track, self.playhead)
+    }
+
+    /// The file a picture or sound clip plays — what "find this in the media
+    /// browser" needs, without the caller having to guess which lane the clip
+    /// is on. `None` for a title, which plays no file.
+    pub fn media_of_clip(&self, clip: ClipId) -> Option<bettercut_foundation::MediaId> {
+        self.video_clip(clip)
+            .map(|c| c.media_id)
+            .or_else(|| self.audio_clip(clip).map(|c| c.media_id))
+    }
+
+    /// Run `commands` and fold them into the undo step already on top.
+    ///
+    /// For an edit that is *part of* what the user just did rather than a
+    /// thing of its own: a magnetic track closing up behind a delete, or the
+    /// keys a freeze punch adds to the clip it just made. Undoing takes the
+    /// whole gesture back, which is what the user thinks they did.
+    pub(crate) fn dispatch_amending(&mut self, commands: Vec<Command>) -> Result<(), EditorError> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let mut built: Vec<Box<dyn EditorCommand>> = Vec::with_capacity(commands.len());
+        for command in &commands {
+            built.push(self.build(command.clone())?);
+        }
+        for command in built {
+            self.history.amend_top(command, &mut self.project)?;
+        }
+        self.dirty = true;
+        self.journal_commands(commands);
+        self.events.emit(Event::ProjectChanged);
+        Ok(())
+    }
+
+    /// The colour captions light each word up in, unless told otherwise:
+    /// a warm yellow, which reads on almost any footage.
+    pub const DEFAULT_HIGHLIGHT: bettercut_text::Rgba =
+        bettercut_text::Rgba::new(255, 214, 92, 255);
+
+    /// Hold `clip`'s last frame for `duration`, pushing what follows along.
+    ///
+    /// The other end of the freeze: a held frame *after* the shot rather than
+    /// inside it, which is what a cut needs when the next shot is not ready
+    /// yet. One undo step (§79).
+    pub fn hold_last_frame(
+        &mut self,
+        clip: ClipId,
+        duration: TimelineTime,
+    ) -> Result<ClipId, EditorError> {
+        let span = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipKindMismatch)?
+            .timeline;
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let source = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipKindMismatch)?
+            .clone();
+        let duration = TimelineTime::from_ticks(self.snap_to_frame(sequence, duration).ticks());
+        if duration <= TimelineTime::ZERO {
+            return Err(EditorError::PlayheadOffClip);
+        }
+        let frame = self
+            .project
+            .sequence(sequence)
+            .map_or(1, |s| s.ticks_per_frame().max(1));
+
+        // The clip's own last frame, held: the instant a frame before its
+        // out-point, since the out-point itself is the first frame of
+        // whatever comes next.
+        let last = bettercut_foundation::MediaTime::from_ticks(
+            (source.source.end.ticks() - frame).max(source.source.start.ticks()),
+        );
+        let range = bettercut_timeline::SourceRange::new(
+            last,
+            bettercut_foundation::MediaTime::from_ticks(last.ticks() + frame),
+        )?;
+        let mut frozen = bettercut_timeline::VideoClip::new(source.media_id, span.end, range)?;
+        frozen.frozen = true;
+        frozen.timeline = bettercut_timeline::TimelineRange {
+            start: span.end,
+            end: span.end + duration,
+        };
+        // The look of the shot it came from, so the hold is the same picture
+        // standing still rather than an ungraded one.
+        frozen.transform = source.transform;
+        frozen.crop = source.crop;
+        frozen.opacity = source.opacity;
+        frozen.color = source.color;
+        frozen.blur = source.blur;
+        frozen.curves = source.curves;
+        frozen.lut = source.lut;
+        frozen.blend = source.blend;
+        let held = frozen.id;
+
+        self.staged("Hold Last Frame", |editor, stage| {
+            editor.stage_insert_time(stage, sequence, span.end, duration)?;
+            editor.stage(
+                stage,
+                Command::AddClip {
+                    sequence,
+                    track,
+                    clip: ClipPayload::Video(Box::new(frozen.clone())),
+                },
+            )
+        })?;
+        Ok(held)
+    }
+
+    /// Paste the clipboard at the playhead, pushing everything from there on
+    /// along to make room. Returns how many clips went in.
+    ///
+    /// The insert form of paste: nothing is covered and nothing has to be
+    /// moved out of the way first, which is what makes it the one to reach for
+    /// in the middle of a cut.
+    pub fn paste_insert(&mut self) -> Result<usize, EditorError> {
+        if self.clipboard.is_empty() {
+            return Err(EditorError::Timeline(
+                bettercut_timeline::TimelineError::ClipboardEmpty,
+            ));
+        }
+        let sequence = self.active_sequence_id()?;
+        let at = self.snap_to_frame(sequence, self.playhead);
+        // How much room the clipboard needs: from the earliest thing in it to
+        // the latest.
+        let (Some(first), Some(last)) = (
+            self.clipboard.iter().map(ClipPayload::start).min(),
+            self.clipboard.iter().map(ClipPayload::end).max(),
+        ) else {
+            return Ok(0);
+        };
+        let room = last - first;
+
+        let (video_track, audio_track) = {
+            let active = self
+                .project
+                .sequence(sequence)
+                .ok_or(EditorError::SequenceNotFound(sequence))?;
+            (
+                active.target_track(bettercut_timeline::TrackKind::Video),
+                active.target_track(bettercut_timeline::TrackKind::Audio),
+            )
+        };
+        let commands: Vec<Command> = self
+            .clipboard
+            .clone()
+            .into_iter()
+            .filter_map(|payload| {
+                let track = match payload.kind() {
+                    bettercut_timeline::TrackKind::Video => video_track,
+                    bettercut_timeline::TrackKind::Audio => audio_track,
+                    _ => None,
+                }?;
+                let offset = payload.start() - first;
+                Some(Command::PasteClip {
+                    sequence,
+                    track,
+                    clip: payload,
+                    at: at + offset,
+                    new_id: ClipId::new(),
+                })
+            })
+            .collect();
+        if commands.is_empty() {
+            return Ok(0);
+        }
+
+        let count = commands.len();
+        self.staged(format!("Paste Insert {count} Clips"), |editor, stage| {
+            editor.stage_insert_time(stage, sequence, at, room)?;
+            for command in commands {
+                editor.stage(stage, command)?;
+            }
+            Ok(())
+        })?;
+        Ok(count)
+    }
+
+    /// Earlier saves of this project, newest first. Empty for a project that
+    /// has never been saved.
+    pub fn versions(&self) -> Vec<crate::versions::Version> {
+        self.path
+            .as_deref()
+            .map(crate::versions::list_versions)
+            .unwrap_or_default()
+    }
+
+    /// What has changed between an earlier save and the edit as it stands
+    /// (`crate::compare`).
+    ///
+    /// Reads the file and compares; nothing is opened and nothing changes, so
+    /// this can be asked before deciding whether to go back at all.
+    pub fn changes_since(
+        &self,
+        version: &Path,
+    ) -> Result<Vec<crate::compare::Change>, EditorError> {
+        let earlier = bettercut_project_format::load(version)?;
+        Ok(crate::compare::compare(&earlier, &self.project))
+    }
+
+    /// Open an earlier version, keeping the project as it is now as a version
+    /// first — going back must never be the edit that loses the work.
+    ///
+    /// The project comes back *unsaved*, under the file it was saved as, with
+    /// an empty history: the earlier state is a new starting point rather than
+    /// a step that can be undone into a state that no longer exists.
+    pub fn restore_version(&mut self, version: &Path) -> Result<(), EditorError> {
+        let project = bettercut_project_format::load(version)?;
+        if let Some(path) = self.path.clone() {
+            // Written out first so what is kept is the project as it stands,
+            // unsaved work and all, rather than whatever is on disk.
+            let kept =
+                std::env::temp_dir().join(format!("bettercut-restore-{}.vproj", session_id()));
+            if bettercut_project_format::save(&self.project, &kept).is_ok()
+                && let Ok(bytes) = std::fs::read(&kept)
+            {
+                let _ = crate::versions::write_version(
+                    &path,
+                    &bytes,
+                    crate::versions::now_seconds(),
+                    " before restore",
+                );
+            }
+            let _ = std::fs::remove_file(&kept);
+        }
+        self.project = project;
+        self.history = History::new();
+        self.dirty = true;
+        self.sequence_playheads.clear();
+        self.playhead = TimelineTime::ZERO;
+        self.events.emit(Event::ProjectLoaded);
+        Ok(())
+    }
+
+    /// Set a picture clip's entrance and exit lengths — the fade handles on
+    /// its corners. A length under `MIN_MOTION` takes the animation off.
+    ///
+    /// The *kind* of animation is kept: dragging the handle of a slide makes a
+    /// longer slide, not a fade. `continuing` folds the change into the one
+    /// before it, so a drag is one undo step.
+    pub fn set_clip_ramps(
+        &mut self,
+        clip: ClipId,
+        intro: TimelineTime,
+        outro: TimelineTime,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        use bettercut_timeline::{ClipMotion, MIN_MOTION, Motion, MotionKind};
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let current = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipKindMismatch)?
+            .motion;
+        let keep = |was: Option<Motion>, length: TimelineTime| -> Option<Motion> {
+            if length < MIN_MOTION {
+                return None;
+            }
+            Some(Motion::new(
+                was.map_or(MotionKind::Fade, |motion| motion.kind),
+                length,
+            ))
+        };
+        let motion = ClipMotion {
+            intro: keep(current.intro, intro),
+            outro: keep(current.outro, outro),
+        };
+        if motion == current {
+            return Ok(());
+        }
+        let command = Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property: crate::command::ClipProperty::Motion(motion),
+        };
+        // One gesture, one step, whichever frame of the drag this is — the
+        // label is what the coalescing matches on, so it must be the same for
+        // the first frame as for the rest (§11).
+        self.dispatch_gesture("Change animation".to_owned(), vec![command], continuing)
+    }
+
+    /// Give a picture clip a whole grade at once, under a label of the
+    /// caller's choosing — what colour match does when it works one out.
+    ///
+    /// One undo step rather than six: "match this shot to that one" is one
+    /// thing the user did, and undoing it a control at a time would be a
+    /// puzzle.
+    pub fn set_clip_grade(
+        &mut self,
+        clip: ClipId,
+        grade: bettercut_timeline::ColorAdjust,
+        label: &str,
+    ) -> Result<(), EditorError> {
+        use crate::command::ClipProperty as P;
+
+        let sequence = self.active_sequence_id()?;
+        if self.video_clip(clip).is_none() {
+            return Err(EditorError::ClipKindMismatch);
+        }
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let commands = [
+            P::Brightness(grade.brightness),
+            P::Contrast(grade.contrast),
+            P::Saturation(grade.saturation),
+            P::Temperature(grade.temperature),
+            P::Tint(grade.tint),
+            P::Vibrance(grade.vibrance),
+        ]
+        .into_iter()
+        .map(|property| Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property,
+        })
+        .collect();
+        self.dispatch_group(label.to_owned(), commands)
+    }
+
+    /// Turn the whole mix up or down so it measures `target` LUFS.
+    ///
+    /// `measured` comes from `bettercut_playback::loudness_mix::measure` —
+    /// taken here rather than measured here because measuring means decoding
+    /// every sound in the sequence, which is a job with a progress bar rather
+    /// than a method call on the project.
+    ///
+    /// Returns the master volume it settled on. One undo step, and refused
+    /// when the measurement says there was nothing to hear.
+    pub fn match_loudness(&mut self, measured: f32, target: f32) -> Result<f32, EditorError> {
+        if !measured.is_finite() || !target.is_finite() {
+            return Err(EditorError::NothingToHear);
+        }
+        let sequence = self.active_sequence_id()?;
+        let now = self
+            .project
+            .sequence(sequence)
+            .ok_or(EditorError::SequenceNotFound(sequence))?
+            .master_volume;
+        // The same arithmetic as `bettercut_audio::loudness::gain_for`, written
+        // out rather than depended on: §86 keeps this crate above the audio
+        // engine, and this is one line of decibels.
+        let difference = (target - measured).clamp(-20.0, 20.0);
+        let wanted = (now * 10.0_f32.powf(difference / 20.0)).clamp(0.0, 4.0);
+        if (wanted - now).abs() < 1e-4 {
+            return Ok(now);
+        }
+        self.set_sequence_value(crate::command::ClipProperty::Gain(wanted), false)?;
+        Ok(wanted)
+    }
+
+    // ---- the media library (§66) ----
+
+    /// The longest name a file may be given in this project.
+    pub const MAX_MEDIA_NAME: usize = 60;
+    /// And the longest a bin may be called.
+    pub const MAX_BIN_NAME: usize = 40;
+
+    /// Call a file something else in this project. An empty name goes back to
+    /// the file's own. Returns whether anything changed.
+    pub fn rename_media(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        name: &str,
+    ) -> Result<bool, EditorError> {
+        let name: String = name.trim().chars().take(Self::MAX_MEDIA_NAME).collect();
+        let current = self
+            .project
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?
+            .label
+            .clone();
+        if current.as_deref().unwrap_or_default() == name {
+            return Ok(false);
+        }
+        // An empty name — or the file's own name typed out — is "use the file
+        // name", which is what `None` means.
+        let own = self
+            .project
+            .media_asset(media)
+            .map(|asset| asset.file_name.clone())
+            .unwrap_or_default();
+        let name = (!name.is_empty() && name != own).then_some(name);
+        if name.is_none() && current.is_none() {
+            return Ok(false);
+        }
+        self.dispatch(Command::RenameMedia { media, name })?;
+        Ok(true)
+    }
+
+    /// File a media entry under `bin`, or take it out of its bin with an empty
+    /// name. Returns whether anything changed.
+    pub fn set_media_bin(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        bin: &str,
+    ) -> Result<bool, EditorError> {
+        let bin: String = bin.trim().chars().take(Self::MAX_BIN_NAME).collect();
+        let current = self
+            .project
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?
+            .bin
+            .clone();
+        if current.as_deref().unwrap_or_default() == bin {
+            return Ok(false);
+        }
+        let bin = (!bin.is_empty()).then_some(bin);
+        self.dispatch(Command::SetMediaBin { media, bin })?;
+        Ok(true)
+    }
+
+    /// How many stars a file has, 0–5.
+    pub fn media_rating(&self, media: bettercut_foundation::MediaId) -> u8 {
+        self.project
+            .media_asset(media)
+            .map_or(0, |asset| asset.rating.min(5))
+    }
+
+    /// Give a file `stars` out of five — or none, which is what clicking the
+    /// star a file already has does. Returns whether anything changed.
+    pub fn set_media_rating(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        stars: u8,
+    ) -> Result<bool, EditorError> {
+        let rating = stars.min(5);
+        if self.media_rating(media) == rating {
+            return Ok(false);
+        }
+        self.dispatch(Command::SetMediaRating { media, rating })?;
+        Ok(true)
+    }
+
+    /// Every bin a file is filed under, in order, each named once.
+    pub fn bins(&self) -> Vec<String> {
+        let mut bins: Vec<String> = self
+            .project
+            .media
+            .iter()
+            .filter_map(|asset| asset.bin.clone())
+            .collect();
+        bins.sort();
+        bins.dedup();
+        bins
+    }
+
+    // ---- sound on a clip ----
+
+    /// Whether the sound that came with this clip is muted. False for a clip
+    /// with no sound of its own.
+    pub fn is_muted(&self, clip: ClipId) -> bool {
+        let mut clips = vec![clip];
+        clips.extend(self.linked_with(clip));
+        clips
+            .into_iter()
+            .filter_map(|id| self.audio_clip(id))
+            .any(|audio| audio.muted)
+    }
+
+    /// Mute or unmute the sound that came with `clip` — asked of the picture
+    /// or of the sound, since they are one thing to the user (§12). Returns
+    /// how many clips changed.
+    pub fn set_muted(&mut self, clip: ClipId, muted: bool) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut clips = vec![clip];
+        clips.extend(self.linked_with(clip).into_iter().filter(|c| *c != clip));
+        let commands: Vec<Command> = clips
+            .into_iter()
+            .filter(|id| {
+                self.audio_clip(*id)
+                    .is_some_and(|audio| audio.muted != muted)
+            })
+            .filter_map(|id| {
+                let track = self.track_of(id)?;
+                Some(Command::SetClipProperty {
+                    sequence,
+                    track,
+                    clip: id,
+                    property: crate::command::ClipProperty::Mute(muted),
+                })
+            })
+            .collect();
+        if commands.is_empty() {
+            // Nothing to mute at all is a different answer from "already
+            // muted": a picture with no sound cannot be asked this.
+            if self
+                .linked_with(clip)
+                .into_iter()
+                .chain(std::iter::once(clip))
+                .all(|id| self.audio_clip(id).is_none())
+            {
+                return Err(EditorError::ClipKindMismatch);
+            }
+            return Ok(0);
+        }
+        let changed = commands.len();
+        self.dispatch_group(if muted { "Mute" } else { "Unmute" }.to_owned(), commands)?;
+        Ok(changed)
+    }
+
+    /// The sound clip that starts exactly where `clip` ends, on the same
+    /// track — the other half of a crossfade.
+    pub fn next_touching_sound(&self, clip: ClipId) -> Option<ClipId> {
+        let sequence = self.project.active()?;
+        let span = sequence.clip_span(clip)?;
+        sequence
+            .audio_tracks
+            .iter()
+            .find(|track| track.id == span.track)?
+            .clips()
+            .iter()
+            .find(|other| other.timeline.start == span.timeline.end)
+            .map(|other| other.id)
+    }
+
+    /// Cross the sound at the cut after `clip` by `length`: the two clips
+    /// overlap in the mix without moving, one fading out as the other fades
+    /// in. Returns the length actually used, which is held to what both clips
+    /// can give.
+    ///
+    /// `continuing` folds the change into the one before it, so dragging the
+    /// control is one undo step.
+    pub fn set_audio_crossfade(
+        &mut self,
+        clip: ClipId,
+        length: TimelineTime,
+        continuing: bool,
+    ) -> Result<TimelineTime, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let outgoing = self
+            .audio_clip(clip)
+            .ok_or(EditorError::ClipKindMismatch)?
+            .clone();
+        let incoming = self
+            .next_touching_sound(clip)
+            .and_then(|id| self.audio_clip(id))
+            .ok_or(EditorError::NoRoomForTransition)?
+            .clone();
+        // Both clips keep playing through the overlap, so each needs half the
+        // crossfade in material past its own edge (§25's handles) — and
+        // neither may give up more of itself than it has.
+        let handle_out = self
+            .project
+            .media_asset(outgoing.media_id)
+            .and_then(|asset| asset.source_limit())
+            .map_or(i64::MAX / 4, |limit| {
+                (limit.ticks() - outgoing.source.end.ticks()).max(0)
+            });
+        let handle_in = incoming.source.start.ticks().max(0);
+        let handles = 2 * handle_out.min(handle_in);
+        let room = outgoing
+            .timeline
+            .duration()
+            .min(incoming.timeline.duration())
+            .ticks()
+            .min(handles)
+            .min(bettercut_timeline::MAX_CROSSFADE.ticks());
+        let length = TimelineTime::from_ticks(length.ticks().clamp(0, room));
+        if outgoing.crossfade_out == length {
+            return Ok(length);
+        }
+        let command = Command::SetClipProperty {
+            sequence,
+            track,
+            clip,
+            property: crate::command::ClipProperty::Crossfade(length),
+        };
+        if continuing {
+            self.dispatch_gesture("Crossfade".to_owned(), vec![command], true)?;
+        } else {
+            self.dispatch(command)?;
+        }
+        Ok(length)
+    }
+
+    // ---- captions ----
+
+    /// The colour each word lights up in as it is spoken, or `None` for plain
+    /// captions.
+    pub fn caption_highlight(&self) -> Option<bettercut_text::Rgba> {
+        let mut captions = self
+            .active_sequence()?
+            .text_tracks
+            .iter()
+            .flat_map(|track| track.clips())
+            .map(|clip| clip.highlight);
+        // All of them, or none: a lane where some words light up and others do
+        // not has no one answer, and saying it does would make the control
+        // lie about what pressing it again would do.
+        let first = captions.next()?;
+        captions.all(|other| other == first).then_some(first)?
+    }
+
+    /// Light each word up as it is spoken, across every caption. `None` puts
+    /// them back to plain. One undo step.
+    pub fn set_caption_highlight(
+        &mut self,
+        highlight: Option<bettercut_text::Rgba>,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let targets: Vec<(TrackId, ClipId)> = self
+            .active_sequence()
+            .map(|active| {
+                active
+                    .text_tracks
+                    .iter()
+                    .flat_map(|track| {
+                        let id = track.id;
+                        track
+                            .clips()
+                            .iter()
+                            .filter(|clip| clip.highlight != highlight)
+                            .map(move |clip| (id, clip.id))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        let changed = targets.len();
+        let commands: Vec<Command> = targets
+            .into_iter()
+            .map(|(track, clip)| Command::SetTextProperty {
+                sequence,
+                track,
+                clip,
+                property: crate::command::TextProperty::Highlight(highlight),
+            })
+            .collect();
+        self.dispatch_group("Caption Highlight".to_owned(), commands)?;
+        Ok(changed)
     }
 
     // ---- text overlays (§26) ----
@@ -1760,6 +2731,17 @@ impl Editor {
     /// keyframe editor can then adjust it, and the renderer needs to know
     /// nothing about it.
     pub fn set_movement(&mut self, clip: ClipId, movement: Movement) -> Result<(), EditorError> {
+        self.set_movement_at(clip, movement, bettercut_timeline::MovementStrength::Normal)
+    }
+
+    /// [`Self::set_movement`] at a chosen strength: how far the move travels
+    /// (`bettercut_timeline::MovementStrength`).
+    pub fn set_movement_at(
+        &mut self,
+        clip: ClipId,
+        movement: Movement,
+        strength: bettercut_timeline::MovementStrength,
+    ) -> Result<(), EditorError> {
         use bettercut_timeline::AnimatedParameter;
 
         let sequence = self.active_sequence_id()?;
@@ -1768,7 +2750,25 @@ impl Editor {
             .video_clip(clip)
             .ok_or(EditorError::ClipNotFound(clip))?;
 
-        let scales = [AnimatedParameter::ScaleX, AnimatedParameter::ScaleY];
+        // A pan slides the picture, so it needs the position to itself. Keys
+        // somebody else put there — a shake, a hand-made move — are work that
+        // cannot be guessed back, so the pan is refused instead (§24). A zoom
+        // asks nothing of the position and happily lives over a shake.
+        let was_pan = self.movement_of(clip).is_some_and(Movement::is_pan);
+        let positioned = [AnimatedParameter::PositionX, AnimatedParameter::PositionY]
+            .into_iter()
+            .any(|parameter| video.keyframes.is_animated(parameter));
+        if movement.is_pan() && positioned && !was_pan {
+            return Err(EditorError::AlreadyAnimated("position"));
+        }
+        // Only a pan's own keys are cleared: the scale belongs to whichever
+        // movement is being replaced, and the position only when a pan put it
+        // there or a pan is about to.
+        let mut scales = vec![AnimatedParameter::ScaleX, AnimatedParameter::ScaleY];
+        if movement.is_pan() || was_pan {
+            scales.push(AnimatedParameter::PositionX);
+            scales.push(AnimatedParameter::PositionY);
+        }
         // Whatever is there now goes first, so switching between movements
         // replaces rather than layers — including a zoom the user reversed.
         let mut commands: Vec<Command> = scales
@@ -1793,7 +2793,12 @@ impl Editor {
 
         commands.extend(
             movement
-                .keyframes(video.transform.scale, video.source)
+                .keyframes_at(
+                    video.transform.scale,
+                    video.transform.position,
+                    video.source,
+                    strength,
+                )
                 .into_iter()
                 .map(|(parameter, key)| Command::SetKeyframe {
                     sequence,
@@ -1808,6 +2813,39 @@ impl Editor {
             return Ok(());
         }
         self.dispatch_group(format!("Movement: {}", movement.label()), commands)
+    }
+
+    /// Give every clip in `clips` a movement, as one undo step (§79).
+    ///
+    /// `alternate` turns each one the other way — zoom in, zoom out, zoom in;
+    /// left, right, left — which is what keeps a photo montage from reading as
+    /// a machine: twenty shots all drifting the same way is a conveyor belt.
+    ///
+    /// Clips that refuse the movement are skipped rather than stopping the
+    /// rest: one shot with a shake on it is no reason to leave the other
+    /// nineteen still. Returns how many took it.
+    pub fn set_movement_on(
+        &mut self,
+        clips: &[ClipId],
+        movement: Movement,
+        strength: bettercut_timeline::MovementStrength,
+        alternate: bool,
+    ) -> Result<usize, EditorError> {
+        let mut given = 0;
+        for (index, clip) in clips.iter().enumerate() {
+            let movement = if alternate && index % 2 == 1 {
+                movement.reversed()
+            } else {
+                movement
+            };
+            if self.set_movement_at(*clip, movement, strength).is_ok() {
+                given += 1;
+            }
+        }
+        if given == 0 {
+            return Err(EditorError::AlreadyAnimated("position"));
+        }
+        Ok(given)
     }
 
     /// Shake a clip's picture, or take a shake off (`None`), as one undo step.
@@ -1931,17 +2969,55 @@ impl Editor {
     pub fn movement_of(&self, clip: ClipId) -> Option<Movement> {
         use bettercut_timeline::AnimatedParameter;
 
-        let animated = self
-            .video_clip(clip)?
-            .keyframes
-            .track(AnimatedParameter::ScaleX);
-        // No track at all is the same answer as an empty one: nothing moves.
-        let keys = animated.map_or(&[][..], bettercut_timeline::KeyframeTrack::keys);
-        match keys {
-            [] => Some(Movement::None),
-            [first, .., last] if first.value < last.value => Some(Movement::ZoomIn),
-            [first, .., last] if first.value > last.value => Some(Movement::ZoomOut),
-            _ => None,
+        let keyframes = &self.video_clip(clip)?.keyframes;
+        let pair = |parameter| {
+            let keys = keyframes
+                .track(parameter)
+                .map_or(&[][..], bettercut_timeline::KeyframeTrack::keys);
+            match keys {
+                [first, .., last] => Some((first.value, last.value)),
+                _ => None,
+            }
+        };
+        // A movement's shape: one key at each end and nothing in between. A
+        // shake keys the position dozens of times, and calling that a pan
+        // would let a pan quietly overwrite it.
+        let own_shape = |parameter| {
+            keyframes
+                .track(parameter)
+                .is_some_and(|track| track.len() == 2)
+        };
+        let panned = own_shape(AnimatedParameter::ScaleX)
+            && (own_shape(AnimatedParameter::PositionX) || own_shape(AnimatedParameter::PositionY));
+        // A pan slides the picture across while holding it enlarged, so it is
+        // the *position* that says which way it went; a zoom leaves the
+        // position alone and changes the scale.
+        if let Some((from, to)) = pair(AnimatedParameter::PositionX).filter(|_| panned) {
+            return Some(if from > to {
+                Movement::PanLeft
+            } else {
+                Movement::PanRight
+            });
+        }
+        if let Some((from, to)) = pair(AnimatedParameter::PositionY).filter(|_| panned) {
+            return Some(if from > to {
+                Movement::PanUp
+            } else {
+                Movement::PanDown
+            });
+        }
+        // Position keys that are not a pan's belong to somebody else.
+        if keyframes.is_animated(AnimatedParameter::PositionX)
+            || keyframes.is_animated(AnimatedParameter::PositionY)
+        {
+            return None;
+        }
+        match pair(AnimatedParameter::ScaleX) {
+            // No keys at all is the same answer as no track: nothing moves.
+            None => Some(Movement::None),
+            Some((from, to)) if from < to => Some(Movement::ZoomIn),
+            Some((from, to)) if from > to => Some(Movement::ZoomOut),
+            Some(_) => None,
         }
     }
 
@@ -2031,6 +3107,19 @@ impl Editor {
             ClipProperty::Motion(clip.motion),
             ClipProperty::MotionBlur(clip.motion_blur),
             ClipProperty::Backdrop(clip.backdrop),
+            ClipProperty::Vibrance(clip.color.vibrance),
+            ClipProperty::Border(clip.border),
+            ClipProperty::Shadow(clip.shadow),
+            ClipProperty::CornerPin(clip.corner_pin),
+            ClipProperty::Pixelate(clip.pixelate),
+            ClipProperty::ZoomBlur(clip.zoom_blur),
+            ClipProperty::Glow(clip.glow),
+            ClipProperty::OldFilm(clip.old_film),
+            ClipProperty::Vignette(clip.vignette),
+            ClipProperty::LightLeak(clip.light_leak),
+            ClipProperty::BeatPulse(clip.beat_pulse),
+            ClipProperty::SmoothMotion(clip.smooth_motion),
+            ClipProperty::Curves(clip.curves),
         ])
     }
 
@@ -2063,6 +3152,19 @@ impl Editor {
             ClipProperty::Motion(bettercut_timeline::ClipMotion::default()),
             ClipProperty::MotionBlur(false),
             ClipProperty::Backdrop(bettercut_timeline::Backdrop::None),
+            ClipProperty::Vibrance(0.0),
+            ClipProperty::Border(bettercut_timeline::Border::NONE),
+            ClipProperty::Shadow(bettercut_timeline::Shadow::default()),
+            ClipProperty::CornerPin(bettercut_timeline::CornerPin::NONE),
+            ClipProperty::Pixelate(0.0),
+            ClipProperty::ZoomBlur(0.0),
+            ClipProperty::Glow(0.0),
+            ClipProperty::OldFilm(0.0),
+            ClipProperty::Vignette(0.0),
+            ClipProperty::LightLeak(0.0),
+            ClipProperty::BeatPulse(0.0),
+            ClipProperty::SmoothMotion(false),
+            ClipProperty::Curves(bettercut_timeline::curves::ColourCurves::default()),
         ]
     }
 
@@ -2196,6 +3298,79 @@ impl Editor {
         Ok(true)
     }
 
+    /// Give the marker at `at` a span, or take it away with zero: a note about
+    /// a passage rather than about an instant.
+    ///
+    /// One undo step; returns whether anything changed. A span reaching past
+    /// nothing is no span, and one running backwards is read as the stretch
+    /// between the two instants, because that is plainly what was meant.
+    pub fn set_marker_span(
+        &mut self,
+        at: TimelineTime,
+        span: TimelineTime,
+    ) -> Result<bool, EditorError> {
+        let span = TimelineTime::from_ticks(span.ticks().abs());
+        let mut markers = self.markers().to_vec();
+        let Some(marker) = markers.iter_mut().find(|m| m.time == at) else {
+            return Ok(false);
+        };
+        if marker.span == span {
+            return Ok(false);
+        }
+        marker.span = span;
+        self.replace_markers(markers)?;
+        Ok(true)
+    }
+
+    /// Mark the stretch between the in and out points, or the marked range
+    /// given outright: one mark covering the lot.
+    ///
+    /// The gesture behind "this whole bit is too long" — the alternative is
+    /// two marks and remembering which is which.
+    pub fn mark_range(
+        &mut self,
+        range: bettercut_timeline::TimelineRange,
+        label: &str,
+    ) -> Result<bool, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let start = self.snap_to_frame(sequence, range.start);
+        let end = self.snap_to_frame(sequence, range.end);
+        if end <= start {
+            return Ok(false);
+        }
+        let label: String = label.trim().chars().take(Self::MAX_MARKER_LABEL).collect();
+        let mut markers = self.markers().to_vec();
+        let span = TimelineTime::from_ticks(end.ticks() - start.ticks());
+        match markers.iter_mut().find(|m| m.time == start) {
+            Some(marker) => {
+                marker.span = span;
+                if !label.is_empty() {
+                    marker.label = label;
+                }
+            }
+            None => {
+                let mut marker = bettercut_timeline::Marker::over(start, span);
+                marker.label = label;
+                markers.push(marker);
+            }
+        }
+        self.replace_markers(markers)?;
+        Ok(true)
+    }
+
+    /// The marker covering `at`: a ranged one whose stretch it falls in, or a
+    /// plain one exactly on it.
+    ///
+    /// The ranged marks are checked first, since a plain mark inside a ranged
+    /// one is the smaller answer to "what is this passage".
+    pub fn marker_covering(&self, at: TimelineTime) -> Option<&bettercut_timeline::Marker> {
+        let markers = self.markers();
+        markers
+            .iter()
+            .find(|marker| marker.is_ranged() && marker.covers(at))
+            .or_else(|| markers.iter().find(|marker| marker.covers(at)))
+    }
+
     /// Take away the marker at `at`. Returns whether there was one.
     pub fn remove_marker(&mut self, at: TimelineTime) -> Result<bool, EditorError> {
         let mut markers = self.markers().to_vec();
@@ -2294,6 +3469,76 @@ impl Editor {
             }],
             continuing,
         )
+    }
+
+    /// The volume line on `track`, empty for a lane that has none
+    /// (`bettercut_timeline::track_volume`).
+    pub fn track_volume(&self, track: TrackId) -> &[bettercut_timeline::VolumePoint] {
+        self.active_sequence()
+            .and_then(|sequence| sequence.audio_track(track))
+            .map_or(&[], |track| track.volume.points())
+    }
+
+    /// Draw `points` as the volume line on `track`, replacing whatever was
+    /// there. An empty list takes the line off and the lane goes back to its
+    /// static level.
+    ///
+    /// `continuing` collapses a drag into one undo step (§11), as the clip
+    /// envelope does.
+    pub fn set_track_volume(
+        &mut self,
+        track: TrackId,
+        points: Vec<bettercut_timeline::VolumePoint>,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        // Taking the line off is its own step in the undo menu, and its own
+        // label also stops it joining the drag that came before it.
+        let label = if points.is_empty() {
+            "Clear Track Volume"
+        } else {
+            "Track Volume"
+        };
+        self.dispatch_gesture(
+            label.to_owned(),
+            vec![Command::SetTrackVolume {
+                sequence,
+                track,
+                points,
+            }],
+            continuing,
+        )
+    }
+
+    /// Put a point on `track`'s volume line at `at`, at the level the line
+    /// already has there — somewhere to take hold of, without the shape
+    /// jumping.
+    ///
+    /// The first point on an empty line takes the lane's static level, so
+    /// turning automation on changes nothing until something is moved.
+    pub fn add_track_volume_point(
+        &mut self,
+        track: TrackId,
+        at: TimelineTime,
+    ) -> Result<(), EditorError> {
+        let lane = self
+            .active_sequence()
+            .and_then(|sequence| sequence.audio_track(track))
+            .ok_or(EditorError::TrackNotFound(track))?;
+        let level = lane.volume.gain_at(at).unwrap_or(lane.gain);
+        let mut points = lane.volume.points().to_vec();
+        points.push(bettercut_timeline::VolumePoint::new(at, level));
+        self.set_track_volume(track, points, false)
+    }
+
+    /// Take the volume line off `track`. Returns how many points went.
+    pub fn clear_track_volume(&mut self, track: TrackId) -> Result<usize, EditorError> {
+        let count = self.track_volume(track).len();
+        if count == 0 {
+            return Ok(0);
+        }
+        self.set_track_volume(track, Vec::new(), false)?;
+        Ok(count)
     }
 
     /// Set how a clip's sound fades in and out.
@@ -2823,6 +4068,16 @@ impl Editor {
             path.set_extension(PROJECT_EXTENSION);
         }
 
+        // The file about to be replaced is kept as a version first. A failure
+        // there is reported but does not stop the save: the user asked for
+        // their work to be written, and a missing backup is not a reason to
+        // leave it unwritten.
+        if self.path.as_ref().is_some_and(|own| own == &path)
+            && let Err(err) = crate::versions::keep_version(&path, crate::versions::now_seconds())
+        {
+            tracing::warn!(%err, "could not keep the previous version before saving");
+        }
+
         bettercut_project_format::save(&self.project, &path)?;
 
         // §39: the user's file now holds everything, so there is nothing left
@@ -2909,6 +4164,10 @@ impl Editor {
             copy.enabled = original.enabled;
             copy.gain = original.gain;
             copy.pan = original.pan;
+            // The copy rides with the same edits the original does. It is not
+            // the target, though: that is one lane per kind, and the user
+            // asked for a copy of a track, not for their imports to move.
+            copy.sync_lock = original.sync_lock;
             for clip in original.clips() {
                 let mut clip = clip.clone();
                 clip.set_id(ClipId::new());
@@ -3071,6 +4330,106 @@ impl Editor {
 
             Command::ChangeSetting { change } => Ok(Box::new(ops::ChangeSetting::new(change))),
 
+            // Whole-sequence choices: the cover frame, the watermark and the
+            // sound visualizer. Each is checked against the sequence it names
+            // before anything is written.
+            Command::SetCoverFrame { sequence, at } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetCoverFrame {
+                    sequence,
+                    at: at.map(|at| self.snap_to_frame(sequence, at)),
+                    previous: None,
+                }))
+            }
+
+            Command::SetWatermark {
+                sequence,
+                watermark,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetWatermark {
+                    sequence,
+                    watermark: watermark.map(bettercut_timeline::watermark::Watermark::clamped),
+                    previous: None,
+                }))
+            }
+
+            Command::SetVisualizer {
+                sequence,
+                visualizer,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetVisualizer::new(
+                    sequence,
+                    visualizer.map(|v| *v),
+                )))
+            }
+
+            // The sequences themselves (§30).
+            Command::AddSequence { sequence, index } => {
+                Ok(Box::new(ops::AddSequence::new(sequence, index)))
+            }
+
+            Command::RemoveSequence { sequence } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::RemoveSequence::new(sequence)))
+            }
+
+            Command::RenameSequence { sequence, name } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::RenameSequence::new(sequence, name)))
+            }
+
+            // The media library: a file's name in this project, the bin it is
+            // filed under, and what a colour clip draws.
+            Command::RenameMedia { media, name } => {
+                self.require_media(media)?;
+                Ok(Box::new(ops::RenameMedia::new(media, name)))
+            }
+
+            Command::SetMediaBin { media, bin } => {
+                self.require_media(media)?;
+                Ok(Box::new(ops::SetMediaBin::new(media, bin)))
+            }
+
+            Command::SetMediaRating { media, rating } => {
+                self.require_media(media)?;
+                Ok(Box::new(ops::SetMediaRating::new(media, rating)))
+            }
+
+            Command::SetColour { media, colour } => {
+                self.require_media(media)?;
+                Ok(Box::new(ops::SetColour::new(media, colour)))
+            }
+
+            Command::SetClipAngle {
+                sequence,
+                track,
+                clip,
+                angle,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::SetClipAngle {
+                    sequence,
+                    track,
+                    clip,
+                    angle,
+                    previous: None,
+                }))
+            }
+
+            Command::SlipClip {
+                sequence,
+                track,
+                clip,
+                offset,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(crate::slip::SlipClip::new(
+                    sequence, track, clip, offset,
+                )))
+            }
+
             Command::RelinkMedia {
                 media,
                 path,
@@ -3206,6 +4565,15 @@ impl Editor {
             } => {
                 self.require_track(sequence, track)?;
                 Ok(Box::new(ops::SetTrackMix::new(sequence, track, gain, pan)))
+            }
+
+            Command::SetTrackVolume {
+                sequence,
+                track,
+                points,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::SetTrackVolume::new(sequence, track, points)))
             }
 
             Command::SetColorLabel {
@@ -3473,10 +4841,18 @@ impl Editor {
     /// Applied to every edit that takes a time, so no command can introduce a
     /// sub-frame boundary (§9, §76). A cut that is half a frame off cannot be
     /// rendered and shows up as a duplicated or dropped frame at export.
-    fn snap_to_frame(&self, sequence: SequenceId, at: TimelineTime) -> TimelineTime {
+    pub(crate) fn snap_to_frame(&self, sequence: SequenceId, at: TimelineTime) -> TimelineTime {
         self.project
             .sequence(sequence)
             .map_or(at, |s| s.snap_to_frame(at.max(TimelineTime::ZERO)))
+    }
+
+    /// The file must be in the project before anything is asked of it.
+    fn require_media(&self, media: bettercut_foundation::MediaId) -> Result<(), EditorError> {
+        self.project
+            .media_asset(media)
+            .map(|_| ())
+            .ok_or(EditorError::MediaNotFound(media))
     }
 
     fn require_sequence(&self, id: SequenceId) -> Result<&Sequence, EditorError> {
@@ -3544,38 +4920,38 @@ impl Editor {
     /// False for a track that is not there, which is what a control drawn for
     /// a track that has just been deleted should show.
     pub fn track_flag(&self, track: TrackId, flag: TrackFlag) -> bool {
-        let read = |enabled: bool, locked: bool, solo: bool| match flag {
-            TrackFlag::Enabled => enabled,
-            TrackFlag::Locked => locked,
-            TrackFlag::Solo => solo,
-        };
+        fn read<C>(track: &bettercut_timeline::Track<C>, flag: TrackFlag) -> bool {
+            match flag {
+                TrackFlag::Enabled => track.enabled,
+                TrackFlag::Locked => track.locked,
+                TrackFlag::Solo => track.solo,
+                TrackFlag::SyncLock => track.sync_lock,
+                TrackFlag::Targeted => track.targeted,
+            }
+        }
         self.active_sequence().is_some_and(|sequence| {
             let video = sequence
                 .video_tracks
                 .iter()
                 .find(|t| t.id == track)
-                .map(|t| read(t.enabled, t.locked, t.solo));
+                .map(|t| read(t, flag));
             let audio = || {
                 sequence
                     .audio_tracks
                     .iter()
                     .find(|t| t.id == track)
-                    .map(|t| read(t.enabled, t.locked, t.solo))
+                    .map(|t| read(t, flag))
             };
             let text = || {
                 sequence
                     .text_tracks
                     .iter()
                     .find(|t| t.id == track)
-                    .map(|t| read(t.enabled, t.locked, t.solo))
+                    .map(|t| read(t, flag))
             };
             // Without this an adjustment lane reads as hidden, unlocked and
             // unsoloed whatever it is — the header shows the wrong state.
-            let adjustment = || {
-                sequence
-                    .adjustment_track(track)
-                    .map(|t| read(t.enabled, t.locked, t.solo))
-            };
+            let adjustment = || sequence.adjustment_track(track).map(|t| read(t, flag));
             video
                 .or_else(audio)
                 .or_else(text)
@@ -4008,7 +5384,7 @@ impl Editor {
     ///
     /// Shared with the freeze frame, which is a gap with a held frame dropped
     /// into it — and has to be one undo step, not two.
-    fn stage_insert_time(
+    pub(crate) fn stage_insert_time(
         &mut self,
         stage: &mut Stage,
         sequence: SequenceId,
@@ -4070,6 +5446,125 @@ impl Editor {
         }
 
         Ok(count)
+    }
+
+    /// Take `range` out of every lane and close the gap it leaves (§10's
+    /// ripple delete, over a stretch rather than a clip).
+    ///
+    /// The mirror of [`Self::insert_time`]: a clip the range starts or ends
+    /// inside is split there, everything inside goes, and everything after
+    /// moves left by the length of the range — on every lane, so the sound,
+    /// the titles and the captions after it keep their place against the
+    /// picture. Markers inside it go with it; markers after it move.
+    ///
+    /// One undo step for the lot (§79). Returns how many clips were removed.
+    pub fn remove_time(
+        &mut self,
+        range: bettercut_timeline::TimelineRange,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let start = self.snap_to_frame(sequence, range.start);
+        let end = self.snap_to_frame(sequence, range.end);
+        if end <= start {
+            return Ok(0);
+        }
+        self.staged("Ripple Delete Range", |editor, stage| {
+            editor.stage_remove_time(stage, sequence, start, end)
+        })
+    }
+
+    /// The stretch itself, inside someone else's edit.
+    pub(crate) fn stage_remove_time(
+        &mut self,
+        stage: &mut Stage,
+        sequence: SequenceId,
+        start: TimelineTime,
+        end: TimelineTime,
+    ) -> Result<usize, EditorError> {
+        let length = TimelineTime::from_ticks(end.ticks() - start.ticks());
+
+        // Cut clean edges at both ends first, so what is left either side is a
+        // whole clip. The far end first: splitting at the near end would
+        // renumber nothing, but doing the later cut first keeps the earlier
+        // one against the clip it was measured on.
+        for at in [end, start] {
+            let straddling: Vec<ClipId> = self
+                .clips_from(at, true)
+                .into_iter()
+                .map(|(_, clip, _)| clip)
+                .collect();
+            for command in self.split_commands(sequence, at, &straddling) {
+                self.stage(stage, command)?;
+            }
+        }
+
+        // Everything wholly inside the stretch goes.
+        let inside: Vec<(TrackId, ClipId)> = self
+            .project()
+            .active()
+            .map(|active| {
+                active
+                    .clip_spans()
+                    .filter(|span| span.timeline.start >= start && span.timeline.end <= end)
+                    .map(|span| (span.track, span.clip))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let removed = inside.len();
+        for (track, clip) in inside {
+            self.stage(
+                stage,
+                Command::RemoveClip {
+                    sequence,
+                    track,
+                    clip,
+                },
+            )?;
+        }
+
+        // And everything after it moves left. Earliest first: moving a later
+        // clip first would leave the earlier one with nowhere to land.
+        let mut moves = self.clips_from(end, false);
+        moves.sort_by_key(|(_, _, start)| start.ticks());
+        for (track, clip, at) in moves {
+            self.stage(
+                stage,
+                Command::MoveClip {
+                    sequence,
+                    from_track: track,
+                    to_track: track,
+                    clip,
+                    new_start: TimelineTime::from_ticks(at.ticks() - length.ticks()),
+                },
+            )?;
+        }
+
+        // Markers mark instants in the picture: the ones inside the stretch
+        // are marking something that is no longer there.
+        let markers = self.markers();
+        if markers.iter().any(|marker| marker.time >= start) {
+            let kept = markers
+                .iter()
+                .filter(|marker| marker.time < start || marker.time >= end)
+                .map(|marker| {
+                    let mut marker = marker.clone();
+                    if marker.time >= end {
+                        marker.time =
+                            TimelineTime::from_ticks(marker.time.ticks() - length.ticks());
+                    }
+                    marker
+                })
+                .collect();
+            self.stage(
+                stage,
+                Command::SetMarkers {
+                    sequence,
+                    markers: kept,
+                },
+            )?;
+        }
+
+        Ok(removed)
     }
 
     /// Hold the frame under the playhead for `duration` (§10's freeze frame).
@@ -4705,7 +6200,13 @@ impl Editor {
         self.staged(label, |editor, stage| {
             for (members, range) in targets {
                 let ranges = editor.prepared_ranges(sequence, &[range]);
+                let edited: Vec<TrackId> = members.iter().map(|(track, _)| *track).collect();
+                let ride = ranges.first().copied();
                 editor.stage_remove_ranges(stage, sequence, members, ranges)?;
+                // The same stretch comes out of every lane riding along.
+                if let Some(range) = ride {
+                    editor.stage_sync_remove(stage, sequence, &edited, range)?;
+                }
             }
             Ok(())
         })?;
@@ -4862,10 +6363,22 @@ impl Editor {
 
     pub fn ripple_delete(&mut self, track: TrackId, clip: ClipId) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
-        self.dispatch(Command::RippleDeleteClip {
+        let command = Command::RippleDeleteClip {
             sequence,
             track,
             clip,
+        };
+        // The lanes with sync lock on close the same stretch, so what sat
+        // under the clip still sits where it was (§10). With none on — the
+        // usual case — this is the one command it always was.
+        let span = self.span_and_link(clip).map(|(span, _)| span);
+        let Some(span) = span.filter(|_| !self.sync_riders(&[track]).is_empty()) else {
+            return self.dispatch(command);
+        };
+        self.staged("Ripple Delete", |editor, stage| {
+            editor.stage(stage, command)?;
+            editor.stage_sync_remove(stage, sequence, &[track], span)?;
+            Ok(())
         })
     }
 
@@ -4940,8 +6453,8 @@ impl Editor {
                 .sequence(sequence_id)
                 .ok_or(EditorError::SequenceNotFound(sequence_id))?;
             (
-                sequence.video_tracks.first().map(|t| t.id),
-                sequence.audio_tracks.first().map(|t| t.id),
+                sequence.target_track(bettercut_timeline::TrackKind::Video),
+                sequence.target_track(bettercut_timeline::TrackKind::Audio),
             )
         };
 

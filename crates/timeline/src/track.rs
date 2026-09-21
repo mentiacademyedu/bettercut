@@ -62,6 +62,29 @@ pub struct Track<C> {
     pub gain: f32,
     #[serde(default)]
     pub pan: f32,
+
+    /// A ripple edit on another track moves this one's later clips too, so
+    /// what sits under a cut keeps its place (§10's sync lock).
+    ///
+    /// Per track and off by default, because the useful answer differs by
+    /// lane: the sound recorded with a shot should follow every ripple, and
+    /// the music bed under the whole edit should follow none of them. Off is
+    /// also what every project made before this flag existed did.
+    /// §20a.4's volume line: the lane's level riding along the timeline
+    /// (`crate::track_volume`). Empty for a track whose level is just
+    /// [`Self::gain`], which is every track until someone draws one.
+    #[serde(default)]
+    pub volume: crate::track_volume::TrackVolume,
+
+    #[serde(default)]
+    pub sync_lock: bool,
+
+    /// New clips land here: an import, a paste, a voiceover.
+    ///
+    /// One track per lane kind carries it; with none flagged the first track
+    /// of the kind takes them, which is where they always went.
+    #[serde(default)]
+    pub targeted: bool,
 }
 
 fn unity() -> f32 {
@@ -95,6 +118,9 @@ impl<C: Clip> Track<C> {
             solo: false,
             gain: 1.0,
             pan: 0.0,
+            volume: crate::track_volume::TrackVolume::default(),
+            sync_lock: false,
+            targeted: false,
         }
     }
 

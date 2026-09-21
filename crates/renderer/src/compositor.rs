@@ -89,6 +89,14 @@ pub struct Compositor {
     target_view: wgpu::TextureView,
     /// The same texture seen as [`Compositor::PRESENT_FORMAT`].
     present_view: wgpu::TextureView,
+    /// A second copy of the finished frame, made on request
+    /// ([`Compositor::keep_snapshot`]).
+    ///
+    /// What "before and after, side by side" needs: two versions of the same
+    /// instant on screen at once means compositing twice, and the first result
+    /// has to survive the second composite. A texture-to-texture copy on the
+    /// GPU, so nothing travels back across the bus for it.
+    snapshot: Option<(wgpu::Texture, wgpu::TextureView)>,
 
     /// One per §22 blend mode, in `BlendMode::ALL` order. Pipelines are the
     /// only place a blend state can live in wgpu, so four modes are four
@@ -121,6 +129,9 @@ pub struct Compositor {
     targets: TargetPool,
     /// The frame number the next composite's film grain is drawn for.
     grain_seed: u32,
+    /// Clear to nothing instead of the background colour, so what no layer
+    /// covers stays see-through — for an export with a transparent background.
+    transparent: bool,
     /// Colour lookup tables the caller has loaded, by id (`crate::lut`).
     luts: crate::lut::LutTables,
 }
@@ -312,6 +323,7 @@ impl Compositor {
             target,
             target_view,
             present_view,
+            snapshot: None,
             pipelines,
             layer_bind_group,
             texture_layout,
@@ -322,6 +334,7 @@ impl Compositor {
             effects,
             targets: TargetPool::new(Self::FORMAT),
             grain_seed: 0,
+            transparent: false,
             luts,
         })
     }
@@ -344,6 +357,60 @@ impl Compositor {
 
     pub fn target(&self) -> &wgpu::Texture {
         &self.target
+    }
+
+    /// Keep the frame just composited, so the next one can be shown beside it.
+    ///
+    /// The kept copy lives until the next call; a compositor that is never
+    /// asked pays nothing for this.
+    pub fn keep_snapshot(&mut self) -> Result<(), RenderError> {
+        let size = self.target.size();
+        let matches = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|(texture, _)| texture.size() == size);
+        if !matches {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("composite snapshot"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: Self::FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[Self::PRESENT_FORMAT],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("composite snapshot view"),
+                format: Some(Self::PRESENT_FORMAT),
+                ..Default::default()
+            });
+            self.snapshot = Some((texture, view));
+        }
+        let Some((texture, _)) = &self.snapshot else {
+            return Ok(());
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("snapshot copy"),
+            });
+        encoder.copy_texture_to_texture(self.target.as_image_copy(), texture.as_image_copy(), size);
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// The kept frame, for drawing beside the current one. `None` until
+    /// [`Self::keep_snapshot`] has been called.
+    pub fn snapshot_view(&self) -> Option<&wgpu::TextureView> {
+        self.snapshot.as_ref().map(|(_, view)| view)
+    }
+
+    /// The kept frame's texture, for reading pixels back in a test.
+    pub fn snapshot_texture(&self) -> Option<&wgpu::Texture> {
+        self.snapshot.as_ref().map(|(texture, _)| texture)
     }
 
     /// The colour of one rendered pixel, in sRGB, or `None` off the frame.
@@ -519,14 +586,18 @@ impl Compositor {
             let uniform = layer_uniform(
                 layer.look.transform,
                 LayerLook {
+                    bars: 0.0,
                     opacity: layer.look.opacity,
                     color: layer.look.color,
                     key: layer.look.chroma_key,
                     mask: layer.look.mask,
                     crop: layer.look.crop,
-                    // A vignette frames the frame, not a clip in it; grain is
+                    // The clip's own vignette, around its own picture; grain is
                     // the film the whole frame is on.
-                    vignette: 0.0,
+                    vignette: layer.look.vignette,
+                    border: layer.look.border,
+                    shadow: layer.look.shadow,
+                    corner_pin: layer.look.corner_pin,
                     grain: 0.0,
                     grain_seed: 0,
                 },
@@ -544,40 +615,50 @@ impl Compositor {
         // which makes the fit term one and leaves the transform meaning what it
         // says about the output.
         let grain_seed = self.grain_seed;
-        let full_frame = |transform: Transform, opacity: f32, color, vignette: f32, grain: f32| {
-            layer_uniform(
-                transform,
-                LayerLook {
-                    opacity,
-                    color,
-                    // A grade works on the assembled picture; a key belongs to
-                    // the clip that was shot against a screen, a mask to the
-                    // clip it was drawn on, and a crop to the shot it was set
-                    // on — §36's canvas shape is how a sequence is re-framed.
-                    key: None,
-                    mask: None,
-                    crop: bettercut_timeline::Crop::NONE,
-                    vignette,
-                    grain,
-                    grain_seed,
-                },
-                self.config.resolution.width,
-                self.config.resolution.height,
-                self.config.resolution,
-            )
-        };
+        let full_frame =
+            |transform: Transform, opacity: f32, color, vignette: f32, grain: f32, bars: f32| {
+                layer_uniform(
+                    transform,
+                    LayerLook {
+                        opacity,
+                        color,
+                        // A grade works on the assembled picture; a key belongs to
+                        // the clip that was shot against a screen, a mask to the
+                        // clip it was drawn on, and a crop to the shot it was set
+                        // on — §36's canvas shape is how a sequence is re-framed.
+                        key: None,
+                        mask: None,
+                        crop: bettercut_timeline::Crop::NONE,
+                        vignette,
+                        // A frame's own edges are the frame; nothing to round.
+                        border: bettercut_timeline::Border::NONE,
+                        shadow: bettercut_timeline::Shadow::NONE,
+                        bars,
+                        grain,
+                        grain_seed,
+                        // A grade covers the whole frame; only a clip is pinned.
+                        corner_pin: bettercut_timeline::CornerPin::NONE,
+                    },
+                    self.config.resolution.width,
+                    self.config.resolution.height,
+                    self.config.resolution,
+                )
+            };
         let master_uniform = full_frame(
             master.transform,
             master.opacity,
             master.color,
             master.vignette,
             master.grain,
+            // Last, over the finished picture and every title on it.
+            master.bars,
         );
         // The picture as it was: no grade, no vignette.
         let copy_uniform = full_frame(
             Transform::default(),
             1.0,
             bettercut_timeline::ColorAdjust::IDENTITY,
+            0.0,
             0.0,
             0.0,
         );
@@ -591,6 +672,7 @@ impl Compositor {
                     look.color,
                     look.vignette,
                     look.grain,
+                    0.0,
                 )
             })
             .collect();
@@ -658,6 +740,10 @@ impl Compositor {
                     lut: layer.look.lut,
                     rgb_split: layer.look.rgb_split,
                     glitch: layer.look.glitch,
+                    pixelate: layer.look.pixelate,
+                    zoom_blur: layer.look.zoom_blur,
+                    glow: layer.look.glow,
+                    old_film: layer.look.old_film,
                     reflection: layer.look.reflection,
                     seed: grain_seed,
                 };
@@ -688,7 +774,11 @@ impl Compositor {
         // sRGB from the model into the linear values wgpu clears with — the
         // target is an sRGB texture, so it encodes on write and a value handed
         // over unconverted would come out visibly pale.
-        let background = clear_colour(master.background);
+        let background = if self.transparent {
+            wgpu::Color::TRANSPARENT
+        } else {
+            clear_colour(master.background)
+        };
 
         // The stack in runs: the layers beneath the first grade, then the
         // layers between each grade and the next, then the rest.
@@ -779,12 +869,16 @@ impl Compositor {
                     targets,
                 );
                 let params = EffectParams {
+                    old_film: 0.0,
+                    glow: 0.0,
                     blur: grade.look.clamped().blur,
                     // As the master: a grade is not a place to sharpen a shot.
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     seed: 0,
                 };
@@ -859,11 +953,15 @@ impl Compositor {
                 // The whole picture is graded, not sharpened: sharpening is a
                 // decision about a shot's own detail.
                 let params = EffectParams {
+                    old_film: 0.0,
+                    glow: 0.0,
                     blur: master.blur,
                     sharpen: 0.0,
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     seed: 0,
                 };
@@ -948,6 +1046,13 @@ impl Compositor {
     /// preview and the export alike). Zero until set.
     pub fn set_grain_seed(&mut self, seed: u32) {
         self.grain_seed = seed;
+    }
+
+    /// Leave the background see-through rather than filling it with the
+    /// sequence's background colour. The picture read back is then
+    /// premultiplied by its alpha.
+    pub fn set_transparent(&mut self, transparent: bool) {
+        self.transparent = transparent;
     }
 
     /// Give the compositor a colour lookup table to draw clips with. Loaded
@@ -1116,7 +1221,9 @@ impl Compositor {
 /// in its tail. A `vec3` aligns to 16, so the struct rounds to 96.
 /// 128 through the white balance, then §22's crop as two `vec2`s at 128 and
 /// 136 — which is why this is 144 and not 136: the struct aligns to 16.
-const UNIFORM_SIZE: u64 = 160;
+/// Then vignette and grain to 160, the border and shadow to 192, and the
+/// cinematic bars at 192, rounding to 208.
+const UNIFORM_SIZE: u64 = 240;
 
 fn create_target(
     device: &wgpu::Device,
@@ -1265,9 +1372,18 @@ struct LayerLook {
     crop: bettercut_timeline::Crop,
     /// Darkened edges, for a full-frame draw only. Zero for every clip.
     vignette: f32,
+    /// Rounded corners and a border on a clip's own picture.
+    border: bettercut_timeline::Border,
+    /// Set on a shadow's own layer: drawn as the soft dark shape, not the
+    /// picture.
+    shadow: bettercut_timeline::Shadow,
+    /// Cinematic bars, as the shape they cut to; the master draw only.
+    bars: f32,
     /// Film grain, full-frame draws only, and the frame it is drawn for.
     grain: f32,
     grain_seed: u32,
+    /// §45's corner pin: each corner moved, in output-frame units.
+    corner_pin: bettercut_timeline::CornerPin,
 }
 
 fn layer_uniform(
@@ -1284,8 +1400,12 @@ fn layer_uniform(
         mask,
         crop,
         vignette,
+        border,
+        shadow,
+        bars,
         grain,
         grain_seed,
+        corner_pin,
     } = look;
     // §22 crops *before* transforming, and that ordering is visible right here:
     // the aspect fitted to the frame is the **cropped** picture's, not the
@@ -1377,6 +1497,19 @@ fn layer_uniform(
     bytes[52..56].copy_from_slice(&color.brightness.clamp(0.0, 4.0).to_ne_bytes());
     bytes[56..60].copy_from_slice(&color.contrast.clamp(0.0, 4.0).to_ne_bytes());
     bytes[60..64].copy_from_slice(&color.saturation.clamp(0.0, 4.0).to_ne_bytes());
+    // Vibrance rides in the tail padding at 196; see the WGSL struct.
+    bytes[196..200].copy_from_slice(&color.vibrance.clamp(-1.0, 1.0).to_ne_bytes());
+    // §45's corner pin, four `vec2`s. A `vec2` aligns to 8, so the first one
+    // lands at 200 — right after `vibrance` at 196 — and the struct then runs
+    // to 232 and rounds to 240. Clip space runs -1..1 across the frame where
+    // the pin's offsets are in frames, so each is doubled; and its y runs the
+    // other way from the picture's.
+    let pin = corner_pin.clamped();
+    for (index, corner) in pin.offsets.iter().enumerate() {
+        let at = 200 + index * 8;
+        bytes[at..at + 4].copy_from_slice(&(corner[0] * 2.0).to_ne_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&(-corner[1] * 2.0).to_ne_bytes());
+    }
 
     // The chroma key, or zeroes — which the shader reads as "no key", because
     // a tolerance and softness of zero remove nothing.
@@ -1397,6 +1530,8 @@ fn layer_uniform(
             bettercut_timeline::MaskShape::Linear => 1,
             bettercut_timeline::MaskShape::Rectangle => 2,
             bettercut_timeline::MaskShape::Ellipse => 3,
+            bettercut_timeline::MaskShape::Star => 4,
+            bettercut_timeline::MaskShape::Heart => 5,
         };
         bytes[88..92].copy_from_slice(&shape.to_ne_bytes());
         bytes[92..96].copy_from_slice(&mask.feather.to_ne_bytes());
@@ -1443,6 +1578,45 @@ fn layer_uniform(
     // one nobody can see.
     let cell = (output.height as f32 / 1080.0).max(1.0);
     bytes[156..160].copy_from_slice(&cell.to_ne_bytes());
+
+    // Rounded corners and a border, measured against the picture's shorter
+    // side — which needs the picture's shape as it is drawn: the cropped
+    // source, stretched by any uneven scale.
+    let border = border.clamped();
+    bytes[160..164].copy_from_slice(&border.radius.to_ne_bytes());
+    bytes[164..168].copy_from_slice(&border.width.to_ne_bytes());
+    // A shadow's layer is drawn in its colour and has no border of its own,
+    // so the border's colour slots carry the shadow's.
+    let shadow = shadow.clamped();
+    let colour = if shadow.is_visible() {
+        shadow.colour
+    } else {
+        border.colour
+    };
+    for (index, channel) in colour.into_iter().enumerate() {
+        let at = 168 + index * 4;
+        let linear = srgb_to_linear(f32::from(channel) / 255.0);
+        bytes[at..at + 4].copy_from_slice(&linear.to_ne_bytes());
+    }
+    let stretch = (transform.scale.x / transform.scale.y).abs();
+    let picture_aspect = crop.applied_to(source_width.max(1) as f32 / source_height.max(1) as f32)
+        * if stretch.is_finite() && stretch > 0.0 {
+            stretch
+        } else {
+            1.0
+        };
+    bytes[180..184].copy_from_slice(&picture_aspect.to_ne_bytes());
+    if shadow.is_visible() {
+        bytes[184..188].copy_from_slice(&shadow.softness.to_ne_bytes());
+        bytes[188..192].copy_from_slice(&1.0_f32.to_ne_bytes());
+    }
+    // The bars as the share of the height each covers, worked out against the
+    // output's shape so the shader only compares.
+    let bar = bettercut_timeline::bar_height(
+        output.width.max(1) as f32 / output.height.max(1) as f32,
+        bars,
+    );
+    bytes[192..196].copy_from_slice(&bar.to_ne_bytes());
     bytes
 }
 
@@ -1501,14 +1675,51 @@ mod tests {
         )
     }
 
+    /// §45's corner pin rides in the tail the struct gained at 208: four
+    /// `vec2`s, in clip-space units, with the picture's y turned the other way
+    /// up.
+    #[test]
+    fn a_corner_pin_is_written_into_the_tail() {
+        let bytes = layer_uniform(
+            Transform::default(),
+            LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
+                vignette: 0.0,
+                grain: 0.0,
+                grain_seed: 0,
+                crop: bettercut_timeline::Crop::NONE,
+                opacity: 1.0,
+                color: ColorAdjust::default(),
+                key: None,
+                mask: None,
+                corner_pin: bettercut_timeline::CornerPin::NONE.with_corner(0, [-0.25, -0.25]),
+            },
+            1920,
+            1080,
+            Resolution::HD_1080,
+        );
+        let read = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!(read(200), -0.5, "the pinned corner's x is not at 200");
+        assert_eq!(read(204), 0.5, "its y is not at 204, or is upside down");
+        for at in (208..232).step_by(4) {
+            assert_eq!(read(at), 0.0, "an unpinned corner at {at} was written");
+        }
+    }
+
     #[test]
     fn an_identity_transform_fills_a_matching_frame() {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1545,9 +1756,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1576,9 +1791,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1606,9 +1825,13 @@ mod tests {
         let bytes = layer_uniform(
             transform,
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1639,9 +1862,13 @@ mod tests {
         let bytes = layer_uniform(
             transform,
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1674,13 +1901,18 @@ mod tests {
             saturation: 0.5,
             temperature: -0.6,
             tint: 0.4,
+            vibrance: 0.3,
         };
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 0.5,
                 color,
@@ -1708,10 +1940,12 @@ mod tests {
         // The vignette, after the crop: offset 144, and the struct rounds to
         // 160. Zero here because this is a clip's look, and a clip has none.
         assert_eq!(read(144), 0.0, "the vignette is not at offset 144");
+        // Vibrance, in the padding the cinematic bars left behind at 196.
+        assert_eq!(read(196), 0.3, "vibrance is not at offset 196");
         assert_eq!(bytes.len(), UNIFORM_SIZE as usize);
         assert_eq!(
-            UNIFORM_SIZE, 160,
-            "the WGSL struct is declared as 160 bytes"
+            UNIFORM_SIZE, 240,
+            "the WGSL struct is declared as 240 bytes"
         );
     }
 
@@ -1722,9 +1956,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.6,
                 grain_seed: 1234,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::IDENTITY,
@@ -1745,9 +1983,40 @@ mod tests {
         );
         assert_eq!(bytes.len(), UNIFORM_SIZE as usize);
         assert_eq!(
-            UNIFORM_SIZE, 160,
-            "the WGSL struct is declared as 160 bytes"
+            UNIFORM_SIZE, 240,
+            "the WGSL struct is declared as 240 bytes"
         );
+    }
+
+    /// The border's place at the end of the struct, and the picture's drawn
+    /// shape it is measured against: a 16:9 source cropped to a square and
+    /// stretched twice as wide is 2:1.
+    #[test]
+    fn the_border_is_packed_after_the_grain() {
+        let bytes = layer_uniform(
+            Transform {
+                scale: Vec2::new(1.0, 0.5),
+                ..Transform::default()
+            },
+            LayerLook {
+                opacity: 1.0,
+                crop: bettercut_timeline::crop_to_aspect(16.0 / 9.0, 1.0),
+                border: bettercut_timeline::Border {
+                    radius: 0.5,
+                    width: 0.1,
+                    colour: [255, 0, 255],
+                },
+                ..LayerLook::default()
+            },
+            1920,
+            1080,
+            Resolution::new(1920, 1080),
+        );
+        let read = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!(read(160), 0.5, "the radius is not at offset 160");
+        assert!((read(164) - 0.1).abs() < 1e-6, "the width is not at 164");
+        assert_eq!((read(168), read(172), read(176)), (1.0, 0.0, 1.0));
+        assert!((read(180) - 2.0).abs() < 0.01, "shape {}", read(180));
     }
 
     /// The chroma key's own place in that struct.
@@ -1770,9 +2039,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1801,9 +2074,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1829,9 +2106,13 @@ mod tests {
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1865,13 +2146,18 @@ mod tests {
             // temperature of -40 sends the red channel deeply negative.
             temperature: -40.0,
             tint: 12.0,
+            vibrance: 0.0,
         };
         let bytes = layer_uniform(
             Transform::default(),
             LayerLook {
+                bars: 0.0,
+                shadow: Default::default(),
+                border: bettercut_timeline::Border::NONE,
                 vignette: 0.0,
                 grain: 0.0,
                 grain_seed: 0,
+                corner_pin: bettercut_timeline::CornerPin::NONE,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color,

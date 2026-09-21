@@ -1,6 +1,7 @@
 //! Shapes: a rectangle, a rounded rectangle, an ellipse — the plain blocks a
 //! short video is built from. A box behind a caption, a highlight over part of
-//! a shot, a coloured bar for a lower third.
+//! a shot, a coloured bar for a lower third. And the three a video points
+//! things out with: an arrow, a star, a speech bubble.
 //!
 //! # Drawn like a title
 //!
@@ -28,16 +29,32 @@ pub enum ShapeKind {
     Rectangle,
     RoundedRectangle,
     Ellipse,
+    /// Pointing right; turn the clip to point it anywhere.
+    Arrow,
+    /// Five points.
+    Star,
+    /// A rounded box with a tail down to the lower left.
+    SpeechBubble,
 }
 
 impl ShapeKind {
-    pub const ALL: [Self; 3] = [Self::Rectangle, Self::RoundedRectangle, Self::Ellipse];
+    pub const ALL: [Self; 6] = [
+        Self::Rectangle,
+        Self::RoundedRectangle,
+        Self::Ellipse,
+        Self::Arrow,
+        Self::Star,
+        Self::SpeechBubble,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Rectangle => "Rectangle",
             Self::RoundedRectangle => "Rounded",
             Self::Ellipse => "Ellipse",
+            Self::Arrow => "Arrow",
+            Self::Star => "Star",
+            Self::SpeechBubble => "Speech bubble",
         }
     }
 }
@@ -111,14 +128,14 @@ impl Shape {
         let (width, height) = (w.ceil() as u32, h.ceil() as u32);
         let (half_w, half_h) = (w / 2.0, h / 2.0);
         let radius = match self.kind {
-            ShapeKind::RoundedRectangle => {
+            ShapeKind::RoundedRectangle | ShapeKind::SpeechBubble => {
                 if self.corner_radius.is_finite() {
                     self.corner_radius.clamp(0.0, half_w.min(half_h))
                 } else {
                     0.0
                 }
             }
-            ShapeKind::Rectangle | ShapeKind::Ellipse => 0.0,
+            ShapeKind::Rectangle | ShapeKind::Ellipse | ShapeKind::Arrow | ShapeKind::Star => 0.0,
         };
         let outline = self
             .outline
@@ -171,6 +188,61 @@ impl Shape {
                 let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
                 outside + qx.max(qy).min(0.0) - radius
             }
+            ShapeKind::Arrow => {
+                // A shaft and a head, pointing right. The head is as long as
+                // it is tall, up to two fifths of the length.
+                let head = (half_h * 2.0).min(half_w * 0.8);
+                let base = half_w - head;
+                let shaft = half_h * 0.4;
+                polygon_distance(
+                    px,
+                    py,
+                    &[
+                        (-half_w, -shaft),
+                        (base, -shaft),
+                        (base, -half_h),
+                        (half_w, 0.0),
+                        (base, half_h),
+                        (base, shaft),
+                        (-half_w, shaft),
+                    ],
+                )
+            }
+            ShapeKind::Star => {
+                // Five points round the box's own ellipse, the inner corners
+                // at a little under half the way out. Top point up.
+                let points: Vec<(f32, f32)> = (0..10)
+                    .map(|i| {
+                        let angle =
+                            -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                        let reach = if i % 2 == 0 { 1.0 } else { 0.45 };
+                        (angle.cos() * half_w * reach, angle.sin() * half_h * reach)
+                    })
+                    .collect();
+                polygon_distance(px, py, &points)
+            }
+            ShapeKind::SpeechBubble => {
+                // The body over the top three quarters, the tail under it.
+                let body_bottom = half_h * 0.5;
+                let body_half_h = (half_h + body_bottom) / 2.0;
+                let body_centre = (body_bottom - half_h) / 2.0;
+                let r = radius.min(body_half_h);
+                let qx = px.abs() - (half_w - r);
+                let qy = (py - body_centre).abs() - (body_half_h - r);
+                let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+                let body = outside + qx.max(qy).min(0.0) - r;
+                // Overlapping the body a little, so the two join seamlessly.
+                let tail = polygon_distance(
+                    px,
+                    py,
+                    &[
+                        (-half_w * 0.5, body_bottom - 4.0),
+                        (-half_w * 0.1, body_bottom - 4.0),
+                        (-half_w * 0.6, half_h),
+                    ],
+                );
+                body.min(tail)
+            }
             ShapeKind::Ellipse => {
                 // Scaled to a unit circle and back by the local stretch — close
                 // to the true distance near the edge, which is all the
@@ -186,6 +258,29 @@ impl Shape {
             }
         }
     }
+}
+
+/// Signed distance from (px, py) to a closed polygon's edge, negative inside:
+/// the nearest edge for the size, a crossing count for the side.
+fn polygon_distance(px: f32, py: f32, points: &[(f32, f32)]) -> f32 {
+    let mut nearest = f32::MAX;
+    let mut inside = false;
+    let mut j = points.len() - 1;
+    for i in 0..points.len() {
+        let (ax, ay) = points[j];
+        let (bx, by) = points[i];
+        let (ex, ey) = (bx - ax, by - ay);
+        let (wx, wy) = (px - ax, py - ay);
+        let t = ((wx * ex + wy * ey) / (ex * ex + ey * ey).max(f32::EPSILON)).clamp(0.0, 1.0);
+        let (dx, dy) = (wx - ex * t, wy - ey * t);
+        nearest = nearest.min(dx * dx + dy * dy);
+        if (ay > py) != (by > py) && px < ax + (py - ay) * ex / ey {
+            inside = !inside;
+        }
+        j = i;
+    }
+    let distance = nearest.sqrt();
+    if inside { -distance } else { distance }
 }
 
 /// `a` towards `b` by `t`, alpha included.

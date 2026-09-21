@@ -24,6 +24,7 @@
 //! second option behind it yet, and a disabled dropdown would imply there is.
 
 use bettercut_editor_core::foundation::{FrameRate, TimelineTime};
+use bettercut_editor_core::reshape::matches_aspect;
 use bettercut_editor_core::timeline::{Resolution, TimelineRange};
 use bettercut_editor_core::{Editor, SHAPES, Shape};
 use bettercut_export::{ExportSettings, RateControl, VideoCodec, codec_is_available};
@@ -123,7 +124,7 @@ impl BitrateChoice {
 /// Containers offered. Both hold H.264 and H.265.
 /// The formats offered. The last is sound only: the mix as a WAV, with no
 /// picture rendered — for a voice-over to master, or the podcast cut.
-const CONTAINERS: [(&str, &str); 4] = [
+const CONTAINERS: [(&str, &str); 6] = [
     ("mp4", "Plays everywhere"),
     ("mov", "QuickTime; editors"),
     ("wav", "Sound only — the mix, uncompressed"),
@@ -131,13 +132,27 @@ const CONTAINERS: [(&str, &str); 4] = [
         "gif",
         "A looping animation with no sound — for chats and web pages",
     ),
+    (
+        "png",
+        "Every frame as a numbered picture, in a folder: for effects and colour work",
+    ),
+    (
+        "webm",
+        "A see-through background wherever nothing is drawn — for overlays and stickers; no sound",
+    ),
 ];
+
+/// The index in [`CONTAINERS`] that means a video with a transparent background.
+const TRANSPARENT: usize = 5;
 
 /// The index in [`CONTAINERS`] that means sound only.
 const SOUND_ONLY: usize = 2;
 
 /// The index in [`CONTAINERS`] that means an animated GIF.
 const GIF: usize = 3;
+
+/// The index in [`CONTAINERS`] that means a PNG image sequence.
+const FRAMES: usize = 4;
 
 /// Widths offered for a GIF. Small, because a GIF keeps every pixel of every
 /// frame: past 640 the files stop being the quick thing a GIF is for.
@@ -150,6 +165,19 @@ const DEFAULT_GIF_RATE: i64 = 15;
 
 /// 16-bit stereo at 48 kHz, in kilobits a second, for the size estimate.
 const WAV_KBPS: f64 = 48_000.0 * 16.0 * 2.0 / 1_000.0;
+
+/// A span as a site writes one: minutes and seconds, with hours only when
+/// there are some. `format_timecode` is for the timeline, where frames matter;
+/// an upload limit is "3:00".
+pub fn short_span(length: TimelineTime) -> String {
+    let seconds = length.ticks() / bettercut_editor_core::foundation::TICKS_PER_SECOND;
+    let (hours, minutes, seconds) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
 
 /// A platform's upload settings, applied in one choice.
 ///
@@ -165,15 +193,63 @@ pub struct Platform {
     pub short_edge: u32,
     /// A fixed frame rate, or `None` to keep the sequence's.
     pub fps: Option<FrameRate>,
+    /// The longest upload the site takes, in seconds, or `None` where the
+    /// limit is long enough not to be a limit.
+    ///
+    /// Checked, not enforced: the numbers move — every one of these has been
+    /// raised at least once — and an editor that refused to write a file
+    /// because of a number compiled into it last year would be worse than
+    /// useless. The hint says what is being checked against, so a limit that
+    /// has moved is obvious rather than mysterious.
+    pub max_seconds: Option<i64>,
 }
 
-pub const PLATFORMS: [Platform; 5] = [
+impl Platform {
+    /// The longest upload, as a span.
+    pub fn limit(self) -> Option<TimelineTime> {
+        self.max_seconds.map(TimelineTime::from_seconds)
+    }
+
+    /// What is worth saying about sending an export of `length` at `size` to
+    /// this site. Empty when there is nothing to say.
+    ///
+    /// Lengths are written the way a site writes them — "3:00", not
+    /// "00:03:00.000" — because the number being compared is the number in
+    /// the site's own guidance.
+    ///
+    /// Warnings, not refusals: someone exporting a twelve minute cut for a
+    /// site that takes ten may be about to trim it, may be uploading it
+    /// somewhere else as well, or may know something this program does not.
+    pub fn complaints(self, length: TimelineTime, size: Resolution) -> Vec<String> {
+        let mut said = Vec::new();
+        if let Some(limit) = self.limit()
+            && length > limit
+        {
+            said.push(format!(
+                "{} is longer than {} takes ({})",
+                short_span(length),
+                self.label,
+                short_span(limit)
+            ));
+        }
+        if !matches_aspect(size, self.ratio) {
+            said.push(format!(
+                "This file is {}×{}; {} shows {}:{}",
+                size.width, size.height, self.label, self.ratio.0, self.ratio.1
+            ));
+        }
+        said
+    }
+}
+
+pub const PLATFORMS: [Platform; 7] = [
     Platform {
         label: "YouTube 1080p",
         hint: "Landscape at 1920×1080, the sequence's own frame rate",
         ratio: (16, 9),
         short_edge: 1080,
         fps: None,
+        max_seconds: None,
     },
     Platform {
         label: "YouTube 4K",
@@ -181,20 +257,39 @@ pub const PLATFORMS: [Platform; 5] = [
         ratio: (16, 9),
         short_edge: 2160,
         fps: None,
+        max_seconds: None,
     },
     Platform {
-        label: "TikTok · Reels · Shorts",
-        hint: "Vertical at 1080×1920, 30 fps",
+        label: "TikTok",
+        hint: "Vertical at 1080×1920, 30 fps — checked against a 10:00 upload",
         ratio: (9, 16),
         short_edge: 1080,
         fps: Some(FrameRate::FPS_30),
+        max_seconds: Some(10 * 60),
+    },
+    Platform {
+        label: "Instagram Reels",
+        hint: "Vertical at 1080×1920, 30 fps — checked against a 3:00 reel",
+        ratio: (9, 16),
+        short_edge: 1080,
+        fps: Some(FrameRate::FPS_30),
+        max_seconds: Some(3 * 60),
+    },
+    Platform {
+        label: "YouTube Shorts",
+        hint: "Vertical at 1080×1920, 30 fps — checked against a 3:00 short",
+        ratio: (9, 16),
+        short_edge: 1080,
+        fps: Some(FrameRate::FPS_30),
+        max_seconds: Some(3 * 60),
     },
     Platform {
         label: "Instagram feed",
-        hint: "Portrait at 1080×1350, 30 fps — the tallest the feed shows",
+        hint: "Portrait at 1080×1350, 30 fps — the tallest the feed shows, checked against 15:00",
         ratio: (4, 5),
         short_edge: 1080,
         fps: Some(FrameRate::FPS_30),
+        max_seconds: Some(15 * 60),
     },
     Platform {
         label: "Square post",
@@ -202,6 +297,7 @@ pub const PLATFORMS: [Platform; 5] = [
         ratio: (1, 1),
         short_edge: 1080,
         fps: Some(FrameRate::FPS_30),
+        max_seconds: None,
     },
 ];
 
@@ -212,6 +308,8 @@ pub struct ExportRequest {
     /// `None` for the sequence's own shape. Otherwise the export reads
     /// [`Editor::export_copy`] instead of the project as it stands.
     pub shape: Option<Shape>,
+    /// Which sequence: `None` for the one on screen.
+    pub sequence: Option<bettercut_editor_core::foundation::SequenceId>,
 }
 
 /// Whether the window is open, and what it has been set to.
@@ -257,6 +355,16 @@ pub struct ExportDialog {
     /// Set on opening whenever marks exist, since marking a range is usually
     /// done in order to export it.
     only_marked: bool,
+    /// Export every sequence in the project with these settings, each file
+    /// named for its sequence, rather than only the one on screen.
+    every_sequence: bool,
+    /// The preset last chosen, as an index into [`PLATFORMS`].
+    ///
+    /// Three of them ask for the same file — vertical, 1080×1920, 30 fps —
+    /// and differ only in what they check. Without remembering the choice the
+    /// menu would snap to the first of the three the moment it was made, and
+    /// the checks would be the wrong site's.
+    chosen_platform: Option<usize>,
     /// Which codecs this machine can write, probed when the window opens.
     available: Vec<(VideoCodec, bool)>,
     complaint: Option<String>,
@@ -412,7 +520,7 @@ impl ExportDialog {
         // A shape is a picture's; sound has none, and three identical WAVs
         // under three names would be a surprise. A GIF is one small loop of
         // the edit as it is.
-        if self.sound_only() || self.gif() {
+        if self.sound_only() || self.gif() || self.image_sequence() || self.transparent() {
             return Vec::new();
         }
         let main = self.resolution(native);
@@ -424,7 +532,7 @@ impl ExportDialog {
 
     /// The main file's shape, when it differs from the sequence's.
     fn main_shape_for(&self, native: Resolution) -> Option<Shape> {
-        if self.sound_only() || self.gif() {
+        if self.sound_only() || self.gif() || self.image_sequence() || self.transparent() {
             return None;
         }
         self.main_shape.filter(|shape| !shape.matches(native))
@@ -439,6 +547,7 @@ impl ExportDialog {
         self.codec = VideoCodec::H264;
         self.container = 0;
         self.bitrate = BitrateChoice::High;
+        self.chosen_platform = PLATFORMS.iter().position(|p| p.label == platform.label);
         self.main_shape = SHAPES
             .into_iter()
             .find(|shape| shape.ratio == platform.ratio)
@@ -447,10 +556,109 @@ impl ExportDialog {
         self.also.retain(|ratio| *ratio != platform.ratio);
     }
 
+    /// The settings as a preset worth keeping: the format, and nothing about
+    /// *this* export (`crate::export_presets`).
+    pub fn as_preset(&self, native: Resolution) -> crate::export_presets::SavedExport {
+        crate::export_presets::SavedExport {
+            container: self.container,
+            codec: format!("{:?}", self.codec),
+            height: self.height_preset,
+            custom: self.custom.map(|size| (size.width, size.height)),
+            frame_rate: self
+                .frame_rate
+                .map(|rate| (rate.as_rational().num(), rate.as_rational().den())),
+            bitrate: format!("{:?}", self.bitrate),
+            custom_kbps: self.custom_kbps,
+            rate_control: format!("{:?}", self.rate_control),
+            also: self.also.clone(),
+            shape: self.main_shape_for(native).map(|shape| shape.ratio),
+        }
+    }
+
+    /// Put a saved preset on: everything it names, and nothing it does not.
+    ///
+    /// A field that no longer means anything — a codec this build dropped, a
+    /// size preset that has moved — is left as it is rather than guessed at,
+    /// which is what keeps a preset from an older build usable instead of
+    /// dangerous.
+    pub fn apply_preset(&mut self, preset: &crate::export_presets::SavedExport) {
+        if preset.container < CONTAINERS.len() {
+            self.container = preset.container;
+        }
+        if let Some(codec) = VideoCodec::ALL
+            .into_iter()
+            .find(|codec| format!("{codec:?}") == preset.codec)
+        {
+            self.codec = codec;
+        }
+        match preset.height {
+            Some(index) if index < HEIGHTS.len() => self.height_preset = Some(index),
+            Some(_) => {}
+            None => {
+                if let Some((width, height)) = preset.custom {
+                    self.height_preset = None;
+                    self.custom = Some(Resolution::new(width, height));
+                }
+            }
+        }
+        // Only a rate the timebase can hold exactly (§9), which is every
+        // rate the picker offers.
+        self.frame_rate = preset.frame_rate.and_then(|(num, den)| {
+            FrameRate::SUPPORTED
+                .into_iter()
+                .find(|rate| rate.as_rational().num() == num && rate.as_rational().den() == den)
+        });
+        if let Some(choice) = BitrateChoice::ALL
+            .into_iter()
+            .find(|choice| format!("{choice:?}") == preset.bitrate)
+        {
+            self.bitrate = choice;
+        }
+        if preset.custom_kbps.is_some() {
+            self.custom_kbps = preset.custom_kbps;
+        }
+        if let Some(control) = [RateControl::Variable, RateControl::Constant]
+            .into_iter()
+            .find(|control| format!("{control:?}") == preset.rate_control)
+        {
+            self.rate_control = control;
+        }
+        self.also = preset.also.clone();
+        self.main_shape = preset
+            .shape
+            .and_then(|ratio| SHAPES.into_iter().find(|shape| shape.ratio == ratio));
+        // The settings are the user's now, not a site's.
+        self.chosen_platform = None;
+    }
+
     /// The platform the settings currently match, if any — so the menu says
     /// "TikTok" while they are what TikTok wants, and "Custom" once changed.
+    ///
+    /// The one last chosen wins while its settings still hold, so a choice
+    /// between presets that ask for the same file is not quietly rewritten.
     fn platform_in_use(&self, native: Resolution, native_rate: FrameRate) -> Option<Platform> {
-        PLATFORMS.into_iter().find(|platform| {
+        if let Some(chosen) = self
+            .chosen_platform
+            .and_then(|index| PLATFORMS.get(index))
+            .copied()
+            && self.settings_match(chosen, native, native_rate)
+        {
+            return Some(chosen);
+        }
+        PLATFORMS
+            .into_iter()
+            .find(|platform| self.settings_match(*platform, native, native_rate))
+    }
+
+    /// Whether the settings as they stand are the ones `platform` asks for.
+    fn settings_match(
+        &self,
+        platform: Platform,
+        native: Resolution,
+        native_rate: FrameRate,
+    ) -> bool {
+        {
+            let platform = &platform;
             let mut applied = ExportDialog {
                 also: self.also.clone(),
                 ..ExportDialog::default()
@@ -463,7 +671,7 @@ impl ExportDialog {
                 && applied.container == self.container
                 && applied.bitrate == self.bitrate
                 && applied.main_shape_for(native) == self.main_shape_for(native)
-        })
+        }
     }
 
     /// Whether the chosen format is sound only.
@@ -474,6 +682,15 @@ impl ExportDialog {
     /// Whether the chosen format is an animated GIF.
     fn gif(&self) -> bool {
         self.container == GIF
+    }
+
+    fn image_sequence(&self) -> bool {
+        self.container == FRAMES
+    }
+
+    /// Whether the chosen format keeps the background see-through.
+    fn transparent(&self) -> bool {
+        self.container == TRANSPARENT
     }
 
     fn gif_width(&self) -> u32 {
@@ -534,13 +751,84 @@ impl ExportDialog {
                         // finishing a minute sooner.
                         threads: 2,
                         sound_only: self.sound_only(),
+                        // A user's export always carries its sound; only a
+                        // render in place asks for picture alone.
+                        picture_only: false,
                         gif: self.gif(),
+                        image_sequence: self.image_sequence(),
+                        transparent: self.transparent(),
                     },
                     shape,
+                    sequence: None,
                 })
             })
             .collect()
     }
+}
+
+/// The files for every sequence but the one on screen, when the dialog is set
+/// to export them all: each written whole, in its own shape and rate, with its
+/// name added to the file name. An empty sequence is skipped rather than
+/// failing the rest.
+fn other_sequence_requests(dialog: &ExportDialog, editor: &Editor) -> Vec<ExportRequest> {
+    if !dialog.every_sequence {
+        return Vec::new();
+    }
+    let active = editor.active_sequence().map(|s| s.id);
+    let mut requests = Vec::new();
+    for other in &editor.project().sequences {
+        if Some(other.id) == active {
+            continue;
+        }
+        let Some(whole) = TimelineRange::new(TimelineTime::ZERO, other.duration())
+            .ok()
+            .filter(|r| r.duration() > TimelineTime::ZERO)
+        else {
+            continue;
+        };
+        let part = file_part(&other.name);
+        for mut request in dialog.requests(other.resolution, other.frame_rate, whole) {
+            request.settings.path = with_suffix(&request.settings.path, &part);
+            request.sequence = Some(other.id);
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+/// A file name part made from a sequence's name: the characters a file system
+/// refuses replaced, runs of them collapsed, never empty.
+pub fn file_part(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        let bad =
+            matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control();
+        if bad || c.is_whitespace() {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let out = out.trim_matches(|c| c == '-' || c == '.').to_owned();
+    if out.is_empty() {
+        "sequence".to_owned()
+    } else {
+        out
+    }
+}
+
+/// `path` with `-<part>` added to the file name, before the extension.
+pub fn with_suffix(path: &std::path::Path, part: &str) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let name = match path.extension() {
+        Some(ext) => format!("{stem}-{part}.{}", ext.to_string_lossy()),
+        None => format!("{stem}-{part}"),
+    };
+    path.with_file_name(name)
 }
 
 /// Draw the window. Returns settings when the user pressed Export.
@@ -588,6 +876,10 @@ pub fn show(
     // than left for the user to discover in the file.
     let soloed = soloed_lanes(sequence);
     let marked = sequence.marked_range();
+    // What the export will actually be long, which is what a site's limit is
+    // about: the marked span when one is being sent, the whole cut otherwise.
+    let export_length = export_range(dialog.only_marked, marked, duration)
+        .map_or(duration, |range| range.duration());
     let has_sound = sequence.audio_tracks.iter().any(|track| track.enabled);
     let mut start = None;
 
@@ -634,11 +926,37 @@ pub fn show(
                 ui.label(egui::RichText::new("Animation").strong());
                 ui.add_space(2.0);
                 gif_rows(ui, dialog, native);
+            } else if dialog.transparent() {
+                // A size and a rate; the codec is fixed by the transparency.
+                ui.label(egui::RichText::new("Transparent video").strong());
+                ui.add_space(2.0);
+                resolution_row(ui, dialog, native);
+                frame_rate_row(ui, dialog, native_rate);
+                row(ui, "Written as", |ui| {
+                    ui.label(
+                        egui::RichText::new("VP9 WebM · see-through where nothing is drawn · no sound")
+                            .color(theme::DISABLED),
+                    );
+                });
+            } else if dialog.image_sequence() {
+                // Pictures have a size and a rate; no codec, no bitrate.
+                ui.label(egui::RichText::new("Frames").strong());
+                ui.add_space(2.0);
+                resolution_row(ui, dialog, native);
+                frame_rate_row(ui, dialog, native_rate);
+                row(ui, "Written as", |ui| {
+                    ui.label(
+                        egui::RichText::new("PNG · lossless · one file a frame · no sound")
+                            .color(theme::DISABLED),
+                    );
+                });
             } else {
                 ui.label(egui::RichText::new("Video").strong());
                 ui.add_space(2.0);
 
                 platform_row(ui, dialog, native, native_rate);
+                own_presets_row(ui, dialog, state, native);
+                platform_checks_row(ui, dialog, native, native_rate, export_length);
                 shape_row(ui, dialog, native);
                 resolution_row(ui, dialog, native);
                 bitrate_rows(ui, dialog, native);
@@ -653,6 +971,20 @@ pub fn show(
                          match, so players do not have to guess.",
                         );
                 });
+            }
+
+            // More than one sequence: all of them in one press, each named
+            // for its sequence.
+            let sequences = editor.sequence_list().len();
+            if sequences > 1 {
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut dialog.every_sequence,
+                    format!("Every sequence ({sequences})"),
+                )
+                .on_hover_text(
+                    "Export each sequence with these settings, one after another. Files are named after their sequence; each keeps its own shape and length.",
+                );
             }
 
             if let Some(what) = &soloed {
@@ -719,7 +1051,8 @@ pub fn show(
         return Vec::new();
     }
 
-    let requests = dialog.requests(native, native_rate, range);
+    let mut requests = dialog.requests(native, native_rate, range);
+    requests.extend(other_sequence_requests(dialog, editor));
     if !requests.is_empty() {
         dialog.open = false;
     }
@@ -796,6 +1129,124 @@ fn platform_row(
         if let Some(platform) = chosen {
             dialog.apply_platform(platform, native, native_rate);
         }
+    });
+}
+
+/// What is worth knowing before this file is uploaded: it is longer than the
+/// site takes, or it is not the shape the site shows.
+///
+/// Said here rather than refused, and said before the button rather than after
+/// the encode: the point of a preset is to find this out while it still costs
+/// nothing to fix.
+fn platform_checks_row(
+    ui: &mut egui::Ui,
+    dialog: &ExportDialog,
+    native: Resolution,
+    native_rate: FrameRate,
+    length: TimelineTime,
+) {
+    let Some(platform) = dialog.platform_in_use(native, native_rate) else {
+        return;
+    };
+    // The size the main file will actually be, shape and all.
+    let complaints = platform.complaints(length, dialog.resolution(native));
+    if complaints.is_empty() {
+        // Saying nothing would read as "not checked". One line, so the check
+        // is visibly a check.
+        row(ui, "Checks", |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} · fits what {} takes",
+                    short_span(length),
+                    platform.label
+                ))
+                .color(theme::OK_TEXT),
+            );
+        });
+        return;
+    }
+    row(ui, "Checks", |ui| {
+        ui.vertical(|ui| {
+            for complaint in complaints {
+                ui.label(egui::RichText::new(complaint).color(theme::CAUTION));
+            }
+            ui.label(
+                egui::RichText::new(
+                    "The file is written anyway — mark in and out to send part of it",
+                )
+                .small()
+                .color(theme::DISABLED),
+            );
+        });
+    });
+}
+
+/// The user's own presets: the format they send every week, which is not any
+/// site's recommendation (`crate::export_presets`).
+fn own_presets_row(
+    ui: &mut egui::Ui,
+    dialog: &mut ExportDialog,
+    state: &mut UiState,
+    native: Resolution,
+) {
+    row(ui, "Mine", |ui| {
+        ui.vertical(|ui| {
+            let mut apply = None;
+            let mut forget = None;
+            if state.export_presets.is_empty() {
+                ui.label(
+                    egui::RichText::new("name these settings below to use them again")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                for (name, preset) in state.export_presets.all().to_vec() {
+                    let response = ui
+                        .add(egui::Button::selectable(
+                            dialog.as_preset(native) == preset,
+                            &name,
+                        ))
+                        .on_hover_text(
+                            "Format, size, rate, bitrate and extra shapes. Right-click to forget it",
+                        );
+                    if response.clicked() {
+                        apply = Some(preset.clone());
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button(format!("Forget \u{201c}{name}\u{201d}")).clicked() {
+                            forget = Some(name.clone());
+                            ui.close();
+                        }
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut state.export_preset_draft)
+                        .desired_width(140.0)
+                        .char_limit(crate::export_presets::MAX_NAME)
+                        .hint_text("name these settings"),
+                );
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Save").clicked() || entered)
+                    && !state.export_preset_draft.trim().is_empty()
+                {
+                    let name = std::mem::take(&mut state.export_preset_draft);
+                    let preset = dialog.as_preset(native);
+                    match state.export_presets.save(&name, preset) {
+                        Ok(()) => state.info(format!("Saved the export preset \u{201c}{}\u{201d}", name.trim())),
+                        Err(why) => state.error(why),
+                    }
+                }
+            });
+            if let Some(preset) = apply {
+                dialog.apply_preset(&preset);
+            }
+            if let Some(name) = forget {
+                state.export_presets.remove(&name);
+            }
+        });
     });
 }
 
@@ -1263,6 +1714,21 @@ fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duratio
         );
         return;
     }
+    if dialog.image_sequence() {
+        let rate = dialog.frame_rate.unwrap_or(FrameRate::FPS_30);
+        let count = bettercut_editor_core::foundation::ticks_per_frame(rate)
+            .filter(|t| *t > 0)
+            .map_or(0, |t| (duration.ticks() + t - 1) / t);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} · {count} PNG frames in a folder",
+                duration.format_timecode()
+            ))
+            .small()
+            .color(theme::DISABLED),
+        );
+        return;
+    }
     if dialog.sound_only() {
         let seconds =
             duration.ticks() as f64 / bettercut_editor_core::foundation::TICKS_PER_SECOND as f64;
@@ -1688,6 +2154,75 @@ mod tests {
         SHAPES.into_iter().find(|s| s.label == label).unwrap()
     }
 
+    /// With every sequence ticked, each other sequence that has something in
+    /// it adds its own file, named for it, in its own shape; an empty one adds
+    /// none, and unticked adds nothing.
+    #[test]
+    fn every_sequence_adds_a_file_per_other_sequence() {
+        use bettercut_editor_core::media::{MediaAsset, MediaKind};
+
+        let (mut editor, _events) = Editor::new_project("Many");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/a.mp4",
+            bettercut_editor_core::foundation::MediaTime::from_seconds(4),
+        ));
+        editor.place_media(media).unwrap();
+        let first = editor.active_sequence().unwrap().id;
+        let square = editor.duplicate_sequence(first).unwrap();
+        editor.rename_sequence(square, "Square cut").unwrap();
+        let _empty = editor.add_sequence().unwrap();
+        editor.switch_sequence(first);
+
+        let mut dialog = ExportDialog {
+            name: "trip".to_owned(),
+            folder: Some(std::path::PathBuf::from("/out")),
+            height_preset: Some(2),
+            ..ExportDialog::default()
+        };
+        assert!(other_sequence_requests(&dialog, &editor).is_empty());
+
+        dialog.every_sequence = true;
+        let extra = other_sequence_requests(&dialog, &editor);
+        assert_eq!(
+            extra.len(),
+            1,
+            "the empty sequence was exported, or the copy was not"
+        );
+        assert_eq!(extra[0].sequence, Some(square));
+        assert!(
+            extra[0]
+                .settings
+                .path
+                .to_string_lossy()
+                .ends_with("trip-Square-cut.mp4"),
+            "{:?}",
+            extra[0].settings.path
+        );
+        assert_eq!(
+            extra[0].settings.range.duration(),
+            TimelineTime::from_seconds(4)
+        );
+    }
+
+    /// A sequence's name makes a safe file name part; a path gains it before
+    /// the extension.
+    #[test]
+    fn sequence_names_become_file_name_parts() {
+        assert_eq!(file_part("Vertical cut"), "Vertical-cut");
+        assert_eq!(file_part("  a/b: c?  "), "a-b-c");
+        assert_eq!(file_part("..."), "sequence");
+        assert_eq!(file_part(""), "sequence");
+        assert_eq!(
+            with_suffix(std::path::Path::new("/out/trip.mp4"), "Square"),
+            std::path::PathBuf::from("/out/trip-Square.mp4")
+        );
+        assert_eq!(
+            with_suffix(std::path::Path::new("/out/trip"), "Square"),
+            std::path::PathBuf::from("/out/trip-Square")
+        );
+    }
+
     fn everything() -> TimelineRange {
         TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_seconds(10)).unwrap()
     }
@@ -1899,11 +2434,7 @@ mod tests {
             ..ExportDialog::default()
         };
 
-        dialog.apply_platform(
-            platform("TikTok · Reels · Shorts"),
-            native,
-            FrameRate::FPS_60,
-        );
+        dialog.apply_platform(platform("TikTok"), native, FrameRate::FPS_60);
         let requests = dialog.requests(native, FrameRate::FPS_60, everything());
 
         assert_eq!(requests.len(), 1);
@@ -1970,16 +2501,96 @@ mod tests {
             ..ExportDialog::default()
         };
 
-        dialog.apply_platform(
-            platform("TikTok · Reels · Shorts"),
-            native,
-            FrameRate::FPS_30,
-        );
+        dialog.apply_platform(platform("TikTok"), native, FrameRate::FPS_30);
         let requests = dialog.requests(native, FrameRate::FPS_30, everything());
 
         let shapes: Vec<_> = requests.iter().map(|r| r.shape.map(|s| s.label)).collect();
         assert_eq!(shapes, vec![Some("9:16"), Some("16:9")]);
         assert!(requests[1].settings.path.ends_with("trip-16x9.mp4"));
+    }
+
+    /// A cut longer than the site takes is said so before the encode, not
+    /// discovered on the upload page.
+    #[test]
+    fn a_long_cut_is_flagged_for_the_site_it_is_made_for() {
+        let vertical = Resolution::new(1080, 1920);
+        let twelve = TimelineTime::from_seconds(12 * 60);
+
+        let said = platform("YouTube Shorts").complaints(twelve, vertical);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("12:00"), "{}", said[0]);
+        assert!(said[0].contains("3:00"), "{}", said[0]);
+
+        // The same cut is fine for TikTok's longer limit... up to a point.
+        assert!(
+            platform("TikTok")
+                .complaints(TimelineTime::from_seconds(9 * 60), vertical)
+                .is_empty()
+        );
+        assert_eq!(platform("TikTok").complaints(twelve, vertical).len(), 1);
+    }
+
+    /// And a landscape file for a vertical site: the other half of the check.
+    #[test]
+    fn a_shape_the_site_does_not_show_is_flagged() {
+        let said = platform("Instagram Reels")
+            .complaints(TimelineTime::from_seconds(30), Resolution::HD_1080);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("1920\u{d7}1080"), "{}", said[0]);
+        assert!(said[0].contains("9:16"), "{}", said[0]);
+    }
+
+    /// A site with no limit worth checking says nothing about length.
+    #[test]
+    fn a_site_without_a_limit_says_nothing_about_length() {
+        let hours = TimelineTime::from_seconds(3 * 60 * 60);
+        assert!(
+            platform("YouTube 1080p")
+                .complaints(hours, Resolution::HD_1080)
+                .is_empty()
+        );
+    }
+
+    /// The three vertical presets ask for the same file and differ only in
+    /// what they check, so the menu has to keep saying the one that was
+    /// picked rather than the first of the three.
+    #[test]
+    fn the_vertical_presets_are_kept_apart() {
+        let native = Resolution::HD_1080;
+        let mut dialog = ExportDialog::default();
+
+        for label in ["TikTok", "Instagram Reels", "YouTube Shorts"] {
+            dialog.apply_platform(platform(label), native, FrameRate::FPS_30);
+            assert_eq!(
+                dialog
+                    .platform_in_use(native, FrameRate::FPS_30)
+                    .map(|p| p.label),
+                Some(label)
+            );
+        }
+
+        // And a setting changed by hand still reads as Custom.
+        dialog.bitrate = BitrateChoice::Lower;
+        assert_eq!(dialog.platform_in_use(native, FrameRate::FPS_30), None);
+    }
+
+    /// Every limit is written into the hint the menu shows, so the number a
+    /// file is checked against is one the user can read before pressing
+    /// anything — and cannot drift away from the check.
+    #[test]
+    fn every_limit_is_stated_in_its_hint() {
+        for platform in PLATFORMS {
+            let Some(limit) = platform.limit() else {
+                continue;
+            };
+            assert!(
+                platform.hint.contains(&short_span(limit)),
+                "{} checks against {} but says {:?}",
+                platform.label,
+                short_span(limit),
+                platform.hint
+            );
+        }
     }
 
     /// Every platform lands on an even size its menu row describes.

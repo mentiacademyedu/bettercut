@@ -59,6 +59,9 @@ pub struct LayerRequest {
     /// For a title typing itself in: how many characters to draw. `None` for
     /// everything, and always `None` for media.
     pub reveal: Option<usize>,
+    /// Which angle of a multicam clip this layer asks for (`crate::compound`).
+    /// `None` on everything else, which is all but one clip in a thousand.
+    pub angle: Option<usize>,
 }
 
 /// Where a layer's picture comes from.
@@ -73,6 +76,11 @@ pub enum LayerSource {
     Media(MediaId),
     /// §26: rasterized from the text clip with this id.
     Text(ClipId),
+    /// The timecode and file name over the picture (`crate::burn_in`). The
+    /// text itself is built where it is drawn, from the instant the layer is
+    /// read at, so one line of code decides what it says for the preview and
+    /// the export alike (§46).
+    BurnIn,
     /// A flat colour, generated rather than read from anywhere (§25's flash).
     ///
     /// sRGB bytes, which is what the texture upload expects. It carries no
@@ -87,7 +95,7 @@ impl LayerSource {
     pub fn media(self) -> Option<MediaId> {
         match self {
             Self::Media(id) => Some(id),
-            Self::Text(_) | Self::Solid { .. } => None,
+            Self::Text(_) | Self::Solid { .. } | Self::BurnIn => None,
         }
     }
 }
@@ -105,6 +113,30 @@ pub fn layer_requests(
     sequence: &Sequence,
     position: TimelineTime,
 ) -> Vec<LayerRequest> {
+    plan(project, sequence, position, 0)
+}
+
+/// [`layer_requests`], with how many compounds deep this plan already is.
+///
+/// A compound clip is not decoded: its layers are the layers of the sequence
+/// inside it, which is what the expansion at the end of this function does
+/// (`crate::compound`). The depth is what stops a compound that contains
+/// itself from planning frames forever.
+pub(crate) fn plan(
+    project: &Project,
+    sequence: &Sequence,
+    position: TimelineTime,
+    depth: u8,
+) -> Vec<LayerRequest> {
+    // Render in place: a baked stretch plays as the one file it was written
+    // to, rather than as the twenty layers that made it
+    // (`bettercut_timeline::render`). The overlays are in the file as well —
+    // they were on when it was baked, and changing one changes the hash that
+    // says whether the file is still the edit.
+    if let Some(render) = crate::rendered::usable(project, sequence, position) {
+        return vec![baked_layer(render, position)];
+    }
+
     let mut requests = Vec::new();
 
     // §20a.4: while any picture track is soloed, only those are on screen.
@@ -154,6 +186,22 @@ pub fn layer_requests(
             }) => {
                 let fade = (2.0 * progress - 1.0).abs();
                 push_layer(&mut requests, project, track.id, clip, position, fade);
+            }
+            // One shot at a time, like a fade through black, breaking up into
+            // glitches towards the cut and snapping back together after it.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::Glitch,
+                ..
+            }) => {
+                let before = requests.len();
+                push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                let (amount, shake) = transition_glitch(progress);
+                for request in &mut requests[before..] {
+                    request.look.glitch = request.look.glitch.max(amount);
+                    request.look.rgb_split = request.look.rgb_split.max(amount);
+                    request.look.transform.position.x += shake;
+                }
             }
             // §25's blur dissolve. Both shots are on screen, as in a
             // crossfade, and both go soft together — so the change-over
@@ -217,6 +265,7 @@ pub fn layer_requests(
                     position,
                     out_move,
                 );
+                let before = requests.len();
                 push_moving(
                     &mut requests,
                     project,
@@ -225,15 +274,34 @@ pub fn layer_requests(
                     position,
                     in_move,
                 );
+                // A wipe or an iris cuts the incoming shot to its growing
+                // shape, in place of any mask of its own while it runs.
+                if let Some(mask) = transition_mask(kind, progress)
+                    && let Some(request) = requests.get_mut(before)
+                {
+                    request.look.mask = Some(mask);
+                }
             }
             None => {
                 // §36: something behind a clip that does not fill the frame,
                 // drawn first so the clip itself lands on top of it.
                 push_backdrop(&mut requests, project, sequence, track.id, clip, position);
+                let before = requests.len();
                 push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                // The punch on the beat, on every copy the smear just drew.
+                let pulse = beat_pulse_at(clip.beat_pulse, &sequence.markers, position);
+                if pulse != 1.0 {
+                    for request in &mut requests[before..] {
+                        request.look.transform.scale.x *= pulse;
+                        request.look.transform.scale.y *= pulse;
+                    }
+                }
+                push_light_leak(&mut requests, track.id, clip, position);
             }
         }
     }
+
+    add_shadows(&mut requests, sequence);
 
     // §26: text composites over every video track. Last in the list, because
     // §22 draws later layers over earlier ones.
@@ -279,11 +347,19 @@ pub fn layer_requests(
                 // Zero-based within the clip's own span; see `timeline::text`.
                 source_time: source_time_of(clip.timeline.start, clip.source.start, position),
                 look: bettercut_timeline::ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     sharpen: 0.0,
                     // A title's colours are chosen, not filmed: nothing to grade.
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     // A title is generated at exactly the size it is drawn at;
                     // there is no surplus source to crop away.
@@ -300,17 +376,389 @@ pub fn layer_requests(
                     blend: bettercut_timeline::BlendMode::Normal,
                 },
                 reveal: look.reveal,
+                angle: None,
             });
         }
     }
 
-    requests
+    push_burn_in(&mut requests, sequence, position);
+    push_visualizer(&mut requests, sequence, position);
+    push_progress_bar(&mut requests, sequence, position);
+    push_watermark(&mut requests, project, sequence);
+
+    crate::compound::expand(project, requests, depth, plan)
+}
+
+/// The one layer a baked stretch plays: the file, read at the instant inside
+/// it, with nothing done to it.
+///
+/// On the lane of none, like the overlays: an adjustment lane must not grade a
+/// picture that already has that lane's grade baked into it.
+fn baked_layer(render: &bettercut_timeline::RenderedRange, position: TimelineTime) -> LayerRequest {
+    LayerRequest {
+        clip: render.clip,
+        track: TrackId::from_u128(0),
+        source: LayerSource::Media(render.media),
+        source_time: MediaTime::from_ticks(position.ticks() - render.range.start.ticks()),
+        look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform::default(),
+            opacity: 1.0,
+            color: bettercut_timeline::ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: bettercut_timeline::BlendMode::Normal,
+        },
+        reveal: None,
+        angle: None,
+    }
+}
+
+/// The timecode and file name over the picture, for a copy sent out for notes.
+///
+/// On the lane of none, like the watermark and the progress bar: it is about
+/// the export rather than about any clip, and no adjustment should grade it.
+fn push_burn_in(requests: &mut Vec<LayerRequest>, sequence: &Sequence, position: TimelineTime) {
+    let burn = sequence.master.burn_in.clamped();
+    if !burn.is_visible() {
+        return;
+    }
+    let (place, anchor) = burn.placement();
+    requests.push(LayerRequest {
+        clip: ClipId::from_u128(0),
+        track: TrackId::from_u128(0),
+        source: LayerSource::BurnIn,
+        // Where on the timeline it is being drawn: what the text is made from.
+        source_time: MediaTime::from_ticks(position.ticks()),
+        look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform {
+                position: bettercut_timeline::Vec2::new(place[0], place[1]),
+                anchor: bettercut_timeline::Vec2::new(anchor[0], anchor[1]),
+                ..Transform::default()
+            },
+            opacity: 1.0,
+            color: bettercut_timeline::ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: bettercut_timeline::BlendMode::Normal,
+        },
+        reveal: None,
+        angle: None,
+    });
+}
+
+/// What the burn-in says at `position`, and the title clip that draws it.
+///
+/// `None` when there is nothing to say. Shared by the preview and the export,
+/// so the copy sent out carries exactly what the editor was looking at (§46).
+pub fn burn_in_clip(
+    project: &Project,
+    sequence: &Sequence,
+    position: TimelineTime,
+) -> Option<bettercut_timeline::TextClip> {
+    let burn = sequence.master.burn_in.clamped();
+    if !burn.is_visible() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if burn.timecode {
+        parts.push(position.format_timecode());
+    }
+    if burn.file_name {
+        // The file the topmost picture at this instant came from — the one the
+        // viewer is actually looking at.
+        let name = sequence
+            .video_tracks
+            .iter()
+            .rev()
+            .find_map(|track| {
+                track
+                    .clips()
+                    .iter()
+                    .find(|clip| clip.timeline.contains(position))
+                    .and_then(|clip| project.media_asset(clip.media_id))
+                    .map(|asset| asset.display_name().to_owned())
+            })
+            .unwrap_or_default();
+        if !name.is_empty() {
+            parts.push(name);
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut clip = bettercut_timeline::TextClip::new(parts.join("   "), TimelineTime::ZERO).ok()?;
+    // Plain, monospaced-looking and readable over anything: white with a dark
+    // box behind it, which is what every burn-in in every editor looks like
+    // and for the same reason.
+    clip.style.size = burn.size * sequence.resolution.height.max(1) as f32;
+    clip.style.stroke = None;
+    clip.style.background = Some(bettercut_text::Background {
+        color: bettercut_text::Rgba::new(0, 0, 0, 160),
+        padding: clip.style.size * 0.25,
+        corner_radius: clip.style.size * 0.15,
+    });
+    Some(clip)
+}
+
+/// The progress bar, over everything, filled as far as `position` is through
+/// the sequence. On a lane of its own (a track id belonging to no track), so
+/// no adjustment grades it.
+fn push_progress_bar(
+    requests: &mut Vec<LayerRequest>,
+    sequence: &Sequence,
+    position: TimelineTime,
+) {
+    let bar = sequence.master.progress_bar.clamped();
+    let Some(filled) = progress_bar_fill(sequence, position) else {
+        return;
+    };
+    if !bar.is_visible() || filled <= 0.0 {
+        return;
+    }
+    requests.push(LayerRequest {
+        clip: ClipId::from_u128(0),
+        track: TrackId::from_u128(0),
+        source: LayerSource::Solid { rgb: bar.colour },
+        source_time: MediaTime::ZERO,
+        look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            // From the frame's top-left or bottom-left corner, as wide as the
+            // video is played and as tall as the bar.
+            transform: Transform {
+                position: bettercut_timeline::Vec2::new(-0.5, if bar.top { -0.5 } else { 0.5 }),
+                scale: bettercut_timeline::Vec2::new(filled, bar.height),
+                anchor: bettercut_timeline::Vec2::new(0.0, if bar.top { 0.0 } else { 1.0 }),
+                ..Transform::default()
+            },
+            opacity: 1.0,
+            color: bettercut_timeline::ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: bettercut_timeline::BlendMode::Normal,
+        },
+        reveal: None,
+        angle: None,
+    });
+}
+
+/// The watermark, last of all: the logo in its corner, sized as a share of the
+/// frame's width whatever the picture's own shape. On the lane of none, so no
+/// adjustment grades it.
+fn push_watermark(requests: &mut Vec<LayerRequest>, project: &Project, sequence: &Sequence) {
+    let Some(mark) = sequence
+        .watermark
+        .map(bettercut_timeline::watermark::Watermark::clamped)
+    else {
+        return;
+    };
+    let Some(asset) = project.media_asset(mark.media) else {
+        return; // §66: a missing logo leaves the frame as it is
+    };
+    if asset.width == 0 || asset.height == 0 {
+        return;
+    }
+    let output = sequence.resolution.width.max(1) as f32 / sequence.resolution.height.max(1) as f32;
+    let (fit_x, _) =
+        bettercut_timeline::fit_scale(asset.width as f32 / asset.height as f32, output);
+    let scale = mark.size / fit_x.max(0.0001);
+    let (position, anchor) = mark.placement(output);
+    requests.push(LayerRequest {
+        clip: ClipId::from_u128(0),
+        track: TrackId::from_u128(0),
+        source: LayerSource::Media(mark.media),
+        source_time: MediaTime::ZERO,
+        look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform {
+                position: bettercut_timeline::Vec2::new(position[0], position[1]),
+                scale: bettercut_timeline::Vec2::new(scale, scale),
+                anchor: bettercut_timeline::Vec2::new(anchor[0], anchor[1]),
+                ..Transform::default()
+            },
+            opacity: mark.opacity,
+            color: bettercut_timeline::ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: None,
+            blend: bettercut_timeline::BlendMode::Normal,
+        },
+        reveal: None,
+        angle: None,
+    });
+}
+
+/// The visualizer's bars at `position`, over the pictures and titles: one solid
+/// layer a bar, standing on the bottom edge or hanging from the top. On the
+/// same lane of none as the progress bar, so no adjustment grades them.
+fn push_visualizer(requests: &mut Vec<LayerRequest>, sequence: &Sequence, position: TimelineTime) {
+    let Some(visualizer) = sequence.visualizer.as_ref() else {
+        return;
+    };
+    let heights = visualizer.bar_heights(position);
+    let count = heights.len().max(1) as f32;
+    // Each bar a little narrower than its slot, so they read as bars.
+    let width = 0.72 / count;
+    for (index, height) in heights.into_iter().enumerate() {
+        if height <= 0.0 {
+            continue;
+        }
+        let top = visualizer.top;
+        requests.push(LayerRequest {
+            clip: ClipId::from_u128(0),
+            track: TrackId::from_u128(0),
+            source: LayerSource::Solid {
+                rgb: visualizer.colour,
+            },
+            source_time: MediaTime::ZERO,
+            look: bettercut_timeline::ClipLook {
+                corner_pin: Default::default(),
+                old_film: 0.0,
+                glow: 0.0,
+                shadow: Default::default(),
+                border: Default::default(),
+                sharpen: 0.0,
+                lut: None,
+                rgb_split: 0.0,
+                glitch: 0.0,
+                pixelate: 0.0,
+                zoom_blur: 0.0,
+                vignette: 0.0,
+                reflection: bettercut_timeline::Reflection::None,
+                crop: bettercut_timeline::Crop::NONE,
+                transform: Transform {
+                    position: bettercut_timeline::Vec2::new(
+                        -0.5 + (index as f32 + 0.5) / count,
+                        if top { -0.5 } else { 0.5 },
+                    ),
+                    scale: bettercut_timeline::Vec2::new(width, height),
+                    anchor: bettercut_timeline::Vec2::new(0.5, if top { 0.0 } else { 1.0 }),
+                    ..Transform::default()
+                },
+                opacity: 0.9,
+                color: bettercut_timeline::ColorAdjust::IDENTITY,
+                blur: 0.0,
+                chroma_key: None,
+                mask: None,
+                blend: bettercut_timeline::BlendMode::Normal,
+            },
+            reveal: None,
+            angle: None,
+        });
+    }
+}
+
+/// How much of the frame's width the progress bar fills at `position`, 0–1;
+/// `None` for an empty sequence.
+pub fn progress_bar_fill(sequence: &Sequence, position: TimelineTime) -> Option<f32> {
+    let length = sequence.duration().ticks();
+    (length > 0).then(|| (position.ticks() as f64 / length as f64).clamp(0.0, 1.0) as f32)
 }
 
 /// Which audio clips are audible in `[position, position + duration)`.
 ///
 /// Over tracks rather than a sequence so the mixer thread can ask it of the
 /// snapshot it holds (§54): the thread never sees the project.
+/// Put a shadow layer under every picture that has one.
+///
+/// Last, over the finished picture layers, so the shadow follows the picture
+/// wherever everything before decided it goes — keyframes, an entrance, a
+/// transition's move, the beat's punch — without each of those having to know
+/// shadows exist. The shadow layer keeps the picture's shape (crop, corners)
+/// and none of its grade or effects, which a flat dark shape cannot show; the
+/// picture above it carries no shadow, which is how the compositor tells the
+/// two apart.
+pub fn add_shadows(requests: &mut Vec<LayerRequest>, sequence: &Sequence) {
+    if !requests.iter().any(|r| r.look.shadow.is_visible()) {
+        return;
+    }
+    let (width, height) = (sequence.resolution.width, sequence.resolution.height);
+    let mut with = Vec::with_capacity(requests.len() * 2);
+    for mut request in requests.drain(..) {
+        let shadow = request.look.shadow;
+        if shadow.is_visible() {
+            let (dx, dy) = shadow.offset(width, height);
+            let mut transform = request.look.transform;
+            transform.position.x += dx;
+            transform.position.y += dy;
+            with.push(LayerRequest {
+                look: bettercut_timeline::ClipLook {
+                    corner_pin: Default::default(),
+                    transform,
+                    opacity: request.look.opacity * shadow.opacity,
+                    shadow,
+                    mask: None,
+                    chroma_key: None,
+                    blend: bettercut_timeline::BlendMode::Normal,
+                    ..request.look.ungraded()
+                },
+                reveal: None,
+                angle: None,
+                ..request
+            });
+            request.look.shadow = bettercut_timeline::Shadow::NONE;
+        }
+        with.push(request);
+    }
+    *requests = with;
+}
+
 /// Every adjustment running at `position`, bottom lane first.
 ///
 /// The other half of what is on screen at an instant, beside
@@ -359,6 +807,46 @@ pub fn load_luts(
             }
         }
     }
+
+    // Curves, each baked into a table of its own over the clip's file LUT.
+    // Keyed by what they are, so an unchanged grade is not rebuilt.
+    let mut files: std::collections::HashMap<
+        bettercut_foundation::LutId,
+        Option<bettercut_timeline::CubeLut>,
+    > = std::collections::HashMap::new();
+    for sequence in &project.sequences {
+        for track in &sequence.video_tracks {
+            for clip in track.clips() {
+                if clip.curves.is_identity() {
+                    continue;
+                }
+                let Some(generated) = clip.effective_lut() else {
+                    continue;
+                };
+                if !tried.insert(generated.lut) {
+                    continue;
+                }
+                let file = clip.lut.map(bettercut_timeline::ClipLut::clamped);
+                let under = file.and_then(|file| {
+                    files
+                        .entry(file.lut)
+                        .or_insert_with(|| {
+                            project
+                                .luts
+                                .iter()
+                                .find(|asset| asset.id == file.lut)
+                                .and_then(|asset| {
+                                    bettercut_timeline::load_cube_file(&asset.path).ok()
+                                })
+                        })
+                        .as_ref()
+                        .map(|table| (table, file.strength))
+                });
+                let table = clip.curves.clamped().build_lut(under);
+                load(generated.lut, &table);
+            }
+        }
+    }
 }
 
 /// The frame number grain is drawn for at `position`: the preview and the
@@ -382,7 +870,9 @@ pub fn grain_seed(sequence: &Sequence, position: TimelineTime) -> u32 {
 pub fn graded_beneath(sequence: &Sequence, tracks: impl IntoIterator<Item = TrackId>) -> usize {
     tracks
         .into_iter()
-        .take_while(|track| sequence.text_track(*track).is_none())
+        // Pictures only: a title, or the progress bar on its lane of none,
+        // ends the graded run.
+        .take_while(|track| sequence.video_track(*track).is_some())
         .count()
 }
 
@@ -395,22 +885,30 @@ pub fn resolve_audio_tracks(
     let mut audible = Vec::new();
 
     let soloed = tracks.iter().any(|track| track.solo);
-    for track in tracks {
+    for (lane, track) in tracks.iter().enumerate() {
         if !bettercut_timeline::track_plays(track.enabled, track.solo, soloed) {
             continue; // muted, or not the one being soloed (§8)
         }
-        let range = bettercut_timeline::TimelineRange {
-            start: position,
-            end,
-        };
-        for clip in track.clips_in_range(range) {
+        // Each clip's reach past its edges for crossfades, so a clip whose own
+        // span has ended but whose fade-out has not is still heard.
+        let halves = bettercut_timeline::crossfade_halves(track.clips());
+        for (clip, &(lead, tail)) in track.clips().iter().zip(&halves) {
+            // A muted clip keeps its place and is simply not heard.
+            if clip.muted {
+                continue;
+            }
+            let span_start = TimelineTime::from_ticks(clip.timeline.start.ticks() - lead);
+            let span_end = TimelineTime::from_ticks(clip.timeline.end.ticks() + tail);
+            if span_end <= position || span_start >= end {
+                continue;
+            }
             // Where this clip begins inside the requested block.
-            let offset = if clip.timeline.start > position {
-                clip.timeline.start - position
+            let offset = if span_start > position {
+                span_start - position
             } else {
                 TimelineTime::ZERO
             };
-            let from = position.max(clip.timeline.start);
+            let from = position.max(span_start);
             // Scaled by the clip's speed, like every other
             // timeline-to-source mapping: a clip at 2× is already
             // twice as far into its material at the same instant.
@@ -429,11 +927,22 @@ pub fn resolve_audio_tracks(
             let frames =
                 |ticks: i64| ticks.div_euclid(bettercut_foundation::TICKS_PER_AUDIO_SAMPLE);
             let (fade_in, fade_out) = clip.fitted_fades();
+            // Measured from the reach, not the clip, when it crossfades: the
+            // ramp spans the whole overlap. A clip's own fade on an edge that
+            // crossfades gives way to the crossfade.
             let fades = bettercut_audio::Fades {
-                into_clip: frames(into_clip),
-                remaining: frames(clip.timeline.end.ticks() - from.ticks()),
-                fade_in: frames(fade_in),
-                fade_out: frames(fade_out),
+                into_clip: frames(from.ticks() - span_start.ticks()),
+                remaining: frames(span_end.ticks() - from.ticks()),
+                fade_in: if lead > 0 { 0 } else { frames(fade_in) },
+                fade_out: if tail > 0 { 0 } else { frames(fade_out) },
+                crossfade_in: frames(2 * lead),
+                crossfade_out: frames(2 * tail),
+                curve: match clip.fade_shape {
+                    bettercut_timeline::FadeShape::Smooth => bettercut_audio::FadeCurve::Smooth,
+                    bettercut_timeline::FadeShape::Linear => bettercut_audio::FadeCurve::Linear,
+                    bettercut_timeline::FadeShape::Fast => bettercut_audio::FadeCurve::Fast,
+                    bettercut_timeline::FadeShape::Slow => bettercut_audio::FadeCurve::Slow,
+                },
             };
 
             // §24: a keyframed volume is evaluated at both ends of the block
@@ -451,18 +960,43 @@ pub fn resolve_audio_tracks(
                     }
                 });
 
+            // The lane's own line, read at both ends of the block exactly as
+            // the clip's is, so a scene riding down does it smoothly rather
+            // than stepping at every block boundary.
+            let track_automation = (!track.volume.is_empty()).then(|| {
+                let until = end.min(clip.timeline.end);
+                bettercut_audio::GainRamp {
+                    from: track.volume.gain_at(from).unwrap_or(track.gain),
+                    to: track.volume.gain_at(until).unwrap_or(track.gain),
+                    frames: frames(until.ticks() - from.ticks()),
+                }
+            });
+
             audible.push(AudibleClip {
                 clip: clip.id,
+                lane,
                 media: clip.media_id,
                 source_start,
                 speed: clip.speed,
                 reversed: clip.reversed,
                 denoise: clip.denoise,
+                eq: clip.eq.clamped(),
+                space: clip.space.clamped(),
+                channels: clip.channels,
+                pitch: clip.pitch,
+                keep_pitch: clip.keep_pitch,
+                leveller: clip.leveller,
+                de_ess: clip.de_ess,
                 gain: if automation.is_some() { 1.0 } else { clip.gain },
                 offset,
                 fades,
                 automation,
-                track_gain: track.gain,
+                track_gain: if track_automation.is_some() {
+                    1.0
+                } else {
+                    track.gain
+                },
+                track_automation,
                 track_pan: track.pan,
             });
         }
@@ -489,6 +1023,14 @@ pub fn layer_transform(
 ) -> Transform {
     match request.source {
         LayerSource::Media(_) => request.look.transform,
+        // Drawn at its own size in the corner it was placed in, like a title.
+        LayerSource::BurnIn => bettercut_timeline::natural_size_transform(
+            request.look.transform,
+            frame.width,
+            frame.height,
+            output.width,
+            output.height,
+        ),
         // A generated colour has no shape of its own, so it takes the frame's.
         // The uniform fits every layer to the frame by its aspect, which would
         // letterbox a square of white inside a wide frame; undoing that fit is
@@ -499,7 +1041,12 @@ pub fn layer_transform(
                 output.width.max(1) as f32 / output.height.max(1) as f32,
             );
             Transform {
-                scale: bettercut_timeline::Vec2::new(1.0 / fit_x, 1.0 / fit_y),
+                // Times the look's own scale, so a generated layer can be
+                // sized — a progress bar is a strip of a full frame.
+                scale: bettercut_timeline::Vec2::new(
+                    request.look.transform.scale.x / fit_x,
+                    request.look.transform.scale.y / fit_y,
+                ),
                 ..request.look.transform
             }
         }
@@ -711,20 +1258,83 @@ fn push_layer_with(
         Trail::Allow => smear_for(clip, position, look.transform, look.opacity),
         Trail::Single => vec![(look.transform, look.opacity)],
     };
+    let blend = smooth_motion_blend(clip, project, source_time);
     for (transform, share) in copies {
+        let (base, over) = match blend {
+            Some((base, next, phase)) => (base, Some((next, phase))),
+            None => (source_time, None),
+        };
         requests.push(LayerRequest {
             clip: clip.id,
             track,
+            angle: clip.angle,
             source: LayerSource::Media(clip.media_id),
-            source_time,
+            source_time: base,
             look: bettercut_timeline::ClipLook {
+                corner_pin: Default::default(),
                 transform,
                 opacity: share,
                 ..look
             },
             reveal: None,
         });
+        // The next frame laid over it, as far as the playhead is between
+        // the two: a slowed shot glides instead of repeating frames.
+        if let Some((next, phase)) = over {
+            requests.push(LayerRequest {
+                clip: clip.id,
+                track,
+                angle: clip.angle,
+                source: LayerSource::Media(clip.media_id),
+                source_time: next,
+                look: bettercut_timeline::ClipLook {
+                    corner_pin: Default::default(),
+                    transform,
+                    opacity: share * phase,
+                    ..look
+                },
+                reveal: None,
+            });
+        }
     }
+}
+
+/// For a slowed clip with smooth motion on: the source frame at or before
+/// `source_time`, the one after it, and how far between them it is (0–1).
+/// `None` when there is nothing to blend — normal speed, a hold, a photo, a
+/// file with no frame rate, or exactly on a frame.
+pub fn smooth_motion_blend(
+    clip: &VideoClip,
+    project: &Project,
+    source_time: MediaTime,
+) -> Option<(MediaTime, MediaTime, f32)> {
+    if !clip.smooth_motion || clip.frozen {
+        return None;
+    }
+    // Only slower than normal: a clip at or above full speed has a new frame
+    // every output frame anyway.
+    if clip.speed.num() >= clip.speed.den() {
+        return None;
+    }
+    let rate = project.media_asset(clip.media_id)?.frame_rate?;
+    let frame = bettercut_foundation::ticks_per_frame(rate).filter(|t| *t > 0)?;
+    let ticks = source_time.ticks();
+    let base = ticks.div_euclid(frame) * frame;
+    let phase = (ticks - base) as f32 / frame as f32;
+    if phase <= 0.001 {
+        return None;
+    }
+    // Backwards, the next frame shown is the earlier one.
+    let (base, next, phase) = if clip.reversed {
+        (base + frame, base, 1.0 - phase)
+    } else {
+        (base, base + frame, phase)
+    };
+    Some((
+        MediaTime::from_ticks(base),
+        MediaTime::from_ticks(next),
+        phase,
+    ))
 }
 
 /// The copies a clip is drawn as this frame: one, unless it is smearing.
@@ -827,6 +1437,9 @@ fn push_backdrop(
         ..bettercut_timeline::Transform::default()
     };
     request.look.blur = bettercut_timeline::BACKDROP_BLUR;
+    // A fill behind the shot, not a second framed copy of it.
+    request.look.border = bettercut_timeline::Border::NONE;
+    request.look.shadow = bettercut_timeline::Shadow::NONE;
     // Opacity is left as `push_layer` computed it — the clip's own, keyframes
     // and animation included. This used to be forced to 1, on the grounds that
     // a half-transparent backdrop lets the black through and the frame stops
@@ -845,6 +1458,8 @@ pub struct LayerMove {
     pub scale: f32,
     /// Multiplied into the clip's own opacity.
     pub alpha: f32,
+    /// Degrees added to the clip's own rotation.
+    pub rotation: f32,
 }
 
 impl LayerMove {
@@ -852,7 +1467,28 @@ impl LayerMove {
         offset_x: 0.0,
         scale: 1.0,
         alpha: 1.0,
+        rotation: 0.0,
     };
+}
+
+/// How broken up the picture is at `progress` through a glitch transition, on
+/// the glitch and RGB split scale (0–100), and how far it jumps sideways, in
+/// frame widths.
+///
+/// Clean at either end and wrecked at the cut. The jump changes a dozen times
+/// a second rather than every frame — a shake at the frame rate reads as noise,
+/// a few lurches read as a signal dropping out — and it is worked out from the
+/// progress alone, so preview and export lurch on the same frames (§46).
+pub fn transition_glitch(progress: f32) -> (f32, f32) {
+    let t = progress.clamp(0.0, 1.0);
+    let strength = (1.0 - (2.0 * t - 1.0).abs()).sqrt();
+    let step = (t * 12.0).floor() as u32;
+    let hash = step.wrapping_mul(2_654_435_761) >> 16;
+    let side = (hash % 1000) as f32 / 1000.0 * 2.0 - 1.0;
+    (
+        bettercut_timeline::MAX_GLITCH * strength,
+        side * 0.03 * strength,
+    )
 }
 
 /// The outgoing and incoming placements for a moving transition (§25).
@@ -893,9 +1529,43 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
                 offset_x: 0.0,
                 scale: 1.0 + 0.35 * t,
                 alpha: 1.0 - t,
+                rotation: 0.0,
             },
             LayerMove::STILL,
         ),
+        // The outgoing shot turns half a turn as it shrinks into the middle;
+        // at the cut the incoming one is exactly there — the same size, the
+        // same angle — and unwinds back out to fill the frame. Eased, so the
+        // spin is fastest where the two change over.
+        TransitionKind::Spin => {
+            if t < 0.5 {
+                let s = t / 0.5;
+                (
+                    LayerMove {
+                        scale: 1.0 - 0.6 * s,
+                        rotation: 180.0 * s * s,
+                        ..LayerMove::STILL
+                    },
+                    LayerMove {
+                        alpha: 0.0,
+                        ..LayerMove::STILL
+                    },
+                )
+            } else {
+                let u = 1.0 - (t - 0.5) / 0.5;
+                (
+                    LayerMove {
+                        alpha: 0.0,
+                        ..LayerMove::STILL
+                    },
+                    LayerMove {
+                        scale: 1.0 - 0.6 * u,
+                        rotation: -180.0 * u * u,
+                        ..LayerMove::STILL
+                    },
+                )
+            }
+        }
         // A crossfade is the incoming clip coming up over the outgoing one, and
         // a fade through black never has two layers at once; neither is a
         // moving transition, and both are handled before this is called.
@@ -908,9 +1578,54 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
         ),
         // Neither moves anything: a flash is a layer laid over the top, and a
         // blur dissolve is a crossfade with the sharpness taken out of both.
-        TransitionKind::FadeThroughBlack | TransitionKind::Flash | TransitionKind::Blur => {
-            (LayerMove::STILL, LayerMove::STILL)
+        // A wipe and an iris move nothing either: the incoming shot is cut to
+        // a shape that grows (`transition_mask`).
+        TransitionKind::FadeThroughBlack
+        | TransitionKind::Flash
+        | TransitionKind::Blur
+        | TransitionKind::Wipe
+        | TransitionKind::Iris
+        | TransitionKind::Glitch => (LayerMove::STILL, LayerMove::STILL),
+    }
+}
+
+/// The shape the incoming shot is cut to at `progress` through a wipe or an
+/// iris: nothing at the start, the whole frame by the end. `None` for every
+/// other kind.
+///
+/// Built from the clip mask the compositor already draws, so a wipe is a
+/// moving mask rather than a shader of its own (§46 for free). The soft edge
+/// starts and ends just outside the frame, so neither end shows a sliver.
+pub fn transition_mask(kind: TransitionKind, progress: f32) -> Option<bettercut_timeline::Mask> {
+    use bettercut_timeline::{Mask, MaskShape};
+    const FEATHER: f32 = 0.03;
+    let t = progress.clamp(0.0, 1.0);
+    match kind {
+        // A vertical edge moving left to right, keeping what is left of it.
+        // A linear mask keeps the side above its edge; turned a quarter the
+        // other way, "above" is "to the left".
+        TransitionKind::Wipe => Some(Mask {
+            shape: MaskShape::Linear,
+            center: [-FEATHER + t * (1.0 + 2.0 * FEATHER), 0.5],
+            size: [0.5, 0.5],
+            feather: FEATHER,
+            rotation_degrees: -90.0,
+            invert: false,
+        }),
+        // A circle from nothing to past the corners, which sit about 0.71
+        // from the middle.
+        TransitionKind::Iris => {
+            let radius = t * (0.72 + FEATHER);
+            Some(Mask {
+                shape: MaskShape::Ellipse,
+                center: [0.5, 0.5],
+                size: [radius, radius],
+                feather: FEATHER,
+                rotation_degrees: 0.0,
+                invert: false,
+            })
         }
+        _ => None,
     }
 }
 
@@ -987,10 +1702,18 @@ fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, al
         // precisely because an opacity of zero is not a sensible one, and the
         // colour of a generated layer is not up for adjustment anyway.
         look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
             sharpen: 0.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
             transform: Transform::default(),
@@ -1002,6 +1725,117 @@ fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, al
             blend: bettercut_timeline::BlendMode::Normal,
         },
         reveal: None,
+        angle: None,
+    });
+}
+
+/// Where a light leak's glow is, how big, and how strong, `seconds` into a
+/// clip with `amount` (0–100): `(centre, half size, opacity)` in frame units.
+/// `None` for no leak.
+///
+/// It drifts and breathes on slow, unrelated cycles, so it never visibly
+/// repeats in a short clip — and it is a function of time alone, so the
+/// preview and the export draw the same glow on the same frame (§46).
+pub fn light_leak_at(amount: f32, seconds: f64) -> Option<([f32; 2], [f32; 2], f32)> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return None;
+    }
+    let share = (amount / 100.0).min(1.0);
+    let t = seconds as f32;
+    let centre = [
+        0.5 + 0.35 * (t * 0.43).sin(),
+        0.4 + 0.2 * (t * 0.31 + 1.0).sin(),
+    ];
+    let size = [0.45 + 0.1 * (t * 0.23).sin(), 0.6];
+    let breathing = 0.6 + 0.4 * (t * 0.9 + 2.0).sin().abs();
+    Some((centre, size, share * breathing))
+}
+
+/// How long a beat pulse takes to ease back after its marker.
+pub const BEAT_PULSE_SECONDS: f64 = 0.3;
+
+/// The furthest a beat pulse punches in, at 100: a fifth bigger.
+pub const MAX_BEAT_PULSE: f32 = 0.2;
+
+/// The scale a beat pulse gives a picture at `position`: largest on a marker,
+/// easing back to 1 over [`BEAT_PULSE_SECONDS`] after it. 1 away from every
+/// marker or with no amount.
+pub fn beat_pulse_at(
+    amount: f32,
+    markers: &[bettercut_timeline::Marker],
+    position: TimelineTime,
+) -> f32 {
+    if !amount.is_finite() || amount <= 0.0 {
+        return 1.0;
+    }
+    let window = (BEAT_PULSE_SECONDS * bettercut_foundation::TICKS_PER_SECOND as f64) as i64;
+    let since = markers
+        .iter()
+        .map(|m| position.ticks() - m.time.ticks())
+        .filter(|since| (0..window).contains(since))
+        .min();
+    let Some(since) = since else {
+        return 1.0;
+    };
+    let left = 1.0 - since as f32 / window as f32;
+    1.0 + (amount / 100.0).min(1.0) * MAX_BEAT_PULSE * left * left
+}
+
+/// The warm colour a light leak glows in.
+pub const LIGHT_LEAK_RGB: [u8; 3] = [255, 146, 58];
+
+/// A light leak over `clip`: a warm solid, cut to a very soft oval where the
+/// glow is, screened over the shot so it only ever brightens.
+fn push_light_leak(
+    requests: &mut Vec<LayerRequest>,
+    track: TrackId,
+    clip: &VideoClip,
+    position: TimelineTime,
+) {
+    let seconds = (position.ticks() - clip.timeline.start.ticks()) as f64
+        / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let Some((centre, size, opacity)) = light_leak_at(clip.light_leak, seconds) else {
+        return;
+    };
+    requests.push(LayerRequest {
+        clip: clip.id,
+        track,
+        source: LayerSource::Solid {
+            rgb: LIGHT_LEAK_RGB,
+        },
+        source_time: MediaTime::ZERO,
+        look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
+            sharpen: 0.0,
+            lut: None,
+            rgb_split: 0.0,
+            glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
+            reflection: bettercut_timeline::Reflection::None,
+            crop: bettercut_timeline::Crop::NONE,
+            transform: Transform::default(),
+            opacity,
+            color: bettercut_timeline::ColorAdjust::IDENTITY,
+            blur: 0.0,
+            chroma_key: None,
+            mask: Some(bettercut_timeline::Mask {
+                shape: bettercut_timeline::MaskShape::Ellipse,
+                center: centre,
+                size,
+                feather: 1.0,
+                rotation_degrees: 25.0,
+                invert: false,
+            }),
+            blend: bettercut_timeline::BlendMode::Screen,
+        },
+        reveal: None,
+        angle: None,
     });
 }
 
@@ -1052,6 +1886,7 @@ fn push_moving(
     request.look.transform.position.x += movement.offset_x;
     request.look.transform.scale.x *= movement.scale;
     request.look.transform.scale.y *= movement.scale;
+    request.look.transform.rotation_degrees += movement.rotation;
 }
 
 /// Where in the source a clip is reading at `position`, *including* outside its
@@ -1083,6 +1918,10 @@ fn handle_time(clip: &VideoClip, position: TimelineTime) -> MediaTime {
 #[derive(Debug, Clone, Copy)]
 pub struct AudibleClip {
     pub clip: ClipId,
+    /// Which sound lane it came from, counted from the top as the timeline
+    /// draws them. For the per-lane meters: everything else about mixing is
+    /// the clip's own business, but a meter is a *lane's* reading.
+    pub lane: usize,
     pub media: MediaId,
     /// Where in the source the audible span starts.
     pub source_start: MediaTime,
@@ -1095,6 +1934,24 @@ pub struct AudibleClip {
     /// Voice clean-up, 0–100. Carried from block to block by the mixer, so a
     /// clip's clean-up is one continuous process however the audio is cut up.
     pub denoise: f32,
+    /// The clip's equaliser, already held to its ranges. Carried from block to
+    /// block by the mixer, as the clean-up is.
+    pub eq: bettercut_timeline::ClipEq,
+    /// The clip's echo or reverb, already held to its range. Carried from
+    /// block to block by the mixer, as the equaliser is.
+    pub space: bettercut_timeline::ClipSpace,
+    /// Which channels play where, applied as soon as the sound is read.
+    pub channels: bettercut_timeline::ChannelMode,
+    /// The voice changer's shift in semitones; zero is none. Carried from
+    /// block to block by the mixer.
+    pub pitch: f32,
+    /// Hold the pitch where it was through a speed change: the mixer shifts it
+    /// back by as much as the resampling moved it.
+    pub keep_pitch: bool,
+    /// The leveller, 0–100. Carried from block to block by the mixer.
+    pub leveller: f32,
+    /// The de-esser, 0–100. Carried from block to block by the mixer.
+    pub de_ess: f32,
     pub gain: f32,
     /// Offset from the start of the requested block, in timeline ticks.
     pub offset: TimelineTime,
@@ -1106,7 +1963,13 @@ pub struct AudibleClip {
     /// one rather than scaling it.
     pub automation: Option<bettercut_audio::GainRamp>,
     /// §20a.4's track stage, from the track the clip is on.
+    ///
+    /// 1.0 when [`Self::track_automation`] is there, for the same reason
+    /// [`Self::gain`] is: a line replaces the static level rather than scaling
+    /// it.
     pub track_gain: f32,
+    /// The track's volume line across this block, where the lane has one.
+    pub track_automation: Option<bettercut_audio::GainRamp>,
     pub track_pan: f32,
 }
 
@@ -1259,6 +2122,10 @@ impl PlaybackEngine {
                 let Some(asset) = project.media_asset(clip.media_id) else {
                     continue;
                 };
+                // Nothing to decode ahead for a made picture.
+                if asset.generated.is_some() {
+                    continue;
+                }
                 let source = asset.frame_time(if clip.frozen {
                     clip.source().start
                 } else {
@@ -1360,6 +2227,19 @@ impl PlaybackEngine {
                 // §26.1: the same rasterizer the export uses, so the title on
                 // screen is the title in the file.
                 LayerSource::Solid { rgb } => Arc::new(solid_frame(rgb)),
+                LayerSource::BurnIn => {
+                    let Some(clip) = burn_in_clip(
+                        project,
+                        sequence,
+                        bettercut_foundation::TimelineTime::from_ticks(request.source_time.ticks()),
+                    ) else {
+                        continue;
+                    };
+                    match self.text.frame_for(&clip, None) {
+                        Some(frame) => frame,
+                        None => continue,
+                    }
+                }
                 LayerSource::Text(clip) => {
                     let Some(text) = sequence.text_clip(clip) else {
                         continue;
@@ -1380,6 +2260,7 @@ impl PlaybackEngine {
                 track: request.track,
                 frame,
                 look: bettercut_timeline::ClipLook {
+                    corner_pin: Default::default(),
                     transform,
                     ..request.look
                 },
@@ -1390,6 +2271,14 @@ impl PlaybackEngine {
     }
 
     /// The font families available for §26's text overlays.
+    /// Make an imported font available to the preview's titles.
+    pub fn add_font_file(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<Vec<String>, bettercut_text::TextError> {
+        self.text.add_font_file(path)
+    }
+
     pub fn font_families(&self) -> Vec<String> {
         self.text.families()
     }
@@ -1412,6 +2301,11 @@ impl PlaybackEngine {
         asset: &MediaAsset,
         source_time: MediaTime,
     ) -> Result<Arc<VideoFrame>, PlaybackError> {
+        // A colour clip is drawn each time rather than cached, so changing
+        // its colour needs no invalidation; it is a few hundred small rows.
+        if let Some(frame) = asset.generated_frame() {
+            return Ok(Arc::new(frame));
+        }
         // Every instant of a still is the same picture, and keyed as one it
         // is decoded once rather than once per frame.
         let source_time = asset.frame_time(source_time);

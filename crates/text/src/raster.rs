@@ -60,10 +60,26 @@ impl TextRenderer {
     /// is a worse answer than the machine's own fonts. [`Self::with_fonts`] is
     /// the seam that closes this when the assets exist.
     pub fn new() -> Self {
+        let mut fonts = FontSystem::new();
+        // Fonts the user imported, so every renderer — the preview's and every
+        // export's — can draw them.
+        let imported = user_fonts_dir();
+        if imported.is_dir() {
+            fonts.db_mut().load_fonts_dir(&imported);
+        }
         Self {
-            fonts: FontSystem::new(),
+            fonts,
             glyphs: SwashCache::new(),
         }
+    }
+
+    /// Make the font file at `path` available to this renderer, returning the
+    /// families it added.
+    pub fn add_font_file(&mut self, path: &std::path::Path) -> Result<Vec<String>, TextError> {
+        let bytes = std::fs::read(path).map_err(|e| TextError::Font(e.to_string()))?;
+        let families = font_families_in(&bytes)?;
+        self.fonts.db_mut().load_font_data(bytes);
+        Ok(families)
     }
 
     /// Build a renderer over exactly these font files and nothing else.
@@ -136,6 +152,23 @@ impl TextRenderer {
         style: &TextStyle,
         visible: Option<usize>,
     ) -> Result<TextBitmap, TextError> {
+        self.rasterize_marked(text, style, visible, None)
+    }
+
+    /// [`Self::rasterize_revealed`], with the characters in `mark` filled in
+    /// the mark's colour instead of the style's — the word being said, in a
+    /// caption that highlights each word as it comes.
+    ///
+    /// Only the fill changes. The layout, the outline and the shadow are the
+    /// whole text's, so the highlight moving from word to word never nudges a
+    /// letter.
+    pub fn rasterize_marked(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        visible: Option<usize>,
+        mark: Option<Mark>,
+    ) -> Result<TextBitmap, TextError> {
         let style = style.sanitized();
         if text.trim().is_empty() {
             return Err(TextError::Empty);
@@ -184,7 +217,23 @@ impl TextRenderer {
         }
 
         let cutoff = visible.map(|chars| Cutoff::after(text, chars));
-        let glyphs = self.glyph_mask(&mut buffer, width as usize, height as usize, margin, cutoff);
+        let marked_span = mark
+            .as_ref()
+            .filter(|m| m.chars.start < m.chars.end)
+            .map(|m| {
+                (
+                    Cutoff::after(text, m.chars.start),
+                    Cutoff::after(text, m.chars.end),
+                )
+            });
+        let (glyphs, marked, colour_glyphs) = self.glyph_mask(
+            &mut buffer,
+            width as usize,
+            height as usize,
+            margin,
+            cutoff,
+            marked_span,
+        );
         if glyphs.is_empty() {
             // Shaping succeeded but nothing was drawn: every character is
             // missing from every font available. Saying "empty" is honest —
@@ -192,22 +241,33 @@ impl TextRenderer {
             return Err(TextError::Empty);
         }
 
-        Ok(compose(
+        let marked = mark.zip(marked).map(|(m, mask)| (mask, m.color));
+        let flat = compose(
             &glyphs,
+            marked.as_ref(),
+            colour_glyphs.as_deref(),
             &style,
             width,
             height,
             margin,
             text_width,
             text_height,
-        ))
+        );
+        Ok(arc(flat, style.curve))
     }
 
-    /// Draw the shaped glyphs into a coverage mask.
+    /// Draw the shaped glyphs into a coverage mask, and keep the pixels of any
+    /// glyph that brought its own colours.
     ///
     /// White and fully opaque, so the alpha the rasterizer reports *is* the
     /// coverage. Colour is applied afterwards, once, to whichever of the
     /// stroke, shadow and fill wants it.
+    ///
+    /// The exception is an emoji: those are drawn from a colour bitmap or a
+    /// layered outline in the font, and a yellow face filled in the title's
+    /// colour is a shape nobody recognises. Asking for white and watching what
+    /// comes back is how they are told apart — a glyph whose pixels are not
+    /// white painted them itself, and they are kept to be drawn over the fill.
     fn glyph_mask(
         &mut self,
         buffer: &mut Buffer,
@@ -215,8 +275,13 @@ impl TextRenderer {
         height: usize,
         margin: f32,
         cutoff: Option<Cutoff>,
-    ) -> Mask {
+        marked_span: Option<(Cutoff, Cutoff)>,
+    ) -> (Mask, Option<Mask>, Option<Vec<u8>>) {
         let mut mask = Mask::new(width, height);
+        let mut marked = marked_span.map(|_| Mask::new(width, height));
+        // Only made once something colourful is actually drawn: ordinary text
+        // should not pay for a second full-size buffer.
+        let mut colours: Option<Vec<u8>> = None;
         let offset = margin.round() as i32;
         let white = cosmic_text::Color::rgba(255, 255, 255, 255);
 
@@ -230,6 +295,10 @@ impl TextRenderer {
                 }
                 let physical = glyph.physical((0.0, run.line_y), 1.0);
                 let color = glyph.color_opt.unwrap_or(white);
+                // In the mark: reached its start, not yet its end.
+                let in_mark = marked_span.is_some_and(|(from, to)| {
+                    !from.shows(run.line_i, glyph.start) && to.shows(run.line_i, glyph.start)
+                });
                 self.glyphs.with_pixels(
                     &mut self.fonts,
                     physical.cache_key,
@@ -247,13 +316,83 @@ impl TextRenderer {
                             return;
                         }
                         mask.cover(px as usize, py as usize, alpha);
+                        if pixel.r() != 255 || pixel.g() != 255 || pixel.b() != 255 {
+                            let colours =
+                                colours.get_or_insert_with(|| vec![0_u8; width * height * 4]);
+                            let at = (py as usize * width + px as usize) * 4;
+                            colours[at] = pixel.r();
+                            colours[at + 1] = pixel.g();
+                            colours[at + 2] = pixel.b();
+                            colours[at + 3] = alpha;
+                        }
+                        if in_mark && let Some(marked) = marked.as_mut() {
+                            marked.cover(px as usize, py as usize, alpha);
+                        }
                     },
                 );
             }
         }
 
-        mask
+        (mask, marked, colours)
     }
+}
+
+/// Where imported fonts are kept for this user: every renderer loads them.
+pub fn user_fonts_dir() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join(".local").join("share"))
+        })
+        .unwrap_or_else(std::env::temp_dir)
+        .join("bettercut")
+        .join("fonts")
+}
+
+/// The family names of the faces in a font file's bytes, or why it is not a
+/// font this can draw with.
+pub fn font_families_in(bytes: &[u8]) -> Result<Vec<String>, TextError> {
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(bytes.to_vec());
+    let mut names: Vec<String> = db
+        .faces()
+        .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return Err(TextError::Font(
+            "that file is not a font this editor can use (.ttf, .otf or .ttc)".to_owned(),
+        ));
+    }
+    Ok(names)
+}
+
+/// Copy the font at `path` into `folder` so it is loaded from now on, and
+/// return where it went and the families it holds. A file of the same name
+/// already there is replaced.
+pub fn import_font_into(
+    path: &std::path::Path,
+    folder: &std::path::Path,
+) -> Result<(std::path::PathBuf, Vec<String>), TextError> {
+    let bytes = std::fs::read(path).map_err(|e| TextError::Font(e.to_string()))?;
+    let families = font_families_in(&bytes)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| TextError::Font("the font file has no name".to_owned()))?;
+    std::fs::create_dir_all(folder).map_err(|e| TextError::Font(e.to_string()))?;
+    let destination = folder.join(name);
+    std::fs::write(&destination, bytes).map_err(|e| TextError::Font(e.to_string()))?;
+    Ok((destination, families))
+}
+
+/// Characters drawn in their own colour: a range of character indices into the
+/// text, newlines counted, end exclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    pub chars: std::ops::Range<usize>,
+    pub color: Rgba,
 }
 
 /// Where a partial reveal stops, in the terms the layout reports glyphs in:
@@ -331,8 +470,11 @@ fn measure(buffer: &Buffer) -> (f32, f32) {
 /// text but in front of its background box, or a caption's shadow would vanish
 /// the moment the box was turned on; the stroke belongs behind the fill, or a
 /// thick outline would eat into the letterforms it is supposed to surround.
+#[allow(clippy::too_many_arguments)]
 fn compose(
     glyphs: &Mask,
+    marked: Option<&(Mask, Rgba)>,
+    colour_glyphs: Option<&[u8]>,
     style: &TextStyle,
     width: u32,
     height: u32,
@@ -376,13 +518,213 @@ fn compose(
         blend_mask(&mut pixels, &glyphs.dilated(stroke.width), stroke.color);
     }
 
-    blend_mask(&mut pixels, glyphs, style.color);
+    // Where the fill's colour comes from: flat, or shaded down the text from
+    // the style's colour to the gradient's, measured over the letters' own
+    // box so the whole range shows however much margin the decorations need.
+    let fill_at = |y: usize| -> Rgba {
+        match style.gradient {
+            None => style.color,
+            Some(bottom) => {
+                let t = ((y as f32 + 0.5 - margin) / text_height.max(1.0)).clamp(0.0, 1.0);
+                let mix =
+                    |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+                Rgba::new(
+                    mix(style.color.r, bottom.r),
+                    mix(style.color.g, bottom.g),
+                    mix(style.color.b, bottom.b),
+                    mix(style.color.a, bottom.a),
+                )
+            }
+        }
+    };
+
+    match marked {
+        None if style.gradient.is_none() => blend_mask(&mut pixels, glyphs, style.color),
+        None => {
+            for y in 0..glyphs.height {
+                let fill = fill_at(y);
+                for x in 0..glyphs.width {
+                    let coverage = glyphs.at(x, y);
+                    if coverage == 0 {
+                        continue;
+                    }
+                    let source_alpha = (coverage as f32 / 255.0) * (fill.a as f32 / 255.0);
+                    blend_pixel(&mut pixels, (y * glyphs.width + x) * 4, fill, source_alpha);
+                }
+            }
+        }
+        // One fill, each pixel in the colour of the letter it belongs to, so
+        // the lit word is exactly as heavy as it was unlit. Drawing the mark
+        // over the fill instead would blend the soft edges twice.
+        Some((mask, colour)) => {
+            for y in 0..glyphs.height {
+                for x in 0..glyphs.width {
+                    let coverage = glyphs.at(x, y);
+                    if coverage == 0 {
+                        continue;
+                    }
+                    let fill = if mask.at(x, y) > 0 {
+                        *colour
+                    } else {
+                        fill_at(y)
+                    };
+                    let source_alpha = (coverage as f32 / 255.0) * (fill.a as f32 / 255.0);
+                    blend_pixel(&mut pixels, (y * glyphs.width + x) * 4, fill, source_alpha);
+                }
+            }
+        }
+    }
+
+    // Emoji last, in their own colours, over the fill that stood in for them.
+    // The stroke and shadow beneath still followed their shape, which is what
+    // makes an emoji with an outline look like the rest of the line.
+    if let Some(colours) = colour_glyphs {
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let at = (y * width as usize + x) * 4;
+                let alpha = colours[at + 3];
+                if alpha == 0 {
+                    continue;
+                }
+                let colour = Rgba::new(colours[at], colours[at + 1], colours[at + 2], 255);
+                let source_alpha = (f32::from(alpha) / 255.0) * (f32::from(style.color.a) / 255.0);
+                blend_pixel(&mut pixels, at, colour, source_alpha);
+            }
+        }
+    }
 
     TextBitmap {
         width,
         height,
         pixels,
     }
+}
+
+/// The least bend worth drawing: below this the text is left straight.
+const LEAST_CURVE: f32 = 0.01;
+
+/// `bitmap` bent round a circle by `curve` (-1–1): the middle of the text runs
+/// along the arc at its full length, so letters keep their size along the
+/// line, and the top of the text is on the outside of an arch. Positive arches
+/// up, negative sags; ±1 is half a circle.
+///
+/// A warp of the finished picture rather than placing each glyph, so the
+/// outline, shadow and box all bend with the letters exactly as they were
+/// drawn.
+pub fn arc(bitmap: TextBitmap, curve: f32) -> TextBitmap {
+    if !curve.is_finite() || curve.abs() < LEAST_CURVE {
+        return bitmap;
+    }
+    let (w, h) = (bitmap.width as f32, bitmap.height as f32);
+    let sweep = curve.abs().min(1.0) * std::f32::consts::PI;
+    let radius = w / sweep;
+    let up = curve > 0.0;
+
+    // Where a source point lands, with the circle's centre at the origin and
+    // y down: the text's middle row on `radius`, its top further out.
+    let place = |x: f32, y: f32| -> (f32, f32) {
+        let angle = (x - w / 2.0) / radius;
+        let r = if up {
+            radius + (h / 2.0 - y)
+        } else {
+            radius + (y - h / 2.0)
+        };
+        let across = r * angle.sin();
+        let down = r * angle.cos();
+        (across, if up { -down } else { down })
+    };
+
+    // The bent picture's bounds, from points round the source's edge.
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let steps = 64;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        for (x, y) in [(t * w, 0.0), (t * w, h), (0.0, t * h), (w, t * h)] {
+            let (px, py) = place(x, y);
+            min_x = min_x.min(px);
+            max_x = max_x.max(px);
+            min_y = min_y.min(py);
+            max_y = max_y.max(py);
+        }
+    }
+    let out_w = ((max_x - min_x).ceil() as u32 + 2).min(MAX_DIMENSION);
+    let out_h = ((max_y - min_y).ceil() as u32 + 2).min(MAX_DIMENSION);
+    let mut pixels = vec![0u8; out_w as usize * out_h as usize * 4];
+
+    // Every output pixel, back to where it came from, read with a bilinear
+    // blend so the bent edges stay smooth.
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let px = ox as f32 + 0.5 + min_x - 1.0;
+            let py = oy as f32 + 0.5 + min_y - 1.0;
+            let away = if up { -py } else { py };
+            let r = (px * px + away * away).sqrt();
+            let angle = px.atan2(away);
+            if angle.abs() > sweep / 2.0 + 0.5 / radius {
+                continue;
+            }
+            let sx = angle * radius + w / 2.0 - 0.5;
+            let sy = if up {
+                h / 2.0 - (r - radius)
+            } else {
+                h / 2.0 + (r - radius)
+            } - 0.5;
+            if sx < -1.0 || sy < -1.0 || sx > w || sy > h {
+                continue;
+            }
+            let sample = bilinear(&bitmap, sx, sy);
+            let at = (oy as usize * out_w as usize + ox as usize) * 4;
+            pixels[at..at + 4].copy_from_slice(&sample);
+        }
+    }
+    TextBitmap {
+        width: out_w,
+        height: out_h,
+        pixels,
+    }
+}
+
+/// The bitmap at a fractional pixel, premultiplied for the blend so a soft
+/// edge does not pick up the colour of the transparent pixels beside it.
+fn bilinear(bitmap: &TextBitmap, x: f32, y: f32) -> [u8; 4] {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let read = |ix: f32, iy: f32| -> [f32; 4] {
+        if ix < 0.0 || iy < 0.0 || ix >= bitmap.width as f32 || iy >= bitmap.height as f32 {
+            return [0.0; 4];
+        }
+        let at = (iy as usize * bitmap.width as usize + ix as usize) * 4;
+        let p = &bitmap.pixels[at..at + 4];
+        let a = f32::from(p[3]) / 255.0;
+        [
+            f32::from(p[0]) * a,
+            f32::from(p[1]) * a,
+            f32::from(p[2]) * a,
+            a,
+        ]
+    };
+    let (a, b, c, d) = (
+        read(x0, y0),
+        read(x0 + 1.0, y0),
+        read(x0, y0 + 1.0),
+        read(x0 + 1.0, y0 + 1.0),
+    );
+    let mut out = [0.0_f32; 4];
+    for i in 0..4 {
+        let top = a[i] + (b[i] - a[i]) * fx;
+        let bottom = c[i] + (d[i] - c[i]) * fx;
+        out[i] = top + (bottom - top) * fy;
+    }
+    let alpha = out[3];
+    if alpha <= 0.0 {
+        return [0; 4];
+    }
+    [
+        (out[0] / alpha).round().clamp(0.0, 255.0) as u8,
+        (out[1] / alpha).round().clamp(0.0, 255.0) as u8,
+        (out[2] / alpha).round().clamp(0.0, 255.0) as u8,
+        (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
 }
 
 /// Source-over, straight alpha.

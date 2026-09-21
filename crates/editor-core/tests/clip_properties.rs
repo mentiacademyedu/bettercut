@@ -517,6 +517,7 @@ fn a_look_applies_to_a_clip_as_one_undo_step() {
         saturation: 0.7,
         temperature: 0.4,
         tint: -0.15,
+        vibrance: 0.0,
     };
 
     editor.set_color_adjust(Some(clip), look).unwrap();
@@ -543,6 +544,7 @@ fn a_look_applies_to_the_whole_video_when_no_clip_is_given() {
         saturation: 0.0,
         temperature: -0.3,
         tint: 0.2,
+        vibrance: 0.0,
     };
 
     editor.set_color_adjust(None, look).unwrap();
@@ -781,13 +783,14 @@ fn a_sound_cannot_be_mirrored() {
     );
 }
 
-/// The whole video's vignette: set, undone, and refused by a clip.
+/// The whole video's vignette: set and undone — and a clip's own, which is
+/// separate from it and leaves the master's alone.
 ///
 /// The `is_default` check is the one that matters most and would pass unnoticed
 /// if wrong: a vignette has no animated parameter behind it, so without its own
 /// case every vignette reads as untouched and its reset stays greyed out.
 #[test]
-fn the_whole_video_takes_a_vignette_and_a_clip_does_not() {
+fn the_whole_video_and_a_clip_each_take_their_own_vignette() {
     assert!(ClipProperty::Vignette(0.0).is_default());
     assert!(
         !ClipProperty::Vignette(0.4).is_default(),
@@ -803,11 +806,18 @@ fn the_whole_video_takes_a_vignette_and_a_clip_does_not() {
     editor.undo().unwrap();
     assert_eq!(editor.active_sequence().unwrap().master.vignette, 0.0);
 
-    assert!(
-        editor
-            .set_clip_property(video, ClipProperty::Vignette(0.5), false)
-            .is_err(),
-        "a clip accepted a vignette, which frames the frame and not a clip"
+    editor
+        .set_clip_property(video, ClipProperty::Vignette(2.0), false)
+        .unwrap();
+    assert_eq!(
+        editor.video_clip(video).unwrap().vignette,
+        bettercut_editor_core::timeline::MAX_VIGNETTE,
+        "a clip's vignette was not held to its range"
+    );
+    assert_eq!(
+        editor.active_sequence().unwrap().master.vignette,
+        0.0,
+        "a clip's vignette reached the whole video"
     );
 }
 
@@ -881,6 +891,36 @@ fn the_whole_video_takes_grain_and_a_clip_does_not() {
             .set_clip_property(video, ClipProperty::Grain(0.5), false)
             .is_err(),
         "a clip accepted grain, which is the film the whole frame is on"
+    );
+}
+
+/// Cinematic bars: the whole video's, set, undone, clamped, refused by a clip.
+#[test]
+fn the_whole_video_takes_cinematic_bars_and_a_clip_does_not() {
+    assert!(ClipProperty::Bars(0.0).is_default());
+    assert!(!ClipProperty::Bars(2.39).is_default());
+
+    let (mut editor, video, _) = editor_with_clips();
+    editor
+        .set_sequence_value(ClipProperty::Bars(2.39), false)
+        .unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.bars, 2.39);
+    assert!(!editor.active_sequence().unwrap().master.is_identity());
+    editor.undo().unwrap();
+    assert_eq!(editor.active_sequence().unwrap().master.bars, 0.0);
+
+    for runaway in [400.0, f32::NAN, -2.0] {
+        editor
+            .set_sequence_value(ClipProperty::Bars(runaway), false)
+            .unwrap();
+        let bars = editor.active_sequence().unwrap().master.bars;
+        assert!((0.0..=4.0).contains(&bars), "{runaway} became {bars}");
+    }
+
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Bars(2.0), false)
+            .is_err()
     );
 }
 
@@ -966,4 +1006,186 @@ fn a_reflection_applies_undoes_and_is_picture_only() {
         serde_json::from_value(json).expect("an old project loads");
     let old = project.sequences[0].video_tracks[0].clips()[0].reflection;
     assert_eq!(old, Reflection::None);
+}
+
+/// A sound clip's EQ is set, held to its ranges, undone, and refused on a
+/// picture.
+#[test]
+fn an_eq_applies_to_sound_only() {
+    use bettercut_editor_core::timeline::{ClipEq, EQ_LOW_CUT_MAX};
+
+    let (mut editor, video, audio) = editor_with_clips();
+    let eq = ClipEq {
+        low_cut: 1_000.0,
+        high_cut: 0.0,
+        presence: 3.0,
+        hum: 60.0,
+    };
+    editor
+        .set_clip_property(audio, ClipProperty::Eq(eq), false)
+        .unwrap();
+    let stored = editor.audio_clip(audio).unwrap().eq;
+    assert_eq!(
+        stored.low_cut, EQ_LOW_CUT_MAX,
+        "the low cut was not held to its range"
+    );
+    assert_eq!(stored.presence, 3.0);
+
+    editor.undo().unwrap();
+    assert!(editor.audio_clip(audio).unwrap().eq.is_flat());
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Eq(eq), false)
+            .is_err()
+    );
+}
+
+/// A sound clip's echo or reverb is set, held to its range, undone, refused
+/// on a picture, and a dry kind stores as dry whatever the amount.
+#[test]
+fn echo_and_reverb_apply_to_sound_only() {
+    use bettercut_editor_core::timeline::{ClipSpace, SpaceKind};
+
+    let (mut editor, video, audio) = editor_with_clips();
+    let hall = ClipSpace {
+        kind: SpaceKind::Hall,
+        mix: 3.0,
+    };
+    editor
+        .set_clip_property(audio, ClipProperty::Space(hall), false)
+        .unwrap();
+    assert_eq!(
+        editor.audio_clip(audio).unwrap().space,
+        ClipSpace {
+            kind: SpaceKind::Hall,
+            mix: 1.0
+        },
+        "the amount was not held to its range"
+    );
+    editor.undo().unwrap();
+    assert!(editor.audio_clip(audio).unwrap().space.is_dry());
+
+    editor
+        .set_clip_property(
+            audio,
+            ClipProperty::Space(ClipSpace {
+                kind: SpaceKind::Dry,
+                mix: 0.8,
+            }),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        editor.audio_clip(audio).unwrap().space,
+        ClipSpace::default()
+    );
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Space(hall), false)
+            .is_err()
+    );
+}
+
+/// Dragging a picture's fade handle sets its entrance or exit length: a fade
+/// where there was none, the same kind where there was one, and nothing once
+/// dragged under half the shortest motion.
+#[test]
+fn a_picture_fade_handle_sets_its_entrance_and_exit() {
+    use bettercut_editor_core::foundation::TimelineTime;
+    use bettercut_editor_core::timeline::{ClipMotion, MIN_MOTION, Motion, MotionKind};
+
+    let (mut editor, video, _) = editor_with_clips();
+    editor
+        .set_clip_ramps(
+            video,
+            TimelineTime::from_millis(500),
+            TimelineTime::ZERO,
+            false,
+        )
+        .unwrap();
+    let motion = editor.video_clip(video).unwrap().motion;
+    assert_eq!(motion.intro.map(|m| m.kind), Some(MotionKind::Fade));
+    assert_eq!(
+        motion.intro.unwrap().duration,
+        TimelineTime::from_millis(500)
+    );
+    assert_eq!(motion.outro, None);
+
+    // A slide keeps being a slide when its length is dragged.
+    editor
+        .set_clip_property(
+            video,
+            ClipProperty::Motion(ClipMotion {
+                intro: None,
+                outro: Some(Motion::new(
+                    MotionKind::SlideLeft,
+                    TimelineTime::from_seconds(1),
+                )),
+            }),
+            false,
+        )
+        .unwrap();
+    editor
+        .set_clip_ramps(
+            video,
+            TimelineTime::ZERO,
+            TimelineTime::from_millis(1_500),
+            false,
+        )
+        .unwrap();
+    let outro = editor.video_clip(video).unwrap().motion.outro.unwrap();
+    assert_eq!(outro.kind, MotionKind::SlideLeft);
+    assert_eq!(outro.duration, TimelineTime::from_millis(1_500));
+
+    // Dragged nearly to nothing: gone.
+    editor
+        .set_clip_ramps(
+            video,
+            TimelineTime::ZERO,
+            TimelineTime::from_ticks(MIN_MOTION.ticks() / 3),
+            false,
+        )
+        .unwrap();
+    assert_eq!(editor.video_clip(video).unwrap().motion.outro, None);
+
+    // A drag is one undo step.
+    let depth = editor.undo_depth();
+    for ms in [200, 300, 400] {
+        editor
+            .set_clip_ramps(
+                video,
+                TimelineTime::from_millis(ms),
+                TimelineTime::ZERO,
+                true,
+            )
+            .unwrap();
+    }
+    assert!(editor.undo_depth() <= depth + 1);
+}
+
+/// A sound clip's fade shape: set, undone, refused by a picture.
+#[test]
+fn a_sound_takes_a_fade_shape_and_a_picture_does_not() {
+    use bettercut_editor_core::timeline::FadeShape;
+    assert!(ClipProperty::FadeShape(FadeShape::Smooth).is_default());
+    assert!(!ClipProperty::FadeShape(FadeShape::Fast).is_default());
+
+    let (mut editor, video, sound) = editor_with_clips();
+    editor
+        .set_clip_property(sound, ClipProperty::FadeShape(FadeShape::Slow), false)
+        .unwrap();
+    assert_eq!(
+        editor.audio_clip(sound).unwrap().fade_shape,
+        FadeShape::Slow
+    );
+    editor.undo().unwrap();
+    assert_eq!(
+        editor.audio_clip(sound).unwrap().fade_shape,
+        FadeShape::Smooth
+    );
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::FadeShape(FadeShape::Fast), false)
+            .is_err()
+    );
 }

@@ -138,6 +138,62 @@ impl StillJob {
     }
 }
 
+/// A rendered frame waiting to be collected: its size and its RGBA rows.
+pub type RenderedFrame = std::sync::Arc<std::sync::Mutex<Option<(Resolution, Vec<u8>)>>>;
+
+/// Rendering a frame to hand back rather than to save — for the clipboard.
+/// The same render as [`StillJob`]; the pixels land in `slot`, for whoever
+/// submitted the job to collect when it finishes.
+pub struct FrameGrabJob {
+    project: Project,
+    sequence: SequenceId,
+    position: TimelineTime,
+    slot: RenderedFrame,
+}
+
+impl FrameGrabJob {
+    pub fn new(project: Project, sequence: SequenceId, position: TimelineTime) -> Self {
+        Self {
+            project,
+            sequence,
+            position,
+            slot: RenderedFrame::default(),
+        }
+    }
+
+    /// Where the frame will be once the job has finished.
+    pub fn slot(&self) -> RenderedFrame {
+        std::sync::Arc::clone(&self.slot)
+    }
+}
+
+impl Task for FrameGrabJob {
+    fn label(&self) -> String {
+        format!("Copying the frame at {}", self.position.format_timecode())
+    }
+
+    fn priority(&self) -> Priority {
+        Priority::Export
+    }
+
+    fn run(&mut self, ctx: &JobContext) -> Result<(), String> {
+        let Some(sequence) = self.project.sequence(self.sequence) else {
+            return Err("that sequence is no longer in the project".to_owned());
+        };
+        let cancel = JobCancel(ctx);
+        match render_still(&self.project, sequence, self.position, &cancel) {
+            Ok(frame) => {
+                if let Ok(mut slot) = self.slot.lock() {
+                    *slot = Some(frame);
+                }
+                Ok(())
+            }
+            Err(ExportError::Cancelled) => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+}
+
 /// The scheduler's cancellation, as the media crate asks for it.
 struct JobCancel<'a>(&'a JobContext);
 

@@ -111,6 +111,29 @@ impl Editor {
         clip: ClipId,
         ramp: SpeedRamp,
     ) -> Result<Vec<ClipId>, EditorError> {
+        self.apply_speed_factors(
+            clip,
+            ramp.factors(),
+            &format!("{} Speed Ramp", ramp.label()),
+        )
+    }
+
+    /// [`Self::apply_speed_ramp`] with factors of the caller's own — what a
+    /// curve drawn by hand comes down to ([`SpeedCurve`]).
+    ///
+    /// One piece per factor, each holding the same amount of material, each
+    /// playing at the clip's own speed times its factor.
+    pub fn apply_speed_factors(
+        &mut self,
+        clip: ClipId,
+        factors: &[Rational],
+        label: &str,
+    ) -> Result<Vec<ClipId>, EditorError> {
+        if factors.len() < 2 {
+            return Err(EditorError::TooShortToRamp {
+                pieces: factors.len(),
+            });
+        }
         let sequence_id = self.active_sequence_id()?;
         if !self.can_retime(clip) {
             return Err(EditorError::NoMotionToRetime);
@@ -128,7 +151,6 @@ impl Editor {
             .or_else(|| self.audio_clip(clip).map(|audio| audio.speed))
             .ok_or(EditorError::ClipNotFound(clip))?;
 
-        let factors = ramp.factors();
         let pieces = factors.len();
         let (start, end) = (span.timeline.start, span.timeline.end);
 
@@ -149,7 +171,8 @@ impl Editor {
         }
         let track = span.track;
 
-        self.staged(format!("{} Speed Ramp", ramp.label()), |editor, stage| {
+        let factors = factors.to_vec();
+        self.staged(label.to_owned(), |editor, stage| {
             for at in cuts {
                 // Whatever covers `at` now: after the first cut, the right half.
                 let Some((_, target, _)) = editor
@@ -184,7 +207,7 @@ impl Editor {
 
             // Left to right: each re-time pushes the pieces after it, and they
             // are found by id, so the push never loses one.
-            for (piece, factor) in ids.iter().zip(factors) {
+            for (piece, factor) in ids.iter().zip(&factors) {
                 let target = times(speed, *factor).unwrap_or(speed);
                 for linked in editor.linked_with(*piece) {
                     let Some(on) = editor.track_of(linked) else {

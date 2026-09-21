@@ -78,6 +78,11 @@ struct App {
     /// Title is recomputed only when it changes; setting it every frame would
     /// churn the window manager.
     last_title: String,
+    /// The microphone, while a voiceover is being recorded.
+    voiceover: bettercut_ui::voiceover::VoiceoverRecorder,
+    /// Where the playhead was when the last scrub burst was played, so one
+    /// burst is played per move rather than per frame.
+    last_scrub: Option<bettercut_editor_core::foundation::TimelineTime>,
 }
 
 impl App {
@@ -87,6 +92,17 @@ impl App {
         // tests included, keeps an in-memory one.
         ui.recent = bettercut_ui::recent::RecentProjects::stored_in(
             bettercut_ui::recent::RecentProjects::default_file(),
+        );
+        ui.keymap =
+            bettercut_ui::keymap::Keymap::stored_in(bettercut_ui::keymap::Keymap::default_file());
+        ui.title_styles = bettercut_ui::title_styles::UserTitleStyles::stored_in(
+            bettercut_ui::title_styles::UserTitleStyles::default_file(),
+        );
+        ui.export_presets = bettercut_ui::export_presets::UserExports::stored_in(
+            bettercut_ui::export_presets::UserExports::default_file(),
+        );
+        ui.user_looks = bettercut_ui::looks::UserLooks::stored_in(
+            bettercut_ui::looks::UserLooks::default_file(),
         );
 
         // A project that fails to open must not stop the app from starting:
@@ -208,6 +224,8 @@ impl App {
             proxies,
             applied_mode: mode,
             last_title,
+            voiceover: Default::default(),
+            last_scrub: None,
         }
     }
 }
@@ -227,6 +245,22 @@ impl eframe::App for App {
             preview.invalidate_render();
         }
 
+        if let Some(preview) = self.preview.as_mut() {
+            preview.set_compare_original(self.ui.compare_original);
+            preview.set_compare_split(self.ui.compare_split);
+
+            // §10's scrub: the playhead moved while stopped — dragged along
+            // the ruler, nudged a frame, jumped to a marker — so a short burst
+            // of the mix from there is played. Noticed here rather than at
+            // every place that moves it, because every one of them should be
+            // audible.
+            let at = self.editor.playhead();
+            if self.ui.audio_scrub && Some(at) != self.last_scrub && !preview.is_playing() {
+                preview.scrub_audio(at);
+            }
+            self.last_scrub = Some(at);
+        }
+
         // Playback work happens before drawing, so the frame painted this pass
         // is the one the clock is asking for rather than the previous one.
         let playing = match self.preview.as_mut() {
@@ -234,8 +268,54 @@ impl eframe::App for App {
             None => false,
         };
 
+        // A font picked with Import Font: copied into the fonts folder, then
+        // loaded into the preview so the title can use it at once. Every export
+        // loads the folder when it starts.
+        if let Some(path) = self.ui.font_import.take() {
+            let folder = bettercut_editor_core::text::user_fonts_dir();
+            match bettercut_editor_core::text::import_font_into(&path, &folder) {
+                Ok((copied, families)) => {
+                    if let Some(preview) = self.preview.as_mut() {
+                        if let Err(err) = preview.add_font_file(&copied) {
+                            self.ui.error(err);
+                        }
+                        self.ui.font_families = preview.font_families();
+                    }
+                    self.ui.info(format!("Font added: {}", families.join(", ")));
+                    self.ui.font_imported = families.into_iter().next();
+                    self.ui.needs_repaint = true;
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // A voiceover started or stopped from the transport.
+        self.voiceover
+            .sync(&mut self.editor, &mut self.ui, self.preview.as_mut());
+
         // §52: mirror the playback counters so the System panel can show them.
         self.ui.playback = self.preview.as_ref().map(bettercut_ui::Preview::stats);
+
+        // §20a: and what each sound lane is putting into the mix, for the
+        // meters in the track heads. Taken every frame, because a meter that
+        // is only read while something else happens is a meter that sticks.
+        let live = self
+            .preview
+            .as_ref()
+            .map(bettercut_ui::Preview::lane_levels)
+            .unwrap_or_default();
+        let since = ui.ctx().input(|i| i.stable_dt);
+        self.ui.settle_lane_levels(&live, since);
+        // A meter on its way down needs frames to come down in. Playback asks
+        // for those anyway; this is for the moment after it stops.
+        if self
+            .ui
+            .lane_levels
+            .iter()
+            .any(|(left, right)| *left > 0.0 || *right > 0.0)
+        {
+            ui.ctx().request_repaint();
+        }
 
         // §13: pick up proxies that finished encoding, and queue any new
         // imports. Both are cheap when nothing has changed.
@@ -255,6 +335,58 @@ impl eframe::App for App {
         for message in update.messages {
             self.ui.info(message);
         }
+        for (track, at, path) in update.bounced {
+            match self.editor.place_bounce(track, &path, at) {
+                Ok(_) => self.ui.info("Track bounced to one clip"),
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+        for (range, path, fingerprint) in update.rendered {
+            match self.editor.import_baked(&path) {
+                Ok(media) => match self.editor.record_render(range, media, fingerprint) {
+                    Ok(()) => {
+                        // Re-baking a stretch writes over the file the same id
+                        // already names, so any decoder holding it open has to
+                        // let go — the same reopen a finished proxy asks for.
+                        if let Some(preview) = self.preview.as_mut() {
+                            preview.proxy_ready(media);
+                        }
+                        self.ui.info("Rendered");
+                    }
+                    Err(err) => self.ui.error(err.to_string()),
+                },
+                Err(err) => self
+                    .ui
+                    .error(format!("Could not read the render back: {err}")),
+            }
+        }
+        if let Some((clip, grade)) = update.colour_match {
+            match self.editor.set_clip_grade(clip, grade, "Match Colour") {
+                Ok(()) => self.ui.info("Colour matched"),
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+        for (incoming, width, height, rgba) in update.trim_frames {
+            self.ui
+                .trim
+                .arrived(ui.ctx(), incoming, width, height, &rgba);
+            ui.ctx().request_repaint();
+        }
+        if let Some((at, width, height, rgba)) = update.scope_frame {
+            self.ui.scopes.arrived(at, width, height, &rgba);
+            ui.ctx().request_repaint();
+        }
+        if update.scope_failed {
+            self.ui.scopes.pending = false;
+        }
+        if let Some((width, height, rgba)) = update.copied_frame {
+            ui.ctx()
+                .copy_image(egui::ColorImage::from_rgba_unmultiplied(
+                    [width as usize, height as usize],
+                    &rgba,
+                ));
+            self.ui.info(format!("Frame copied ({width}×{height})"));
+        }
         for failure in update.failures {
             self.ui.error(failure);
         }
@@ -272,6 +404,19 @@ impl eframe::App for App {
 
         let export = self.proxies.export_progress();
         self.ui.export_progress = export.map(|(_, fraction)| fraction);
+        // The queue window's requests, then what it should show next.
+        if let Some(index) = self.ui.export_queue.remove.take() {
+            self.proxies.remove_waiting_export(index);
+        }
+        if std::mem::take(&mut self.ui.export_queue.clear) {
+            let removed = self.proxies.clear_waiting_exports();
+            if removed > 0 {
+                self.ui
+                    .info(format!("Took {removed} export(s) off the queue"));
+            }
+        }
+        self.ui.export_queue.running = self.proxies.running_export_label();
+        self.ui.export_queue.waiting = self.proxies.waiting_export_labels();
         if self.ui.export_stop_requested {
             self.ui.export_stop_requested = false;
             if let Some((id, _)) = export {
@@ -304,16 +449,30 @@ impl eframe::App for App {
         for (index, request) in requested.into_iter().enumerate() {
             // An extra shape exports a reshaped copy, so the edit on screen
             // never changes shape under the user.
-            match self.editor.export_copy(request.shape) {
+            match self.editor.export_copy_of(request.sequence, request.shape) {
                 Ok((project, sequence)) => {
+                    let cover_path = (!request.settings.sound_only).then(|| {
+                        bettercut_editor_core::cover::cover_path_for(&request.settings.path)
+                    });
                     let job =
                         bettercut_export::ExportJob::new(&project, sequence, request.settings);
                     if index == 0 {
                         let label = job.label_for_status();
                         self.ui.info(match files {
                             1 => label,
-                            n => format!("{label}, then {} more shape(s)", n - 1),
+                            n => format!("{label}, then {} more file(s)", n - 1),
                         });
+                    }
+                    // The cover, beside the file, when one was chosen — a
+                    // picture of the same copy the export reads.
+                    let cover = project.sequence(sequence).and_then(|s| s.cover_frame);
+                    if let (Some(at), Some(path)) = (cover, cover_path) {
+                        self.proxies.submit_still(bettercut_export::StillJob::new(
+                            project.clone(),
+                            sequence,
+                            at,
+                            path,
+                        ));
                     }
                     self.proxies.submit_export(job);
                     self.ui.needs_repaint = true;
@@ -331,6 +490,118 @@ impl eframe::App for App {
                     self.ui
                         .info(format!("Saving the frame at {}", at.format_timecode()));
                     self.proxies.submit_still(job);
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // Render in place: the marked stretch baked to a file on the
+        // scheduler, like any other export (§74), and remembered when it
+        // lands (below, with the other finished jobs).
+        if let Some(range) = self.ui.render_request.take() {
+            match bettercut_ui::render::render_job(&self.editor, range) {
+                Ok((job, path, fingerprint)) => {
+                    self.ui.info("Rendering the marked stretch");
+                    self.proxies.submit_render(job, range, path, fingerprint);
+                }
+                Err(err) => self.ui.error(err),
+            }
+        }
+
+        // Bouncing a sound lane to one clip: mixed on the scheduler, put down
+        // when it lands (below, with the other finished jobs).
+        if let Some(track) = self.ui.bounce_request.take() {
+            match bettercut_ui::bounce::bounce_job(&self.editor, track) {
+                Ok(job) => self.proxies.submit_bounce(job),
+                Err(err) => self.ui.error(err),
+            }
+        }
+
+        // A contact sheet: a frame per tile, so it goes on the scheduler
+        // like every other render (§74).
+        if let Some(path) = self.ui.contact_sheet_request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    let range = project.sequence(sequence).and_then(|active| {
+                        active.marked_range().or_else(|| {
+                            bettercut_editor_core::timeline::TimelineRange::new(
+                                bettercut_editor_core::foundation::TimelineTime::ZERO,
+                                active.duration(),
+                            )
+                            .ok()
+                        })
+                    });
+                    match range {
+                        Some(range) => {
+                            let settings = bettercut_export::SheetSettings::of(path, range);
+                            self.ui.info("Making the contact sheet\u{2026}");
+                            self.proxies.submit_still_sheet(
+                                bettercut_export::ContactSheetJob::new(project, sequence, settings),
+                            );
+                        }
+                        None => self.ui.error("There is nothing in this sequence yet"),
+                    }
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // A frame for the clipboard: rendered like a saved one, then copied
+        // when it arrives (below, with the other finished jobs).
+        if let Some(at) = self.ui.copy_frame_request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    self.ui
+                        .info(format!("Copying the frame at {}", at.format_timecode()));
+                    self.proxies
+                        .submit_frame_grab(bettercut_export::FrameGrabJob::new(
+                            project, sequence, at,
+                        ));
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // Both sides of the cut, for the trim window: two renders, asked for
+        // once per cut.
+        if let Some((outgoing, incoming)) = self.ui.trim.request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    for (is_incoming, at) in [(false, outgoing), (true, incoming)] {
+                        self.proxies.submit_trim_grab(
+                            is_incoming,
+                            bettercut_export::FrameGrabJob::new(project.clone(), sequence, at),
+                        );
+                    }
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
+
+        // The scopes' frame, when the Scopes window has settled on one.
+        if let Some(at) = self.ui.scopes.request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    self.proxies.submit_scope_grab(
+                        at,
+                        bettercut_export::FrameGrabJob::new(project, sequence, at),
+                    );
+                }
+                Err(_) => self.ui.scopes.pending = false,
+            }
+        }
+
+        // A colour match: worked out in the background, applied when it
+        // arrives (below), as one undo step.
+        if let Some((clip, at)) = self.ui.colour_match_request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    self.ui
+                        .info("Matching colour to the frame under the playhead");
+                    self.proxies
+                        .submit_colour_match(bettercut_export::ColourMatchJob::new(
+                            project, sequence, clip, at,
+                        ));
                 }
                 Err(err) => self.ui.error(err.to_string()),
             }

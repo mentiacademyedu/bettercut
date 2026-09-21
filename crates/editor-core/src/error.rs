@@ -79,6 +79,56 @@ pub enum EditorError {
     #[error("move the playhead over the clip to add a keyframe")]
     PlayheadOffClip,
 
+    /// A key was dragged or deleted that is no longer where it was — the clip
+    /// changed underneath the graph.
+    #[error("there is no keyframe there any more")]
+    NoKeyframeThere,
+
+    /// A compound needs clips to fold in; titles stay where they are, so a
+    /// selection of nothing but titles asks for a compound of nothing.
+    #[error("select the picture or sound clips to fold into a compound clip")]
+    NothingToCompound,
+
+    /// Lining two recordings up would put one of them before the start of the
+    /// timeline. Moving the other one is what fixes it.
+    #[error("these line up before the start of the timeline — move the other clip later first")]
+    NoRoomToSync,
+
+    /// A track that found nothing to write: the two clips do not overlap where
+    /// the playhead is, or the thing followed left the frame at once.
+    #[error("nothing to follow here — put the playhead where both clips are playing")]
+    NothingTracked,
+
+    /// A loudness match asked for on a mix with nothing audible in it.
+    #[error("there is nothing to hear in this edit yet")]
+    NothingToHear,
+
+    /// A sticker with no character in it.
+    #[error("pick a sticker to add")]
+    NoSticker,
+
+    /// Steadying this shot would mean cropping more of it away than the shake
+    /// costs. Refused rather than done quietly.
+    #[error("this shot moves too much to steady without cropping most of it away")]
+    TooShakyToSteady,
+
+    /// A multicam needs cameras: two clips at least, and a lane each to put
+    /// them on.
+    #[error("a multicam clip needs at least two picture clips, and a lane for each")]
+    NotEnoughAngles,
+
+    /// An angle asked of a clip that is not a multicam.
+    #[error("that clip is not a multicam clip")]
+    NotMulticam,
+
+    #[error("this multicam has {count} angle(s), so there is no angle {angle}")]
+    NoSuchAngle { angle: usize, count: usize },
+
+    /// A slip plays a different stretch of a file; a photo, a colour or a
+    /// held frame is one picture, so there is no other stretch to play.
+    #[error("only video and sound clips can be slipped — this one has no footage either side")]
+    NothingToSlip,
+
     /// §25: a crossfade reads material either side of the cut, and a clip
     /// trimmed to the edge of its file has none to read.
     #[error("not enough spare footage either side of the cut for a transition")]
@@ -99,9 +149,21 @@ pub enum EditorError {
     )]
     ReplacementTooShort { needed: f64, available: f64 },
 
+    /// Removing the only sequence a project has.
+    #[error("a project needs at least one sequence")]
+    LastSequence,
+
+    /// A sequence put in with the id of one already there.
+    #[error("sequence {0:?} is already in the project")]
+    SequenceAlreadyExists(bettercut_foundation::SequenceId),
+
     /// A track renamed to nothing.
     #[error("a track needs a name")]
     EmptyTrackName,
+
+    /// A sequence renamed to nothing at all.
+    #[error("give the sequence a name")]
+    EmptySequenceName,
 
     /// A track put in with the id of one already there.
     #[error("track {0:?} is already in the sequence")]
@@ -119,6 +181,47 @@ pub enum EditorError {
     #[error("the clips' linked sound has no room to trade places, so nothing moved")]
     NoRoomToSwap,
 
+    /// Saving as a template, refused with the reason.
+    #[error("could not save as a template: {0}")]
+    TemplateNotSaved(String),
+
+    /// A lower third with no name to show.
+    #[error("type a name for the lower third")]
+    LowerThirdNeedsName,
+
+    /// Photos to the beat with fewer than two usable markers.
+    #[error("mark the music's beats first — right-click a sound clip and choose Mark Beats")]
+    NotEnoughBeats,
+
+    /// Photos to the beat with no photos to place.
+    #[error("select some photos to cut to the beat")]
+    NothingToCutToBeats,
+
+    /// A shape crop on a file whose picture size was never learned.
+    #[error("this clip's picture size is not known, so it cannot be cropped to a shape")]
+    UnknownPictureSize,
+
+    /// A voiceover with no sound in it.
+    #[error("nothing was recorded")]
+    NothingRecorded,
+
+    /// A loop of fewer than two plays, or more than the editor makes.
+    #[error("a loop plays a clip between 2 and 20 times")]
+    LoopCountOutOfRange,
+
+    /// A shuffle asked of fewer than two clips side by side on one lane.
+    #[error("select two or more clips next to each other on one lane to shuffle")]
+    NothingToShuffle,
+
+    /// A shuffle that would move linked sound onto another clip.
+    #[error("the clips' linked sound has no room to be reordered, so nothing moved")]
+    NoRoomToShuffle,
+
+    /// Fit to fill asked for a speed past the speed control's limits, or an
+    /// end that is not after the clip's start.
+    #[error("the clip would have to play slower than 0.1× or faster than 10× to fit there")]
+    FillOutOfRange,
+
     /// Closing a gap, with no gap where it was asked for.
     #[error("there is no gap there to close")]
     NoGapThere,
@@ -127,6 +230,13 @@ pub enum EditorError {
     /// another clip, or onto a locked track — so it is left open.
     #[error("a linked clip has no room to move left, so the gap stays open")]
     GapBlocked,
+
+    /// A lane riding along with a ripple edit (§10's sync lock) has a clip
+    /// the edit runs through, or nowhere for one to land.
+    #[error(
+        "a sync-locked track has a clip across the edit — cut it there, or take its sync lock off"
+    )]
+    SyncBlocked,
 
     /// A template's tracks are occupied where it wants to go.
     #[error("there are clips in the way where the template would go")]
@@ -146,6 +256,38 @@ pub enum EditorError {
 
     #[error("project has never been saved — use Save As")]
     NoProjectPath,
+
+    /// Split at Markers with no markers.
+    #[error("there are no markers to split at; press M to add one")]
+    NoMarkers,
+
+    /// A colour change asked of a file rather than a colour clip.
+    #[error("that clip is not a colour clip")]
+    NotAColourClip,
+
+    /// Lift or extract with no in and out marks set.
+    #[error("set in and out marks around the part to take out first (I and O)")]
+    NoMarkedRange,
+
+    /// An extract would pull the edit past a locked track.
+    #[error("a locked track has clips after the marks; unlock it to close the gap, or use Lift")]
+    LockedTrackInTheWay,
+
+    /// Fit Music on a shot's own sound.
+    #[error("this sound belongs to a shot — fit a music clip instead")]
+    MusicHasPicture,
+
+    /// Fit Music with no pictures to fit to, or a song after all of them.
+    #[error("there are no pictures for the music to end with")]
+    NothingToFitTo,
+
+    /// A split into more pieces than the clip has room, or pieces too short.
+    #[error("that would cut the clip into too many pieces, or pieces too short to keep")]
+    SplitTooFine,
+
+    /// A file could not be read or written, with the reason.
+    #[error("could not read or write a file: {0}")]
+    Io(String),
 
     /// Save a Copy aimed at the project's own file.
     #[error(

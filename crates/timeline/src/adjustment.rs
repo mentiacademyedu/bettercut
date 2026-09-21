@@ -99,6 +99,7 @@ impl AdjustmentLook {
                 saturation: A::Saturation.clamp(finite(self.color.saturation, 1.0)),
                 temperature: A::Temperature.clamp(finite(self.color.temperature, 0.0)),
                 tint: A::Tint.clamp(finite(self.color.tint, 0.0)),
+                vibrance: finite(self.color.vibrance, 0.0).clamp(-1.0, 1.0),
             },
             blur: A::Blur.clamp(finite(self.blur, 0.0)),
             strength: finite(self.strength, 1.0).clamp(0.0, 1.0),

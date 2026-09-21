@@ -138,7 +138,11 @@ impl Editor {
                         // The same keys the Movement buttons write (§24), from
                         // the same place, so a template's zoom and a user's are
                         // one thing.
-                        for (parameter, key) in movement.keyframes(clip.transform.scale, source) {
+                        for (parameter, key) in movement.keyframes(
+                            clip.transform.scale,
+                            clip.transform.position,
+                            source,
+                        ) {
                             clip.keyframes.set(parameter, key);
                         }
                         let id = clip.id;

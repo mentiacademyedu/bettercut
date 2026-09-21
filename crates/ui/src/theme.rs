@@ -49,6 +49,15 @@ pub const TEXT_CLIP_TOP: Color32 = Color32::from_rgb(152, 120, 206);
 pub const IN_OUT_MARK: Color32 = Color32::from_rgb(120, 200, 255);
 pub const IN_OUT_SPAN: Color32 = Color32::from_rgba_premultiplied(20, 40, 60, 40);
 
+/// A whole lane's volume line, apart from a clip's own (`AUTOMATION`) so the
+/// two read as the different things they are.
+pub const TRACK_AUTOMATION: Color32 = Color32::from_rgb(138, 214, 250);
+
+/// The render bar under the ruler: a stretch already baked to a file, and one
+/// whose edit has moved on since. Green and amber, as every editor draws them.
+pub const RENDERED: Color32 = Color32::from_rgb(90, 190, 110);
+pub const RENDERED_STALE: Color32 = Color32::from_rgb(200, 160, 70);
+
 /// A fade handle on a sound clip's corner: near-white, so it reads on any
 /// clip colour and is not mistaken for a volume point's yellow.
 pub const FADE_HANDLE: Color32 = Color32::from_rgb(240, 240, 240);
@@ -57,12 +66,18 @@ pub const ADJUSTMENT_CLIP: Color32 = Color32::from_rgb(168, 124, 52);
 pub const ADJUSTMENT_CLIP_TOP: Color32 = Color32::from_rgb(198, 152, 74);
 pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
 pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
+/// Something worth knowing before pressing the button, which is not a failure:
+/// an export longer than the site it is made for accepts.
+pub const CAUTION: Color32 = Color32::from_rgb(230, 180, 90);
 pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);
 
 /// Width of the track-name column on the left of the timeline.
 pub const TRACK_HEADER_WIDTH: f32 = 148.0;
 /// Height of the timecode ruler above the tracks.
 pub const RULER_HEIGHT: f32 = 26.0;
+/// Height of the overview strip along the bottom of the timeline — the whole
+/// edit at a glance, with the visible part marked on it.
+pub const OVERVIEW_HEIGHT: f32 = 30.0;
 /// A lane at the normal height; `state::LaneHeight` offers smaller and larger.
 pub const TRACK_HEIGHT: f32 = 58.0;
 pub const TRACK_GAP: f32 = 2.0;

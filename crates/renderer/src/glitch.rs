@@ -14,7 +14,7 @@ use crate::graph::{EffectContext, EffectInput, EffectNode, EffectParams, EffectT
 const UNIFORM_STRIDE: u64 = 256;
 
 /// Bytes in `GlitchParams`. Must match `glitch.wgsl` exactly.
-const PARAMS_SIZE: u64 = 16;
+const PARAMS_SIZE: u64 = 32;
 
 const INITIAL_PASS_CAPACITY: u64 = 16;
 
@@ -22,20 +22,48 @@ const INITIAL_PASS_CAPACITY: u64 = 16;
 /// couple of percent the channels stop reading as one picture at all.
 pub const MAX_SPLIT: f32 = 0.02;
 
-/// An RGB split and glitch resolved for one frame.
+/// The biggest pixelate block, as a share of the picture's longer side, at
+/// 100%: a face at that size is unrecognisable, and the frame still reads.
+pub const MAX_BLOCK: f32 = 0.08;
+
+/// The strongest zoom blur, at 100%: each point takes in the picture this
+/// share of its distance towards the middle. A quarter reads as a rush forward without the
+/// picture dissolving.
+pub const MAX_ZOOM: f32 = 0.25;
+
+/// The strongest glow, at 100%: how much of the gathered light is added back.
+pub const MAX_GLOW: f32 = 1.5;
+
+/// An RGB split, glitch, pixelate and zoom blur resolved for one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlitchPlan {
     /// Channel separation in UV.
     pub split: f32,
     /// How much of the picture breaks up, 0–1.
     pub glitch: f32,
+    /// Block size as a share of the longer side; zero is off.
+    pub block: f32,
+    /// How far each point streaks towards the middle; zero is off.
+    pub zoom: f32,
+    /// How much bloom is added; zero is off.
+    pub glow: f32,
+    /// How worn the film looks, 0–1; zero is off.
+    pub film: f32,
     pub seed: u32,
 }
 
 impl GlitchPlan {
     /// `rgb_split` and `glitch` are the Inspector's 0–100. `None` when neither
     /// does anything, so a clip without them costs no pass.
-    pub fn new(rgb_split: f32, glitch: f32, seed: u32) -> Option<Self> {
+    pub fn new(
+        rgb_split: f32,
+        glitch: f32,
+        pixelate: f32,
+        zoom_blur: f32,
+        glow: f32,
+        old_film: f32,
+        seed: u32,
+    ) -> Option<Self> {
         let share = |amount: f32| {
             if amount.is_finite() {
                 (amount / bettercut_timeline::MAX_GLITCH).clamp(0.0, 1.0)
@@ -43,13 +71,26 @@ impl GlitchPlan {
                 0.0
             }
         };
-        let (split, glitch) = (share(rgb_split), share(glitch));
-        if split <= 0.0 && glitch <= 0.0 {
+        let (split, glitch, pixelate) = (share(rgb_split), share(glitch), share(pixelate));
+        let zoom = share(zoom_blur);
+        let glow = share(glow);
+        let film = share(old_film);
+        if split <= 0.0
+            && glitch <= 0.0
+            && pixelate <= 0.0
+            && zoom <= 0.0
+            && glow <= 0.0
+            && film <= 0.0
+        {
             return None;
         }
         Some(Self {
             split: split * MAX_SPLIT,
             glitch,
+            block: pixelate * MAX_BLOCK,
+            zoom: zoom * MAX_ZOOM,
+            glow: glow * MAX_GLOW,
+            film,
             seed,
         })
     }
@@ -60,6 +101,10 @@ impl GlitchPlan {
         bytes[4..8].copy_from_slice(&self.glitch.to_ne_bytes());
         // Below 2^24, where every whole number is exact in an f32.
         bytes[8..12].copy_from_slice(&((self.seed % (1 << 24)) as f32).to_ne_bytes());
+        bytes[12..16].copy_from_slice(&self.block.to_ne_bytes());
+        bytes[16..20].copy_from_slice(&self.zoom.to_ne_bytes());
+        bytes[20..24].copy_from_slice(&self.glow.to_ne_bytes());
+        bytes[24..28].copy_from_slice(&self.film.to_ne_bytes());
         bytes
     }
 }
@@ -211,7 +256,15 @@ impl EffectNode for GlitchPass {
         params: EffectParams,
         input: EffectInput<'_>,
     ) -> Result<Option<EffectTexture>, RenderError> {
-        let Some(plan) = GlitchPlan::new(params.rgb_split, params.glitch, params.seed) else {
+        let Some(plan) = GlitchPlan::new(
+            params.rgb_split,
+            params.glitch,
+            params.pixelate,
+            params.zoom_blur,
+            params.glow,
+            params.old_film,
+            params.seed,
+        ) else {
             return Ok(None);
         };
 
@@ -289,16 +342,26 @@ mod tests {
 
     #[test]
     fn nothing_costs_nothing() {
-        assert!(GlitchPlan::new(0.0, 0.0, 7).is_none());
-        assert!(GlitchPlan::new(-3.0, f32::NAN, 7).is_none());
+        assert!(GlitchPlan::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7).is_none());
+        assert!(GlitchPlan::new(-3.0, f32::NAN, -1.0, f32::NAN, f32::NAN, f32::NAN, 7).is_none());
     }
 
     #[test]
     fn amounts_are_held_to_their_ceilings() {
-        let full = GlitchPlan::new(100.0, 100.0, 0).expect("plan");
-        let past = GlitchPlan::new(1e6, 1e6, 0).expect("plan");
+        let full = GlitchPlan::new(100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 0).expect("plan");
+        let past = GlitchPlan::new(1e6, 1e6, 1e6, 1e6, 1e6, 1e6, 0).expect("plan");
         assert_eq!(full, past);
         assert_eq!(full.split, MAX_SPLIT);
         assert_eq!(full.glitch, 1.0);
+        assert_eq!(full.block, MAX_BLOCK);
+        assert_eq!(full.zoom, MAX_ZOOM);
+        assert!(
+            GlitchPlan::new(0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0).is_some(),
+            "pixelate alone is a pass"
+        );
+        assert!(
+            GlitchPlan::new(0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0).is_some(),
+            "zoom blur alone is a pass"
+        );
     }
 }

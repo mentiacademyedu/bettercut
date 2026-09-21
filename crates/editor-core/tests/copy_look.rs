@@ -257,9 +257,25 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
     )
     .unwrap();
     let dressed = VideoClip {
+        corner_pin: Default::default(),
+        angle: None,
+        old_film: 0.0,
+        glow: 0.0,
+        shadow: Default::default(),
+        border: Default::default(),
         sharpen: 45.0,
         rgb_split: 30.0,
         glitch: 12.0,
+        pixelate: 20.0,
+        zoom_blur: 15.0,
+        vignette: 0.25,
+        light_leak: 30.0,
+        beat_pulse: 40.0,
+        smooth_motion: false,
+        curves: bettercut_timeline::curves::ColourCurves {
+            master: [0.0, 0.2, 0.5, 0.8, 1.0],
+            ..Default::default()
+        },
         reflection: bettercut_timeline::Reflection::Kaleidoscope,
         // Timing, not look, so not part of what is being compared here.
         reversed: false,
@@ -277,6 +293,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
             saturation: 0.9,
             temperature: 0.4,
             tint: -0.25,
+            vibrance: 0.0,
         },
         blur: 12.0,
         blend: BlendMode::Screen,
@@ -317,6 +334,8 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
     let source = clip(&editor, first).clone();
     let pasted = clip(&editor, second).clone();
     let expected = VideoClip {
+        corner_pin: Default::default(),
+        angle: None,
         id: pasted.id,
         media_id: pasted.media_id,
         timeline: pasted.timeline,

@@ -413,6 +413,34 @@ impl Scaler {
         dst_width: i32,
         dst_height: i32,
     ) -> Result<Self, MediaError> {
+        Self::to_yuv(
+            src_width,
+            src_height,
+            src_format,
+            src_full_range,
+            src_colorspace,
+            dst_width,
+            dst_height,
+            ffi::AV_PIX_FMT_YUV420P,
+        )
+    }
+
+    /// [`Self::to_yuv420p`] into another 4:2:0 layout — `YUVA420P` keeps an
+    /// alpha plane, which sws fills from the source's.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "sws_getContext's own arguments, one each"
+    )]
+    pub(crate) fn to_yuv(
+        src_width: i32,
+        src_height: i32,
+        src_format: i32,
+        src_full_range: bool,
+        src_colorspace: i32,
+        dst_width: i32,
+        dst_height: i32,
+        dst_format: i32,
+    ) -> Result<Self, MediaError> {
         // Bicubic rather than bilinear: a proxy is usually a large downscale,
         // and bilinear downscaling loses detail the user needs to judge focus.
         // SAFETY: sws_getContext validates its arguments and returns null when
@@ -424,7 +452,7 @@ impl Scaler {
                 src_format,
                 dst_width,
                 dst_height,
-                ffi::AV_PIX_FMT_YUV420P,
+                dst_format,
                 ffi::SWS_BICUBIC as i32,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),

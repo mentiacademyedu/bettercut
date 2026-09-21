@@ -86,6 +86,29 @@ pub struct ProjectSettings {
     /// §10: snapping on the timeline.
     #[serde(default = "default_true")]
     pub snapping_enabled: bool,
+
+    /// How long a photo — or a colour clip — runs when it is put on the
+    /// timeline. Defaulted, so older projects keep five seconds.
+    #[serde(default = "default_photo_length")]
+    pub photo_length: bettercut_foundation::MediaTime,
+
+    /// A magnetic main track: clips on the first picture lane stay packed
+    /// from the start, so a delete or a move closes up behind it. Off unless
+    /// chosen.
+    #[serde(default)]
+    pub magnetic_timeline: bool,
+}
+
+/// The shortest and longest a photo may be set to run when placed: shorter
+/// than half a second is a flash, longer than a minute is a still that should
+/// be a video.
+pub const MIN_PHOTO_LENGTH: bettercut_foundation::MediaTime =
+    bettercut_foundation::MediaTime::from_millis(500);
+pub const MAX_PHOTO_LENGTH: bettercut_foundation::MediaTime =
+    bettercut_foundation::MediaTime::from_seconds(60);
+
+fn default_photo_length() -> bettercut_foundation::MediaTime {
+    bettercut_media::STILL_DURATION
 }
 
 fn default_true() -> bool {
@@ -108,6 +131,8 @@ impl Default for ProjectSettings {
             cache_limit_bytes: default_cache_limit(),
             autosave_interval_secs: default_autosave_secs(),
             snapping_enabled: true,
+            photo_length: default_photo_length(),
+            magnetic_timeline: false,
         }
     }
 }

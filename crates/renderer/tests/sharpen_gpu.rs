@@ -92,6 +92,11 @@ fn render(compositor: &mut Compositor, frame: &VideoFrame, blur: f32, sharpen: f
             &[Layer {
                 frame,
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     crop: Crop::NONE,
                     transform: Transform::default(),
                     opacity: 1.0,
@@ -101,6 +106,9 @@ fn render(compositor: &mut Compositor, frame: &VideoFrame, blur: f32, sharpen: f
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     chroma_key: None,
                     mask: None,

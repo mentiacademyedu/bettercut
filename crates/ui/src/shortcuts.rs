@@ -29,7 +29,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Playback",
         shortcuts: &[
-            Shortcut::new("Space", "Play / pause", &[Key::Space]),
+            Shortcut::new("Space", "Play / pause (Ctrl + L: loop)", &[Key::Space]),
             Shortcut::new(
                 "J / K / L",
                 "Reverse / stop / forward; press again to go faster (hold K: step a frame)",
@@ -91,11 +91,16 @@ pub const SECTIONS: &[Section] = &[
             Shortcut::new("Shift + Delete", "Delete and close the gap", &[]),
             Shortcut::new(
                 "Ctrl + X / C / V",
-                "Cut / copy / paste",
+                "Cut / copy / paste (Ctrl + Shift + V: paste and push the rest along)",
                 &[Key::X, Key::C, Key::V],
             ),
             Shortcut::new("Ctrl + Alt + C / V", "Copy / paste a clip's look", &[]),
             Shortcut::new("Ctrl + D", "Duplicate", &[Key::D]),
+            Shortcut::new(
+                "R",
+                "Rotate the selection a quarter turn right (Shift: left)",
+                &[Key::R],
+            ),
             Shortcut::new(
                 "Ctrl + G",
                 "Group the selection to move together (Shift: ungroup)",
@@ -117,8 +122,13 @@ pub const SECTIONS: &[Section] = &[
             Shortcut::new("Ctrl + S", "Save (Shift: save as)", &[]),
             Shortcut::new(
                 "Esc",
-                "Put down the eyedropper, or finish cropping",
+                "Leave full screen, put down the eyedropper, or finish cropping",
                 &[Key::Escape],
+            ),
+            Shortcut::new(
+                "F",
+                "Full screen preview (Shift: find this frame in its file)",
+                &[Key::F],
             ),
             Shortcut::new("? or F1", "This list", &[Key::Questionmark, Key::F1]),
         ],
@@ -131,6 +141,16 @@ pub const SECTIONS: &[Section] = &[
             Shortcut::new("Ctrl + click", "Add a clip to the selection", &[]),
             Shortcut::new("Drag on empty space", "Select every clip in a box", &[]),
             Shortcut::new("Alt + drag", "Move without snapping", &[]),
+            Shortcut::new(
+                "Shift + drag",
+                "Drop between clips; on an edge, trim the sound alone (a J or L cut)",
+                &[],
+            ),
+            Shortcut::new(
+                "Ctrl + Alt + drag",
+                "Slip a clip; on a cut, roll the cut (Shift: slide it)",
+                &[],
+            ),
             Shortcut::new("Right-click", "Actions for what is under the pointer", &[]),
             Shortcut::new(
                 "Double-click a volume line",
@@ -160,6 +180,8 @@ pub const HANDLED_KEYS: &[Key] = &[
     Key::A,
     Key::G,
     Key::N,
+    Key::R,
+    Key::F,
     Key::M,
     Key::I,
     Key::O,
@@ -246,13 +268,48 @@ pub fn handle(
         return;
     }
 
+    // Waiting for a new key from the Shortcuts window: the next key pressed is
+    // the answer, and nothing else happens with it.
+    if let Some(default) = state.rebinding {
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } => Some(*key),
+                _ => None,
+            })
+        });
+        if let Some(key) = pressed {
+            state.rebinding = None;
+            if key == egui::Key::Escape {
+                state.info("Shortcut left as it was");
+            } else {
+                match state.keymap.rebind(default, key) {
+                    Ok(()) => state.info(format!(
+                        "{} now does what {} did",
+                        key.name(),
+                        default.name()
+                    )),
+                    Err(reason) => state.error(reason),
+                }
+            }
+        }
+        return;
+    }
+
+    // Each key the sheet was written for, read from whichever key on the
+    // keyboard now does its job (`crate::keymap`).
     let (keys, modifiers, holding_k) = ctx.input(|i| {
         let pressed: Vec<egui::Key> = HANDLED_KEYS
             .iter()
             .copied()
-            .filter(|k| i.key_pressed(*k))
+            .filter(|k| i.key_pressed(state.keymap.key_for(*k)))
             .collect();
-        (pressed, i.modifiers, i.key_down(egui::Key::K))
+        (
+            pressed,
+            i.modifiers,
+            i.key_down(state.keymap.key_for(egui::Key::K)),
+        )
     });
 
     for key in keys {
@@ -267,6 +324,15 @@ pub fn handle(
                 None => state.error("No preview renderer"),
             },
 
+            egui::Key::L if modifiers.command => match preview.as_deref_mut() {
+                Some(preview) => {
+                    let looping = !preview.is_looping();
+                    preview.set_looping(looping);
+                    state.info(if looping { "Loop on" } else { "Loop off" });
+                    state.needs_repaint = true;
+                }
+                None => state.error("No preview renderer"),
+            },
             // K held with J or L: one frame at a time, stopped — how the frame
             // to cut on is found by hand.
             egui::Key::J | egui::Key::L if holding_k && !modifiers.command => {
@@ -323,6 +389,7 @@ pub fn handle(
             egui::Key::C if modifiers.command && modifiers.alt => copy_look(editor, state),
             egui::Key::V if modifiers.command && modifiers.alt => paste_look(editor, state),
             egui::Key::C if modifiers.command => copy_selection(editor, state),
+            egui::Key::V if modifiers.command && modifiers.shift => paste_insert(editor, state),
             egui::Key::V if modifiers.command => paste_at_playhead(editor, state),
             egui::Key::D if modifiers.command => duplicate_selection(editor, state),
             egui::Key::G if modifiers.command && modifiers.shift => {
@@ -346,7 +413,27 @@ pub fn handle(
             // eyedropper leaves the preview's handles dead with no obvious
             // way back, because the button that armed it has scrolled away.
             egui::Key::Escape => {
-                cancel_modes(state);
+                // Out of full screen first: it is the one mode that hides
+                // everything else, including the way out.
+                if state.fullscreen {
+                    state.fullscreen = false;
+                    state.needs_repaint = true;
+                } else {
+                    cancel_modes(state);
+                }
+            }
+
+            egui::Key::F if !modifiers.command => {
+                if modifiers.shift {
+                    match_frame(editor, state, None);
+                } else {
+                    state.fullscreen = !state.fullscreen;
+                    state.needs_repaint = true;
+                }
+            }
+
+            egui::Key::R if !modifiers.command => {
+                rotate_selection(editor, state, if modifiers.shift { -1 } else { 1 });
             }
 
             // §10 "Snapping" — a toggle worth a bare key, since it gets flipped
@@ -546,6 +633,22 @@ pub(crate) fn ungroup_selection(editor: &mut Editor, state: &mut UiState) {
     }
 }
 
+/// R and Shift+R: a quarter turn right or left for every selected picture.
+pub(crate) fn rotate_selection(editor: &mut Editor, state: &mut UiState, quarters: i32) {
+    let selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    match editor.rotate_quarter(&selected, quarters) {
+        Ok(0) => state.info("Select a picture clip to rotate"),
+        Ok(n) => {
+            state.info(format!(
+                "Rotated {n} clip(s) {}",
+                if quarters < 0 { "left" } else { "right" }
+            ));
+            state.needs_repaint = true;
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
 /// Trade places with the clip beside it, reporting either way.
 pub(crate) fn swap_clip(
     editor: &mut Editor,
@@ -652,10 +755,10 @@ pub fn split_columns<'a, T>(sections: Sections<'a, T>, columns: usize) -> Vec<Se
 /// The widest an action's description runs before it wraps.
 const ACTION_WIDTH: f32 = 210.0;
 
-fn section_grid(ui: &mut egui::Ui, title: &str, rows: &[Shortcut]) {
+fn section_grid(ui: &mut egui::Ui, state: &mut UiState, title: &str, rows: &[Shortcut]) {
     ui.label(egui::RichText::new(title).strong());
     egui::Grid::new(("shortcuts", title))
-        .num_columns(2)
+        .num_columns(if state.editing_keys { 3 } else { 2 })
         // Tight rows: the whole sheet has to fit a laptop screen without
         // scrolling, and every shortcut added makes it taller.
         .spacing([16.0, 1.0])
@@ -669,6 +772,32 @@ fn section_grid(ui: &mut egui::Ui, title: &str, rows: &[Shortcut]) {
                     ui.set_max_width(ACTION_WIDTH);
                     ui.add(egui::Label::new(row.action).wrap());
                 });
+                // The key on the keyboard for each of this row's jobs: click
+                // one, then press the key you want instead. Only while
+                // changing keys, so the sheet itself stays compact.
+                if state.editing_keys {
+                    ui.horizontal(|ui| {
+                        for default in row.bound {
+                            let now = state.keymap.key_for(*default);
+                            let waiting = state.rebinding == Some(*default);
+                            let text = if waiting { "…" } else { now.name() };
+                            let mut label = egui::RichText::new(text).monospace().small();
+                            if state.keymap.is_moved(*default) {
+                                label = label.color(crate::theme::PLAYHEAD);
+                            }
+                            if ui
+                            .add(egui::Button::new(label).small())
+                            .on_hover_text(format!(
+                                "Click, then press a new key for this (Esc to cancel). Normally {}",
+                                default.name()
+                            ))
+                            .clicked()
+                        {
+                            state.rebinding = Some(*default);
+                        }
+                        }
+                    });
+                }
                 ui.end_row();
             }
         });
@@ -714,20 +843,42 @@ pub fn help_window(ctx: &egui::Context, state: &mut UiState) {
                         for column in split_columns(&found, columns) {
                             ui.vertical(|ui| {
                                 for (title, rows) in column {
-                                    section_grid(ui, title, rows);
+                                    section_grid(ui, state, title, rows);
                                 }
                             });
                             ui.add_space(24.0);
                         }
                     });
                 });
-            ui.label(
-                egui::RichText::new(
-                    "The clip actions are also on the timeline's right-click menu.",
-                )
-                .small()
-                .color(crate::theme::DISABLED),
-            );
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "The clip actions are also on the timeline's right-click menu.",
+                    )
+                    .small()
+                    .color(crate::theme::DISABLED),
+                );
+                ui.checkbox(&mut state.editing_keys, "Change keys")
+                    .on_hover_text("Show the key for each shortcut, to click and replace");
+                if state.editing_keys
+                    && ui
+                        .small_button("Reset keys")
+                        .on_hover_text("Put every shortcut back on its own key")
+                        .clicked()
+                {
+                    state.keymap.reset_all();
+                    state.info("Shortcuts back on their own keys");
+                }
+            });
+            if let Some(default) = state.rebinding {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Press the new key for what {} does (Esc to cancel)",
+                        default.name()
+                    ))
+                    .color(crate::theme::PLAYHEAD),
+                );
+            }
         });
     state.shortcuts_open = open && state.shortcuts_open;
 }
@@ -845,6 +996,18 @@ pub(crate) fn paste_at_playhead(editor: &mut Editor, state: &mut UiState) {
         Ok(n) => {
             state.clear_selection();
             state.info(format!("Pasted {n} clip(s)"));
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Paste at the playhead, pushing everything after it along to make room.
+pub(crate) fn paste_insert(editor: &mut Editor, state: &mut UiState) {
+    match editor.paste_insert() {
+        Ok(n) => {
+            state.clear_selection();
+            state.needs_repaint = true;
+            state.info(format!("Pasted {n} clip(s), and moved the rest along"));
         }
         Err(err) => state.error(err.to_string()),
     }
@@ -1007,6 +1170,7 @@ pub(crate) fn delete_selection(editor: &mut Editor, state: &mut UiState) {
 
     match editor.dispatch_group(label, commands) {
         Ok(()) => {
+            close_up_if_magnetic(editor, state);
             state.clear_selection();
             state.info(if missing > 0 {
                 format!("Deleted {count} clip(s); {missing} were already gone")
@@ -1016,6 +1180,18 @@ pub(crate) fn delete_selection(editor: &mut Editor, state: &mut UiState) {
         }
         Err(err) => state.error(err.to_string()),
     }
+}
+
+/// On a magnetic timeline, close the main track up after an edit, as part of
+/// that edit's undo step.
+pub(crate) fn close_up_if_magnetic(editor: &mut Editor, state: &mut UiState) {
+    if !editor.is_magnetic() {
+        return;
+    }
+    if let Err(err) = editor.close_up_main_track() {
+        state.error(err.to_string());
+    }
+    state.needs_repaint = true;
 }
 
 /// The selection plus every clip linked to something in it (§12), without
@@ -1055,6 +1231,37 @@ fn locate(editor: &Editor, clip: ClipId) -> Option<TrackId> {
         })
 }
 
+/// Match frame: show the file behind the frame under the playhead, with the
+/// stretch this clip plays marked on it (`editor_core::match_frame`).
+///
+/// `clip` names one outright — a right-click on it — and `None` asks what the
+/// playhead is looking at.
+pub fn match_frame(editor: &Editor, state: &mut UiState, clip: Option<ClipId>) {
+    let selection: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    let found = match clip {
+        Some(clip) => editor.match_frame_of(clip),
+        None => editor.match_frame(&selection),
+    };
+    let Some(found) = found else {
+        state.info("Nothing there to match — a colour or a title has no file behind it");
+        return;
+    };
+    let Some(asset) = editor.project().media_asset(found.media) else {
+        return;
+    };
+    let name = asset.display_name().to_owned();
+    state.reveal_media(found.media, &name);
+    // Marked with what this clip plays, so placing it again cuts in the same
+    // stretch rather than the whole file.
+    state
+        .media_marks
+        .insert(found.media, (found.source.start, Some(found.source.end)));
+    state.info(format!(
+        "{name} at {}",
+        bettercut_editor_core::foundation::TimelineTime::from_ticks(found.at.ticks())
+            .format_timecode()
+    ));
+}
 #[cfg(test)]
 mod escape_tests {
     use super::*;

@@ -170,11 +170,13 @@ impl Editor {
         }
 
         let spans: Vec<_> = sequence.clip_spans().collect();
+        // The track's own later clips, and the later clips of every lane
+        // riding along with it (§10's sync lock).
+        let riders = self.sync_riders(&[track]);
         let mut moving: Vec<ClipId> = Vec::new();
-        for span in spans
-            .iter()
-            .filter(|span| span.track == track && span.timeline.start >= gap.end)
-        {
+        for span in spans.iter().filter(|span| {
+            span.timeline.start >= gap.end && (span.track == track || riders.contains(&span.track))
+        }) {
             for clip in self.linked_with(span.clip) {
                 if !moving.contains(&clip) {
                     moving.push(clip);

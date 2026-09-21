@@ -80,7 +80,11 @@ impl Default for AudioPlan {
 
 impl AudioPlan {
     pub fn of(project: &Project, sequence: &Sequence) -> Self {
-        let tracks = sequence.audio_tracks.clone();
+        let mut tracks = sequence.audio_tracks.clone();
+        // A compound clip's own sound, laid out where the compound plays. The
+        // mixer never learns what a compound is: it is handed ordinary tracks
+        // of ordinary clips (`crate::compound`).
+        tracks.extend(crate::compound::audio_tracks(project, sequence, 0));
         let assets = tracks
             .iter()
             .flat_map(|t| t.clips())
@@ -110,6 +114,29 @@ pub struct AudioMixer {
     /// loop — or a changed amount starts it afresh; continuous playback and an
     /// export carry it on, sample for sample.
     cleaners: HashMap<bettercut_foundation::ClipId, (bettercut_audio::VoiceCleaner, u32, i64)>,
+    /// Each equalised clip's filters, with the settings they were made for and
+    /// the tick their next sample belongs at — started afresh on a jump or a
+    /// changed setting, exactly as the clean-ups are.
+    equalizers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::Equalizer, [u32; 4], i64)>,
+    /// Each clip's echo or reverb, the same way: its delay lines carry on
+    /// through continuous playback and start empty after a jump.
+    /// Each voice-changed clip's pitch shifter, the same way again.
+    pitchers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::PitchShifter, u32, i64)>,
+    /// Each levelled clip's compressor, the same way.
+    levellers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::Leveller, u32, i64)>,
+    /// Each de-essed clip's band-pass and detector, the same way again.
+    de_essers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::DeEsser, u32, i64)>,
+    spaces: HashMap<
+        bettercut_foundation::ClipId,
+        (bettercut_audio::Space, bettercut_timeline::ClipSpace, i64),
+    >,
+    /// The loudest sample each sound lane put into the last block, per side.
+    ///
+    /// Gathered as the block is mixed rather than measured afterwards: once
+    /// the lanes are summed there is no way back to which of them was loud,
+    /// and re-mixing a lane on its own to find out would be a second mix that
+    /// could disagree with the first (§46).
+    lane_peaks: Vec<(f32, f32)>,
 }
 
 impl AudioMixer {
@@ -118,6 +145,12 @@ impl AudioMixer {
             sources: HashMap::new(),
             decoder_threads: decoder_threads.max(1),
             cleaners: HashMap::new(),
+            equalizers: HashMap::new(),
+            spaces: HashMap::new(),
+            pitchers: HashMap::new(),
+            levellers: HashMap::new(),
+            de_essers: HashMap::new(),
+            lane_peaks: Vec::new(),
         }
     }
 
@@ -154,16 +187,24 @@ impl AudioMixer {
         }
         let duration = TimelineTime::from_ticks(frames as i64 * TICKS_PER_AUDIO_SAMPLE);
 
+        // This block's readings only: a meter holding a level from a block
+        // that has already been heard is a meter telling the truth about
+        // the past.
+        for lane in &mut self.lane_peaks {
+            *lane = (0.0, 0.0);
+        }
         for audible in resolve_audio_tracks(&plan.tracks, position, duration) {
             let Some(asset) = plan.assets.get(&audible.media) else {
                 continue; // §66: missing media is silence, not a failure
             };
-            let Some(source) = self.source_for(asset) else {
-                continue;
-            };
-
             let offset = (audible.offset.ticks() / TICKS_PER_AUDIO_SAMPLE) as usize;
-            let wanted = frames.saturating_sub(offset);
+            // Up to the end of the block — or of the clip, when that comes
+            // first. Read to the block's end, a clip ending mid-block went on
+            // sounding past its own end, over whatever followed it: up to a
+            // tenth of a second in an export, whose blocks are that long.
+            let wanted = frames
+                .saturating_sub(offset)
+                .min(usize::try_from(audible.fades.remaining).unwrap_or(0));
             if wanted == 0 {
                 continue;
             }
@@ -188,7 +229,17 @@ impl AudioMixer {
             } else {
                 audible.source_start
             };
-            match source.read(read_from, to_read) {
+            // Made sound has no file to open: the samples come from the
+            // source time asked for (`bettercut_media::generated_sound`), so a
+            // tone is the same sound played, scrubbed or exported.
+            let read = match asset.generated_sound {
+                Some(sound) => Ok(sound.read(read_from, to_read)),
+                None => match self.source_for(asset) {
+                    Some(source) => source.read(read_from, to_read),
+                    None => continue,
+                },
+            };
+            match read {
                 Ok(mut planes) if !planes.is_empty() => {
                     if audible.reversed {
                         for plane in &mut planes {
@@ -200,6 +251,69 @@ impl AudioMixer {
                     } else {
                         bettercut_audio::resample(&planes, wanted, rate)
                     };
+                    // The channels first: every stage after this should hear
+                    // the voice in both ears, not an empty side.
+                    audible.channels.apply(&mut planes);
+                    // The voice changed next, so the tone controls shape the
+                    // voice as it will be heard.
+                    // The voice changer, plus — when the clip asks for its
+                    // pitch held — as many semitones back as the re-timing
+                    // moved it. One shifter does both: they are the same
+                    // operation, and running two would grain the sound twice.
+                    let corrected = if audible.keep_pitch && !audible.speed.is_one() {
+                        -12.0 * (audible.speed.as_f64() as f32).log2()
+                    } else {
+                        0.0
+                    };
+                    let shift = audible.pitch + corrected;
+                    if shift != 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let bits = shift.to_bits();
+                        let fresh = match self.pitchers.get(&audible.clip) {
+                            Some((_, setting, next)) => *setting != bits || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh && let Some(shifter) = bettercut_audio::PitchShifter::new(shift) {
+                            self.pitchers
+                                .insert(audible.clip, (shifter, bits, starts_at));
+                        }
+                        if let Some((shifter, _, next)) = self.pitchers.get_mut(&audible.clip) {
+                            shifter.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
+                    // The tone first, then the clean-up listening to it.
+                    if !audible.eq.is_flat() {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let eq = audible.eq;
+                        let key = [
+                            eq.low_cut.to_bits(),
+                            eq.high_cut.to_bits(),
+                            eq.presence.to_bits(),
+                            eq.hum.to_bits(),
+                        ];
+                        let fresh = match self.equalizers.get(&audible.clip) {
+                            Some((_, settings, next)) => *settings != key || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh
+                            && let Some(equalizer) = bettercut_audio::Equalizer::with_hum(
+                                eq.low_cut,
+                                eq.high_cut,
+                                eq.presence,
+                                eq.hum,
+                            )
+                        {
+                            self.equalizers
+                                .insert(audible.clip, (equalizer, key, starts_at));
+                        }
+                        if let Some((equalizer, _, next)) = self.equalizers.get_mut(&audible.clip) {
+                            equalizer.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
                     if audible.denoise > 0.0 {
                         let starts_at = position.ticks() + audible.offset.ticks();
                         let bits = audible.denoise.to_bits();
@@ -220,7 +334,84 @@ impl AudioMixer {
                             *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
                         }
                     }
-                    bettercut_audio::mix_into(
+                    // Levelled after the clean-up, so the background it pulled
+                    // down is not lifted back up, and before the room.
+                    if audible.leveller > 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let bits = audible.leveller.to_bits();
+                        let fresh = match self.levellers.get(&audible.clip) {
+                            Some((_, setting, next)) => *setting != bits || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh
+                            && let Some(leveller) = bettercut_audio::Leveller::new(audible.leveller)
+                        {
+                            self.levellers
+                                .insert(audible.clip, (leveller, bits, starts_at));
+                        }
+                        if let Some((leveller, _, next)) = self.levellers.get_mut(&audible.clip) {
+                            leveller.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
+                    // De-essed after the leveller, because the leveller is
+                    // what lifts an ess into a problem: dipping first would
+                    // leave it to be raised again.
+                    if audible.de_ess > 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let bits = audible.de_ess.to_bits();
+                        let fresh = match self.de_essers.get(&audible.clip) {
+                            Some((_, setting, next)) => *setting != bits || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh
+                            && let Some(de_esser) = bettercut_audio::DeEsser::new(audible.de_ess)
+                        {
+                            self.de_essers
+                                .insert(audible.clip, (de_esser, bits, starts_at));
+                        }
+                        if let Some((de_esser, _, next)) = self.de_essers.get_mut(&audible.clip) {
+                            de_esser.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
+                    // The space last: a room around the cleaned-up voice, not
+                    // a clean-up fighting the room's tail.
+                    if !audible.space.is_dry() {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let space = audible.space;
+                        let fresh = match self.spaces.get(&audible.clip) {
+                            Some((_, settings, next)) => *settings != space || *next != starts_at,
+                            None => true,
+                        };
+                        let place = match space.kind {
+                            bettercut_timeline::SpaceKind::Echo => {
+                                Some(bettercut_audio::Place::Echo)
+                            }
+                            bettercut_timeline::SpaceKind::Room => {
+                                Some(bettercut_audio::Place::Room)
+                            }
+                            bettercut_timeline::SpaceKind::Hall => {
+                                Some(bettercut_audio::Place::Hall)
+                            }
+                            bettercut_timeline::SpaceKind::Dry => None,
+                        };
+                        if fresh
+                            && let Some(place) = place
+                            && let Some(processor) = bettercut_audio::Space::new(place, space.mix)
+                        {
+                            self.spaces
+                                .insert(audible.clip, (processor, space, starts_at));
+                        }
+                        if let Some((processor, _, next)) = self.spaces.get_mut(&audible.clip) {
+                            processor.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
+                    let heard = bettercut_audio::mix_into(
                         out,
                         channels,
                         &planes,
@@ -230,9 +421,18 @@ impl AudioMixer {
                             fades: audible.fades,
                             automation: audible.automation,
                             track_gain: audible.track_gain,
+                            track_automation: audible.track_automation,
                             track_pan: audible.track_pan,
                         },
                     );
+                    if self.lane_peaks.len() <= audible.lane {
+                        self.lane_peaks.resize(audible.lane + 1, (0.0, 0.0));
+                    }
+                    // The loudest of the lane's clips, not the last of them:
+                    // two clips crossfading are both that lane, and a meter
+                    // that showed only the second would dip through every cut.
+                    let lane = &mut self.lane_peaks[audible.lane];
+                    *lane = (lane.0.max(heard.0), lane.1.max(heard.1));
                 }
                 Ok(_) => {}
                 Err(err) => {
@@ -241,6 +441,13 @@ impl AudioMixer {
                 }
             }
         }
+    }
+
+    /// What each sound lane put into the last block mixed, per side, in lane
+    /// order. Shorter than the sequence's lanes when the ones below it were
+    /// silent, which is what a lane with nothing under the playhead is.
+    pub fn lane_peaks(&self) -> &[(f32, f32)] {
+        &self.lane_peaks
     }
 
     fn source_for(&mut self, asset: &MediaAsset) -> Option<&mut AudioSource> {
@@ -270,7 +477,15 @@ enum Message {
     Plan(Arc<AudioPlan>),
     Seek(TimelineTime),
     Playing(bool),
+    /// Play a short burst from here: the playhead is being dragged (§10's
+    /// scrub). Only while stopped — during playback the sound is already the
+    /// answer to where the playhead is.
+    Scrub(TimelineTime),
 }
+
+/// How much sound one scrub burst is. Long enough to recognise a word or a
+/// beat, short enough that dragging does not lag behind the hand.
+const SCRUB_MS: usize = 80;
 
 /// §20a.2's mixer thread, feeding the device's ring buffer.
 ///
@@ -289,6 +504,14 @@ pub struct MixerThread {
     /// that is one block stale — which nobody can see.
     peak_left: Arc<AtomicU32>,
     peak_right: Arc<AtomicU32>,
+    /// The mix's loudness over the last three seconds and the last 400 ms, in
+    /// LUFS, as `f32` bits — `f32::NAN` for "nothing to report", which is what
+    /// silence and a stopped mixer both are (`bettercut_audio::loudness`).
+    short_term: Arc<AtomicU32>,
+    momentary: Arc<AtomicU32>,
+    /// What each sound lane is putting into the mix, for the meters in the
+    /// track heads (`crate::lane_meters`).
+    lanes: Arc<crate::lane_meters::LaneMeters>,
 }
 
 impl MixerThread {
@@ -299,12 +522,18 @@ impl MixerThread {
         let pushed = Arc::new(AtomicU64::new(0));
         let peak_left = Arc::new(AtomicU32::new(0));
         let peak_right = Arc::new(AtomicU32::new(0));
+        let short_term = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
+        let momentary = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
+        let lanes = Arc::new(crate::lane_meters::LaneMeters::new());
 
         let handle = {
             let limited = Arc::clone(&limited);
             let pushed = Arc::clone(&pushed);
             let left = Arc::clone(&peak_left);
             let right = Arc::clone(&peak_right);
+            let short = Arc::clone(&short_term);
+            let moment = Arc::clone(&momentary);
+            let lane_meters = Arc::clone(&lanes);
             std::thread::Builder::new()
                 .name("bettercut-mixer".to_owned())
                 .spawn(move || {
@@ -312,9 +541,13 @@ impl MixerThread {
                         receiver,
                         sink,
                         decoder_threads,
-                        &limited,
-                        &pushed,
-                        (&left, &right),
+                        Reports {
+                            limited: &limited,
+                            pushed: &pushed,
+                            peaks: (&left, &right),
+                            loudness: (&short, &moment),
+                            lanes: &lane_meters,
+                        },
                     );
                 })?
         };
@@ -326,6 +559,9 @@ impl MixerThread {
             pushed,
             peak_left,
             peak_right,
+            short_term,
+            momentary,
+            lanes,
         })
     }
 
@@ -344,10 +580,25 @@ impl MixerThread {
         self.send(Message::Playing(playing));
     }
 
+    /// Play a short burst of the mix from `position` — what makes dragging the
+    /// playhead audible (§10's scrub).
+    ///
+    /// Ignored while playing: the sound is already saying where the playhead
+    /// is, and a burst over the top of it would be two mixes at once.
+    pub fn scrub(&self, position: TimelineTime) {
+        self.send(Message::Scrub(position));
+    }
+
     /// §20a.4: samples the limiter had to clamp. Non-zero means the mix is too
     /// hot.
     pub fn limited_samples(&self) -> u64 {
         self.limited.load(Ordering::Relaxed)
+    }
+
+    /// What each sound lane put into the last block, per side, in lane order
+    /// (`crate::lane_meters`). All silence while playback is stopped.
+    pub fn lane_peaks(&self) -> Vec<(f32, f32)> {
+        self.lanes.all()
     }
 
     /// The last block's peak level per side, 0.0 to 1.0 or beyond.
@@ -356,6 +607,18 @@ impl MixerThread {
             f32::from_bits(self.peak_left.load(Ordering::Relaxed)),
             f32::from_bits(self.peak_right.load(Ordering::Relaxed)),
         )
+    }
+
+    /// What the mix is measuring right now: the last three seconds and the
+    /// last 400 ms, in LUFS. `None` where there is nothing to report — the
+    /// mixer is stopped, or what is playing is below the standard's silence
+    /// gate.
+    pub fn loudness(&self) -> (Option<f32>, Option<f32>) {
+        let read = |slot: &AtomicU32| {
+            let value = f32::from_bits(slot.load(Ordering::Relaxed));
+            value.is_finite().then_some(value)
+        };
+        (read(&self.short_term), read(&self.momentary))
     }
 
     /// Frames pushed to the device since the thread started. Diagnostics, and
@@ -389,18 +652,51 @@ impl Drop for MixerThread {
     }
 }
 
+/// Everything the mixer thread tells the interface, all of it atomic.
+///
+/// One bundle rather than seven arguments, because they travel together and
+/// always will: every one of them is a number the thread writes and nobody
+/// waits on (§20a.2, §54).
+struct Reports<'a> {
+    limited: &'a AtomicU64,
+    pushed: &'a AtomicU64,
+    /// The mix's peak level per side, as `f32` bits.
+    peaks: (&'a AtomicU32, &'a AtomicU32),
+    /// Short-term and momentary loudness, as `f32` bits.
+    loudness: (&'a AtomicU32, &'a AtomicU32),
+    /// What each sound lane is putting in (`crate::lane_meters`).
+    lanes: &'a crate::lane_meters::LaneMeters,
+}
+
 fn run(
     receiver: Receiver<Message>,
     mut sink: bettercut_audio::AudioSink,
     decoder_threads: u32,
-    limited: &AtomicU64,
-    pushed: &AtomicU64,
-    peaks: (&AtomicU32, &AtomicU32),
+    reports: Reports<'_>,
 ) {
+    let Reports {
+        limited,
+        pushed,
+        peaks,
+        loudness,
+        lanes,
+    } = reports;
     let mut mixer = AudioMixer::new(decoder_threads);
     let mut plan = Arc::new(AudioPlan::default());
     let mut playing = false;
     let mut filled_to = TimelineTime::ZERO;
+    // The live meter, made once: §20a.2 forbids allocating on this thread,
+    // and this is the only place its ring is sized.
+    let mut meter = bettercut_audio::loudness::LiveLoudness::new(2);
+    let report = |meter: &bettercut_audio::loudness::LiveLoudness| {
+        let store = |slot: &AtomicU32, value: Option<f32>| {
+            slot.store(value.unwrap_or(f32::NAN).to_bits(), Ordering::Relaxed);
+        };
+        store(loudness.0, meter.short_term());
+        store(loudness.1, meter.momentary());
+    };
+    // Where the last scrub asked to be heard from, if one is waiting.
+    let mut scrub_at: Option<TimelineTime> = None;
 
     let channels = sink.channels();
     // Allocated once, here. The real-time rule against allocating (§20a.2)
@@ -439,6 +735,7 @@ fn run(
                 }
                 Message::Seek(position) => filled_to = position,
                 Message::Playing(now) => playing = now,
+                Message::Scrub(position) => scrub_at = Some(position),
             }
         }
 
@@ -447,8 +744,55 @@ fn run(
             // paused mix looks like sound that is not there.
             peaks.0.store(0.0_f32.to_bits(), Ordering::Relaxed);
             peaks.1.store(0.0_f32.to_bits(), Ordering::Relaxed);
+            // Nor is any lane: one left holding its last block is a lane that
+            // looks like it is still playing.
+            lanes.silence();
+            // And a stopped mixer is measuring nothing, rather than still
+            // showing what was playing when it stopped.
+            meter.reset();
+            report(&meter);
+
+            // A scrub: one short burst from where the playhead now is. Only
+            // the *latest* one — a fast drag asks for dozens a second, and
+            // playing every one of them would fall further behind the hand
+            // with each.
+            if let Some(position) = scrub_at.take()
+                && channels > 0
+            {
+                let frames = SCRUB_MS * sink.sample_rate() as usize / 1000;
+                // Nothing queued but this: the ring is otherwise idle while
+                // stopped, and a backlog of bursts is exactly what makes a
+                // scrub feel detached from the pointer.
+                if sink.vacant_frames() >= frames {
+                    let mut burst = vec![0.0_f32; frames * channels];
+                    mixer.mix_block(&plan, position, frames, channels, &mut burst);
+                    let clamped = bettercut_audio::finish(&mut burst, plan.master_volume) as u64;
+                    if clamped > 0 {
+                        limited.fetch_add(clamped, Ordering::Relaxed);
+                    }
+                    // Faded in and out, or every burst starts and ends with a
+                    // click — which is all a listener would hear.
+                    let fade = (frames / 8).max(1);
+                    for frame in 0..frames {
+                        let gain = (frame as f32 / fade as f32)
+                            .min((frames - frame) as f32 / fade as f32)
+                            .clamp(0.0, 1.0);
+                        for channel in 0..channels {
+                            burst[frame * channels + channel] *= gain;
+                        }
+                    }
+                    let (left, right) = bettercut_audio::peaks(&burst, channels);
+                    peaks.0.store(left.to_bits(), Ordering::Relaxed);
+                    peaks.1.store(right.to_bits(), Ordering::Relaxed);
+                    lanes.publish(mixer.lane_peaks());
+                    sink.push(&burst);
+                }
+            }
             continue;
         }
+        // Playing: whatever scrub was asked for is answered by the playback
+        // itself.
+        scrub_at = None;
 
         while sink.vacant_frames() >= BLOCK_FRAMES {
             block.fill(0.0);
@@ -463,6 +807,13 @@ fn run(
             let (left, right) = bettercut_audio::peaks(&block, channels);
             peaks.0.store(left.to_bits(), Ordering::Relaxed);
             peaks.1.store(right.to_bits(), Ordering::Relaxed);
+            // The lanes that made that block, before it is summed away.
+            lanes.publish(mixer.lane_peaks());
+
+            // The same block the device is about to hear, through the meter:
+            // what is reported is what is played (§46).
+            meter.push_interleaved(&block, channels);
+            report(&meter);
 
             let accepted = sink.push(&block);
             pushed.fetch_add((accepted / channels) as u64, Ordering::Relaxed);

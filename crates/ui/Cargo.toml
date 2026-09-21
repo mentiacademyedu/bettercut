@@ -17,6 +17,9 @@ bettercut-cache.workspace = true
 egui.workspace = true
 eframe.workspace = true
 rfd = "0.15"
+# One saved title style a line, as JSON: a `TextStyle` is a nested thing, and
+# the looks file's tab-separated columns would not hold it honestly.
+serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

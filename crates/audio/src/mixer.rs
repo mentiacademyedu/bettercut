@@ -79,6 +79,15 @@ pub struct MixParams {
     /// fades still apply on top — an envelope says how the level rides, a fade
     /// says how the clip enters and leaves, and a clip can want both.
     pub automation: Option<GainRamp>,
+
+    /// The *track's* volume line across this block, where the lane has one
+    /// (`bettercut_timeline::track_volume`).
+    ///
+    /// The same rule as the clip's, one stage up: when it is here it is the
+    /// track's level, so the caller passes `track_gain: 1.0` beside it. It
+    /// multiplies with the clip's — the clip says how loud that piece is, the
+    /// lane says how loud the lane is under it, as a desk works.
+    pub track_automation: Option<GainRamp>,
 }
 
 impl Default for MixParams {
@@ -89,6 +98,7 @@ impl Default for MixParams {
             track_pan: 0.0,
             fades: Fades::default(),
             automation: None,
+            track_automation: None,
         }
     }
 }
@@ -101,6 +111,32 @@ impl Default for MixParams {
 /// however the timeline is cut into blocks — and so the same in the preview's
 /// 480-frame blocks as in the export's frame-sized ones (§46).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FadeCurve {
+    /// Squared: a steady-sounding fade, what a fade has always been here.
+    #[default]
+    Smooth,
+    /// A straight ramp of level: seems to hold, then drop at the end.
+    Linear,
+    /// Most of the change at once, then easing to silence.
+    Fast,
+    /// Barely moving at first, then all at the end.
+    Slow,
+}
+
+impl FadeCurve {
+    /// The level at `t` (0 silent, 1 full) along the fade.
+    pub fn level(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Smooth => t * t,
+            Self::Linear => t,
+            Self::Fast => t.sqrt(),
+            Self::Slow => t * t * t,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Fades {
     /// Frames of the clip already heard before the first mixed frame.
     pub into_clip: i64,
@@ -109,6 +145,13 @@ pub struct Fades {
     /// Length of each fade in frames. Zero is no fade.
     pub fade_in: i64,
     pub fade_out: i64,
+    /// Length of an equal-power crossfade at each end, in frames: the clip
+    /// rising while the one before it falls, or falling while the next rises.
+    /// Sine-shaped, so the two together hold the loudness steady.
+    pub crossfade_in: i64,
+    pub crossfade_out: i64,
+    /// The shape of the fade in and the fade out (crossfades keep their own).
+    pub curve: FadeCurve,
 }
 
 impl Fades {
@@ -124,21 +167,35 @@ impl Fades {
             let into = self.into_clip + frame;
             if into < self.fade_in {
                 let t = (into.max(0) as f32) / (self.fade_in as f32);
-                gain *= t * t;
+                gain *= self.curve.level(t);
             }
         }
         if self.fade_out > 0 {
             let left = self.remaining - frame;
             if left < self.fade_out {
                 let t = (left.max(0) as f32) / (self.fade_out as f32);
-                gain *= t * t;
+                gain *= self.curve.level(t);
+            }
+        }
+        if self.crossfade_in > 0 {
+            let into = self.into_clip + frame;
+            if into < self.crossfade_in {
+                let t = (into.max(0) as f32) / (self.crossfade_in as f32);
+                gain *= (t * std::f32::consts::FRAC_PI_2).sin();
+            }
+        }
+        if self.crossfade_out > 0 {
+            let left = self.remaining - frame;
+            if left < self.crossfade_out {
+                let t = (left.max(0) as f32) / (self.crossfade_out as f32);
+                gain *= (t * std::f32::consts::FRAC_PI_2).sin();
             }
         }
         gain
     }
 
     fn is_none(&self) -> bool {
-        self.fade_in <= 0 && self.fade_out <= 0
+        self.fade_in <= 0 && self.fade_out <= 0 && self.crossfade_in <= 0 && self.crossfade_out <= 0
     }
 }
 
@@ -165,21 +222,29 @@ impl MixParams {
 ///
 /// Adds rather than overwrites, because several clips and tracks land in the
 /// same buffer. The caller zeroes `out` once per block.
+///
+/// Gives back the loudest sample *this call contributed*, per side: the level
+/// of one clip after its gain, its fades, its envelope and its lane's pan,
+/// which is what a per-lane meter has to show. Measured here rather than
+/// worked out again by the caller, because the only honest answer is the
+/// number that actually went into the buffer (§46). Callers that only want
+/// the mixing may ignore it.
 pub fn mix_into(
     out: &mut [f32],
     channels: usize,
     planes: &[Vec<f32>],
     at_frame: usize,
     params: MixParams,
-) {
+) -> (f32, f32) {
     if channels == 0 || planes.is_empty() {
-        return;
+        return (0.0, 0.0);
     }
 
     let out_frames = out.len() / channels;
     if at_frame >= out_frames {
-        return;
+        return (0.0, 0.0);
     }
+    let (mut peak_left, mut peak_right) = (0.0_f32, 0.0_f32);
 
     let source_frames = planes.iter().map(Vec::len).min().unwrap_or(0);
     let count = source_frames.min(out_frames - at_frame);
@@ -200,13 +265,19 @@ pub fn mix_into(
         if let Some(ramp) = riding {
             envelope *= ramp.at(frame);
         }
+        if let Some(ramp) = params.track_automation {
+            envelope *= ramp.at(frame);
+        }
 
         if channels == 2 {
             // The common case: stereo out. A mono source feeds both sides.
             let left = planes[0][frame];
             let right = planes.get(1).map_or(left, |p| p[frame]);
-            out[out_base] += left * left_gain * envelope;
-            out[out_base + 1] += right * right_gain * envelope;
+            let (left, right) = (left * left_gain * envelope, right * right_gain * envelope);
+            out[out_base] += left;
+            out[out_base + 1] += right;
+            peak_left = peak_left.max(left.abs());
+            peak_right = peak_right.max(right.abs());
         } else {
             // Any other layout: apply the combined gain without panning, since
             // pan has no defined meaning outside stereo.
@@ -216,10 +287,25 @@ pub fn mix_into(
                     .get(channel)
                     .or_else(|| planes.first())
                     .map_or(0.0, |p| p[frame]);
-                out[out_base + channel] += sample * gain;
+                let sample = sample * gain;
+                out[out_base + channel] += sample;
+                // Channel 0 reads as the left of the pair and 1 as the right,
+                // exactly as `peaks` folds a block: a meter with eight bars
+                // would say nothing a stereo one does not.
+                match channel {
+                    0 => peak_left = peak_left.max(sample.abs()),
+                    1 => peak_right = peak_right.max(sample.abs()),
+                    _ => {}
+                }
             }
         }
     }
+    // A mono layout is heard on both sides, so it meters on both.
+    if channels == 1 {
+        peak_right = peak_left;
+    }
+    let keep = |peak: f32| if peak.is_finite() { peak } else { 0.0 };
+    (keep(peak_left), keep(peak_right))
 }
 
 /// The loudest sample in each of a stereo block, for a level meter (§20a).
@@ -271,6 +357,31 @@ pub fn finish(out: &mut [f32], master_gain: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Equal power: at every point across a crossfade the falling and rising
+    /// gains, squared, add to one, so the loudness holds steady.
+    #[test]
+    fn a_crossfade_holds_the_loudness_steady() {
+        let length = 1_000;
+        for at in [0, 250, 500, 750, 999] {
+            let falling = Fades {
+                into_clip: 0,
+                remaining: length - at,
+                crossfade_out: length,
+                ..Fades::default()
+            }
+            .gain_at(0);
+            let rising = Fades {
+                into_clip: at,
+                remaining: 10_000,
+                crossfade_in: length,
+                ..Fades::default()
+            }
+            .gain_at(0);
+            let power = falling * falling + rising * rising;
+            assert!((power - 1.0).abs() < 0.01, "at {at}: power {power}");
+        }
+    }
+
     use super::*;
 
     fn mono(samples: &[f32]) -> Vec<Vec<f32>> {
@@ -354,6 +465,65 @@ mod tests {
         assert!((right_only[1] - 1.0).abs() < 1e-5);
     }
 
+    /// What a clip put into the mix is what the meter has to show: the level
+    /// after its gain and its lane's pan, not the samples that went in.
+    #[test]
+    fn mixing_reports_the_level_it_added() {
+        let mut out = vec![0.0_f32; 8];
+        let heard = mix_into(
+            &mut out,
+            2,
+            &mono(&[0.5, -0.8, 0.25, 0.1]),
+            0,
+            MixParams {
+                clip_gain: 0.5,
+                ..MixParams::default()
+            },
+        );
+        // Centre pan is 1/sqrt(2) a side, so 0.8 at half gain reads 0.283.
+        let expected = 0.8 * 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!((heard.0 - expected).abs() < 1e-5, "{heard:?}");
+        assert!((heard.1 - expected).abs() < 1e-5, "{heard:?}");
+    }
+
+    /// A lane panned hard left is loud on the left and silent on the right,
+    /// and its meter says so.
+    #[test]
+    fn a_panned_lane_reports_one_side() {
+        let mut out = vec![0.0_f32; 8];
+        let heard = mix_into(
+            &mut out,
+            2,
+            &mono(&[1.0, 1.0, 1.0, 1.0]),
+            0,
+            MixParams {
+                track_pan: -1.0,
+                ..MixParams::default()
+            },
+        );
+        assert!(heard.0 > 0.99, "the left went quiet: {heard:?}");
+        assert!(heard.1 < 1e-6, "the right was not silent: {heard:?}");
+    }
+
+    /// Nothing mixed is nothing metered: a clip outside the block, no planes,
+    /// no channels.
+    #[test]
+    fn nothing_mixed_is_nothing_metered() {
+        let mut out = vec![0.0_f32; 8];
+        assert_eq!(
+            mix_into(&mut out, 2, &mono(&[1.0; 4]), 99, MixParams::default()),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            mix_into(&mut out, 2, &[], 0, MixParams::default()),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            mix_into(&mut out, 0, &mono(&[1.0; 4]), 0, MixParams::default()),
+            (0.0, 0.0)
+        );
+    }
+
     #[test]
     fn clips_are_summed_not_overwritten() {
         let mut out = vec![0.0; 4];
@@ -424,10 +594,13 @@ mod tests {
     #[test]
     fn a_fade_in_rises_from_silence() {
         let fades = Fades {
+            curve: Default::default(),
             into_clip: 0,
             remaining: 1000,
             fade_in: 100,
             fade_out: 0,
+            crossfade_in: 0,
+            crossfade_out: 0,
         };
         assert_eq!(fades.gain_at(0), 0.0, "a fade in starts silent");
         assert!(
@@ -441,10 +614,13 @@ mod tests {
     #[test]
     fn a_fade_out_reaches_silence_at_the_clips_end() {
         let fades = Fades {
+            curve: Default::default(),
             into_clip: 900,
             remaining: 100,
             fade_in: 0,
             fade_out: 100,
+            crossfade_in: 0,
+            crossfade_out: 0,
         };
         assert_eq!(fades.gain_at(0), 1.0);
         assert!((fades.gain_at(50) - 0.25).abs() < 1e-6);
@@ -456,10 +632,13 @@ mod tests {
     #[test]
     fn a_fade_is_the_same_whatever_the_block_size() {
         let fade = |into_clip: i64| Fades {
+            curve: Default::default(),
             into_clip,
             remaining: 400 - into_clip,
             fade_in: 300,
             fade_out: 0,
+            crossfade_in: 0,
+            crossfade_out: 0,
         };
         let whole: Vec<f32> = (0..400).map(|f| fade(0).gain_at(f)).collect();
         let blocked: Vec<f32> = (0..4)
@@ -479,10 +658,13 @@ mod tests {
             MixParams {
                 track_pan: -1.0,
                 fades: Fades {
+                    curve: Default::default(),
                     into_clip: 0,
                     remaining: 4,
                     fade_in: 2,
                     fade_out: 0,
+                    crossfade_in: 0,
+                    crossfade_out: 0,
                 },
                 ..Default::default()
             },
@@ -599,10 +781,13 @@ mod automation_tests {
             0,
             MixParams {
                 fades: Fades {
+                    curve: Default::default(),
                     into_clip: 0,
                     remaining: 4,
                     fade_in: 4,
                     fade_out: 0,
+                    crossfade_in: 0,
+                    crossfade_out: 0,
                 },
                 automation: Some(GainRamp::steady(0.5)),
                 ..MixParams::default()
@@ -681,5 +866,43 @@ mod peak_tests {
     fn a_broken_sample_does_not_poison_the_meter() {
         let (left, right) = peaks(&[f32::NAN, f32::INFINITY, 0.3, 0.2], 2);
         assert!(left.is_finite() && right.is_finite(), "{left}, {right}");
+    }
+}
+
+#[cfg(test)]
+mod fade_curve_tests {
+    use super::*;
+
+    /// Halfway through a fade, each shape is where its name says.
+    #[test]
+    fn each_fade_shape_bends_its_own_way() {
+        let half = |curve: FadeCurve| {
+            Fades {
+                into_clip: 50,
+                remaining: 1_000,
+                fade_in: 100,
+                curve,
+                ..Fades::default()
+            }
+            .gain_at(0)
+        };
+        let (smooth, linear, fast, slow) = (
+            half(FadeCurve::Smooth),
+            half(FadeCurve::Linear),
+            half(FadeCurve::Fast),
+            half(FadeCurve::Slow),
+        );
+        assert!((linear - 0.5).abs() < 1e-6);
+        assert!((smooth - 0.25).abs() < 1e-6);
+        assert!(fast > linear && linear > smooth && smooth > slow);
+        for curve in [
+            FadeCurve::Smooth,
+            FadeCurve::Linear,
+            FadeCurve::Fast,
+            FadeCurve::Slow,
+        ] {
+            assert_eq!(curve.level(0.0), 0.0);
+            assert_eq!(curve.level(1.0), 1.0);
+        }
     }
 }

@@ -110,6 +110,77 @@ pub fn toolbar(
                 ui.close();
                 save_copy(editor, state);
             }
+            // Everything in one folder, for handing the edit to somebody else
+            // or putting it on another drive.
+            let (files, bytes) = editor.collect_size();
+            if ui
+                .add_enabled(files > 0, egui::Button::new("Collect Files…"))
+                .on_hover_text(format!(
+                    "Copy this project and the {files} file(s) it uses — about {} — into \
+                     one folder. Nothing is moved or deleted.",
+                    readable_bytes(bytes)
+                ))
+                .on_disabled_hover_text("This project uses no files yet")
+                .clicked()
+            {
+                ui.close();
+                collect_files(editor, state);
+            }
+            // Earlier saves, kept beside the project as it is saved.
+            let versions = editor.versions();
+            ui.add_enabled_ui(!versions.is_empty(), |ui| {
+                ui.menu_button("Go Back to a Version", |ui| {
+                    ui.label(
+                        egui::RichText::new("Each save keeps the one before. Going back keeps the current project too.")
+                            .small()
+                            .color(theme::DISABLED),
+                    );
+                    let mut chosen = None;
+                    for version in &versions {
+                        if ui.button(&version.label).clicked() {
+                            chosen = Some(version.path.clone());
+                            ui.close();
+                        }
+                    }
+                    if let Some(path) = chosen {
+                        match editor.restore_version(&path) {
+                            Ok(()) => {
+                                reset_state(state);
+                                state.info("Went back to an earlier version. Save to keep it");
+                            }
+                            Err(err) => state.error(err.to_string()),
+                        }
+                    }
+                })
+                .response
+                .on_disabled_hover_text("Earlier versions appear here once the project has been saved more than once");
+
+                // What is *in* a version, before deciding to go back to it: a
+                // list of dates says when each save happened and nothing about
+                // what it holds (`editor_core::compare`).
+                ui.menu_button("What Changed Since…", |ui| {
+                    ui.label(
+                        egui::RichText::new("Compare this edit with an earlier save. Nothing is opened or changed.")
+                            .small()
+                            .color(theme::DISABLED),
+                    );
+                    let mut asked = None;
+                    for version in &versions {
+                        if ui.button(&version.label).clicked() {
+                            asked = Some((version.path.clone(), version.label.clone()));
+                            ui.close();
+                        }
+                    }
+                    if let Some((path, label)) = asked {
+                        match editor.changes_since(&path) {
+                            Ok(changes) => state.version_changes.show_changes(label, changes),
+                            Err(err) => state.error(err.to_string()),
+                        }
+                    }
+                })
+                .response
+                .on_disabled_hover_text("Earlier versions appear here once the project has been saved more than once");
+            });
         });
         if ui
             .button("Export…")
@@ -173,7 +244,40 @@ pub fn toolbar(
             }
         })
         .response
-        .on_hover_text("A rectangle or an ellipse on the title lane, placed like a title");
+        .on_hover_text("A box, an ellipse, an arrow, a star or a speech bubble on the title lane, placed like a title");
+        // Who is talking: a name, a role and a bar, sliding in low on the left.
+        ui.menu_button("Lower Third", |ui| {
+            ui.set_min_width(240.0);
+            let (name, role, accent) = &mut state.lower_third;
+            ui.add(egui::TextEdit::singleline(name).hint_text("Name"));
+            ui.add(egui::TextEdit::singleline(role).hint_text("Role (optional)"));
+            ui.horizontal(|ui| {
+                ui.label("bar");
+                ui.color_edit_button_srgb(accent);
+            });
+            let ready = !name.trim().is_empty();
+            if ui
+                .add_enabled(ready, egui::Button::new("Add at the Playhead"))
+                .on_disabled_hover_text("Type a name first")
+                .clicked()
+            {
+                let (name, role, accent) = state.lower_third.clone();
+                ui.close();
+                match editor.add_lower_third(&name, &role, accent) {
+                    Ok(parts) => {
+                        state.clear_selection();
+                        for part in parts {
+                            state.selected_clips.insert(part);
+                        }
+                        state.info("Lower third added");
+                        state.needs_repaint = true;
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        })
+        .response
+        .on_hover_text("A name and a role with a coloured bar, low on the left, sliding in");
         ui.menu_button("Add Timer", |ui| {
             for direction in bettercut_editor_core::timeline::CountDirection::ALL {
                 if ui.button(direction.label()).clicked() {
@@ -232,6 +336,130 @@ pub fn toolbar(
             }
         }
 
+        // A background to go under titles and footage: a flat colour or a
+        // gradient, on the lowest picture lane with room at the playhead.
+        ui.menu_button("Add Colour", |ui| {
+            for (name, colour) in COLOUR_CLIP_PRESETS {
+                if ui.button(name).clicked() {
+                    match editor.add_colour_clip(colour) {
+                        Ok(clip) => {
+                            state.selected_clips.clear();
+                            state.selected_clips.insert(clip);
+                            state.inspector_tab = InspectorTab::Video;
+                            state.needs_repaint = true;
+                        }
+                        Err(err) => state.error(err.to_string()),
+                    }
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "A solid colour or gradient clip at the playhead, under the footage. \
+             Change its colours in the Inspector.",
+        );
+
+        // Sound with no recording behind it: what a delivery is lined up
+        // against, and a gap somebody chose (`editor_core::tone`).
+        ui.menu_button("Add Sound", |ui| {
+            use bettercut_editor_core::media::GeneratedSound;
+            let beep = "Sync Beep";
+            let mut made: Option<(GeneratedSound, bettercut_editor_core::foundation::TimelineTime)> =
+                None;
+            let mut beeped = false;
+            for (name, sound, seconds, hint) in [
+                (
+                    "1 kHz Tone · 30 s",
+                    GeneratedSound::LINE_UP,
+                    30_i64,
+                    "A steady 1 kHz at -18 dBFS: what whoever receives the file lines their \
+                     meters up against",
+                ),
+                (
+                    "Silence · 2 s",
+                    GeneratedSound::Silence,
+                    2,
+                    "Silence you put there, which reads differently from a gap nobody noticed \
+                     — trim, move and fade it like any clip",
+                ),
+            ] {
+                if ui.button(name).on_hover_text(hint).clicked() {
+                    made = Some((
+                        sound,
+                        bettercut_editor_core::foundation::TimelineTime::from_seconds(seconds),
+                    ));
+                    ui.close();
+                }
+            }
+            if ui
+                .button(beep)
+                .on_hover_text(
+                    "One frame of 1 kHz at the playhead: the frame it is on is the frame the \
+                     picture mark lines up with",
+                )
+                .clicked()
+            {
+                beeped = true;
+                ui.close();
+            }
+
+            let placed = if beeped {
+                Some(editor.add_sync_beep())
+            } else {
+                made.map(|(sound, length)| editor.add_generated_sound(sound, length))
+            };
+            match placed {
+                Some(Ok(clip)) => {
+                    state.selected_clips.clear();
+                    state.selected_clips.insert(clip);
+                    state.inspector_tab = InspectorTab::Audio;
+                    state.needs_repaint = true;
+                }
+                Some(Err(err)) => state.error(err.to_string()),
+                None => {}
+            }
+        })
+        .response
+        .on_hover_text(
+            "A line-up tone, a sync beep or a stretch of silence at the playhead, on the first \
+             sound lane with room for it",
+        );
+
+        // A symbol on the title lane: a heart, a tick, a lightning bolt. Four
+        // to a row, so the grid reads as a palette rather than as a list.
+        ui.menu_button("Sticker", |ui| {
+            use bettercut_editor_core::stickers::STICKERS;
+            let mut chosen: Option<&str> = None;
+            egui::Grid::new("stickers").spacing([2.0, 2.0]).show(ui, |ui| {
+                for (index, (sticker, name)) in STICKERS.iter().enumerate() {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new(*sticker).size(22.0)))
+                        .on_hover_text(*name)
+                        .clicked()
+                    {
+                        chosen = Some(sticker);
+                    }
+                    if index % 4 == 3 {
+                        ui.end_row();
+                    }
+                }
+            });
+            if let Some(sticker) = chosen {
+                match editor.add_sticker(sticker) {
+                    Ok(clip) => {
+                        state.select_only(clip);
+                        state.inspector_tab = InspectorTab::Video;
+                        state.needs_repaint = true;
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+                ui.close();
+            }
+        })
+        .response
+        .on_hover_text("Put a symbol on the title lane at the playhead");
+
         // §31: a whole edit from a few clips. Beside the other things that put
         // something on the timeline.
         if ui
@@ -281,6 +509,57 @@ pub fn toolbar(
                 .map_or(TimelineTime::ZERO, |s| s.duration());
             state.zoom_to_fit(duration, ui.available_width().max(400.0));
         }
+        let selection = state.selection_range(editor);
+        if ui
+            .add_enabled(selection.is_some(), egui::Button::new("Selection"))
+            .on_hover_text("Zoom in on the selected clips")
+            .on_disabled_hover_text("Select clips to zoom in on them")
+            .clicked()
+            && let Some(range) = selection
+        {
+            // The lanes, not the whole window: the track names take the left.
+            let lanes = (ui.ctx().content_rect().width() - theme::TRACK_HEADER_WIDTH).max(200.0);
+            state.zoom_to_range(range, lanes);
+        }
+
+        ui.separator();
+
+        // Find clips by file name, title words or note; Enter goes to the next
+        // one after the playhead, and round again from the start.
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut state.find_query)
+                .desired_width(130.0)
+                .hint_text("Find clips"),
+        );
+        let found = editor.find_clips(&state.find_query);
+        if !state.find_query.trim().is_empty() {
+            ui.label(
+                egui::RichText::new(match found.len() {
+                    0 => "none".to_owned(),
+                    n => format!("{n} found"),
+                })
+                .small()
+                .color(theme::DISABLED),
+            );
+        }
+        if field.lost_focus()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !found.is_empty()
+        {
+            let playhead = editor.playhead();
+            let next = found
+                .iter()
+                .find(|f| f.start > playhead)
+                .unwrap_or(&found[0]);
+            editor.set_playhead(next.start);
+            state.select_only(next.clip);
+            let lanes = (ui.ctx().content_rect().width() - theme::TRACK_HEADER_WIDTH).max(200.0);
+            state.follow_playhead(next.start, lanes);
+            state.info(format!("Found {}", next.label));
+            state.needs_repaint = true;
+            // Keep the box ready for the next Enter.
+            field.request_focus();
+        }
 
         ui.separator();
 
@@ -301,6 +580,28 @@ pub fn toolbar(
 
         ui.checkbox(&mut state.snapping, "Snap")
             .on_hover_text("Snap edits to clip edges and the playhead (N). Hold Alt to bypass.");
+
+        // A magnetic main track: the first picture lane stays packed, so a
+        // delete or a drag closes up behind it.
+        let mut magnetic = editor.is_magnetic();
+        if ui
+            .checkbox(&mut magnetic, "Magnetic")
+            .on_hover_text("Keep the main track's clips together from the start: deleting or moving one closes the gap")
+            .changed()
+        {
+            match editor.dispatch(bettercut_editor_core::Command::ChangeSetting {
+                change: bettercut_editor_core::SettingChange::MagneticTimeline(magnetic),
+            }) {
+                Ok(()) => {
+                    if magnetic {
+                        // Turning it on packs the track now, as part of the
+                        // same step, so it is magnetic from the first moment.
+                        crate::shortcuts::close_up_if_magnetic(editor, state);
+                    }
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
 
         if ui
             .button("Split")
@@ -360,6 +661,36 @@ pub fn toolbar(
                 state.markers_open = !state.markers_open;
             }
             if ui
+                .button("Trim")
+                .on_hover_text("Both sides of the cut nearest the playhead, a frame at a time")
+                .clicked()
+            {
+                state.trim.open = !state.trim.open;
+            }
+            if ui
+                .button("Storyboard")
+                .on_hover_text("The cut as a row of cards: drag one to move that shot")
+                .clicked()
+            {
+                state.storyboard_open = !state.storyboard_open;
+            }
+            if ui
+                .button("Sound")
+                .on_hover_text(
+                    "The selected sound clip drawn tall: zoom in, read the level, place the playhead exactly",
+                )
+                .clicked()
+            {
+                state.waveform_view.open = !state.waveform_view.open;
+            }
+            if ui
+                .button("Scopes")
+                .on_hover_text("Histogram and waveform of the frame under the playhead")
+                .clicked()
+            {
+                state.scopes.open = !state.scopes.open;
+            }
+            if ui
                 .button("History")
                 .on_hover_text("Every step of the edit; click one to go back to it (Ctrl+H)")
                 .clicked()
@@ -380,6 +711,160 @@ pub fn toolbar(
             );
         });
     });
+}
+
+/// The sequences, as tabs above the timeline: click one to work on it, "+" for
+/// a new one, right-click a tab to rename, duplicate or delete it.
+pub fn sequence_tabs(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    let sequences = editor.sequence_list();
+    let active = editor.active_sequence().map(|s| s.id);
+    let only_one = sequences.len() == 1;
+    let mut switch_to = None;
+    let mut duplicate = None;
+    let mut reshaped = None;
+    let mut save_template = None;
+    let mut remove = None;
+    let mut menu_open = false;
+
+    ui.horizontal_wrapped(|ui| {
+        for (id, name) in &sequences {
+            let tab = ui
+                .selectable_label(active == Some(*id), name)
+                .on_hover_text("Right-click to rename, duplicate or delete");
+            if tab.clicked() {
+                switch_to = Some(*id);
+            }
+            tab.context_menu(|ui| {
+                menu_open = true;
+                let mut draft = match &state.sequence_name_draft {
+                    Some((draft_id, text)) if draft_id == id => text.clone(),
+                    _ => name.clone(),
+                };
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut draft)
+                        .desired_width(160.0)
+                        .char_limit(Editor::MAX_TRACK_NAME)
+                        .hint_text("sequence name"),
+                );
+                if field.changed() {
+                    state.sequence_name_draft = Some((*id, draft));
+                }
+                ui.separator();
+                if ui.button("Duplicate").clicked() {
+                    duplicate = Some(*id);
+                    ui.close();
+                }
+                // This edit's timing, framing and titles as a template, its
+                // footage left as slots for the next video.
+                if ui
+                    .button("Save as Template")
+                    .on_hover_text("Keep this edit's timing, transitions and titles as a template to fill with other clips")
+                    .clicked()
+                {
+                    ui.close();
+                    save_template = Some((*id, name.clone()));
+                }
+                // Another shape of the same edit: the vertical cut of a
+                // landscape video, with every shot cropped to fill it.
+                ui.menu_button("Copy as Shape", |ui| {
+                    let size = editor.project().sequence(*id).map(|s| s.resolution);
+                    for shape in bettercut_editor_core::reshape::SHAPES {
+                        if size.is_some_and(|size| shape.matches(size)) {
+                            continue;
+                        }
+                        if ui.button(shape.label).on_hover_text(shape.hint).clicked() {
+                            reshaped = Some((*id, shape));
+                            ui.close();
+                        }
+                    }
+                });
+                if ui
+                    .add_enabled(
+                        !only_one,
+                        egui::Button::new(egui::RichText::new("Delete").color(theme::ERROR_TEXT)),
+                    )
+                    .on_disabled_hover_text("A project needs at least one sequence")
+                    .on_hover_text("Undoable")
+                    .clicked()
+                {
+                    remove = Some(*id);
+                    ui.close();
+                }
+            });
+        }
+        if ui
+            .button("+")
+            .on_hover_text("A new, empty sequence in the same format")
+            .clicked()
+        {
+            match editor.add_sequence() {
+                Ok(_) => {
+                    state.clear_selection();
+                    state.info("New sequence");
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    });
+
+    // The name typed into a tab's menu, once no menu is open to type into.
+    if !menu_open && let Some((id, name)) = state.sequence_name_draft.take() {
+        match editor.rename_sequence(id, &name) {
+            Ok(true) => state.info(format!("Sequence renamed to {}", name.trim())),
+            Ok(false) => {}
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(id) = switch_to
+        && editor.switch_sequence(id)
+    {
+        state.clear_selection();
+        state.needs_repaint = true;
+    }
+    if let Some(id) = duplicate {
+        match editor.duplicate_sequence(id) {
+            Ok(_) => {
+                state.clear_selection();
+                state.info("Sequence duplicated");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some((id, name)) = save_template {
+        if editor.switch_sequence(id) {
+            state.clear_selection();
+        }
+        let folder = bettercut_editor_core::templates::library::user_dir();
+        match editor.save_as_template(&name, &folder) {
+            Ok(saved) => state.info(if saved.left_out > 0 {
+                format!(
+                    "Saved \"{name}\" as a template with {} slot(s); {} shape(s) or timer(s) left out",
+                    saved.slots, saved.left_out
+                )
+            } else {
+                format!("Saved \"{name}\" as a template with {} slot(s)", saved.slots)
+            }),
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some((id, shape)) = reshaped {
+        match editor.copy_sequence_as(id, shape) {
+            Ok(_) => {
+                state.clear_selection();
+                state.info(format!("{} copy made", shape.label));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(id) = remove {
+        match editor.remove_sequence(id) {
+            Ok(()) => {
+                state.clear_selection();
+                state.info("Sequence deleted");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 }
 
 /// Apply the note being typed, if there is one.
@@ -474,11 +959,15 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
     // Finding one file among dozens: words typed match anywhere in the name,
     // and the kind narrows it further. Unused files can go in one step.
-    ui.add(
+    let search = ui.add(
         egui::TextEdit::singleline(&mut state.media_search)
             .hint_text("Search files")
             .desired_width(f32::INFINITY),
     );
+    if search.changed() {
+        // Looking for something else: the mark has served its purpose.
+        state.media_reveal = None;
+    }
     ui.horizontal_wrapped(|ui| {
         for filter in crate::state::MediaFilter::ALL {
             if ui
@@ -488,7 +977,94 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                 state.media_kind = filter;
             }
         }
+        ui.separator();
+        // The takes worth keeping: the first pass through a shoot is choosing,
+        // not editing, and this is the half of it that shows the choice.
+        let starred = state.media_stars > 0;
+        if ui
+            .selectable_label(starred, if starred { "Starred" } else { "All takes" })
+            .on_hover_text("Show only the files with at least three stars")
+            .clicked()
+        {
+            state.media_stars = if starred { 0 } else { 3 };
+            state.needs_repaint = true;
+        }
     });
+    // How the files are ordered, and how much of each one is shown. Both are
+    // one row: a long import is read by narrowing, then ordering, then
+    // switching to the compact list — in that order, left to right.
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Sort").small().color(theme::DISABLED));
+        for sort in crate::state::MediaSort::ALL {
+            if ui
+                .selectable_label(state.media_sort == sort, sort.label())
+                .clicked()
+            {
+                // Pressing the sort already chosen turns it around, which is
+                // how every file list behaves.
+                if state.media_sort == sort {
+                    state.media_sort_reversed = !state.media_sort_reversed;
+                } else {
+                    state.media_sort = sort;
+                    state.media_sort_reversed = false;
+                }
+                state.needs_repaint = true;
+            }
+        }
+        if ui
+            .button(if state.media_sort_reversed {
+                "Reversed"
+            } else {
+                "In order"
+            })
+            .on_hover_text("Turn the order around")
+            .clicked()
+        {
+            state.media_sort_reversed = !state.media_sort_reversed;
+            state.needs_repaint = true;
+        }
+        ui.separator();
+        let view = state.media_view;
+        if ui
+            .button(view.label())
+            .on_hover_text("Switch between cards with thumbnails and a compact list")
+            .clicked()
+        {
+            state.media_view = match view {
+                crate::state::MediaView::Cards => crate::state::MediaView::List,
+                crate::state::MediaView::List => crate::state::MediaView::Cards,
+            };
+            state.needs_repaint = true;
+        }
+    });
+
+    // Bins, once there are any: every file, the unfiled ones, or one bin.
+    let bins = editor.bins();
+    if bins.is_empty() {
+        state.media_bin = None;
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Bins").small().color(theme::DISABLED));
+            if ui
+                .selectable_label(state.media_bin.is_none(), "All")
+                .clicked()
+            {
+                state.media_bin = None;
+            }
+            for bin in &bins {
+                let shown = state.media_bin.as_ref() == Some(&Some(bin.clone()));
+                if ui.selectable_label(shown, bin).clicked() {
+                    state.media_bin = Some(Some(bin.clone()));
+                }
+            }
+            if ui
+                .selectable_label(state.media_bin == Some(None), "Unfiled")
+                .clicked()
+            {
+                state.media_bin = Some(None);
+            }
+        });
+    }
     let unused = editor.unused_media().len();
     if unused > 0
         && ui
@@ -507,36 +1083,65 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             Err(err) => state.error(err.to_string()),
         }
     }
-    let total = editor.project().media.len();
+    let total = editor.project().media.iter().filter(|m| !m.baked).count();
 
     // Collect first so the list can be drawn while dispatching commands below.
-    let assets: Vec<(MediaId, String, bool, bool, MediaTime, bool)> = editor
+    let mut assets: Vec<(MediaId, String, bool, bool, MediaTime, bool, MediaKind)> = editor
         .project()
         .media
         .iter()
         .filter(|m| {
-            state.media_kind.accepts(m.kind)
-                && crate::state::media_name_matches(&m.file_name, &state.media_search)
+            // A baked stretch of the edit is media the program wrote, not a
+            // file the user brought in (`editor_core::render_in_place`).
+            !m.baked
+                && state.media_kind.accepts(m.kind)
+                && m.rating >= state.media_stars
+                && state
+                    .media_bin
+                    .as_ref()
+                    .is_none_or(|wanted| &m.bin == wanted)
+                && (crate::state::media_name_matches(m.display_name(), &state.media_search)
+                    || crate::state::media_name_matches(&m.file_name, &state.media_search))
         })
         .map(|m| {
             (
                 m.id,
-                m.file_name.clone(),
+                m.display_name().to_owned(),
                 m.missing,
                 // A photo has no duration and needs none.
                 !m.is_still() && m.duration.is_zero(),
                 m.duration,
                 m.is_still(),
+                m.kind,
             )
         })
         .collect();
+
+    // Sorting is over the filtered list, so what is on screen is what is
+    // ordered. "Added" is the order they arrived in, which is what the library
+    // already held — so the default costs nothing.
+    match state.media_sort {
+        crate::state::MediaSort::Added => {}
+        crate::state::MediaSort::Name => {
+            assets.sort_by_key(|a| a.1.to_lowercase());
+        }
+        crate::state::MediaSort::Duration => assets.sort_by_key(|a| a.4.ticks()),
+        crate::state::MediaSort::Kind => assets.sort_by_key(|a| match a.6 {
+            MediaKind::Video => 0,
+            MediaKind::Audio => 1,
+            MediaKind::Image => 2,
+        }),
+    }
+    if state.media_sort_reversed {
+        assets.reverse();
+    }
 
     // §33's auto slideshow, offered only when there is something to make one
     // from. A button that is always there and usually refuses teaches people to
     // ignore it.
     let photos: Vec<MediaId> = assets
         .iter()
-        .filter(|(_, _, missing, _, _, still)| *still && !*missing)
+        .filter(|(_, _, missing, _, _, still, _)| *still && !*missing)
         .map(|(id, ..)| *id)
         .collect();
     if photos.len() >= 2 {
@@ -545,8 +1150,21 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     }
 
     let mut place: Option<MediaId> = None;
+    // A file to put at the playhead, and how (`editor_core::three_point`).
+    let mut drop_at: Option<(MediaId, bettercut_editor_core::three_point::DropKind)> = None;
     let mut relink: Option<MediaId> = None;
     let mut remove: Option<MediaId> = None;
+    let mut rename: Option<(MediaId, String)> = None;
+    let mut refile: Option<(MediaId, String)> = None;
+    let mut replace_all: Option<(MediaId, MediaId)> = None;
+    // Every file by name, for "use another file everywhere this one is".
+    let every_file: Vec<(MediaId, String)> = editor
+        .project()
+        .media
+        .iter()
+        .map(|m| (m.id, m.display_name().to_owned()))
+        .collect();
+    let mut renaming_open = false;
 
     // One banner rather than one button per broken asset: media usually moves a
     // folder at a time, so the folder scan is the action that actually fixes
@@ -597,17 +1215,148 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         );
     }
 
+    if state.media_view == crate::state::MediaView::List {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (id, name, missing, no_duration, duration, still, kind) in &assets {
+                let row = ui.horizontal(|ui| {
+                    let can_place = !*no_duration && !*missing;
+                    if ui
+                        .add_enabled(can_place, egui::Button::new("+").small())
+                        .on_hover_text("Add to timeline")
+                        .on_disabled_hover_text(
+                            "This file has no duration to place, or it is missing from disk.",
+                        )
+                        .clicked()
+                    {
+                        place = Some(*id);
+                    }
+                    ui.label(
+                        egui::RichText::new(match kind {
+                            MediaKind::Video => "Video",
+                            MediaKind::Audio => "Sound",
+                            MediaKind::Image => "Photo",
+                        })
+                        .small()
+                        .color(theme::DISABLED),
+                    );
+                    if *missing {
+                        ui.label(egui::RichText::new("missing").color(theme::ERROR_TEXT));
+                    }
+                    let length = if *still || *no_duration {
+                        String::new()
+                    } else {
+                        TimelineTime::from_ticks(duration.ticks()).format_timecode()
+                    };
+                    if !length.is_empty() {
+                        ui.label(
+                            egui::RichText::new(length)
+                                .small()
+                                .monospace()
+                                .color(theme::DISABLED),
+                        );
+                    }
+                    ui.label(name)
+                        .on_hover_text("Switch to Cards for the thumbnail, renaming and the rest");
+                });
+                mark_revealed(ui, state, *id, row.response.rect);
+            }
+        });
+        if let Some((id, kind)) = drop_at {
+            drop_at_playhead(editor, state, id, kind);
+        }
+        if let Some(id) = place {
+            place_on_timeline(editor, state, id);
+        }
+        return;
+    }
+
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (id, name, missing, no_duration, duration, still) in &assets {
-            ui.group(|ui| {
-                thumbnail(ui, state, *id, *missing);
+        for (id, name, missing, no_duration, duration, still, _) in &assets {
+            let card = ui.group(|ui| {
+                match editor.project().media_asset(*id).and_then(|a| a.generated) {
+                    Some(colour) => colour_swatch(ui, colour),
+                    None => thumbnail(ui, state, *id, *missing, *duration),
+                }
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(name).strong());
+                    let label = ui
+                        .label(egui::RichText::new(name).strong())
+                        .on_hover_text("Right-click to rename it in the project");
+                    // A name of its own, typed in a menu and applied when the
+                    // menu closes, as a track's is.
+                    label.context_menu(|ui| {
+                        renaming_open = true;
+                        let mut draft = match &state.media_name_draft {
+                            Some((draft_id, text)) if draft_id == id => text.clone(),
+                            _ => name.clone(),
+                        };
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut draft)
+                                .desired_width(180.0)
+                                .char_limit(Editor::MAX_MEDIA_NAME)
+                                .hint_text("name in this project"),
+                        );
+                        if field.changed() {
+                            state.media_name_draft = Some((*id, draft.clone()));
+                        }
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            rename = Some((*id, draft));
+                            ui.close();
+                        }
+                        if ui
+                            .button("Use the file name")
+                            .on_hover_text("Forget the given name")
+                            .clicked()
+                        {
+                            rename = Some((*id, String::new()));
+                            ui.close();
+                        }
+                        ui.separator();
+                        ui.menu_button("Move to Bin", |ui| {
+                            for bin in &bins {
+                                if ui.button(bin).clicked() {
+                                    refile = Some((*id, bin.clone()));
+                                    ui.close();
+                                }
+                            }
+                            ui.horizontal(|ui| {
+                                let field = ui.add(
+                                    egui::TextEdit::singleline(&mut state.new_bin_draft)
+                                        .desired_width(120.0)
+                                        .char_limit(Editor::MAX_BIN_NAME)
+                                        .hint_text("new bin"),
+                                );
+                                let enter = field.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if (ui.button("Add").clicked() || enter)
+                                    && !state.new_bin_draft.trim().is_empty()
+                                {
+                                    refile = Some((*id, std::mem::take(&mut state.new_bin_draft)));
+                                    ui.close();
+                                }
+                            });
+                            if ui.button("Take out of its bin").clicked() {
+                                refile = Some((*id, String::new()));
+                                ui.close();
+                            }
+                        });
+                        if editor.media_is_used(*id) {
+                            ui.menu_button("Replace Everywhere With", |ui| {
+                                for (other, other_name) in &every_file {
+                                    if other != id && ui.button(other_name).clicked() {
+                                        replace_all = Some((*id, *other));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
+                    });
                     if *missing {
                         ui.label(egui::RichText::new("missing").color(theme::ERROR_TEXT));
                     }
                 });
+
+                stars_row(ui, editor, state, *id);
 
                 if *still {
                     ui.label(egui::RichText::new("Photo").small().color(theme::DISABLED));
@@ -648,6 +1397,29 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                         place = Some(*id);
                     }
 
+                    // Three-point editing: the marked part, at the playhead,
+                    // either replacing what is there or pushing it along
+                    // (`editor_core::three_point`).
+                    use bettercut_editor_core::three_point::DropKind;
+                    if ui
+                        .add_enabled(can_place, egui::Button::new("Overwrite"))
+                        .on_hover_text(
+                            "Put it at the playhead over whatever is there; nothing else moves",
+                        )
+                        .clicked()
+                    {
+                        drop_at = Some((*id, DropKind::Overwrite));
+                    }
+                    if ui
+                        .add_enabled(can_place, egui::Button::new("Insert"))
+                        .on_hover_text(
+                            "Put it at the playhead and push everything from there along",
+                        )
+                        .clicked()
+                    {
+                        drop_at = Some((*id, DropKind::Insert));
+                    }
+
                     // Removing an asset a clip still uses would leave cuts
                     // pointing at nothing, so it is refused — and the button
                     // says why rather than failing after the click. §2 also
@@ -670,8 +1442,45 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     }
                 });
             });
+            mark_revealed(ui, state, *id, card.response.rect);
         }
     });
+
+    // A typed name is applied once its menu has closed, however it closed.
+    if rename.is_none()
+        && !renaming_open
+        && let Some((id, text)) = state.media_name_draft.take()
+    {
+        rename = Some((id, text));
+    }
+    if let Some((id, text)) = rename {
+        state.media_name_draft = None;
+        match editor.rename_media(id, &text) {
+            Ok(true) => state.needs_repaint = true,
+            Ok(false) => {}
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    if let Some((old, new)) = replace_all {
+        match editor.replace_media_everywhere(old, new) {
+            Ok((0, 0)) => state.info("Nothing uses that file in this sequence"),
+            Ok((changed, 0)) => state.info(format!("Replaced in {changed} clip(s)")),
+            Ok((changed, refused)) => state.info(format!(
+                "Replaced in {changed} clip(s); {refused} could not take the new file (too short, or missing a picture or sound)"
+            )),
+            Err(err) => state.error(err.to_string()),
+        }
+        state.needs_repaint = true;
+    }
+
+    if let Some((id, bin)) = refile {
+        match editor.set_media_bin(id, &bin) {
+            Ok(true) => state.needs_repaint = true,
+            Ok(false) => {}
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 
     if let Some(id) = place {
         place_on_timeline(editor, state, id);
@@ -761,6 +1570,62 @@ fn relink_folder(editor: &mut Editor, state: &mut UiState) {
 /// whole argument for egui + wgpu is that this needs no copy and no overlay
 /// window — and that panels may overlap it, which a native child window could
 /// never allow.
+/// The picture on the whole screen, with the playhead's time and how to get
+/// back shown small in a corner while the pointer moves.
+pub fn fullscreen_preview(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    preview: Option<&crate::Preview>,
+) {
+    let full = ui.max_rect();
+    let Some(sequence) = editor.active_sequence() else {
+        return;
+    };
+    let aspect = sequence.resolution.aspect_ratio().max(0.01);
+    // The largest box of the sequence's shape that fits the screen.
+    let size = if full.width() / full.height() > aspect {
+        egui::vec2(full.height() * aspect, full.height())
+    } else {
+        egui::vec2(full.width(), full.width() / aspect)
+    };
+    let rect = egui::Rect::from_center_size(full.center(), size);
+    let response = ui.allocate_rect(full, egui::Sense::click());
+    if let Some(preview) = preview.filter(|p| p.has_content()) {
+        ui.painter().image(
+            preview.texture_id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    if response.double_clicked() {
+        state.fullscreen = false;
+    }
+    // A moving pointer brings the hint back; still, the picture is clean.
+    let moving = ui.input(|i| i.pointer.delta().length() > 0.0 || i.pointer.any_down());
+    let shown_id = ui.id().with("fullscreen hint");
+    let now = ui.input(|i| i.time);
+    if moving {
+        ui.data_mut(|d| d.insert_temp(shown_id, now));
+    }
+    let last: f64 = ui.data(|d| d.get_temp(shown_id)).unwrap_or(now);
+    if now - last < 2.5 {
+        ui.painter().text(
+            full.left_bottom() + egui::vec2(16.0, -16.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!(
+                "{}   ·   Space play   ·   Esc or F to leave full screen",
+                editor.playhead().format_timecode()
+            ),
+            egui::FontId::proportional(14.0),
+            egui::Color32::from_white_alpha(200),
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+}
+
 pub fn preview(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -779,13 +1644,47 @@ pub fn preview(
         return;
     };
     let output_aspect = sequence.resolution.aspect_ratio().max(0.01);
+    let resolution = (sequence.resolution.width, sequence.resolution.height);
 
-    // Letterbox a rect with the sequence's aspect ratio.
-    let mut size = egui::vec2(rect.width() - 24.0, (rect.width() - 24.0) / output_aspect);
-    if size.y > rect.height() - 24.0 {
-        size = egui::vec2((rect.height() - 24.0) * output_aspect, rect.height() - 24.0);
+    // Ctrl + scroll steps the zoom; the middle button pans a zoomed picture.
+    if response.hovered() {
+        // One step per wheel notch, read from the raw events: the smoothed
+        // scroll would step several times for one turn of the wheel.
+        let notches: Vec<bool> = ui.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } if modifiers.command && delta.y != 0.0 => Some(delta.y > 0.0),
+                    _ => None,
+                })
+                .collect()
+        });
+        for inwards in notches {
+            state.preview_zoom = state.preview_zoom.step(inwards);
+            state.needs_repaint = true;
+        }
     }
-    let canvas = egui::Rect::from_center_size(rect.center(), size);
+    if response.dragged_by(egui::PointerButton::Middle)
+        && state.preview_zoom != crate::state::PreviewZoom::Fit
+    {
+        state.preview_pan += response.drag_delta();
+        state.needs_repaint = true;
+    }
+
+    // Where the picture goes: letterboxed to fit, or at a set scale and pan.
+    // Everything drawn over it — guides, handles, the eyedropper — works from
+    // this one rect, so they all follow the zoom.
+    let (canvas, pan) = crate::preview_overlay::preview_canvas(
+        rect,
+        resolution,
+        state.preview_zoom,
+        state.preview_pan,
+        1.0 / ui.ctx().pixels_per_point(),
+    );
+    state.preview_pan = pan;
 
     painter.rect_filled(canvas, 4, egui::Color32::BLACK);
     painter.rect_stroke(
@@ -797,16 +1696,76 @@ pub fn preview(
 
     let has_content = preview.is_some_and(crate::Preview::has_content);
 
+    // Dragging the divider of a side-by-side comparison. Before the picture is
+    // drawn, so the line lands where the pointer left it rather than a frame
+    // behind.
+    if state.compare_split
+        && response.dragged()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        state.compare_split_at =
+            ((pos.x - canvas.left()) / canvas.width().max(1.0)).clamp(0.05, 0.95);
+        state.needs_repaint = true;
+    }
+
     // The composited frame, painted directly. One line, no copy (§4.1).
     if let Some(preview) = preview
         && has_content
     {
-        painter.image(
-            preview.texture_id(),
-            canvas,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
+        let split = state
+            .compare_split
+            .then(|| preview.snapshot_id())
+            .flatten()
+            .map(|id| (id, state.compare_split_at.clamp(0.05, 0.95)));
+        match split {
+            None => {
+                painter.image(
+                    preview.texture_id(),
+                    canvas,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            // Graded to the left of the divider, the original to the right,
+            // each drawn from its own part of its own texture so the two
+            // halves line up exactly.
+            Some((original, at)) => {
+                let edge = canvas.left() + canvas.width() * at;
+                painter.image(
+                    preview.texture_id(),
+                    egui::Rect::from_min_max(canvas.min, egui::pos2(edge, canvas.bottom())),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(at, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                painter.image(
+                    original,
+                    egui::Rect::from_min_max(egui::pos2(edge, canvas.top()), canvas.max),
+                    egui::Rect::from_min_max(egui::pos2(at, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                painter.line_segment(
+                    [
+                        egui::pos2(edge, canvas.top()),
+                        egui::pos2(edge, canvas.bottom()),
+                    ],
+                    egui::Stroke::new(2.0, theme::SELECTION),
+                );
+                painter.text(
+                    egui::pos2(edge - 6.0, canvas.top() + 4.0),
+                    egui::Align2::RIGHT_TOP,
+                    "after",
+                    egui::FontId::proportional(12.0),
+                    theme::CLIP_TEXT,
+                );
+                painter.text(
+                    egui::pos2(edge + 6.0, canvas.top() + 4.0),
+                    egui::Align2::LEFT_TOP,
+                    "before",
+                    egui::FontId::proportional(12.0),
+                    theme::CLIP_TEXT,
+                );
+            }
+        }
     } else {
         painter.text(
             canvas.center(),
@@ -826,6 +1785,10 @@ pub fn preview(
             theme::DISABLED,
         );
     }
+
+    // Guides over the picture, under the handles: they help place things, and
+    // must never get in the way of grabbing one.
+    crate::preview_overlay::draw_guides(&painter, state.preview_guide, canvas);
 
     // The eyedropper, before the handles: while it is armed the picture is
     // a colour chart, not a thing to drag, and letting a transform handle take
@@ -944,6 +1907,20 @@ fn transform_handles(
         overlay::on_rotate_handle(shown.box_on_canvas, shown.transform.rotation_degrees, at)
     });
 
+    // §45's corner pin, for the selected clip while pin mode is on. Like crop
+    // mode, it takes the corners over: a drag meant to pin that scaled instead
+    // would be a nasty surprise.
+    let pin_mode = selected
+        .filter(|_| state.corner_pin_mode)
+        .and_then(|shown| {
+            editor
+                .video_clip(shown.clip)
+                .map(|clip| (shown, clip.corner_pin))
+        });
+    let on_pinned_corner = pin_mode.zip(pointer).and_then(|((shown, pin), at)| {
+        overlay::pinned_corner_at(shown.box_on_canvas, canvas, pin, at)
+    });
+
     // Crop mode, for the clip it was armed on and only while that clip is the
     // one selected (see `UiState::cropping`). While it is on, the crop edges
     // are the only handles: the corners and the rotate handle sit where a crop
@@ -1050,6 +2027,36 @@ fn transform_handles(
                     },
                 )
             }),
+            // A pinned corner, while pin mode is on: it sits where the scale
+            // handle would, and pin mode is what says which one the press
+            // means.
+            _ if on_pinned_corner.is_some() => {
+                pin_mode
+                    .zip(on_pinned_corner)
+                    .map(|((shown, pin), corner)| {
+                        let index = match corner {
+                            overlay::Corner::TopLeft => 0,
+                            overlay::Corner::TopRight => 1,
+                            overlay::Corner::BottomRight => 2,
+                            overlay::Corner::BottomLeft => 3,
+                        };
+                        // Where that corner would sit with no pin at all: what
+                        // the drag's offset is measured from.
+                        let unpinned = overlay::pinned_corners(
+                            shown.box_on_canvas,
+                            canvas,
+                            bettercut_editor_core::timeline::CornerPin::NONE,
+                        )[index];
+                        (
+                            shown,
+                            overlay::Gesture::Pin {
+                                corner,
+                                from: pin,
+                                origin: unpinned,
+                            },
+                        )
+                    })
+            }
             _ if on_mask.is_some() => on_mask,
             // The rotate handle first: it sits outside the box, so nothing
             // else could claim that press, but checked ahead of the corners
@@ -1120,6 +2127,13 @@ fn transform_handles(
             shown.transform.rotation_degrees,
             dragging,
         );
+    } else if state.corner_pin_mode
+        && let Some(pin) = editor.video_clip(shown.clip).map(|clip| clip.corner_pin)
+    {
+        overlay::draw_pin(
+            painter,
+            overlay::pinned_corners(shown.box_on_canvas, canvas, pin),
+        );
     } else {
         overlay::draw(
             painter,
@@ -1184,6 +2198,27 @@ fn transform_handles(
                         },
                     ))
                 }),
+            // A move snaps to the middle and the edges, and shows the line
+            // it caught; Alt moves freely.
+            overlay::Gesture::Move { from, grab } => {
+                let moved = overlay::moved_position(from, grab, at, canvas);
+                let free = ui.input(|i| i.modifiers.alt);
+                let position = if free {
+                    moved
+                } else {
+                    let half = [
+                        shown.box_on_canvas.width() / canvas.width().max(1.0) / 2.0,
+                        shown.box_on_canvas.height() / canvas.height().max(1.0) / 2.0,
+                    ];
+                    let snapped = overlay::snap_position(moved, half, canvas);
+                    overlay::draw_snap_guides(painter, snapped, canvas);
+                    snapped.position
+                };
+                Some(bettercut_editor_core::ClipProperty::Position {
+                    x: position.x,
+                    y: position.y,
+                })
+            }
             gesture => overlay::property_for(gesture, canvas, shown.box_on_canvas, at),
         };
         let continuing = drag.started;
@@ -1457,7 +2492,7 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             let media_id = video.map(|v| v.media_id).or_else(|| audio.map(|a| a.2));
             let name = media_id
                 .and_then(|m| editor.project().media_asset(m))
-                .map_or_else(|| "(missing)".to_owned(), |m| m.file_name.clone());
+                .map_or_else(|| "(missing)".to_owned(), |m| m.display_name().to_owned());
             let range = video.map(|v| v.timeline).or_else(|| audio.map(|a| a.0));
 
             ui.monospace(format!("media     {name}"));
@@ -1490,6 +2525,7 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             match state.inspector_tab {
                 InspectorTab::Video => {
                     if let Some(look) = video {
+                        clip_fill(ui, editor, state, id);
                         clip_video_properties(ui, editor, state, id, look);
                     } else {
                         unavailable(ui, "This clip has no picture.");
@@ -1562,21 +2598,21 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.label(egui::RichText::new("Tracks").strong());
 
     // Read the switch states, then dispatch after the borrow ends.
-    let tracks: Vec<(TrackId, String, bool, bool)> = sequence
+    let tracks: Vec<(TrackId, String, bool, bool, bool)> = sequence
         .video_tracks
         .iter()
-        .map(|t| (t.id, t.name.clone(), t.enabled, t.locked))
+        .map(|t| (t.id, t.name.clone(), t.enabled, t.locked, t.sync_lock))
         .chain(
             sequence
                 .audio_tracks
                 .iter()
-                .map(|t| (t.id, t.name.clone(), t.enabled, t.locked)),
+                .map(|t| (t.id, t.name.clone(), t.enabled, t.locked, t.sync_lock)),
         )
         .collect();
 
     let mut toggles: Vec<(TrackId, TrackFlag, bool)> = Vec::new();
 
-    for (id, name, enabled, locked) in &tracks {
+    for (id, name, enabled, locked, synced) in &tracks {
         ui.horizontal(|ui| {
             ui.label(name);
             let mut visible = *enabled;
@@ -1590,6 +2626,16 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             let mut lock = *locked;
             if ui.checkbox(&mut lock, "lock").changed() {
                 toggles.push((*id, TrackFlag::Locked, lock));
+            }
+            // §10's sync lock: the one track flag with no button on the
+            // timeline header, so this is where it is turned on.
+            let mut sync = *synced;
+            if ui
+                .checkbox(&mut sync, "sync")
+                .on_hover_text("Ripple edits on other tracks move this one's clips too")
+                .changed()
+            {
+                toggles.push((*id, TrackFlag::SyncLock, sync));
             }
         });
     }
@@ -1665,6 +2711,57 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     editor.dispatch(bettercut_editor_core::Command::ChangeSetting { change })
             {
                 state.error(err.to_string());
+            }
+        });
+
+    ui.separator();
+    // How long a photo runs when it goes on the timeline. A project setting,
+    // through a command like the proxy choice, so it is undone and saved.
+    egui::CollapsingHeader::new("Photos")
+        .default_open(true)
+        .show(ui, |ui| {
+            let length = editor.project().settings.photo_length;
+            let mut seconds = length.as_seconds_f64();
+            let mut change = None;
+            ui.horizontal(|ui| {
+                ui.label("Photo length");
+                let response = ui
+                    .add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.5..=60.0)
+                            .speed(0.1)
+                            .fixed_decimals(1)
+                            .suffix(" s"),
+                    )
+                    .on_hover_text(
+                        "How long a photo or colour clip runs when you add it. \
+                         Clips already on the timeline keep their length.",
+                    );
+                if response.changed() {
+                    change = Some(seconds);
+                }
+                for preset in [3.0, 5.0, 10.0] {
+                    if ui
+                        .selectable_label((seconds - preset).abs() < 0.05, format!("{preset} s"))
+                        .clicked()
+                    {
+                        change = Some(preset);
+                    }
+                }
+            });
+            if let Some(seconds) = change {
+                let value = bettercut_editor_core::foundation::MediaTime::from_ticks(
+                    (seconds * bettercut_editor_core::foundation::TICKS_PER_SECOND as f64).round()
+                        as i64,
+                );
+                if value != length
+                    && let Err(err) =
+                        editor.dispatch(bettercut_editor_core::Command::ChangeSetting {
+                            change: SettingChange::PhotoLength(value),
+                        })
+                {
+                    state.error(err.to_string());
+                }
             }
         });
 
@@ -1832,6 +2929,130 @@ pub fn transport(
         {
             toggle_play = true;
         }
+        // Looping: the marked range, or the whole edit without marks.
+        let looping = preview.as_ref().is_some_and(|p| p.is_looping());
+        let mut toggle_loop = false;
+        if ui
+            .selectable_label(looping, "Loop")
+            .on_hover_text(
+                "Play the stretch between the in and out marks over and over — \
+                 or the whole timeline when there are none (Ctrl+L)",
+            )
+            .clicked()
+        {
+            toggle_loop = true;
+        }
+        // How big the preview draws the picture.
+        ui.menu_button(format!("View {}", state.preview_zoom.label()), |ui| {
+            for zoom in crate::state::PreviewZoom::CHOICES {
+                if ui
+                    .selectable_label(state.preview_zoom == zoom, zoom.label())
+                    .clicked()
+                {
+                    state.preview_zoom = zoom;
+                    state.preview_pan = egui::Vec2::ZERO;
+                    state.needs_repaint = true;
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Look closer at the picture. Ctrl + scroll over it zooms; drag with the middle button to move around");
+        // A voiceover: record while the edit plays; the take lands where the
+        // playhead started.
+        let label = match state.voiceover_live {
+            Some((seconds, _)) => format!("Stop Recording {:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0),
+            None => "Record Voice".to_owned(),
+        };
+        let record = ui
+            .add(egui::Button::new(if state.voiceover_live.is_some() {
+                egui::RichText::new(label).color(theme::ERROR_TEXT)
+            } else {
+                egui::RichText::new(label)
+            }))
+            .on_hover_text("Record from the microphone while the edit plays. The recording goes on a sound track where the playhead was");
+        if let Some((_, level)) = state.voiceover_live {
+            // A small level bar, so a silent microphone shows before the take
+            // is wasted.
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 8.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2, theme::TIMELINE_BACKGROUND);
+            let filled = egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()),
+            );
+            ui.painter().rect_filled(filled, 2, theme::PLAYHEAD);
+        }
+        if record.clicked() {
+            state.voiceover_toggle = true;
+        }
+        if ui
+            .button("Full Screen")
+            .on_hover_text("Watch the picture on the whole screen (F). Escape to come back")
+            .clicked()
+        {
+            state.fullscreen = true;
+            state.needs_repaint = true;
+        }
+        // Hearing the sound while the playhead is dragged.
+        if ui
+            .selectable_label(state.audio_scrub, "Scrub")
+            .on_hover_text("Play the sound while the playhead is dragged or stepped")
+            .clicked()
+        {
+            state.audio_scrub = !state.audio_scrub;
+            state.needs_repaint = true;
+        }
+
+        // Before and after: the preview without any grade or effect.
+        if ui
+            .selectable_label(state.compare_original, "Before")
+            .on_hover_text("Show the picture without its colour grade and effects, to compare. Click again for after")
+            .clicked()
+        {
+            state.compare_original = !state.compare_original;
+            state.needs_repaint = true;
+        }
+        // The same comparison with both halves on screen at once, which is
+        // what makes a small change in a grade visible at all.
+        if ui
+            .selectable_label(state.compare_split, "Split")
+            .on_hover_text(
+                "Show the original on one side of the picture and the graded \
+                 version on the other. Drag the divider to move it.",
+            )
+            .clicked()
+        {
+            state.compare_split = !state.compare_split;
+            if state.compare_split {
+                // The two comparisons would fight over the whole frame.
+                state.compare_original = false;
+            }
+            state.needs_repaint = true;
+        }
+
+        // Guides over the picture: thirds, safe margins, a phone app's buttons.
+        ui.menu_button(
+            if state.preview_guide == crate::state::PreviewGuide::Off {
+                "Guides"
+            } else {
+                "Guides •"
+            },
+            |ui| {
+                for guide in crate::state::PreviewGuide::ALL {
+                    if ui
+                        .selectable_label(state.preview_guide == guide, guide.label())
+                        .on_hover_text(guide.description())
+                        .clicked()
+                    {
+                        state.preview_guide = guide;
+                        state.needs_repaint = true;
+                        ui.close();
+                    }
+                }
+            },
+        )
+        .response
+        .on_hover_text("Lines over the preview for placing things. Never in the export");
         // J and L's speeds, which the Play button alone cannot show.
         let rate = preview.as_ref().map_or(0, |p| p.shuttle_rate());
         if rate != 0 && rate != 1 {
@@ -1889,11 +3110,95 @@ pub fn transport(
         {
             state.still_request = Some((path, playhead));
         }
+        // The whole cut as one picture: a thumbnail hunt, or something to
+        // send to someone who cannot open a video.
+        if ui
+            .add_enabled(
+                duration > TimelineTime::ZERO,
+                egui::Button::new("Contact Sheet"),
+            )
+            .on_hover_text(
+                "A grid of frames across the video, saved as one PNG. Uses the marked range when there is one",
+            )
+            .clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("PNG picture", &["png"])
+                .set_file_name(format!("{} contact sheet.png", editor.project().name.trim()))
+                .save_file()
+        {
+            state.contact_sheet_request = Some(path);
+        }
+
+        // The cover: the frame that stands for the video, saved as a picture
+        // beside every export.
+        let cover = editor.cover_frame();
+        let cover_label = match cover {
+            Some(at) if at == playhead => "Cover (here)".to_owned(),
+            Some(at) => format!("Cover {}", at.format_timecode()),
+            None => "Set Cover".to_owned(),
+        };
+        let cover_button = ui
+            .add_enabled(duration > TimelineTime::ZERO, egui::Button::new(cover_label))
+            .on_hover_text(
+                "Make the frame under the playhead the video's cover: every export saves it as a picture beside the file. Right-click to clear",
+            );
+        if cover_button.clicked() {
+            match editor.set_cover_frame(Some(playhead)) {
+                Ok(()) => state.info(format!("Cover frame set at {}", playhead.format_timecode())),
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+        if cover_button.secondary_clicked() && cover.is_some() {
+            match editor.set_cover_frame(None) {
+                Ok(()) => state.info("Cover frame cleared"),
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+        if ui
+            .add_enabled(
+                duration > TimelineTime::ZERO,
+                egui::Button::new("Copy Frame"),
+            )
+            .on_hover_text("Copy the frame under the playhead, full size, to paste anywhere")
+            .clicked()
+        {
+            state.copy_frame_request = Some(playhead);
+        }
+
+        // Render in place: bake the marked stretch so a heavy section plays at
+        // rate, and the export of it costs nothing to make twice.
+        let marked = editor.active_sequence().and_then(|s| s.marked_range());
+        let already = marked.is_some_and(|range| range_is_baked(editor, range));
+        let render = ui
+            .add_enabled(
+                marked.is_some() && !already,
+                egui::Button::new(if already { "Rendered" } else { "Render In/Out" }),
+            )
+            .on_hover_text(if marked.is_none() {
+                "Mark in and out on the timeline first (I and O), then bake that stretch to a file"
+            } else if already {
+                "This stretch is already rendered. Right-click to throw every render away"
+            } else {
+                "Bake the marked stretch to a file so it plays at rate; the export reuses it. Right-click to throw every render away"
+            });
+        if render.clicked()
+            && let Some(range) = marked
+        {
+            state.render_request = Some(range);
+        }
+        if render.secondary_clicked() {
+            match editor.clear_renders() {
+                0 => state.info("There is nothing rendered to throw away"),
+                n => state.info(format!("Threw away {n} rendered stretch(es)")),
+            }
+            state.needs_repaint = true;
+        }
 
         // §20a: what is going to the device, right now.
         if let Some(stats) = state.playback {
             ui.separator();
             draw_meter(ui, stats.peaks, stats.limited_samples > 0);
+            draw_loudness(ui, stats.loudness, state.loudness_target);
         }
 
         let width = ui.available_width().max(400.0);
@@ -1909,6 +3214,10 @@ pub fn transport(
                 if toggle_play {
                     preview.set_playing(editor, !playing);
                     state.info(if playing { "Paused" } else { "Playing" });
+                }
+                if toggle_loop {
+                    preview.set_looping(!looping);
+                    state.info(if looping { "Loop off" } else { "Loop on" });
                 }
             }
             None => {
@@ -1953,6 +3262,40 @@ pub fn meter_fraction(peak: f32) -> f32 {
 ///
 /// Turns red when the limiter has had to clamp — the one thing a meter must
 /// never be quiet about.
+/// The live loudness reading, beside the peak meter
+/// (`bettercut_audio::loudness::LiveLoudness`).
+///
+/// Peaks say whether a sample is about to clip; loudness says how loud the mix
+/// *sounds*, which is the number every platform turns a delivery up or down to
+/// hit. Both belong here, and neither answers the other's question.
+///
+/// The short-term reading is the one shown — three seconds, so it moves with
+/// the mix rather than with every syllable — and the momentary one is in the
+/// hover text for anyone chasing a single line.
+fn draw_loudness(ui: &mut egui::Ui, (short, momentary): (Option<f32>, Option<f32>), target: f32) {
+    let (text, colour) = match short {
+        // Within a loudness unit of the target is on target: no platform, and
+        // no listener, can tell 0.4 LU apart.
+        Some(lufs) if (lufs - target).abs() <= 1.0 => (format!("{lufs:.1} LUFS"), theme::OK_TEXT),
+        Some(lufs) if lufs > target => (format!("{lufs:.1} LUFS"), theme::CAUTION),
+        Some(lufs) => (format!("{lufs:.1} LUFS"), theme::DISABLED),
+        None => ("— LUFS".to_owned(), theme::DISABLED),
+    };
+    let hover = match (short, momentary) {
+        (Some(short), Some(momentary)) => format!(
+            "Short term {short:.1} LUFS over the last three seconds, momentary {momentary:.1} \
+             over the last 400 ms, against a target of {target:.0}. \
+             Above the target is turned down on delivery; well below it is turned up, noise and all."
+        ),
+        _ => format!(
+            "Nothing to measure yet — play the edit. The target is {target:.0} LUFS; \
+             choose another in the master row."
+        ),
+    };
+    ui.label(egui::RichText::new(text).small().monospace().color(colour))
+        .on_hover_text(hover);
+}
+
 fn draw_meter(ui: &mut egui::Ui, (left, right): (f32, f32), clipping: bool) {
     const WIDTH: f32 = 86.0;
     const BAR: f32 = 5.0;
@@ -2001,14 +3344,142 @@ fn draw_meter(ui: &mut egui::Ui, (left, right): (f32, f32), clipping: bool) {
 ///
 /// The placeholder matters: without it the row height changes the moment a
 /// thumbnail finishes generating, and the whole list jumps under the pointer.
-fn thumbnail(ui: &mut egui::Ui, state: &mut UiState, media: MediaId, missing: bool) {
+/// Which filmstrip tile, and where in the file, a pointer `fraction` of the
+/// way across a thumbnail shows. `None` outside it or with no tiles.
+pub fn scrub_at(fraction: f32, tiles: u32, duration: MediaTime) -> Option<(u32, MediaTime)> {
+    if tiles == 0 || !(0.0..=1.0).contains(&fraction) {
+        return None;
+    }
+    let tile = ((fraction * tiles as f32) as u32).min(tiles - 1);
+    let at = MediaTime::from_ticks((duration.ticks() as f64 * f64::from(fraction)).round() as i64);
+    Some((tile, at))
+}
+
+/// A colour clip's tile in the media browser: its colours, top to bottom,
+/// where a file would show its poster frame.
+fn colour_swatch(ui: &mut egui::Ui, colour: bettercut_editor_core::media::Generated) {
+    const BANDS: usize = 16;
+    let width = ui.available_width().min(180.0);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, width * 9.0 / 16.0), egui::Sense::hover());
+    // A compound has no colours of its own; the browser draws it as the
+    // placeholder grey the generated entry itself would.
+    let (top, bottom) = match colour {
+        bettercut_editor_core::media::Generated::Colour { top, bottom } => (top, bottom),
+        bettercut_editor_core::media::Generated::Compound { .. } => ([32, 34, 38], [32, 34, 38]),
+    };
+    let band = rect.height() / BANDS as f32;
+    for i in 0..BANDS {
+        let t = i as f32 / (BANDS - 1) as f32;
+        let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+        let y = rect.top() + band * i as f32;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), y),
+                egui::pos2(rect.right(), (y + band + 0.5).min(rect.bottom())),
+            ),
+            0,
+            egui::Color32::from_rgb(
+                mix(top[0], bottom[0]),
+                mix(top[1], bottom[1]),
+                mix(top[2], bottom[2]),
+            ),
+        );
+    }
+}
+
+/// Draw a frame around the file a clip was traced back to, and bring it into
+/// view — "Find in Media" is useless if the file it found is off the top of a
+/// long list.
+fn mark_revealed(ui: &egui::Ui, state: &UiState, media: MediaId, rect: egui::Rect) {
+    if state.media_reveal != Some(media) {
+        return;
+    }
+    ui.painter().rect_stroke(
+        rect.expand(2.0),
+        4,
+        egui::Stroke::new(2.0, theme::SELECTION),
+        egui::StrokeKind::Outside,
+    );
+    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+}
+
+fn thumbnail(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    media: MediaId,
+    missing: bool,
+    duration: MediaTime,
+) {
+    let mut clicked_at: Option<MediaTime> = None;
     let width = ui.available_width().min(180.0);
     // 16:9 is only a guess for the placeholder — a real thumbnail draws at its
     // own aspect, letterboxed into this box rather than stretched.
     let size = egui::vec2(width, width * 9.0 / 16.0);
 
     let texture = state.thumbnails.texture(ui.ctx(), media).cloned();
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    // Hovering skims through the file: the filmstrip's tile under the pointer
+    // stands in for the poster, with a line where in the file that is.
+    if !missing
+        && !duration.is_zero()
+        && let Some(pointer) = response.hover_pos()
+        && let Some((sheet, tiles)) = state.thumbnails.filmstrip(ui.ctx(), media)
+        && let Some((tile, at)) =
+            scrub_at((pointer.x - rect.left()) / rect.width(), tiles, duration)
+    {
+        let sheet_size = sheet.size_vec2();
+        let tile_size = egui::vec2(sheet_size.x / tiles as f32, sheet_size.y);
+        let scale = (rect.width() / tile_size.x).min(rect.height() / tile_size.y);
+        let drawn = egui::Rect::from_center_size(rect.center(), tile_size * scale);
+        let u0 = tile as f32 / tiles as f32;
+        ui.painter()
+            .rect_filled(rect, 4, theme::TIMELINE_BACKGROUND);
+        ui.painter().image(
+            sheet.id(),
+            drawn,
+            egui::Rect::from_min_max(
+                egui::pos2(u0, 0.0),
+                egui::pos2(u0 + 1.0 / tiles as f32, 1.0),
+            ),
+            egui::Color32::WHITE,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(pointer.x, rect.bottom() - 6.0),
+                egui::pos2(pointer.x, rect.bottom()),
+            ],
+            egui::Stroke::new(2.0, theme::PLAYHEAD),
+        );
+        ui.painter().text(
+            rect.left_bottom() + egui::vec2(4.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            TimelineTime::from_ticks(at.ticks()).format_timecode(),
+            egui::FontId::monospace(10.0),
+            egui::Color32::WHITE,
+        );
+        if response.clicked() {
+            clicked_at = Some(at);
+        }
+        draw_marks(ui, state, media, rect, duration);
+        if let Some(at) = clicked_at {
+            match state.mark_media(media, at) {
+                Some((from, to)) => state.info(format!(
+                    "Marked {} to {} — “Add to timeline” places that part",
+                    TimelineTime::from_ticks(from.ticks()).format_timecode(),
+                    TimelineTime::from_ticks(to.ticks()).format_timecode()
+                )),
+                None => state.info("In-point marked; click again for the out-point"),
+            }
+        }
+        if response.secondary_clicked() {
+            state.clear_media_marks(media);
+        }
+        ui.ctx().request_repaint();
+        return;
+    }
+    draw_marks(ui, state, media, rect, duration);
 
     match texture {
         Some(handle) if !missing => {
@@ -2377,6 +3848,19 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                 change = Some((ClipProperty::Saturation(saturation), response.dragged()));
             }
 
+            let mut vibrance = master.color.vibrance;
+            let current = ClipProperty::Vibrance(master.color.vibrance);
+            let response = master_row(ui, current, &mut reset, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut vibrance, -1.0..=1.0)
+                        .text("vibrance")
+                        .custom_formatter(|v, _| warmth_label(v, "duller", "vivid")),
+                )
+            });
+            if response.changed() {
+                change = Some((ClipProperty::Vibrance(vibrance), response.dragged()));
+            }
+
             let mut temperature = master.color.temperature;
             let current = ClipProperty::Temperature(master.color.temperature);
             let response = master_row(ui, current, &mut reset, |ui| {
@@ -2432,6 +3916,306 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                 change = Some((ClipProperty::Grain(grain / 100.0), response.dragged()));
             }
 
+            // Black bands top and bottom, over everything: the widescreen
+            // cinema look in one click.
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Cinematic bars")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+                let now = master.bars;
+                if ui
+                    .selectable_label(now == 0.0, "None")
+                    .on_hover_text("No bars")
+                    .clicked()
+                    && now != 0.0
+                {
+                    change = Some((ClipProperty::Bars(0.0), false));
+                }
+                for (label, shape) in bettercut_editor_core::timeline::BAR_PRESETS {
+                    if ui
+                        .selectable_label((now - shape).abs() < 0.001, label)
+                        .on_hover_text(
+                            "Black bars top and bottom, cutting the picture to this shape, over titles too",
+                        )
+                        .clicked()
+                    {
+                        change = Some((ClipProperty::Bars(shape), false));
+                    }
+                }
+            });
+
+            // A logo in a corner of every frame, from the project's pictures.
+            {
+                use bettercut_editor_core::timeline::watermark::{Watermark, WatermarkCorner};
+                let mark = editor.active_sequence().and_then(|s| s.watermark);
+                let pictures: Vec<(bettercut_editor_core::foundation::MediaId, String)> = editor
+                    .project()
+                    .media
+                    .iter()
+                    .filter(|m| m.is_still() && m.generated.is_none())
+                    .map(|m| (m.id, m.display_name().to_owned()))
+                    .collect();
+                let mut next = mark;
+                let mut dragging = false;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new("Watermark")
+                            .small()
+                            .color(theme::DISABLED),
+                    );
+                    let chosen_name = mark
+                        .and_then(|m| pictures.iter().find(|(id, _)| *id == m.media))
+                        .map_or("None".to_owned(), |(_, name)| name.clone());
+                    egui::ComboBox::from_id_salt("watermark picture")
+                        .selected_text(chosen_name)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(mark.is_none(), "None").clicked() {
+                                next = None;
+                            }
+                            for (id, name) in &pictures {
+                                let on = mark.is_some_and(|m| m.media == *id);
+                                if ui.selectable_label(on, name).clicked() && !on {
+                                    next = Some(match mark {
+                                        Some(existing) => Watermark {
+                                            media: *id,
+                                            ..existing
+                                        },
+                                        None => Watermark::new(*id),
+                                    });
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(if pictures.is_empty() {
+                            "Import a logo or photo first, then pick it here"
+                        } else {
+                            "A picture from the project to show in a corner of every frame"
+                        });
+                    if let Some(current) = next.as_mut() {
+                        for corner in WatermarkCorner::ALL {
+                            if ui
+                                .selectable_label(current.corner == corner, corner.label())
+                                .clicked()
+                            {
+                                current.corner = corner;
+                            }
+                        }
+                        let mut size = current.size * 100.0;
+                        let size_slider = ui.add(
+                            egui::Slider::new(&mut size, 3.0..=50.0)
+                                .text("size")
+                                .suffix("%"),
+                        );
+                        if size_slider.changed() {
+                            current.size = size / 100.0;
+                        }
+                        let mut opacity = current.opacity * 100.0;
+                        let opacity_slider = ui.add(
+                            egui::Slider::new(&mut opacity, 0.0..=100.0)
+                                .text("opacity")
+                                .suffix("%"),
+                        );
+                        if opacity_slider.changed() {
+                            current.opacity = opacity / 100.0;
+                        }
+                        dragging = size_slider.dragged() || opacity_slider.dragged();
+                    }
+                });
+                if next != mark {
+                    match editor.set_watermark(next, dragging) {
+                        Ok(()) => state.needs_repaint = true,
+                        Err(err) => state.error(err.to_string()),
+                    }
+                }
+            }
+
+            // The visualizer, once one has been made from a sound clip.
+            if let Some(visualizer) = editor.active_sequence().and_then(|s| s.visualizer.clone()) {
+                let mut next = visualizer.clone();
+                let mut dragging = false;
+                let mut remove = false;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new("Visualizer")
+                            .small()
+                            .color(theme::DISABLED),
+                    );
+                    let bars = ui.add(
+                        egui::Slider::new(
+                            &mut next.bars,
+                            4..=bettercut_editor_core::timeline::visualizer::MAX_BARS,
+                        )
+                        .text("bars"),
+                    );
+                    dragging |= bars.dragged();
+                    let mut height = next.height * 100.0;
+                    let tall = ui.add(
+                        egui::Slider::new(
+                            &mut height,
+                            5.0..=bettercut_editor_core::timeline::visualizer::MAX_VISUALIZER_HEIGHT
+                                * 100.0,
+                        )
+                        .text("height")
+                        .suffix("%"),
+                    );
+                    if tall.changed() {
+                        next.height = height / 100.0;
+                    }
+                    dragging |= tall.dragged();
+                    if ui.color_edit_button_srgb(&mut next.colour).changed() {
+                        dragging |= ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+                    }
+                    ui.checkbox(&mut next.top, "Top");
+                    remove = ui
+                        .button("Remove")
+                        .on_hover_text("Take the visualizer off")
+                        .clicked();
+                });
+                let result = if remove {
+                    Some(editor.set_visualizer(None, false))
+                } else if next != visualizer {
+                    Some(editor.set_visualizer(Some(next), dragging))
+                } else {
+                    None
+                };
+                match result {
+                    Some(Ok(())) => state.needs_repaint = true,
+                    Some(Err(err)) => state.error(err.to_string()),
+                    None => {}
+                }
+            }
+
+            // A bar that fills as the video plays, the way short videos show
+            // how far through they are.
+            let bar = master.progress_bar;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Progress bar")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+                let max = bettercut_editor_core::timeline::MAX_PROGRESS_BAR;
+                for (label, height) in [("None", 0.0), ("Thin", max * 0.3), ("Thick", max)] {
+                    if ui
+                        .selectable_label((bar.height - height).abs() < 1e-4, label)
+                        .clicked()
+                    {
+                        change = Some((
+                            ClipProperty::ProgressBar(
+                                bettercut_editor_core::timeline::ProgressBar { height, ..bar },
+                            ),
+                            false,
+                        ));
+                    }
+                }
+                if bar.is_visible() {
+                    let mut colour = bar.colour;
+                    if ui
+                        .color_edit_button_srgb(&mut colour)
+                        .on_hover_text("Bar colour")
+                        .changed()
+                    {
+                        let dragging =
+                            ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+                        change = Some((
+                            ClipProperty::ProgressBar(
+                                bettercut_editor_core::timeline::ProgressBar { colour, ..bar },
+                            ),
+                            dragging,
+                        ));
+                    }
+                    let mut top = bar.top;
+                    if ui
+                        .checkbox(&mut top, "Top")
+                        .on_hover_text("Along the top of the frame instead of the bottom")
+                        .changed()
+                    {
+                        change = Some((
+                            ClipProperty::ProgressBar(
+                                bettercut_editor_core::timeline::ProgressBar { top, ..bar },
+                            ),
+                            false,
+                        ));
+                    }
+                }
+            });
+
+            // A copy sent out for notes: the timecode and the file name over
+            // the picture, so a note can name the frame it is about.
+            ui.horizontal_wrapped(|ui| {
+                let burn = master.burn_in.clamped();
+                ui.label(
+                    egui::RichText::new("Burn-in")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+                let mut timecode = burn.timecode;
+                if ui
+                    .checkbox(&mut timecode, "Timecode")
+                    .on_hover_text("Draw the time of each frame over the picture")
+                    .changed()
+                {
+                    change = Some((
+                        ClipProperty::BurnIn(bettercut_editor_core::timeline::BurnIn {
+                            timecode,
+                            ..burn
+                        }),
+                        false,
+                    ));
+                }
+                let mut file_name = burn.file_name;
+                if ui
+                    .checkbox(&mut file_name, "File name")
+                    .on_hover_text("Draw the name of the file the shot came from")
+                    .changed()
+                {
+                    change = Some((
+                        ClipProperty::BurnIn(bettercut_editor_core::timeline::BurnIn {
+                            file_name,
+                            ..burn
+                        }),
+                        false,
+                    ));
+                }
+                if burn.is_visible() {
+                    let mut top = burn.top;
+                    if ui
+                        .checkbox(&mut top, "Top")
+                        .on_hover_text("Along the top of the frame instead of the bottom")
+                        .changed()
+                    {
+                        change = Some((
+                            ClipProperty::BurnIn(bettercut_editor_core::timeline::BurnIn {
+                                top,
+                                ..burn
+                            }),
+                            false,
+                        ));
+                    }
+                    let mut size = burn.size;
+                    let response = ui.add(
+                        egui::Slider::new(
+                            &mut size,
+                            bettercut_editor_core::timeline::MIN_BURN_IN_SIZE
+                                ..=bettercut_editor_core::timeline::MAX_BURN_IN_SIZE,
+                        )
+                        .text("size")
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    );
+                    if response.changed() {
+                        change = Some((
+                            ClipProperty::BurnIn(bettercut_editor_core::timeline::BurnIn {
+                                size,
+                                ..burn
+                            }),
+                            response.dragged(),
+                        ));
+                    }
+                }
+            });
+
             // The whole video has looks too: grading the finished picture is
             // the usual way to give an edit one feel (§22).
             looks_row(ui, editor, state, None, master.color, false);
@@ -2454,6 +4238,43 @@ fn master_properties(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             if response.changed() {
                 change = Some((ClipProperty::Gain(volume), response.dragged()));
             }
+            // What a platform will make of this mix, and a way to land on it.
+            // Every platform turns a video up or down to its own target on
+            // delivery; this is how to arrive there already.
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Loudness")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+                match state.loudness_measured {
+                    Some(lufs) => {
+                        ui.label(egui::RichText::new(format!("{lufs:.1} LUFS")).monospace());
+                    }
+                    None => {
+                        ui.label(
+                            egui::RichText::new("not measured")
+                                .small()
+                                .color(theme::DISABLED),
+                        );
+                    }
+                }
+                for (name, target) in bettercut_audio::loudness::LOUDNESS_TARGETS {
+                    if ui
+                        .button(format!("{target:.0}"))
+                        .on_hover_text(format!(
+                            "{name}: measure the mix and set the master volume \
+                             so it lands at {target:.0} LUFS"
+                        ))
+                        .clicked()
+                    {
+                        state.info("Measuring the mix…");
+                        state.loudness_target = target;
+                        crate::loudness::match_to(editor, state, target);
+                    }
+                }
+            });
+
             ui.label(
                 egui::RichText::new(
                     "Applies to the export too. Select a clip to set its own volume.",
@@ -2578,6 +4399,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         },
     ),
     (
@@ -2588,6 +4410,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 1.25,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.25,
         },
     ),
     (
@@ -2598,6 +4421,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 0.92,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.1,
         },
     ),
     (
@@ -2608,6 +4432,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 0.72,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: -0.1,
         },
     ),
     (
@@ -2618,6 +4443,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 0.82,
             temperature: -0.18,
             tint: 0.0,
+            vibrance: 0.15,
         },
     ),
     // The two the white balance made possible. Golden hour and overcast are
@@ -2630,6 +4456,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 1.08,
             temperature: 0.45,
             tint: 0.05,
+            vibrance: 0.2,
         },
     ),
     (
@@ -2640,6 +4467,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 0.95,
             temperature: -0.45,
             tint: -0.05,
+            vibrance: 0.1,
         },
     ),
     (
@@ -2650,6 +4478,7 @@ pub const LOOKS: [(&str, ColorAdjust); 8] = [
             saturation: 0.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         },
     ),
 ];
@@ -2740,6 +4569,108 @@ fn looks_row(
         });
     }
 
+    // The user's own looks, under the built-in ones: a grade arrived at once
+    // and wanted again on every clip from the same camera.
+    let mut apply_saved: Option<crate::looks::SavedLook> = None;
+    if !state.user_looks.is_empty() {
+        let mut remove: Option<String> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("mine").small().color(theme::DISABLED));
+            for (name, look) in state.user_looks.all().to_vec() {
+                let response = ui.add_enabled(
+                    !animated,
+                    // Selected on the grade alone: two looks can share a grade
+                    // and differ in their finish, and the button is showing
+                    // which grade is on the clip.
+                    egui::Button::selectable(look.colour.near_enough(color), &name),
+                );
+                let response = response.on_hover_text(if look.has_effects() {
+                    "Its grade and its finish — blur, sharpen, glow, old film, vignette. Right-click to forget it"
+                } else {
+                    "Right-click to forget this look"
+                });
+                if response.clicked() {
+                    apply_saved = Some(look);
+                }
+                response.context_menu(|ui| {
+                    if ui.button(format!("Forget “{name}”")).clicked() {
+                        remove = Some(name.clone());
+                        ui.close();
+                    }
+                });
+            }
+        });
+        if let Some(name) = remove {
+            state.user_looks.remove(&name);
+            state.needs_repaint = true;
+        }
+    }
+
+    // Saving the grade on screen. A name box rather than "Look 4": the point
+    // of a saved look is finding it again.
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut state.look_name_draft)
+                .desired_width(120.0)
+                .char_limit(crate::looks::MAX_NAME)
+                .hint_text("name this look"),
+        );
+        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.button("Save look").clicked() || entered) && !state.look_name_draft.trim().is_empty()
+        {
+            let name = std::mem::take(&mut state.look_name_draft);
+            // What the clip looks like now, finish and all — saving only the
+            // grade would quietly drop half of what the user is looking at.
+            let look = clip.and_then(|clip| editor.video_clip(clip)).map_or_else(
+                || crate::looks::SavedLook::graded(color),
+                |video| crate::looks::SavedLook {
+                    colour: color,
+                    blur: video.blur,
+                    sharpen: video.sharpen,
+                    glow: video.glow,
+                    old_film: video.old_film,
+                    vignette: video.vignette,
+                },
+            );
+            match state.user_looks.save(&name, look) {
+                Ok(()) => {
+                    state.info(format!("Saved the look “{}”", name.trim()));
+                    state.needs_repaint = true;
+                }
+                Err(why) => state.error(why),
+            }
+        }
+    });
+
+    if let Some(look) = apply_saved {
+        match clip {
+            // The whole video takes the grade and nothing else: a master has
+            // no glow or sharpen of its own to put a finish on.
+            None => chosen = Some(look.colour),
+            Some(clip) => {
+                // One undo step for the lot, through the path Paste Look uses.
+                use bettercut_editor_core::ClipProperty;
+                let properties = vec![
+                    ClipProperty::Brightness(look.colour.brightness),
+                    ClipProperty::Contrast(look.colour.contrast),
+                    ClipProperty::Saturation(look.colour.saturation),
+                    ClipProperty::Temperature(look.colour.temperature),
+                    ClipProperty::Tint(look.colour.tint),
+                    ClipProperty::Vibrance(look.colour.vibrance),
+                    ClipProperty::Blur(look.blur),
+                    ClipProperty::Sharpen(look.sharpen),
+                    ClipProperty::Glow(look.glow),
+                    ClipProperty::OldFilm(look.old_film),
+                    ClipProperty::Vignette(look.vignette),
+                ];
+                match editor.paste_look(&properties, [clip]) {
+                    Ok(_) => state.needs_repaint = true,
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        }
+    }
+
     if let Some(look) = chosen {
         match editor.set_color_adjust(clip, look) {
             Ok(()) => state.needs_repaint = true,
@@ -2759,6 +4690,38 @@ fn clip_colour_properties(
 
     let color = look.color;
     ui.add_space(4.0);
+
+    // One-click looks, above the controls they set: pick one, then tune.
+    let current = editor.filter_of(clip);
+    let mut chosen = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Filter").small().color(theme::DISABLED));
+        for filter in bettercut_editor_core::filters::Filter::ALL {
+            if ui
+                .selectable_label(current == Some(filter), filter.label())
+                .on_hover_text(filter.description())
+                .clicked()
+            {
+                chosen = Some(filter);
+            }
+        }
+    });
+    if let Some(filter) = chosen {
+        let onto: Vec<_> = if state.selected_clips.contains(&clip) {
+            state.selected_clips.iter().copied().collect()
+        } else {
+            vec![clip]
+        };
+        match editor.apply_filter(filter, onto) {
+            Ok(n) if n > 1 => state.info(format!("{} on {n} clips", filter.label())),
+            Ok(_) => {}
+            Err(err) => state.error(err.to_string()),
+        }
+        state.needs_repaint = true;
+        return;
+    }
+    ui.add_space(4.0);
+
     let mut change: Option<(ClipProperty, bool)> = None;
     let mut toggle: Option<ClipProperty> = None;
     let mut reset: Option<ClipProperty> = None;
@@ -2800,6 +4763,28 @@ fn clip_colour_properties(
     );
     if response.changed() {
         change = Some((ClipProperty::Saturation(saturation), response.dragged()));
+    }
+
+    // Vibrance under saturation, because it is the same control with a
+    // conscience: it pushes hardest where there is least colour, so skin holds
+    // while a flat sky comes back.
+    let mut vibrance = color.vibrance;
+    let response = keyed_row(
+        ui,
+        &look,
+        ClipProperty::Vibrance(color.vibrance),
+        &mut toggle,
+        &mut reset,
+        |ui| {
+            ui.add(
+                egui::Slider::new(&mut vibrance, -1.0..=1.0)
+                    .text("vibrance")
+                    .custom_formatter(|v, _| warmth_label(v, "duller", "vivid")),
+            )
+        },
+    );
+    if response.changed() {
+        change = Some((ClipProperty::Vibrance(vibrance), response.dragged()));
     }
 
     // The white balance, below the three multipliers and above the looks —
@@ -2869,6 +4854,465 @@ fn clip_colour_properties(
     looks_row(ui, editor, state, Some(clip), color, animated);
 
     apply_row_actions(editor, state, clip, change, toggle, reset);
+
+    // A frame around this one shot: darker edges on its own picture.
+    let vignette = editor.video_clip(clip).map_or(0.0, |c| c.vignette);
+    let mut next_vignette = vignette * 100.0;
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next_vignette, 0.0..=100.0)
+                .text("vignette")
+                .suffix("%"),
+        )
+        .on_hover_text("Darken the edges of this clip's picture, leaving its middle as it is");
+    if response.changed() {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Vignette(next_vignette / 100.0),
+            response.dragged(),
+        );
+    }
+
+    ui.add_space(8.0);
+    colour_wheels(ui, editor, state, clip);
+    colour_mixer(ui, editor, state, clip);
+    curves_editor(ui, editor, state, clip);
+}
+
+/// One colour range at a time: pick a colour, then move its hue, saturation
+/// and lightness. Written through the curves, like the wheels.
+fn colour_mixer(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::curves::{ColourMixer, MIXER_BANDS};
+
+    let Some(current) = editor.video_clip(clip).map(|c| c.curves) else {
+        return;
+    };
+    let mut next = current;
+    let mut dragging = false;
+    let band_id = ui.id().with(("mixer band", clip));
+    let mut band: usize = ui.data(|d| d.get_temp(band_id)).unwrap_or(0);
+
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Colour mixer").strong());
+        for (index, (name, hue)) in MIXER_BANDS.iter().enumerate() {
+            let [r, g, b] = hue_colour(*hue);
+            let touched = next.mixer.bands[index] != Default::default();
+            let mut text = egui::RichText::new(&name[..1])
+                .color(egui::Color32::from_rgb(r, g, b))
+                .size(15.0);
+            // A range that has been changed stands out from those left alone.
+            if touched {
+                text = text.strong().underline();
+            }
+            if ui
+                .add(egui::Button::selectable(band == index, text))
+                .on_hover_text(*name)
+                .clicked()
+            {
+                band = index;
+            }
+        }
+        if !current.mixer.is_neutral()
+            && ui
+                .small_button("Reset")
+                .on_hover_text("Every colour range back to as shot")
+                .clicked()
+        {
+            next.mixer = ColourMixer::default();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(band_id, band));
+
+    let chosen = &mut next.mixer.bands[band];
+    for (value, text, hint) in [
+        (
+            &mut chosen.hue,
+            "hue",
+            "Move this colour towards its neighbours round the wheel",
+        ),
+        (
+            &mut chosen.saturation,
+            "saturation",
+            "More or less of this colour",
+        ),
+        (
+            &mut chosen.lightness,
+            "lightness",
+            "This colour brighter or darker",
+        ),
+    ] {
+        let mut percent = *value * 100.0;
+        let response = ui
+            .add(
+                egui::Slider::new(&mut percent, -100.0..=100.0)
+                    .text(text)
+                    .suffix("%"),
+            )
+            .on_hover_text(format!("{} — {}", MIXER_BANDS[band].0, hint));
+        if response.changed() {
+            *value = percent / 100.0;
+            dragging |= response.dragged();
+        }
+    }
+
+    if next != current {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Curves(next),
+            dragging,
+        );
+    }
+}
+
+/// A fully saturated colour for `hue` degrees, for a swatch.
+fn hue_colour(hue: f32) -> [u8; 3] {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    [r, g, b].map(|v: f32| (v * 255.0) as u8)
+}
+
+/// Three colour wheels — shadows, midtones, highlights — each a disc to drag a
+/// colour into and a brightness slider beneath. Double-click a wheel to centre
+/// it. Written through the curves, like the tone, so they share a table.
+fn colour_wheels(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::curves::ColourWheels;
+
+    let Some(current) = editor.video_clip(clip).map(|c| c.curves) else {
+        return;
+    };
+    let mut next = current;
+    let mut dragging = false;
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Colour wheels").strong());
+        if !current.wheels.is_neutral()
+            && ui
+                .small_button("Centre all")
+                .on_hover_text("Take every wheel back to no change")
+                .clicked()
+        {
+            next.wheels = ColourWheels::default();
+        }
+    });
+    let side = ((ui.available_width() - 16.0) / 3.0).clamp(60.0, 110.0);
+    ui.horizontal(|ui| {
+        let wheels = [
+            ("Shadows", &mut next.wheels.shadows),
+            ("Midtones", &mut next.wheels.midtones),
+            ("Highlights", &mut next.wheels.highlights),
+        ];
+        for (name, offsets) in wheels {
+            ui.vertical(|ui| {
+                ui.set_width(side);
+                ui.label(egui::RichText::new(name).small());
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+                let painter = ui.painter_at(rect);
+                let centre = rect.center();
+                let radius = side / 2.0 - 2.0;
+                // The hue ring, in wedges, fading to grey in the middle.
+                let wedges = 36;
+                for i in 0..wedges {
+                    let a0 = i as f32 / wedges as f32 * std::f32::consts::TAU;
+                    let a1 = (i + 1) as f32 / wedges as f32 * std::f32::consts::TAU;
+                    let rgb = ColourWheels::offsets((a0 + a1) / 2.0, 1.0, 0.0)
+                        .map(|v| ((0.5 + v * 0.5).clamp(0.0, 1.0) * 255.0) as u8);
+                    let point = |a: f32| centre + radius * egui::vec2(a.cos(), -a.sin());
+                    let mut mesh = egui::Mesh::default();
+                    mesh.colored_vertex(centre, egui::Color32::from_gray(128));
+                    mesh.colored_vertex(point(a0), egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                    mesh.colored_vertex(point(a1), egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                    mesh.add_triangle(0, 1, 2);
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+                let (_, _, brightness) = ColourWheels::position(*offsets);
+                if (response.dragged() || response.clicked())
+                    && let Some(pointer) = response.interact_pointer_pos()
+                {
+                    let d = pointer - centre;
+                    let new_angle = (-d.y).atan2(d.x);
+                    let new_distance = (d.length() / radius).min(1.0);
+                    *offsets = ColourWheels::offsets(new_angle, new_distance, brightness);
+                    dragging |= response.dragged();
+                }
+                if response.double_clicked() {
+                    *offsets = [0.0; 3];
+                }
+                let (angle, distance, _) = ColourWheels::position(*offsets);
+                let dot = centre + radius * distance * egui::vec2(angle.cos(), -angle.sin());
+                painter.circle_stroke(dot, 5.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+                response.on_hover_text(format!(
+                    "Drag to push a colour into the {}. Double-click to centre",
+                    name.to_lowercase()
+                ));
+
+                let mut level = brightness * 100.0;
+                let slider = ui.add(
+                    egui::Slider::new(&mut level, -100.0..=100.0)
+                        .show_value(false)
+                        .text(""),
+                );
+                if slider.changed() {
+                    let (a, d, _) = ColourWheels::position(*offsets);
+                    *offsets = ColourWheels::offsets(a, d, level / 100.0);
+                    dragging |= slider.dragged();
+                }
+            });
+        }
+    });
+
+    if next != current {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Curves(next),
+            dragging,
+        );
+    }
+}
+
+/// Which curve the curves editor is showing: 0 master, then red, green, blue.
+pub fn curve_mut(
+    curves: &mut bettercut_editor_core::timeline::curves::ColourCurves,
+    channel: usize,
+) -> &mut bettercut_editor_core::timeline::curves::Curve {
+    match channel {
+        1 => &mut curves.red,
+        2 => &mut curves.green,
+        3 => &mut curves.blue,
+        _ => &mut curves.master,
+    }
+}
+
+/// The handle nearest `pointer` in a curve drawn in `rect`, if one is close
+/// enough to grab.
+pub fn curve_handle_at(
+    curve: &bettercut_editor_core::timeline::curves::Curve,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+) -> Option<usize> {
+    let last = (curve.len() - 1) as f32;
+    curve
+        .iter()
+        .enumerate()
+        .map(|(i, y)| {
+            let at = egui::pos2(
+                rect.left() + rect.width() * i as f32 / last,
+                rect.bottom() - rect.height() * y,
+            );
+            (i, at.distance(pointer))
+        })
+        .filter(|(_, d)| *d <= 14.0)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
+/// Colour curves: a channel picker and a square to drag the five handles in.
+fn curves_editor(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::curves::{STRAIGHT, sample};
+
+    let Some(current) = editor.video_clip(clip).map(|c| c.curves) else {
+        return;
+    };
+    let mut next = current;
+    let channel_id = ui.id().with(("curve channel", clip));
+    let mut channel: usize = ui.data(|d| d.get_temp(channel_id)).unwrap_or(0);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Curves").strong());
+        for (index, name) in ["RGB", "R", "G", "B"].into_iter().enumerate() {
+            if ui.selectable_label(channel == index, name).clicked() {
+                channel = index;
+            }
+        }
+        if !current.is_straight()
+            && ui
+                .small_button("Straighten")
+                .on_hover_text("Put all four curves back to straight lines")
+                .clicked()
+        {
+            next = bettercut_editor_core::timeline::curves::ColourCurves {
+                tone: current.tone,
+                wheels: current.wheels,
+                mixer: current.mixer,
+                ..Default::default()
+            };
+        }
+    });
+
+    // The tone over the whole picture: sepia, or two colours of your choosing.
+    {
+        use bettercut_editor_core::timeline::curves::Tone;
+        let tone = current.tone;
+        let mut chosen = None;
+        let mut dragging = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Tone").small().color(theme::DISABLED));
+            if ui.selectable_label(tone.is_none(), "None").clicked() {
+                chosen = Some(Tone::None);
+            }
+            if ui
+                .selectable_label(tone == Tone::Sepia, "Sepia")
+                .on_hover_text("The warm brown of an old photograph")
+                .clicked()
+            {
+                chosen = Some(Tone::Sepia);
+            }
+            let is_duotone = matches!(tone, Tone::Duotone { .. });
+            if ui
+                .selectable_label(is_duotone, "Duotone")
+                .on_hover_text("Shadows in one colour, highlights in another")
+                .clicked()
+                && !is_duotone
+            {
+                chosen = Some(Tone::DUOTONE);
+            }
+            if let Tone::Duotone {
+                mut shadow,
+                mut highlight,
+            } = tone
+            {
+                let a = ui
+                    .color_edit_button_srgb(&mut shadow)
+                    .on_hover_text("Shadow colour")
+                    .changed();
+                let b = ui
+                    .color_edit_button_srgb(&mut highlight)
+                    .on_hover_text("Highlight colour")
+                    .changed();
+                if a || b {
+                    chosen = Some(Tone::Duotone { shadow, highlight });
+                    dragging = ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+                }
+            }
+        });
+        if let Some(chosen) = chosen
+            && chosen != tone
+        {
+            apply_clip_property(
+                editor,
+                state,
+                clip,
+                bettercut_editor_core::ClipProperty::Tone(chosen),
+                dragging,
+            );
+            return;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(channel_id, channel));
+
+    let side = ui.available_width().min(220.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2, theme::TIMELINE_BACKGROUND);
+    let grid = egui::Stroke::new(1.0, theme::GRID_LINE);
+    for i in 1..4 {
+        let t = i as f32 / 4.0;
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + rect.width() * t, rect.top()),
+                egui::pos2(rect.left() + rect.width() * t, rect.bottom()),
+            ],
+            grid,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rect.left(), rect.top() + rect.height() * t),
+                egui::pos2(rect.right(), rect.top() + rect.height() * t),
+            ],
+            grid,
+        );
+    }
+    painter.line_segment([rect.left_bottom(), rect.right_top()], grid);
+
+    // Grab the nearest handle on press, then move it up and down while held.
+    let grab_id = ui.id().with(("curve grab", clip));
+    if response.drag_started()
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        let grabbed = curve_handle_at(curve_mut(&mut next, channel), rect, pointer);
+        ui.data_mut(|d| d.insert_temp(grab_id, grabbed));
+    }
+    let grabbed: Option<usize> = ui.data(|d| d.get_temp(grab_id)).flatten();
+    if response.dragged()
+        && let (Some(handle), Some(pointer)) = (grabbed, response.interact_pointer_pos())
+    {
+        let y = ((rect.bottom() - pointer.y) / rect.height()).clamp(0.0, 1.0);
+        curve_mut(&mut next, channel)[handle] = y;
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<Option<usize>>(grab_id));
+    }
+    if response.double_clicked() {
+        *curve_mut(&mut next, channel) = STRAIGHT;
+    }
+
+    let colour = match channel {
+        1 => egui::Color32::from_rgb(235, 80, 80),
+        2 => egui::Color32::from_rgb(80, 210, 100),
+        3 => egui::Color32::from_rgb(90, 140, 240),
+        _ => egui::Color32::from_gray(230),
+    };
+    let curve = *curve_mut(&mut next, channel);
+    let points: Vec<egui::Pos2> = (0..=64)
+        .map(|i| {
+            let x = i as f32 / 64.0;
+            egui::pos2(
+                rect.left() + rect.width() * x,
+                rect.bottom() - rect.height() * sample(&curve, x),
+            )
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, colour)));
+    for (i, y) in curve.iter().enumerate() {
+        let at = egui::pos2(
+            rect.left() + rect.width() * i as f32 / 4.0,
+            rect.bottom() - rect.height() * y,
+        );
+        painter.circle_filled(at, if grabbed == Some(i) { 6.0 } else { 4.5 }, colour);
+    }
+    response.on_hover_text("Drag a handle up to brighten that part of the range, down to darken it. Double-click to straighten this curve.");
+
+    if next != current {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Curves(next),
+            grabbed.is_some(),
+        );
+    }
 }
 
 /// The keyframes on this clip: how many, where, and a way back to the defaults.
@@ -2895,6 +5339,7 @@ Press the ○ beside any                  control in Video or Colours to pin its
     }
 
     animation_summary(ui, editor, state, clip, look);
+    keyframe_graph(ui, editor, state, clip, look);
 
     ui.add_space(6.0);
     // Only the keys. This used to call the whole-clip reset, which also put
@@ -3065,7 +5510,7 @@ fn clip_effect_properties(
         use bettercut_editor_core::timeline::{Mask, MaskShape};
 
         let mask = editor.video_clip(clip).and_then(|clip| clip.mask);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add_space(4.0);
             ui.label("mask");
             if ui
@@ -3084,6 +5529,8 @@ fn clip_effect_properties(
                         MaskShape::Linear => "Keep one side of a straight edge",
                         MaskShape::Rectangle => "Keep a box",
                         MaskShape::Ellipse => "Keep an oval",
+                        MaskShape::Star => "Keep a star",
+                        MaskShape::Heart => "Keep a heart",
                     })
                     .clicked()
                     && !selected
@@ -3284,11 +5731,11 @@ fn clip_effect_properties(
 
     // RGB split and glitch: the break-up looks. Last, as the rarest.
     effect_section(ui, Effect::Glitch, active[4], refold, |ui| {
-        let (split, glitch) = editor
-            .video_clip(clip)
-            .map_or((0.0, 0.0), |clip| (clip.rgb_split, clip.glitch));
+        let (split, glitch, pixelate) = editor.video_clip(clip).map_or((0.0, 0.0, 0.0), |clip| {
+            (clip.rgb_split, clip.glitch, clip.pixelate)
+        });
         let max = bettercut_editor_core::timeline::MAX_GLITCH;
-        let (mut next_split, mut next_glitch) = (split, glitch);
+        let (mut next_split, mut next_glitch, mut next_pixelate) = (split, glitch, pixelate);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             let response = ui
@@ -3313,6 +5760,89 @@ fn clip_effect_properties(
                 .on_hover_text("Throw bands of the picture sideways, different ones every frame");
             if response.changed() {
                 change = Some((ClipProperty::Glitch(next_glitch), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next_pixelate, 0.0..=max)
+                        .text("pixelate")
+                        .suffix("%"),
+                )
+                .on_hover_text(
+                    "Show the picture as coarse blocks. Add a mask to cover just a face or a plate",
+                );
+            if response.changed() {
+                change = Some((ClipProperty::Pixelate(next_pixelate), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut next_zoom = editor.video_clip(clip).map_or(0.0, |clip| clip.zoom_blur);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next_zoom, 0.0..=max)
+                        .text("zoom blur")
+                        .suffix("%"),
+                )
+                .on_hover_text("Streak the picture outwards from the middle, a rush forward. Good on a cut or a beat");
+            if response.changed() {
+                change = Some((ClipProperty::ZoomBlur(next_zoom), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut next_glow = editor.video_clip(clip).map_or(0.0, |clip| clip.glow);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next_glow, 0.0..=max)
+                        .text("glow")
+                        .suffix("%"),
+                )
+                .on_hover_text("Let the bright parts bleed soft light around them, a dreamy bloom");
+            if response.changed() {
+                change = Some((ClipProperty::Glow(next_glow), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut next_film = editor.video_clip(clip).map_or(0.0, |clip| clip.old_film);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next_film, 0.0..=max)
+                        .text("old film")
+                        .suffix("%"),
+                )
+                .on_hover_text("Scratches, dust and a flickering exposure, like a worn old print");
+            if response.changed() {
+                change = Some((ClipProperty::OldFilm(next_film), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut next_leak = editor.video_clip(clip).map_or(0.0, |clip| clip.light_leak);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next_leak, 0.0..=max)
+                        .text("light leak")
+                        .suffix("%"),
+                )
+                .on_hover_text(
+                    "A warm glow drifting across the frame, like light spilling into an old camera",
+                );
+            if response.changed() {
+                change = Some((ClipProperty::LightLeak(next_leak), response.dragged()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut next_pulse = editor.video_clip(clip).map_or(0.0, |clip| clip.beat_pulse);
+            let response = ui
+                .add(egui::Slider::new(&mut next_pulse, 0.0..=max).text("beat pulse").suffix("%"))
+                .on_hover_text("Punch in on every marker and ease back. Add markers on the beat first (M, or Detect Beats)");
+            if response.changed() {
+                change = Some((ClipProperty::BeatPulse(next_pulse), response.dragged()));
             }
         });
     });
@@ -3348,6 +5878,97 @@ fn clip_effect_properties(
     if let Some((property, continuing)) = change {
         apply_clip_property(editor, state, clip, property, continuing);
     }
+}
+
+/// The colour clips the Add Colour menu offers; any of them can be recoloured
+/// afterwards in the Inspector.
+pub const COLOUR_CLIP_PRESETS: [(&str, bettercut_editor_core::media::Generated); 6] = {
+    use bettercut_editor_core::media::Generated;
+    [
+        ("Black", Generated::solid([0, 0, 0])),
+        ("White", Generated::solid([255, 255, 255])),
+        ("Blue", Generated::solid([30, 110, 230])),
+        (
+            "Sunset",
+            Generated::Colour {
+                top: [255, 120, 60],
+                bottom: [120, 40, 140],
+            },
+        ),
+        (
+            "Ocean",
+            Generated::Colour {
+                top: [40, 200, 220],
+                bottom: [20, 50, 140],
+            },
+        ),
+        (
+            "Night",
+            Generated::Colour {
+                top: [40, 40, 70],
+                bottom: [5, 5, 15],
+            },
+        ),
+    ]
+};
+
+/// A colour clip's colours: one, or two for a gradient from top to bottom.
+/// Nothing for a clip made from a file.
+fn clip_fill(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::media::Generated;
+
+    let Some((media, colour)) = editor.colour_of(clip) else {
+        return;
+    };
+    let Generated::Colour { top, bottom } = colour else {
+        return;
+    };
+    let mut top = top;
+    let mut bottom = bottom;
+    let mut gradient = top != bottom;
+    let mut changed = false;
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        changed |= ui.color_edit_button_srgb(&mut top).changed();
+        if gradient {
+            ui.label("to");
+            changed |= ui.color_edit_button_srgb(&mut bottom).changed();
+        }
+        if ui
+            .checkbox(&mut gradient, "Gradient")
+            .on_hover_text("Fade from the first colour at the top to a second at the bottom")
+            .changed()
+        {
+            changed = true;
+            // Turning a gradient on starts from a darker shade of the colour,
+            // so it shows at once; turning it off keeps the top colour.
+            bottom = if gradient {
+                top.map(|c| (c as f32 * 0.35) as u8)
+            } else {
+                top
+            };
+        }
+    });
+    if !gradient {
+        bottom = top;
+    }
+    if changed {
+        // A drag around the picker is one undo step: carried on while the
+        // pointer is still down from the press that started it.
+        let continuing = ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+        match editor.set_colour(media, Generated::Colour { top, bottom }, continuing) {
+            Ok(_) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    ui.separator();
 }
 
 fn clip_video_properties(
@@ -3481,23 +6102,29 @@ fn clip_video_properties(
     // because that is what it changes — and what to adjust afterwards.
     let current = editor.movement_of(clip);
     let mut movement = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_space(4.0);
         ui.label("movement");
         for option in Movement::ALL {
             if ui
                 .add(egui::Button::selectable(
                     current == Some(option),
-                    match option {
-                        Movement::None => "None",
-                        Movement::ZoomIn => "Zoom in",
-                        Movement::ZoomOut => "Zoom out",
-                    },
+                    option.label(),
                 ))
                 .on_hover_text(match option {
-                    Movement::None => "No movement; any zoom keyframes are removed",
+                    Movement::None => "No movement; any zoom or pan keyframes are removed",
                     Movement::ZoomIn => "Grow slowly across the clip",
                     Movement::ZoomOut => "Start close and pull back",
+                    Movement::PanLeft => {
+                        "Slide slowly to the left, a little enlarged so no edge shows"
+                    }
+                    Movement::PanRight => {
+                        "Slide slowly to the right, a little enlarged so no edge shows"
+                    }
+                    Movement::PanUp => "Slide slowly upwards, a little enlarged so no edge shows",
+                    Movement::PanDown => {
+                        "Slide slowly downwards, a little enlarged so no edge shows"
+                    }
                 })
                 .clicked()
             {
@@ -3505,8 +6132,70 @@ fn clip_video_properties(
             }
         }
     });
+    // How far it travels, and — for a montage — whether every other shot
+    // turns the other way.
+    let selected: Vec<bettercut_editor_core::foundation::ClipId> = state
+        .selected_clips
+        .iter()
+        .copied()
+        .filter(|selected| editor.video_clip(*selected).is_some())
+        .collect();
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(4.0);
+        ui.label("travel");
+        for option in bettercut_editor_core::timeline::MovementStrength::ALL {
+            if ui
+                .add(egui::Button::selectable(
+                    state.movement_strength == option,
+                    option.label(),
+                ))
+                .on_hover_text("How far the next movement moves")
+                .clicked()
+            {
+                state.movement_strength = option;
+            }
+        }
+        if selected.len() > 1 {
+            ui.checkbox(&mut state.movement_alternates, "alternate")
+                .on_hover_text(
+                    "Turn every other shot the other way, so a montage does not read as a conveyor belt",
+                );
+        }
+    });
+    if selected.len() > 1 {
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!("{} clips selected", selected.len()))
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        });
+    }
+
     if let Some(movement) = movement {
-        match editor.set_movement(clip, movement) {
+        // More than one picture selected means the montage: every one of them
+        // takes it, as a single undo step.
+        let outcome = if selected.len() > 1 {
+            editor
+                .set_movement_on(
+                    &selected,
+                    movement,
+                    state.movement_strength,
+                    state.movement_alternates,
+                )
+                .map(|given| {
+                    if given < selected.len() {
+                        state.info(format!(
+                            "{given} of {} clips took it; the rest are animated already",
+                            selected.len()
+                        ));
+                    }
+                })
+        } else {
+            editor.set_movement_at(clip, movement, state.movement_strength)
+        };
+        match outcome {
             Ok(()) => state.needs_repaint = true,
             Err(err) => state.error(err.to_string()),
         }
@@ -3627,6 +6316,36 @@ fn clip_video_properties(
         change = Some((ClipProperty::Crop(cropped), crop_dragging));
     }
 
+    // A shape in one click: centred, full size, the edges above set to match.
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(4.0);
+        let now = editor.crop_shape_of(clip);
+        let uncropped = editor.video_clip(clip).is_some_and(|c| c.crop.is_none());
+        let mut chosen = None;
+        if ui
+            .add(egui::Button::selectable(uncropped, "Full"))
+            .on_hover_text("No crop: the whole picture")
+            .clicked()
+        {
+            chosen = Some(None);
+        }
+        for (label, w, h) in bettercut_editor_core::crop_shape::CROP_SHAPES {
+            if ui
+                .add(egui::Button::selectable(now == Some((w, h)), label))
+                .on_hover_text(format!("Crop the picture to {label}, keeping its middle"))
+                .clicked()
+            {
+                chosen = Some(Some((w, h)));
+            }
+        }
+        if let Some(shape) = chosen {
+            match editor.crop_to_shape(clip, shape) {
+                Ok(()) => state.needs_repaint = true,
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    });
+
     // Dragging the edges on the picture, which is how a crop is actually made;
     // the sliders above are for the exact number afterwards.
     ui.horizontal(|ui| {
@@ -3651,8 +6370,52 @@ fn clip_video_properties(
             // One tool at a time: the eyedropper also takes over the picture.
             if state.cropping.is_some() {
                 state.picking_key = None;
+                state.corner_pin_mode = false;
             }
             state.needs_repaint = true;
+        }
+
+        // §45's corner pin: the same idea one step further — each corner on
+        // its own, for setting this picture into a screen in the shot beneath.
+        let pinning = state.corner_pin_mode;
+        if ui
+            .add(egui::Button::selectable(
+                pinning,
+                if pinning {
+                    "Done pinning"
+                } else {
+                    "Corner pin"
+                },
+            ))
+            .on_hover_text(
+                "Drag the picture's four corners one at a time, to lay it on a \
+                 screen or a wall in the shot beneath it.",
+            )
+            .clicked()
+        {
+            state.corner_pin_mode = !pinning;
+            if state.corner_pin_mode {
+                state.cropping = None;
+                state.picking_key = None;
+            }
+            state.needs_repaint = true;
+        }
+        let pinned = editor
+            .video_clip(clip)
+            .is_some_and(|video| !video.corner_pin.is_none());
+        if pinned
+            && ui
+                .button("Unpin")
+                .on_hover_text("Put all four corners back")
+                .clicked()
+        {
+            apply_clip_property(
+                editor,
+                state,
+                clip,
+                ClipProperty::CornerPin(bettercut_editor_core::timeline::CornerPin::NONE),
+                false,
+            );
         }
     });
 
@@ -3754,9 +6517,209 @@ fn clip_video_properties(
 
     apply_row_actions(editor, state, clip, change, toggle, reset);
 
+    clip_border(ui, editor, state, clip);
+
+    clip_shadow(ui, editor, state, clip);
+
     clip_lut(ui, editor, state, clip);
 
     clip_transition(ui, editor, state, clip);
+}
+
+/// Rounded corners and a border on one clip: the framed picture-in-picture
+/// look. Both sliders are shares of the picture's shorter side, so the frame
+/// keeps its look however big the clip is.
+fn clip_border(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::{Border, MAX_BORDER_WIDTH};
+
+    let Some(border) = editor.video_clip(clip).map(|c| c.border) else {
+        return;
+    };
+    let mut next = border;
+    let mut radius = border.radius * 100.0;
+    let mut width = border.width / MAX_BORDER_WIDTH * 100.0;
+    let mut dragging = false;
+    let mut changed = false;
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let response = ui
+            .add(
+                egui::Slider::new(&mut radius, 0.0..=100.0)
+                    .text("corners")
+                    .suffix("%"),
+            )
+            .on_hover_text(
+                "Round the corners of the picture; all the way makes a square clip a circle",
+            );
+        if response.changed() {
+            next.radius = radius / 100.0;
+            dragging |= response.dragged();
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let response = ui
+            .add(
+                egui::Slider::new(&mut width, 0.0..=100.0)
+                    .text("border")
+                    .suffix("%"),
+            )
+            .on_hover_text("A solid border around the picture, following its corners");
+        if response.changed() {
+            next.width = width / 100.0 * MAX_BORDER_WIDTH;
+            dragging |= response.dragged();
+            changed = true;
+        }
+        if border.width > 0.0 {
+            let mut colour = border.colour;
+            if ui
+                .color_edit_button_srgb(&mut colour)
+                .on_hover_text("Border colour")
+                .changed()
+            {
+                next.colour = colour;
+                dragging |= ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+                changed = true;
+            }
+        }
+        if !border.is_none()
+            && ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{21ba}").color(theme::CLIP_TEXT))
+                        .frame(false)
+                        .min_size(egui::vec2(18.0, 18.0)),
+                )
+                .on_hover_text("Square corners, no border")
+                .clicked()
+        {
+            next = Border::NONE;
+            changed = true;
+        }
+    });
+    if changed && next != border {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Border(next),
+            dragging,
+        );
+    }
+}
+
+/// A drop shadow under one clip: how dark, how soft, how far and which way.
+/// Only the darkness shows at first — the rest is already set to a soft
+/// shadow falling down and to the right, so one slider gives a good one.
+fn clip_shadow(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::timeline::{MAX_SHADOW_DISTANCE, MAX_SHADOW_SOFTNESS, Shadow};
+
+    let Some(shadow) = editor.video_clip(clip).map(|c| c.shadow) else {
+        return;
+    };
+    let mut next = shadow;
+    let mut dragging = false;
+    let mut changed = false;
+    let mut row = |ui: &mut egui::Ui, value: &mut f32, range: f32, text: &str, hint: &str| {
+        let mut percent = *value / range * 100.0;
+        let response = ui
+            .horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.add(
+                    egui::Slider::new(&mut percent, 0.0..=100.0)
+                        .text(text)
+                        .suffix("%"),
+                )
+                .on_hover_text(hint)
+            })
+            .inner;
+        if response.changed() {
+            *value = percent / 100.0 * range;
+            dragging |= response.dragged();
+            changed = true;
+        }
+    };
+
+    row(
+        ui,
+        &mut next.opacity,
+        1.0,
+        "shadow",
+        "A soft shadow under the picture, lifting it off what is behind",
+    );
+    if shadow.is_visible() {
+        row(
+            ui,
+            &mut next.softness,
+            MAX_SHADOW_SOFTNESS,
+            "softness",
+            "How blurred the shadow's edge is",
+        );
+        row(
+            ui,
+            &mut next.distance,
+            MAX_SHADOW_DISTANCE,
+            "distance",
+            "How far the shadow falls from the picture",
+        );
+        ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut next.angle_degrees, 0.0..=359.0)
+                        .text("angle")
+                        .suffix("°"),
+                )
+                .on_hover_text("Which way the shadow falls: 90° is straight down");
+            if response.changed() {
+                dragging |= response.dragged();
+                changed = true;
+            }
+            let mut colour = shadow.colour;
+            if ui
+                .color_edit_button_srgb(&mut colour)
+                .on_hover_text("Shadow colour")
+                .changed()
+            {
+                next.colour = colour;
+                dragging |= ui.input(|i| i.pointer.any_down() && !i.pointer.any_pressed());
+                changed = true;
+            }
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{21ba}").color(theme::CLIP_TEXT))
+                        .frame(false)
+                        .min_size(egui::vec2(18.0, 18.0)),
+                )
+                .on_hover_text("No shadow")
+                .clicked()
+            {
+                next = Shadow::NONE;
+                changed = true;
+            }
+        });
+    }
+    if changed && next != shadow {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Shadow(next),
+            dragging,
+        );
+    }
 }
 
 /// A colour lookup table on one clip: which, and how much.
@@ -4006,6 +6969,46 @@ fn clip_speed(
         .color(theme::DISABLED),
     );
 
+    // Fitting the shot to a length rather than choosing a number: "end it
+    // here" is the question people actually have (`editor_core::rate_stretch`).
+    ui.add_space(6.0);
+    let playhead = editor.playhead();
+    let can_stretch = editor
+        .rate_stretch_speed(clip, playhead)
+        .filter(|_| playhead > existing.timeline.start);
+    ui.horizontal(|ui| {
+        let response = ui
+            .add_enabled(
+                can_stretch.is_some(),
+                egui::Button::new("Stretch to playhead"),
+            )
+            .on_hover_text(
+                "Re-time the shot so it ends at the playhead, keeping all of the footage it plays",
+            );
+        if let Some(speed) = can_stretch {
+            ui.label(
+                egui::RichText::new(format!("would be {:.2}\u{d7}", speed.as_f64()))
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("put the playhead after the clip's start")
+                    .small()
+                    .color(theme::DISABLED),
+            );
+        }
+        if response.clicked() {
+            match editor.rate_stretch(clip, playhead, false) {
+                Ok(speed) => {
+                    state.info(format!("Stretched to {:.2}\u{d7}", speed.as_f64()));
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    });
+
     ui.add_space(6.0);
     let mut chosen: Option<Rational> = None;
 
@@ -4085,12 +7088,246 @@ fn clip_speed(
             .color(theme::DISABLED),
     );
 
+    speed_curve_editor(ui, editor, state, clip);
+
+    // Slowed footage glides between its frames instead of repeating them.
+    if let Some(video) = editor.video_clip(clip) {
+        let mut smooth = video.smooth_motion;
+        let slowed = video.speed.num() < video.speed.den();
+        if ui
+            .add_enabled(
+                slowed,
+                egui::Checkbox::new(&mut smooth, "Smooth slow motion"),
+            )
+            .on_hover_text(
+                "Blend each frame into the next so slowed footage glides instead of stepping",
+            )
+            .on_disabled_hover_text("For clips slowed below normal speed")
+            .changed()
+        {
+            apply_clip_property(
+                editor,
+                state,
+                clip,
+                bettercut_editor_core::ClipProperty::SmoothMotion(smooth),
+                false,
+            );
+        }
+    }
+
+    // The sound this clip carries, whether the clip is the picture or the
+    // sound itself: re-timing moves the pitch with the speed unless it is
+    // held.
+    let sounds: Vec<bettercut_editor_core::foundation::ClipId> = editor
+        .linked_with(clip)
+        .into_iter()
+        .filter(|id| editor.audio_clip(*id).is_some())
+        .collect();
+    if let Some(first) = sounds.first().copied() {
+        let mut keep = editor
+            .audio_clip(first)
+            .is_some_and(|audio| audio.keep_pitch);
+        if ui
+            .checkbox(&mut keep, "Keep pitch")
+            .on_hover_text(
+                "Hold the voice where it is when the speed changes, instead of letting it rise and fall with it",
+            )
+            .changed()
+        {
+            for sound in &sounds {
+                apply_clip_property(
+                    editor,
+                    state,
+                    *sound,
+                    bettercut_editor_core::ClipProperty::KeepPitch(keep),
+                    false,
+                );
+            }
+        }
+    }
+
     if let Some(speed) = chosen {
         match editor.set_clip_speed(clip, speed, dragging) {
             Ok(()) => state.needs_repaint = true,
             Err(err) => state.error(err.to_string()),
         }
     }
+}
+
+/// A speed curve drawn by hand: faster where the line is high, slower where it
+/// is low, across the clip from left to right.
+///
+/// The presets above are five shapes; this is the sixth. It becomes the same
+/// thing in the end — a run of pieces, each at its own exact speed — so the
+/// curve is a way of *writing* a ramp rather than a second kind of re-timing.
+fn speed_curve_editor(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::speed_curve::{MAX_PIECES, MAX_SPEED, MIN_PIECES, MIN_SPEED};
+
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Curve").strong())
+        .on_hover_text("Draw the speed across the clip");
+
+    let height = 110.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::drag(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4, theme::TIMELINE_BACKGROUND);
+
+    let inner = rect.shrink(8.0);
+    let x_of = |at: f32| inner.left() + at.clamp(0.0, 1.0) * inner.width();
+    let at_of = |x: f32| ((x - inner.left()) / inner.width().max(1.0)).clamp(0.0, 1.0);
+    // Speeds are read on a log scale: half speed and double speed are the same
+    // distance from normal, which is how they feel.
+    let span = MAX_SPEED.ln() - MIN_SPEED.ln();
+    let y_of = |speed: f32| {
+        let through = (speed.clamp(MIN_SPEED, MAX_SPEED).ln() - MIN_SPEED.ln()) / span;
+        inner.bottom() - through * inner.height()
+    };
+    let speed_of = |y: f32| {
+        let through = ((inner.bottom() - y) / inner.height().max(1.0)).clamp(0.0, 1.0);
+        (MIN_SPEED.ln() + through * span).exp()
+    };
+
+    // Normal speed, to read the shape against.
+    let normal = y_of(1.0);
+    painter.line_segment(
+        [
+            egui::pos2(inner.left(), normal),
+            egui::pos2(inner.right(), normal),
+        ],
+        egui::Stroke::new(1.0, theme::GRID_LINE),
+    );
+
+    let curve = state.speed_curve.clone();
+    let line: Vec<egui::Pos2> = (0..=64)
+        .map(|step| {
+            let at = step as f32 / 64.0;
+            egui::pos2(x_of(at), y_of(curve.speed_at(at)))
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        line,
+        egui::Stroke::new(1.5, theme::SELECTION),
+    ));
+    for (at, speed) in curve.points() {
+        painter.circle_filled(egui::pos2(x_of(*at), y_of(*speed)), 4.0, theme::SELECTION);
+    }
+    painter.text(
+        egui::pos2(inner.left() + 2.0, inner.top()),
+        egui::Align2::LEFT_TOP,
+        format!("{MAX_SPEED:.0}×"),
+        egui::FontId::proportional(10.0),
+        theme::DISABLED,
+    );
+    painter.text(
+        egui::pos2(inner.left() + 2.0, inner.bottom()),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{MIN_SPEED:.1}×"),
+        egui::FontId::proportional(10.0),
+        theme::DISABLED,
+    );
+
+    let pointer = response.interact_pointer_pos().or_else(|| {
+        ui.ctx()
+            .pointer_latest_pos()
+            .filter(|pos| rect.contains(*pos))
+    });
+    let nearest = |pos: egui::Pos2| -> Option<usize> {
+        curve
+            .points()
+            .iter()
+            .enumerate()
+            .map(|(index, (at, speed))| (egui::pos2(x_of(*at), y_of(*speed)).distance(pos), index))
+            .filter(|(distance, _)| *distance <= 9.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, index)| index)
+    };
+
+    if response.drag_started()
+        && let Some(pos) = pointer
+    {
+        state.speed_curve_drag = nearest(pos);
+    }
+    if response.dragged()
+        && let Some(pos) = pointer
+        && let Some(index) = state.speed_curve_drag
+    {
+        state
+            .speed_curve
+            .move_point(index, at_of(pos.x), speed_of(pos.y));
+        state.needs_repaint = true;
+    }
+    if response.drag_stopped() {
+        state.speed_curve_drag = None;
+    }
+    if response.double_clicked()
+        && let Some(pos) = pointer
+    {
+        match nearest(pos) {
+            Some(index) => state.speed_curve.remove_point(index),
+            None => {
+                let index = state.speed_curve.add_point(at_of(pos.x));
+                state
+                    .speed_curve
+                    .move_point(index, at_of(pos.x), speed_of(pos.y));
+            }
+        }
+        state.needs_repaint = true;
+    }
+
+    ui.horizontal(|ui| {
+        let mut pieces = state.speed_curve_pieces;
+        if ui
+            .add(
+                egui::Slider::new(&mut pieces, MIN_PIECES..=MAX_PIECES)
+                    .text("pieces")
+                    .integer(),
+            )
+            .on_hover_text("How many steps the curve is cut into")
+            .changed()
+        {
+            state.speed_curve_pieces = pieces;
+        }
+        let flat = state.speed_curve.is_flat();
+        if ui
+            .add_enabled(!flat, egui::Button::new("Apply curve"))
+            .on_hover_text("Cut the clip into pieces and give each the speed the curve asks for")
+            .on_disabled_hover_text("Drag the line first — a flat curve changes nothing")
+            .clicked()
+        {
+            let factors = state.speed_curve.factors(state.speed_curve_pieces);
+            match editor.apply_speed_factors(clip, &factors, "Speed Curve") {
+                Ok(pieces) => {
+                    if let Some(first) = pieces.first() {
+                        state.select_only(*first);
+                    }
+                    state.info(format!("Speed curve: {} pieces", pieces.len()));
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+            state.needs_repaint = true;
+        }
+        if ui
+            .button("Flat")
+            .on_hover_text("Back to normal speed all the way across")
+            .clicked()
+        {
+            state.speed_curve = bettercut_editor_core::SpeedCurve::default();
+            state.needs_repaint = true;
+        }
+    });
+    ui.label(
+        egui::RichText::new("Drag a point; double-click to add one, or to remove one.")
+            .small()
+            .color(theme::DISABLED),
+    );
 }
 
 /// One button per speed ramp preset. Shared by the Inspector and the clip's
@@ -4311,6 +7548,7 @@ fn text_properties(
     let mut animation = existing.animation;
     let shape = existing.shape.clone();
     let counter = existing.counter;
+    let highlight = existing.highlight;
 
     ui.monospace(format!("start     {}", range.start.format_timecode()));
     ui.monospace(format!("duration  {}", range.duration().format_timecode()));
@@ -4355,7 +7593,11 @@ fn text_properties(
         };
         size(ui, &mut shape.width, "width");
         size(ui, &mut shape.height, "height");
-        if shape.kind == bettercut_editor_core::text::ShapeKind::RoundedRectangle {
+        if matches!(
+            shape.kind,
+            bettercut_editor_core::text::ShapeKind::RoundedRectangle
+                | bettercut_editor_core::text::ShapeKind::SpeechBubble
+        ) {
             let response =
                 ui.add(egui::Slider::new(&mut shape.corner_radius, 0.0..=400.0).text("corners"));
             if response.changed() {
@@ -4472,6 +7714,28 @@ fn text_properties(
                 // one per character.
                 change = Some((TextProperty::Content(text.clone()), true));
             }
+
+            // Karaoke-style: each word lit as it comes, timed across the clip.
+            ui.horizontal(|ui| {
+                let mut on = highlight.is_some();
+                if ui
+                    .checkbox(&mut on, "light each word")
+                    .on_hover_text(
+                        "Colour each word in turn across the clip, the way karaoke captions do",
+                    )
+                    .changed()
+                {
+                    change = Some((
+                        TextProperty::Highlight(on.then_some(Editor::DEFAULT_HIGHLIGHT)),
+                        false,
+                    ));
+                }
+                if let Some(mut colour) = highlight
+                    && colour_button(ui, &mut colour)
+                {
+                    change = Some((TextProperty::Highlight(Some(colour)), false));
+                }
+            });
         }
 
         // A whole look in one click: the style and where it sits, which for a lower
@@ -4525,6 +7789,69 @@ fn text_properties(
                 {
                     style = preset.applied_to(&style);
                     restyled = true;
+                }
+            }
+        });
+
+        // The user's own styles, under the built-in ones: the way *this* video
+        // titles things, so the twentieth caption matches the first.
+        ui.add_space(4.0);
+        let mut forget_style: Option<String> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Mine").strong());
+            if state.title_styles.is_empty() {
+                ui.label(
+                    egui::RichText::new("name this one below to use it again")
+                        .small()
+                        .color(theme::DISABLED),
+                );
+            }
+            for (name, saved) in state.title_styles.all().to_vec() {
+                let response = ui
+                    .add(egui::Button::selectable(saved == style, &name))
+                    .on_hover_text(
+                        "Font, size, colour, outline, shadow and spacing. Right-click to forget it",
+                    );
+                if response.clicked() && saved != style {
+                    style = saved.clone();
+                    restyled = true;
+                }
+                response.context_menu(|ui| {
+                    if ui
+                        .button(format!("Forget \u{201c}{name}\u{201d}"))
+                        .clicked()
+                    {
+                        forget_style = Some(name.clone());
+                        ui.close();
+                    }
+                });
+            }
+        });
+        if let Some(name) = forget_style {
+            state.title_styles.remove(&name);
+            state.needs_repaint = true;
+        }
+        ui.horizontal(|ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut state.title_style_name_draft)
+                    .desired_width(120.0)
+                    .char_limit(crate::title_styles::MAX_NAME)
+                    .hint_text("name this style"),
+            );
+            let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Save style").clicked() || entered)
+                && !state.title_style_name_draft.trim().is_empty()
+            {
+                let name = std::mem::take(&mut state.title_style_name_draft);
+                match state.title_styles.save(&name, style.clone()) {
+                    Ok(()) => {
+                        state.info(format!(
+                            "Saved the title style \u{201c}{}\u{201d}",
+                            name.trim()
+                        ));
+                        state.needs_repaint = true;
+                    }
+                    Err(why) => state.error(why),
                 }
             }
         });
@@ -4594,10 +7921,39 @@ fn text_properties(
             ui,
             egui::Slider::new(&mut style.letter_spacing, -0.2..=1.0).text("letter spacing"),
         );
+        // Text round an arch or a smile, for a badge or a logo look.
+        let mut bend = style.curve * 100.0;
+        if row(
+            ui,
+            egui::Slider::new(&mut bend, -100.0..=100.0)
+                .text("curve")
+                .suffix("%"),
+        ) {
+            style.curve = bend / 100.0;
+            restyled = true;
+        }
 
         ui.horizontal(|ui| {
             ui.label("colour");
             if colour_button(ui, &mut style.color) {
+                restyled = true;
+            }
+            // A second colour shades the letters from top to bottom.
+            let mut shaded = style.gradient.is_some();
+            if ui
+                .checkbox(&mut shaded, "to")
+                .on_hover_text(
+                    "Shade the letters from the first colour at the top to a second at the bottom",
+                )
+                .changed()
+            {
+                style.gradient =
+                    shaded.then_some(bettercut_editor_core::text::Rgba::opaque(255, 170, 40));
+                restyled = true;
+            }
+            if let Some(bottom) = style.gradient.as_mut()
+                && colour_button(ui, bottom)
+            {
                 restyled = true;
             }
             if ui
@@ -4781,6 +8137,58 @@ fn text_properties(
         change = Some((TextProperty::Animation(animation), false));
     }
 
+    // A movement that keeps going while the title is up: a sticker that pulses
+    // or a caption that floats.
+    ui.horizontal_wrapped(|ui| {
+        ui.label("loop");
+        let mut looping = animation.looping;
+        if ui.selectable_label(looping.is_none(), "None").clicked() {
+            looping = None;
+        }
+        for kind in bettercut_editor_core::timeline::LoopMotion::ALL {
+            if ui
+                .selectable_label(looping == Some(kind), kind.label())
+                .clicked()
+            {
+                looping = Some(kind);
+            }
+        }
+        if looping != animation.looping {
+            animation.looping = looping;
+            change = Some((TextProperty::Animation(animation), false));
+        }
+    });
+
+    // Across the whole frame for the title's whole length: credits or a
+    // ticker. Trim the title to set the speed.
+    ui.horizontal_wrapped(|ui| {
+        ui.label("scroll");
+        let mut scroll = animation.scroll;
+        if ui.selectable_label(scroll.is_none(), "None").clicked() {
+            scroll = None;
+        }
+        for kind in bettercut_editor_core::timeline::Scroll::ALL {
+            if ui
+                .selectable_label(scroll == Some(kind), kind.label())
+                .on_hover_text(match kind {
+                    bettercut_editor_core::timeline::Scroll::Credits => {
+                        "Roll up from below the frame to above it, over the title's length"
+                    }
+                    bettercut_editor_core::timeline::Scroll::Ticker => {
+                        "Run from right to left across the frame, over the title's length"
+                    }
+                })
+                .clicked()
+            {
+                scroll = Some(kind);
+            }
+        }
+        if scroll != animation.scroll {
+            animation.scroll = scroll;
+            change = Some((TextProperty::Animation(animation), false));
+        }
+    });
+
     // Beside the animation, as on a clip: a spin or a pop is over in a third
     // of a second, which is exactly when a smear is worth having.
     let mut blurring = smearing;
@@ -4927,6 +8335,23 @@ fn family_picker(
             *family = generic;
             changed = true;
         }
+    }
+
+    // Your own font: copied in, then on offer in every title from now on.
+    if ui
+        .button("Import Font…")
+        .on_hover_text("Add a .ttf or .otf font file, to use in any title")
+        .clicked()
+        && let Some(path) = rfd::FileDialog::new()
+            .add_filter("Fonts", &["ttf", "otf", "ttc"])
+            .pick_file()
+    {
+        state.font_import = Some(path);
+    }
+    // A font just imported goes straight onto this title.
+    if let Some(name) = state.font_imported.take() {
+        *family = FontFamily::Named(name);
+        changed = true;
     }
 
     if state.font_families.is_empty() {
@@ -5105,6 +8530,294 @@ fn keyed_row<R>(
     .inner
 }
 
+/// The animation graph: one parameter's curve across the clip, with its keys
+/// as points that can be dragged, added and deleted.
+///
+/// Numbers in a list say *that* something is animated; a curve says what the
+/// animation does — where it holds, where it rushes, whether the ease is where
+/// the user thinks it is. It is drawn in source time, which is what keys are
+/// anchored to (§24), so it keeps its shape when the clip is trimmed or slipped.
+fn keyframe_graph(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+    look: &VideoLook,
+) {
+    use bettercut_editor_core::foundation::MediaTime;
+
+    let Some(video) = editor.video_clip(clip) else {
+        return;
+    };
+    let source = video.source;
+    let animated: Vec<AnimatedParameter> = AnimatedParameter::ALL
+        .into_iter()
+        .filter(|parameter| video.keyframes.is_animated(*parameter))
+        .collect();
+    let Some(&first) = animated.first() else {
+        return;
+    };
+    let parameter = match state.graph_parameter {
+        Some(chosen) if animated.contains(&chosen) => chosen,
+        _ => first,
+    };
+    state.graph_parameter = Some(parameter);
+
+    // Which parameter the graph is showing. One row of small buttons rather
+    // than a dropdown: a clip rarely animates more than three or four things,
+    // and seeing them all is how the user notices what else is keyed.
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        for candidate in &animated {
+            if ui
+                .selectable_label(*candidate == parameter, candidate.label())
+                .clicked()
+            {
+                state.graph_parameter = Some(*candidate);
+                state.needs_repaint = true;
+            }
+        }
+    });
+
+    let keys = editor.keyframes_of(clip, parameter);
+    if keys.is_empty() {
+        return;
+    }
+
+    // The value axis: the parameter's own limits where it has them, widened if
+    // a key sits outside, and otherwise the keys' own range with room around
+    // it so a flat curve is not drawn on the frame.
+    let (mut low, mut high) = keys.iter().fold((f32::MAX, f32::MIN), |(lo, hi), key| {
+        (lo.min(key.value), hi.max(key.value))
+    });
+    if let Some((min, max)) = parameter.limits() {
+        low = low.min(min);
+        high = high.max(max);
+    }
+    if (high - low).abs() < 1e-4 {
+        low -= 0.5;
+        high += 0.5;
+    }
+    let pad = (high - low) * 0.08;
+    let (low, high) = (low - pad, high + pad);
+
+    let height = 132.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::drag(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4, theme::TIMELINE_BACKGROUND);
+
+    let span = (source.end.ticks() - source.start.ticks()).max(1);
+    let x_of = |time: MediaTime| {
+        let through = (time.ticks() - source.start.ticks()) as f32 / span as f32;
+        rect.left() + 6.0 + through.clamp(0.0, 1.0) * (rect.width() - 12.0)
+    };
+    let time_of = |x: f32| {
+        let through = ((x - rect.left() - 6.0) / (rect.width() - 12.0)).clamp(0.0, 1.0);
+        MediaTime::from_ticks(source.start.ticks() + (f64::from(through) * span as f64) as i64)
+    };
+    let y_of = |value: f32| {
+        let through = ((value - low) / (high - low)).clamp(0.0, 1.0);
+        rect.bottom() - 6.0 - through * (rect.height() - 12.0)
+    };
+    let value_of = |y: f32| {
+        let through = ((rect.bottom() - 6.0 - y) / (rect.height() - 12.0)).clamp(0.0, 1.0);
+        low + through * (high - low)
+    };
+
+    // The parameter's resting value, so a curve reads against "no change".
+    let default = parameter.default_value();
+    if default >= low && default <= high {
+        let y = y_of(default);
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0, theme::GRID_LINE),
+        );
+    }
+
+    // The drag's own idea of where the key is, so the curve follows the pointer
+    // rather than jumping on release.
+    let dragged = state
+        .graph_drag
+        .filter(|drag| drag.clip == clip && drag.parameter == parameter && drag.moved);
+    let shown: Vec<(MediaTime, f32)> = {
+        let mut points: Vec<(MediaTime, f32)> = keys
+            .iter()
+            .map(|key| match dragged {
+                Some(drag) if drag.from == key.time => (drag.to, drag.value),
+                _ => (key.time, key.value),
+            })
+            .collect();
+        points.sort_by_key(|(time, _)| time.ticks());
+        points
+    };
+
+    // The curve between the keys, sampled: the interpolation is the point of
+    // the graph, so it is read from the clip rather than drawn as straight
+    // lines between points.
+    let samples = 96;
+    let mut curve: Vec<egui::Pos2> = Vec::with_capacity(samples);
+    for step in 0..samples {
+        let at =
+            MediaTime::from_ticks(source.start.ticks() + span * step as i64 / (samples as i64 - 1));
+        let value = match dragged {
+            // While a key is moving, straight segments between the points: the
+            // clip has not been told about the move yet.
+            Some(_) => value_between(&shown, at),
+            None => video
+                .keyframes
+                .value_at(parameter, at)
+                .unwrap_or_else(|| value_between(&shown, at)),
+        };
+        curve.push(egui::pos2(x_of(at), y_of(value)));
+    }
+    painter.add(egui::Shape::line(
+        curve,
+        egui::Stroke::new(1.5, theme::KEYFRAME),
+    ));
+
+    // Where the playhead is, when it is over the clip.
+    if let Some(at) = look.source_time
+        && at >= source.start
+        && at <= source.end
+    {
+        let x = x_of(at);
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0, theme::PLAYHEAD),
+        );
+    }
+
+    for (time, value) in &shown {
+        painter.circle_filled(egui::pos2(x_of(*time), y_of(*value)), 4.0, theme::KEYFRAME);
+    }
+
+    // The axis, so the numbers behind the shape are readable.
+    painter.text(
+        egui::pos2(rect.left() + 4.0, rect.top() + 2.0),
+        egui::Align2::LEFT_TOP,
+        format!("{high:.2}"),
+        egui::FontId::proportional(10.0),
+        theme::DISABLED,
+    );
+    painter.text(
+        egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{low:.2}"),
+        egui::FontId::proportional(10.0),
+        theme::DISABLED,
+    );
+
+    let pointer = response.interact_pointer_pos().or_else(|| {
+        ui.ctx()
+            .pointer_latest_pos()
+            .filter(|pos| rect.contains(*pos))
+    });
+    let nearest = |pos: egui::Pos2| -> Option<(MediaTime, f32)> {
+        shown
+            .iter()
+            .copied()
+            .map(|(time, value)| {
+                let at = egui::pos2(x_of(time), y_of(value));
+                (at.distance(pos), time, value)
+            })
+            .filter(|(distance, _, _)| *distance <= 9.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, time, value)| (time, value))
+    };
+
+    if response.drag_started()
+        && let Some(pos) = pointer
+        && let Some((time, value)) = nearest(pos)
+    {
+        state.graph_drag = Some(crate::state::KeyframeDrag {
+            clip,
+            parameter,
+            from: time,
+            to: time,
+            value,
+            moved: false,
+        });
+    }
+
+    if response.dragged()
+        && let Some(pos) = pointer
+        && let Some(drag) = state.graph_drag.as_mut()
+        && drag.clip == clip
+    {
+        drag.moved = true;
+        drag.to = time_of(pos.x);
+        drag.value = value_of(pos.y);
+        state.needs_repaint = true;
+    }
+
+    if response.drag_stopped()
+        && let Some(drag) = state.graph_drag.take()
+        && drag.moved
+        && let Err(err) = editor.move_keyframe(clip, drag.parameter, drag.from, drag.to, drag.value)
+    {
+        state.error(err.to_string());
+    }
+
+    // Double-click: on a key, delete it; anywhere else, add one there.
+    if response.double_clicked()
+        && let Some(pos) = pointer
+    {
+        state.graph_drag = None;
+        let result = match nearest(pos) {
+            Some((time, _)) => editor.remove_keyframe_at(clip, parameter, time),
+            None => editor.set_keyframe(
+                clip,
+                parameter,
+                bettercut_editor_core::timeline::Keyframe::new(
+                    time_of(pos.x),
+                    value_of(pos.y),
+                    bettercut_editor_core::timeline::Interpolation::default(),
+                ),
+            ),
+        };
+        if let Err(err) = result {
+            state.error(err.to_string());
+        }
+        state.needs_repaint = true;
+    }
+
+    ui.label(
+        egui::RichText::new("Drag a point to move it. Double-click to add one, or to remove the one under the pointer.")
+            .small()
+            .color(theme::DISABLED),
+    );
+}
+
+/// The value at `at` along straight lines between `points` — what the graph
+/// draws while a key is mid-drag and the clip has not been told yet.
+fn value_between(
+    points: &[(bettercut_editor_core::foundation::MediaTime, f32)],
+    at: bettercut_editor_core::foundation::MediaTime,
+) -> f32 {
+    match points.first() {
+        None => 0.0,
+        Some((first, value)) if at <= *first => *value,
+        _ => {
+            let last = points.last().copied().unwrap_or((at, 0.0));
+            if at >= last.0 {
+                return last.1;
+            }
+            points
+                .windows(2)
+                .find(|pair| at >= pair[0].0 && at <= pair[1].0)
+                .map_or(last.1, |pair| {
+                    let (a, b) = (pair[0], pair[1]);
+                    let span = (b.0.ticks() - a.0.ticks()).max(1) as f32;
+                    let through = (at.ticks() - a.0.ticks()) as f32 / span;
+                    a.1 + (b.1 - a.1) * through
+                })
+        }
+    }
+}
+
 /// How many keys the clip has, and a way back to them (§24).
 ///
 /// Without this, animation is invisible unless the playhead happens to be
@@ -5172,6 +8885,177 @@ fn animation_summary(
 }
 
 /// Volume for the selected audio clip (§20a.4).
+/// Low cut, high cut and presence for a sound clip. A slider at its "off" end
+/// says so, rather than showing a frequency that does nothing.
+fn eq_controls(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::ClipProperty;
+    use bettercut_editor_core::timeline::{
+        ClipEq, EQ_HIGH_CUT_MAX, EQ_HIGH_CUT_MIN, EQ_LOW_CUT_MAX, EQ_PRESENCE_MAX,
+    };
+
+    let Some(current) = editor.audio_clip(clip).map(|c| c.eq) else {
+        return;
+    };
+    let mut next = current;
+    let mut dragging = false;
+    ui.label(egui::RichText::new("EQ").small().color(theme::DISABLED));
+
+    // Low cut: 0 (off) up to 400 Hz.
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next.low_cut, 0.0..=EQ_LOW_CUT_MAX)
+                .text("low cut")
+                .custom_formatter(|v, _| {
+                    if v < 20.0 {
+                        "off".to_owned()
+                    } else {
+                        format!("{v:.0} Hz")
+                    }
+                }),
+        )
+        .on_hover_text("Take out rumble and boom below this — 80 to 120 Hz suits most voices");
+    dragging |= response.dragged();
+
+    // High cut: shown from 2 kHz to 20 kHz, where the top end is off.
+    let mut high = if next.high_cut <= 0.0 {
+        EQ_HIGH_CUT_MAX
+    } else {
+        next.high_cut
+    };
+    let response = ui
+        .add(
+            egui::Slider::new(&mut high, EQ_HIGH_CUT_MIN..=EQ_HIGH_CUT_MAX)
+                .logarithmic(true)
+                .text("high cut")
+                .custom_formatter(|v, _| {
+                    if v >= f64::from(EQ_HIGH_CUT_MAX) - 1.0 {
+                        "off".to_owned()
+                    } else {
+                        format!("{:.1} kHz", v / 1_000.0)
+                    }
+                }),
+        )
+        .on_hover_text("Soften hiss and harshness above this");
+    dragging |= response.dragged();
+    next.high_cut = if high >= EQ_HIGH_CUT_MAX - 1.0 {
+        0.0
+    } else {
+        high
+    };
+
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next.presence, -EQ_PRESENCE_MAX..=EQ_PRESENCE_MAX)
+                .text("presence")
+                .suffix(" dB")
+                .fixed_decimals(1),
+        )
+        .on_hover_text("Bring a voice forward (up) or set it back (down), around 3 kHz");
+    dragging |= response.dragged();
+
+    // Mains hum: the one noise in a recording that is a *tone*, and so the one
+    // that can be taken out cleanly rather than guessed at.
+    ui.horizontal(|ui| {
+        ui.label("hum");
+        for (label, hz) in [("off", 0.0_f32), ("50 Hz", 50.0), ("60 Hz", 60.0)] {
+            if ui
+                .add(egui::Button::selectable((next.hum - hz).abs() < 0.5, label))
+                .on_hover_text(match hz {
+                    0.0 => "Leave the low end alone",
+                    50.0 => "Notch out 50 Hz mains hum and its harmonics — Europe, Asia, Africa",
+                    _ => "Notch out 60 Hz mains hum and its harmonics — the Americas, Japan",
+                })
+                .clicked()
+            {
+                next.hum = hz;
+            }
+        }
+    });
+
+    if next != current {
+        apply_clip_property(editor, state, clip, ClipProperty::Eq(next), dragging);
+    }
+    if !current.is_flat()
+        && ui
+            .small_button("Flat")
+            .on_hover_text("Turn the lot off")
+            .clicked()
+    {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            ClipProperty::Eq(ClipEq::default()),
+            false,
+        );
+    }
+}
+
+fn space_controls(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    clip: bettercut_editor_core::foundation::ClipId,
+) {
+    use bettercut_editor_core::ClipProperty;
+    use bettercut_editor_core::timeline::{ClipSpace, SpaceKind};
+
+    let Some(current) = editor.audio_clip(clip).map(|c| c.space) else {
+        return;
+    };
+    ui.label(
+        egui::RichText::new("Echo & reverb")
+            .small()
+            .color(theme::DISABLED),
+    );
+    let mut next = current;
+    let mut dragging = false;
+    ui.horizontal(|ui| {
+        for kind in SpaceKind::ALL {
+            if ui
+                .selectable_label(current.kind == kind, kind.label())
+                .on_hover_text(kind.description())
+                .clicked()
+                && current.kind != kind
+            {
+                next.kind = kind;
+                // A fresh choice starts at a blend that is heard.
+                if kind != SpaceKind::Dry && current.mix <= 0.0 {
+                    next.mix = 0.35;
+                }
+            }
+        }
+    });
+    if current.kind != SpaceKind::Dry {
+        let mut percent = next.mix * 100.0;
+        let response = ui
+            .add(
+                egui::Slider::new(&mut percent, 0.0..=100.0)
+                    .text("amount")
+                    .suffix(" %")
+                    .fixed_decimals(0),
+            )
+            .on_hover_text("How much of the echo or room is blended with the sound");
+        if response.changed() {
+            next.mix = percent / 100.0;
+            dragging = response.dragged();
+        }
+    }
+    if next != current {
+        let next = if next.kind == SpaceKind::Dry {
+            ClipSpace::default()
+        } else {
+            next
+        };
+        apply_clip_property(editor, state, clip, ClipProperty::Space(next), dragging);
+    }
+}
+
 fn clip_audio_properties(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -5222,6 +9106,157 @@ fn clip_audio_properties(
         );
     }
 
+    // Loud and quiet words closer together.
+    let levelled = editor.audio_clip(clip).map_or(0.0, |c| c.leveller);
+    let mut next_level = levelled;
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next_level, 0.0..=100.0)
+                .text("leveller")
+                .suffix("%"),
+        )
+        .on_hover_text("Even out a voice: loud words turned down, the whole lifted back up");
+    if response.changed() {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            ClipProperty::Leveller(next_level),
+            response.dragged(),
+        );
+    }
+
+    // The hiss on an "s", dipped only while it is happening.
+    let de_essed = editor.audio_clip(clip).map_or(0.0, |c| c.de_ess);
+    let mut next_ess = de_essed;
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next_ess, 0.0..=100.0)
+                .text("de-esser")
+                .suffix("%"),
+        )
+        .on_hover_text(
+            "Take the hiss off \"s\" and \"t\" without dulling the voice: the sibilant \
+             band is turned down only while an ess is happening",
+        );
+    if response.changed() {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            ClipProperty::DeEss(next_ess),
+            response.dragged(),
+        );
+    }
+
+    // The tone of the recording: three controls, each with an "off" end.
+    eq_controls(ui, editor, state, clip);
+
+    // Where the sound is: dry, or an echo or a room around it.
+    space_controls(ui, editor, state, clip);
+
+    // The voice changer: up for a chipmunk, down for a deep voice.
+    let pitch = editor.audio_clip(clip).map_or(0.0, |c| c.pitch);
+    let mut next_pitch = pitch;
+    let mut pitch_drag = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Voice").small().color(theme::DISABLED));
+        for (label, semitones, hint) in [
+            ("Normal", 0.0, "The voice as recorded"),
+            ("Chipmunk", 7.0, "Higher and squeakier, at the same speed"),
+            ("Deep", -5.0, "Lower and heavier, at the same speed"),
+        ] {
+            if ui
+                .selectable_label((pitch - semitones).abs() < 0.05, label)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                next_pitch = semitones;
+            }
+        }
+    });
+    let response = ui
+        .add(
+            egui::Slider::new(&mut next_pitch, -12.0..=12.0)
+                .text("pitch")
+                .suffix(" st")
+                .fixed_decimals(1),
+        )
+        .on_hover_text("Move the pitch up or down in semitones without changing the speed");
+    pitch_drag |= response.dragged();
+    if (next_pitch - pitch).abs() > 1e-4 {
+        apply_clip_property(
+            editor,
+            state,
+            clip,
+            bettercut_editor_core::ClipProperty::Pitch(next_pitch),
+            pitch_drag,
+        );
+    }
+
+    // A mic recorded on one side only: heard in both ears.
+    let mode = editor
+        .audio_clip(clip)
+        .map_or(bettercut_editor_core::timeline::ChannelMode::Stereo, |c| {
+            c.channels
+        });
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new("Channels")
+                .small()
+                .color(theme::DISABLED),
+        );
+        for choice in bettercut_editor_core::timeline::ChannelMode::ALL {
+            if ui
+                .selectable_label(mode == choice, choice.label())
+                .on_hover_text(choice.description())
+                .clicked()
+                && mode != choice
+            {
+                apply_clip_property(
+                    editor,
+                    state,
+                    clip,
+                    bettercut_editor_core::ClipProperty::Channels(choice),
+                    false,
+                );
+            }
+        }
+    });
+
+    // Into the next sound, where one follows straight on: the cut blended
+    // rather than jumped.
+    if editor.next_touching_sound(clip).is_some() {
+        let current = editor
+            .audio_clip(clip)
+            .map_or(TimelineTime::ZERO, |c| c.crossfade_out);
+        let mut seconds = current.ticks() as f32 / 960_000.0;
+        let max = bettercut_editor_core::timeline::MAX_CROSSFADE.ticks() as f32 / 960_000.0;
+        let response = ui
+            .add(
+                egui::Slider::new(&mut seconds, 0.0..=max)
+                    .text("crossfade into next")
+                    .custom_formatter(|v, _| {
+                        if v < 0.01 {
+                            "off".to_owned()
+                        } else {
+                            format!("{v:.2} s")
+                        }
+                    }),
+            )
+            .on_hover_text(
+                "Blend this sound into the next one across the cut. Needs a little of \
+                 each recording beyond the cut to blend with.",
+            );
+        if response.changed() {
+            let length = TimelineTime::from_ticks((seconds * 960_000.0).round() as i64);
+            match editor.set_audio_crossfade(clip, length, response.dragged()) {
+                Ok(_) => state.needs_repaint = true,
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    }
+
     // Fades, in tenths of a second: the unit a person thinks of a fade in,
     // turned into ticks at once and never used as a position.
     let Some((fade_in, fade_out)) = editor.audio_clip(clip).map(|c| (c.fade_in, c.fade_out)) else {
@@ -5254,6 +9289,46 @@ fn clip_audio_properties(
             Ok(()) => state.needs_repaint = true,
             Err(err) => state.error(err.to_string()),
         }
+    }
+
+    // How the fades curve, once there is a fade to shape.
+    if fade_in > TimelineTime::ZERO || fade_out > TimelineTime::ZERO {
+        let shape = editor
+            .audio_clip(clip)
+            .map(|c| c.fade_shape)
+            .unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("fade shape");
+            for option in bettercut_editor_core::timeline::FadeShape::ALL {
+                if ui
+                    .selectable_label(shape == option, option.label())
+                    .on_hover_text(match option {
+                        bettercut_editor_core::timeline::FadeShape::Smooth => {
+                            "Even to the ear, all the way through"
+                        }
+                        bettercut_editor_core::timeline::FadeShape::Linear => {
+                            "A straight line: seems to hold, then drop at the end"
+                        }
+                        bettercut_editor_core::timeline::FadeShape::Fast => {
+                            "Most of the change straight away"
+                        }
+                        bettercut_editor_core::timeline::FadeShape::Slow => {
+                            "Holds on, then goes at the very end"
+                        }
+                    })
+                    .clicked()
+                    && shape != option
+                {
+                    apply_clip_property(
+                        editor,
+                        state,
+                        clip,
+                        bettercut_editor_core::ClipProperty::FadeShape(option),
+                        false,
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -5661,6 +9736,18 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
             {
                 state.export_stop_requested = true;
             }
+            let waiting = state.export_queue.waiting.len();
+            if ui
+                .button(if waiting > 0 {
+                    format!("Queue ({waiting} waiting)")
+                } else {
+                    "Queue".to_owned()
+                })
+                .on_hover_text("See the exports waiting their turn, and take any off")
+                .clicked()
+            {
+                state.export_queue.open = !state.export_queue.open;
+            }
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -5802,6 +9889,10 @@ pub fn open_project_at(editor: &mut Editor, state: &mut UiState, path: &std::pat
     match Editor::open(path) {
         Ok((opened, _rx)) => {
             *editor = opened;
+            // Bakes whose files have gone since the project was saved: the
+            // cache cleared, the folder tidied, the project moved without its
+            // renders (`editor_core::render_in_place`).
+            editor.prune_renders();
             reset_state(state);
             state.recent.touch(path);
             state.info(format!("Opened {}", path.display()));
@@ -5843,6 +9934,45 @@ pub fn save_project_as(editor: &mut Editor, state: &mut UiState) {
         }
         Err(err) => state.error(format!("Could not save: {err}")),
     }
+}
+
+/// Copy the project and its files into a folder the user picks.
+///
+/// The originals are left alone (§2), so this is safe to point at a drive that
+/// turns out to be too small: what fits is copied and the rest is reported.
+pub fn collect_files(editor: &mut Editor, state: &mut UiState) {
+    let Some(folder) = rfd::FileDialog::new()
+        .set_title("Collect the project and its files into…")
+        .pick_folder()
+    else {
+        return;
+    };
+    match editor.collect_into(&folder) {
+        Ok(done) if done.missing.is_empty() => state.info(format!(
+            "Collected {} file(s) into {}",
+            done.copied,
+            folder.display()
+        )),
+        Ok(done) => state.error(format!(
+            "Collected {} file(s); {} could not be copied: {}",
+            done.copied,
+            done.missing.len(),
+            done.missing.join("; ")
+        )),
+        Err(err) => state.error(format!("Could not collect: {err}")),
+    }
+    state.needs_repaint = true;
+}
+
+/// Bytes as something a person reads: "4.2 GB".
+fn readable_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("kB", 1 << 10)];
+    for (unit, size) in UNITS {
+        if bytes >= size {
+            return format!("{:.1} {unit}", bytes as f64 / size as f64);
+        }
+    }
+    format!("{bytes} bytes")
 }
 
 /// Write a copy of the project somewhere else, and stay in this one.
@@ -6021,7 +10151,7 @@ fn slideshow_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, p
 
         ui.add_space(4.0);
         ui.label("movement");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for movement in Movement::ALL {
                 if ui
                     .add(egui::Button::selectable(
@@ -6048,6 +10178,24 @@ fn slideshow_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, p
         if ui.button("Make Slideshow").clicked() {
             build = true;
             ui.close();
+        }
+
+        // One photo per beat instead of a set number of seconds each.
+        let beats = editor.markers().len();
+        if ui
+            .add_enabled(beats >= 2, egui::Button::new("Cut to the Beat"))
+            .on_hover_text("One photo from each marker to the next, so the pictures change on the music's beats")
+            .on_disabled_hover_text("Mark the music's beats first: right-click a sound clip and choose Mark Beats")
+            .clicked()
+        {
+            ui.close();
+            match editor.photos_to_beats(photos, plan.movement) {
+                Ok(clips) => {
+                    state.info(format!("{} photos cut to the beat", clips.len()));
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
         }
     });
 
@@ -6093,10 +10241,143 @@ fn add_placeholder_clip(editor: &mut Editor, state: &mut UiState) {
 /// imported video arrived silent and an imported song arrived as a video clip
 /// on a video track.
 fn place_on_timeline(editor: &mut Editor, state: &mut UiState, media_id: MediaId) {
-    match editor.place_media(media_id) {
-        Ok(clips) if clips.len() > 1 => state.info("Clip added, with its sound"),
-        Ok(_) => state.info("Clip added"),
+    // The part marked on the file, if one is (`UiState::mark_media`).
+    let part = state.marked_part(media_id);
+    match editor.place_media_range(media_id, part) {
+        Ok(clips) => {
+            let what = if part.is_some() {
+                "Part added"
+            } else {
+                "Clip added"
+            };
+            state.info(if clips.len() > 1 {
+                format!("{what}, with its sound")
+            } else {
+                what.to_owned()
+            });
+        }
         Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Put a file on the timeline *at the playhead*, rather than after everything
+/// else: three-point editing (`editor_core::three_point`).
+fn drop_at_playhead(
+    editor: &mut Editor,
+    state: &mut UiState,
+    media_id: MediaId,
+    kind: bettercut_editor_core::three_point::DropKind,
+) {
+    use bettercut_editor_core::three_point::DropKind;
+
+    let part = state.marked_part(media_id);
+    let at = editor.playhead();
+    match editor.place_media_at(media_id, part, at, kind) {
+        Ok(clips) => {
+            let what = match kind {
+                DropKind::Insert => "Inserted",
+                DropKind::Overwrite => "Overwritten",
+            };
+            state.info(if clips.len() > 1 {
+                format!("{what} at the playhead, with its sound")
+            } else {
+                format!("{what} at the playhead")
+            });
+            state.needs_repaint = true;
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// A file's rating, as five stars to click.
+///
+/// Clicking the star a file already has takes the rating off again, which is
+/// how every rating control in every media tool behaves — and the only way to
+/// say "actually, not that one" without a second control for it.
+fn stars_row(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, media: MediaId) {
+    let rating = editor.media_rating(media);
+    let mut chosen: Option<u8> = None;
+    ui.horizontal(|ui| {
+        for star in 1..=5_u8 {
+            let lit = star <= rating;
+            let response = ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(if lit { "★" } else { "☆" })
+                            .size(13.0)
+                            .color(if lit {
+                                theme::SELECTION
+                            } else {
+                                theme::DISABLED
+                            }),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text(if lit && star == rating {
+                    "Take the rating off".to_owned()
+                } else {
+                    format!("Rate this {star} of 5")
+                });
+            if response.clicked() {
+                chosen = Some(if star == rating { 0 } else { star });
+            }
+        }
+    });
+    if let Some(stars) = chosen {
+        match editor.set_media_rating(media, stars) {
+            Ok(true) => state.needs_repaint = true,
+            Ok(false) => {}
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+}
+
+/// The part of a file marked in the browser, drawn along the bottom of its
+/// thumbnail: a bar for the marked span, or a single line for an in-point
+/// waiting for its out-point.
+fn draw_marks(
+    ui: &egui::Ui,
+    state: &UiState,
+    media: MediaId,
+    rect: egui::Rect,
+    duration: MediaTime,
+) {
+    let Some((from, to)) = state.media_marks.get(&media).copied() else {
+        return;
+    };
+    if duration.is_zero() {
+        return;
+    }
+    let x_of = |at: MediaTime| {
+        let through = (at.ticks() as f64 / duration.ticks() as f64).clamp(0.0, 1.0) as f32;
+        rect.left() + through * rect.width()
+    };
+    let band = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - 4.0),
+        egui::pos2(rect.right(), rect.bottom()),
+    );
+    ui.painter()
+        .rect_filled(band, 0, theme::TIMELINE_BACKGROUND);
+    match to {
+        Some(to) => {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(x_of(from), band.top()),
+                    egui::pos2(x_of(to).max(x_of(from) + 2.0), band.bottom()),
+                ),
+                0,
+                theme::SELECTION,
+            );
+        }
+        None => {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(x_of(from), band.top() - 4.0),
+                    egui::pos2(x_of(from), band.bottom()),
+                ],
+                egui::Stroke::new(2.0, theme::SELECTION),
+            );
+        }
     }
 }
 
@@ -6390,4 +10671,14 @@ mod copy_name_tests {
         assert_eq!(copy_file_name("Holiday cut"), "Holiday cut copy.vproj");
         assert_eq!(copy_file_name("   "), "Untitled copy.vproj");
     }
+}
+
+/// Whether `range` is baked, and the bake is still the edit
+/// (`editor_core::render_in_place`).
+fn range_is_baked(editor: &Editor, range: bettercut_editor_core::timeline::TimelineRange) -> bool {
+    editor.active_sequence().is_some_and(|sequence| {
+        sequence.renders.iter().any(|render| render.range == range)
+            && bettercut_playback::rendered::usable(editor.project(), sequence, range.start)
+                .is_some()
+    })
 }

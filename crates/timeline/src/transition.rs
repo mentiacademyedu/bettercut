@@ -75,10 +75,20 @@ pub enum TransitionKind {
     /// Both shots go soft, crossfade while they are softest, and come back
     /// sharp on the next one.
     Blur,
+    /// The next shot is revealed by an edge sweeping across from the left.
+    Wipe,
+    /// The next shot opens out of a growing circle in the middle.
+    Iris,
+    /// This shot spins away into the middle and the next spins out of it.
+    Spin,
+    /// The picture breaks up into glitches and colour fringes at the cut, and
+    /// comes back together on the next shot. Needs no handles: one shot at a
+    /// time, as a flash.
+    Glitch,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Crossfade,
         Self::FadeThroughBlack,
         Self::Slide,
@@ -86,6 +96,10 @@ impl TransitionKind {
         Self::Zoom,
         Self::Flash,
         Self::Blur,
+        Self::Wipe,
+        Self::Iris,
+        Self::Spin,
+        Self::Glitch,
     ];
 
     pub fn label(self) -> &'static str {
@@ -97,6 +111,10 @@ impl TransitionKind {
             Self::Zoom => "Zoom",
             Self::Flash => "Flash",
             Self::Blur => "Blur",
+            Self::Wipe => "Wipe",
+            Self::Iris => "Iris",
+            Self::Spin => "Spin",
+            Self::Glitch => "Glitch",
         }
     }
 
@@ -125,6 +143,18 @@ impl TransitionKind {
             Self::Blur => {
                 "Both shots go soft, change over while they are softest, and come back sharp. Needs spare footage either side of the cut."
             }
+            Self::Wipe => {
+                "An edge sweeps across from the left, revealing the next shot. Needs spare footage either side of the cut."
+            }
+            Self::Iris => {
+                "The next shot opens out of a circle in the middle. Needs spare footage either side of the cut."
+            }
+            Self::Spin => {
+                "This shot spins away into the middle and the next spins out. Needs spare footage either side of the cut."
+            }
+            Self::Glitch => {
+                "The picture breaks up into glitches at the cut and snaps back on the next shot. Works anywhere, including against the start or end of a file."
+            }
         }
     }
 
@@ -136,7 +166,7 @@ impl TransitionKind {
     /// out-point. A fade through black and a flash show one at a time: what
     /// covers the cut is a colour rather than the other shot.
     pub fn needs_handles(self) -> bool {
-        !matches!(self, Self::FadeThroughBlack | Self::Flash)
+        !matches!(self, Self::FadeThroughBlack | Self::Flash | Self::Glitch)
     }
 }
 

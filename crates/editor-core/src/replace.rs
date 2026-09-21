@@ -119,6 +119,77 @@ impl Editor {
         clip: ClipId,
         media: MediaId,
     ) -> Result<SoundChange, EditorError> {
+        let (commands, change) = self.replace_commands(clip, media)?;
+        self.dispatch_group("Replace Media".to_owned(), commands)?;
+        Ok(change)
+    }
+
+    /// Put `new` in place of `old` in every clip that uses it, in the sequence
+    /// on screen, as one undo step — each clip keeping its own cut, look and
+    /// keys, and its sound following its picture as a single replace does.
+    /// Returns how many clips were changed and how many could not take the new
+    /// file (too short for the cut, or lacking a picture or sound it needs).
+    pub fn replace_media_everywhere(
+        &mut self,
+        old: MediaId,
+        new: MediaId,
+    ) -> Result<(usize, usize), EditorError> {
+        if old == new {
+            return Ok((0, 0));
+        }
+        self.project()
+            .media_asset(new)
+            .ok_or(EditorError::MediaNotFound(new))?;
+        let sequence = self
+            .active_sequence()
+            .ok_or(EditorError::SequenceNotFound(self.active_sequence_id()?))?;
+        // Pictures first: each brings its own sound along, so a sound tied to
+        // a picture that is being replaced is not replaced a second time.
+        let pictures: Vec<ClipId> = sequence
+            .video_tracks
+            .iter()
+            .flat_map(|t| t.clips().iter())
+            .filter(|c| c.media_id == old)
+            .map(|c| c.id)
+            .collect();
+        let sounds: Vec<ClipId> = sequence
+            .audio_tracks
+            .iter()
+            .flat_map(|t| t.clips().iter())
+            .filter(|c| c.media_id == old)
+            .map(|c| c.id)
+            .filter(|id| {
+                !self
+                    .linked_with(*id)
+                    .iter()
+                    .any(|partner| pictures.contains(partner))
+            })
+            .collect();
+
+        self.staged("Replace Media Everywhere", |editor, stage| {
+            let (mut changed, mut refused) = (0, 0);
+            for clip in pictures.iter().chain(sounds.iter()) {
+                match editor.replace_commands(*clip, new) {
+                    Ok((commands, _)) => {
+                        for command in commands {
+                            editor.stage(stage, command)?;
+                        }
+                        changed += 1;
+                    }
+                    Err(_) => refused += 1,
+                }
+            }
+            Ok((changed, refused))
+        })
+    }
+
+    /// The commands that put `media` in place of `clip`'s, and what happens
+    /// to its sound — built against the project as it stands.
+    fn replace_commands(
+        &self,
+        clip: ClipId,
+        media: MediaId,
+    ) -> Result<(Vec<Command>, SoundChange), EditorError> {
         let sequence = self.active_sequence_id()?;
         let asset = self
             .project()
@@ -218,8 +289,7 @@ impl Editor {
                     },
                 },
             );
-            self.dispatch_group("Replace Media".to_owned(), commands)?;
-            return Ok(change);
+            return Ok((commands, change));
         }
 
         let sound = self
@@ -266,12 +336,14 @@ impl Editor {
                 });
             }
         }
-        self.dispatch_group("Replace Media".to_owned(), commands)?;
-        Ok(if pictures.is_empty() {
-            SoundChange::None
-        } else {
-            SoundChange::Unlinked
-        })
+        Ok((
+            commands,
+            if pictures.is_empty() {
+                SoundChange::None
+            } else {
+                SoundChange::Unlinked
+            },
+        ))
     }
 
     /// A clip as it is, minus its link: a swap that changes nothing else.

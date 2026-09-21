@@ -63,12 +63,37 @@ enum Action {
     Colour(TimelineTime, bettercut_editor_core::timeline::ColorLabel),
     Delete(TimelineTime),
     AddAtPlayhead,
+    /// Mark the stretch between the in and out points as one note.
+    MarkRange,
     ClearAll,
     CopyChapters,
 }
 
 /// What "Copy Chapters" says afterwards: how many were copied, and anything a
 /// video site would reject the list for.
+/// Mark the stretch between the in and out points as one note
+/// (`Editor::mark_range`).
+///
+/// In the marker window rather than on a key, because it is a thing done
+/// while reviewing: mark in, mark out, say what is wrong with it.
+pub fn mark_the_marked_range(editor: &mut Editor, state: &mut UiState) {
+    let Some(range) = editor
+        .active_sequence()
+        .and_then(|sequence| sequence.marked_range())
+    else {
+        state.info("Mark in and out first (I and O), then mark that stretch");
+        return;
+    };
+    match editor.mark_range(range, "") {
+        Ok(true) => {
+            state.info("Marked that stretch");
+            state.needs_repaint = true;
+        }
+        Ok(false) => state.info("That stretch is too short to mark"),
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
 pub fn chapters_report(chapters: &bettercut_editor_core::timeline::Chapters) -> String {
     let mut report = format!(
         "Copied {} chapter{} for a video description",
@@ -113,6 +138,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     .clicked()
                 {
                     actions.push(Action::AddAtPlayhead);
+                }
+                if ui
+                    .button("Mark In/Out")
+                    .on_hover_text(
+                        "Mark the stretch between the in and out points as one note, drawn as a band",
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::MarkRange);
                 }
                 if !rows.is_empty()
                     && ui
@@ -258,6 +292,10 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     state.info("There is already a marker at the playhead");
                 }
             }),
+            Action::MarkRange => {
+                mark_the_marked_range(editor, state);
+                Ok(())
+            }
             Action::ClearAll => editor.clear_markers(),
             Action::CopyChapters => {
                 let duration = editor

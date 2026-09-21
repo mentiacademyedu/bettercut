@@ -42,6 +42,7 @@ fn moving_source(path: &Path) {
     let mut writer = VideoWriter::create(
         path,
         ExportFormat {
+            transparent: false,
             width,
             height,
             frame_rate: FrameRate::FPS_30,
@@ -120,6 +121,7 @@ fn one_second() -> TimelineRange {
 
 fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
     ExportSettings {
+        transparent: false,
         path: path.to_path_buf(),
         resolution: Resolution::new(640, 360),
         // The fixture is 29.97, and exporting at its own rate is the ordinary
@@ -131,7 +133,9 @@ fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
         range,
         threads: 2,
         sound_only: false,
+        picture_only: false,
         gif: false,
+        image_sequence: false,
     }
 }
 
@@ -526,8 +530,10 @@ fn a_whole_edit_exports() {
         )
         .expect("valid title");
         title.animation = TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(MotionKind::Pop, TimelineTime::from_millis(300))),
             outro: None,
+            looping: None,
         };
         sequence.text_tracks[0].insert(title).expect("empty track");
     }
@@ -1049,11 +1055,13 @@ fn a_hold_a_fade_and_an_animated_title_export() {
         TextClip::with_duration("Held", TimelineTime::ZERO, TimelineTime::from_seconds(1))
             .expect("valid");
     title.animation = TextAnimation {
+        scroll: None,
         intro: Some(Motion::new(
             MotionKind::Fade,
             TimelineTime::from_millis(300),
         )),
         outro: None,
+        looping: None,
     };
     sequence.text_tracks[0].insert(title).expect("empty track");
 

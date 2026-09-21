@@ -92,9 +92,11 @@ fn the_uniform_structs_are_the_sizes_the_rust_side_writes() {
             // colour values in its padding, the chroma key's `vec3` at 64 with
             // tolerance in its tail, the mask's numbers from 88, the white
             // balance in the tail that left at 120, §22's crop as two `vec2`s
-            // from 128, and the vignette at 144 — rounded to the struct's
-            // 16-byte alignment.
-            160,
+            // from 128, the vignette and grain from 144, and the corners and
+            // border and shadow from 160 to 192, and the bars at 192 — rounded
+            // to the struct's 16-byte alignment — and §45's four pinned corners
+            // from 208, which take it to 240.
+            240,
         ),
         (
             "blur.wgsl",

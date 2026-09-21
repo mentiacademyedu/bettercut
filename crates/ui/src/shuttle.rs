@@ -65,6 +65,28 @@ pub fn advance(
     (TimelineTime::from_ticks(held as i64), at_edge)
 }
 
+/// The stretch looped playback repeats: the in-to-out range when both marks
+/// are set, otherwise the whole sequence. `None` for an empty sequence.
+pub fn loop_range(
+    sequence: &bettercut_editor_core::timeline::Sequence,
+) -> Option<bettercut_editor_core::timeline::TimelineRange> {
+    sequence.marked_range().or_else(|| {
+        bettercut_editor_core::timeline::TimelineRange::new(TimelineTime::ZERO, sequence.duration())
+            .ok()
+    })
+}
+
+/// Where looped playback goes next from `position`: back to the start of
+/// `range` once the playhead has reached its end, otherwise nowhere. A
+/// playhead before the range plays on into it; one already past it when play
+/// began comes back to it.
+pub fn loop_restart(
+    position: TimelineTime,
+    range: bettercut_editor_core::timeline::TimelineRange,
+) -> Option<TimelineTime> {
+    (position >= range.end).then_some(range.start)
+}
+
 /// The status line for a rate.
 pub fn describe(rate: i32) -> String {
     match rate {
@@ -121,6 +143,51 @@ mod tests {
         // Exact in ticks: a sixtieth of a second at 1× is 16,000 ticks.
         let (at, _) = advance(TimelineTime::ZERO, 1, Duration::from_nanos(16_666_667), end);
         assert_eq!(at.ticks(), 16_000);
+    }
+
+    #[test]
+    fn looping_goes_back_to_the_start_only_from_the_end() {
+        use bettercut_editor_core::timeline::TimelineRange;
+        let s = TimelineTime::from_seconds;
+        let range = TimelineRange::new(s(2), s(5)).unwrap();
+        assert_eq!(
+            loop_restart(s(1), range),
+            None,
+            "before the range plays into it"
+        );
+        assert_eq!(loop_restart(s(4), range), None);
+        assert_eq!(loop_restart(s(5), range), Some(s(2)));
+        assert_eq!(
+            loop_restart(s(9), range),
+            Some(s(2)),
+            "past the range comes back"
+        );
+    }
+
+    #[test]
+    fn the_loop_is_the_marks_or_the_whole_edit() {
+        use bettercut_editor_core::Editor;
+        use bettercut_editor_core::media::{MediaAsset, MediaKind};
+        let (mut editor, _events) = Editor::new_project("Loop");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/a.mp4",
+            bettercut_editor_core::foundation::MediaTime::from_seconds(10),
+        ));
+        editor.place_media(media).unwrap();
+        let whole = loop_range(editor.active_sequence().unwrap()).unwrap();
+        assert_eq!(
+            (whole.start, whole.end),
+            (TimelineTime::ZERO, TimelineTime::from_seconds(10))
+        );
+
+        editor.set_mark_in(TimelineTime::from_seconds(2)).unwrap();
+        editor.set_mark_out(TimelineTime::from_seconds(6)).unwrap();
+        let marked = loop_range(editor.active_sequence().unwrap()).unwrap();
+        assert_eq!(
+            (marked.start, marked.end),
+            (TimelineTime::from_seconds(2), TimelineTime::from_seconds(6))
+        );
     }
 
     #[test]

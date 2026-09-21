@@ -101,3 +101,46 @@ fn a_shuttle_moves_the_playhead_at_its_rate_and_stops_at_the_start() {
     preview.update(&mut editor);
     assert_eq!(editor.playhead(), held, "a stopped shuttle kept moving");
 }
+
+/// With looping on, playing past the out mark goes back to the in mark and
+/// keeps playing; with it off, playback runs on past the mark.
+#[test]
+fn looped_playback_goes_round_the_marked_range() {
+    let Some(render_state) = render_state() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut preview = Preview::new(&render_state, 64 * 1024 * 1024, 1).unwrap();
+    let mut editor = editor();
+    let (mark_in, mark_out) = (
+        TimelineTime::from_seconds(2),
+        TimelineTime::from_millis(2_300),
+    );
+    editor.set_mark_in(mark_in).unwrap();
+    editor.set_mark_out(mark_out).unwrap();
+
+    preview.set_looping(true);
+    editor.set_playhead(mark_in);
+    preview.seek_to(mark_in);
+    preview.set_playing(&editor, true);
+    std::thread::sleep(Duration::from_millis(500));
+    preview.update(&mut editor);
+    let at = editor.playhead();
+    assert!(
+        at >= mark_in && at < mark_out,
+        "looped playback left the marked range: {}",
+        at.format_timecode()
+    );
+    assert!(preview.is_playing(), "looping stopped playback");
+
+    preview.set_looping(false);
+    editor.set_playhead(mark_in);
+    preview.seek_to(mark_in);
+    std::thread::sleep(Duration::from_millis(500));
+    preview.update(&mut editor);
+    assert!(
+        editor.playhead() >= mark_out,
+        "with looping off, playback should run past the out mark"
+    );
+    preview.set_playing(&editor, false);
+}

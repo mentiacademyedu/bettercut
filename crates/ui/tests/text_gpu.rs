@@ -125,10 +125,18 @@ fn render(
                 Layer {
                     frame: &back,
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_editor_core::timeline::Reflection::None,
                         crop: bettercut_editor_core::timeline::Crop::NONE,
                         transform: Transform::default(),
@@ -143,10 +151,18 @@ fn render(
                 Layer {
                     frame: &text_frame,
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_editor_core::timeline::Reflection::None,
                         crop: bettercut_editor_core::timeline::Crop::NONE,
                         // The correction the preview and the export both apply.

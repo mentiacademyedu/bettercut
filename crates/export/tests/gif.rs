@@ -249,6 +249,7 @@ fn sweeping_bar(path: &Path) {
     let mut writer = VideoWriter::create(
         path,
         ExportFormat {
+            transparent: false,
             width,
             height,
             frame_rate: FrameRate::FPS_30,
@@ -341,4 +342,81 @@ fn a_gif_export_is_the_edit_at_the_asked_size_and_rate() {
         centres.windows(2).all(|pair| pair[1] > pair[0]),
         "the bar did not move right across the loop: {centres:?}"
     );
+}
+
+/// An image sequence writes one numbered PNG a frame, at the asked size, in a
+/// folder named after the file — and the pictures are the edit.
+#[test]
+fn an_image_sequence_is_one_png_a_frame() {
+    if !gpu_available() {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+    let source = Scratch::new("frames-source.mp4");
+    sweeping_bar(&source.0);
+
+    let mut project = Project::new("Frames");
+    let asset = FfmpegProber.probe(&source.0).expect("probe");
+    let duration = asset.duration;
+    let media = project.add_media(asset);
+    let sequence = project.active_mut().expect("sequence");
+    sequence.resolution = SOURCE;
+    sequence.frame_rate = FrameRate::FPS_30;
+    sequence.video_tracks[0]
+        .insert(
+            VideoClip::new(
+                media,
+                TimelineTime::ZERO,
+                SourceRange::new(MediaTime::ZERO, duration).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let sequence = project.active().unwrap().clone();
+
+    let out = std::env::temp_dir().join(format!("bettercut-frames-{}.png", std::process::id()));
+    let folder = bettercut_export::frames_folder(&out);
+    let _ = std::fs::remove_dir_all(&folder);
+    let mut settings = ExportSettings::for_sequence(out.clone(), &sequence);
+    settings.image_sequence = true;
+    settings.resolution = Resolution {
+        width: 160,
+        height: 90,
+    };
+    settings.frame_rate = FrameRate::new(5, 1).unwrap();
+    settings.range = TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_seconds(1)).unwrap();
+
+    let summary = export(&project, &sequence, &settings, &mut |_| {}, &NeverCancelled)
+        .expect("export the frames");
+    assert_eq!(summary.frames, 5);
+    assert_eq!(summary.path, folder);
+
+    let mut names: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let stem = out.file_stem().unwrap().to_string_lossy().into_owned();
+    let expected: Vec<String> = (1..=5).map(|i| format!("{stem}_{i:05}.png")).collect();
+    assert_eq!(names, expected);
+
+    // The bar moves right from the first picture to the last.
+    let centre = |index: u64| {
+        let decoder = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(bettercut_export::frame_file(&out, index)).unwrap(),
+        ));
+        let mut reader = decoder.read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (160, 90));
+        let row = 45 * 160 * 4;
+        let bright: Vec<usize> = (0..160).filter(|x| pixels[row + x * 4] > 128).collect();
+        (bright[0] + bright[bright.len() - 1]) / 2
+    };
+    let centres: Vec<usize> = (0..5).map(centre).collect();
+    assert!(
+        centres[4] > centres[0],
+        "the pictures are not the edit: {centres:?}"
+    );
+    let _ = std::fs::remove_dir_all(&folder);
 }

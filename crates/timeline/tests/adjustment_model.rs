@@ -83,6 +83,7 @@ fn a_look_round_trips_and_fills_in_what_it_lacks() {
             saturation: 0.6,
             temperature: -0.4,
             tint: 0.1,
+            vibrance: 0.25,
         },
         blur: 15.0,
         strength: 0.7,

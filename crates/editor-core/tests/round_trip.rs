@@ -51,6 +51,7 @@ fn elaborate_project(path: &std::path::Path) {
                 saturation: 0.7,
                 temperature: 0.35,
                 tint: -0.2,
+                vibrance: 0.0,
             },
         )
         .unwrap();
@@ -132,11 +133,13 @@ fn elaborate_project(path: &std::path::Path) {
         .set_text_property(
             title,
             TextProperty::Animation(TextAnimation {
+                scroll: None,
                 intro: Some(Motion::new(MotionKind::Pop, TimelineTime::from_millis(500))),
                 outro: Some(Motion::new(
                     MotionKind::Typewriter,
                     TimelineTime::from_millis(700),
                 )),
+                looping: None,
             }),
             false,
         )
@@ -295,9 +298,25 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
     )
     .unwrap();
     let clip = VideoClip {
+        corner_pin: Default::default(),
+        angle: Some(1),
+        old_film: 0.0,
+        glow: 0.0,
+        shadow: Default::default(),
+        border: Default::default(),
         sharpen: 35.0,
         rgb_split: 30.0,
         glitch: 12.0,
+        pixelate: 20.0,
+        zoom_blur: 15.0,
+        vignette: 0.25,
+        light_leak: 30.0,
+        beat_pulse: 40.0,
+        smooth_motion: true,
+        curves: bettercut_timeline::curves::ColourCurves {
+            master: [0.0, 0.2, 0.5, 0.8, 1.0],
+            ..Default::default()
+        },
         reflection: bettercut_timeline::Reflection::Kaleidoscope,
         reversed: true,
         color_label: bettercut_timeline::ColorLabel::Purple,
@@ -314,6 +333,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
             saturation: 1.3,
             temperature: -0.4,
             tint: 0.25,
+            vibrance: 0.0,
         },
         blur: 22.0,
         blend: BlendMode::Multiply,
@@ -469,6 +489,7 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
         opacity: 0.9,
         enabled: true,
         color_label: bettercut_timeline::ColorLabel::Green,
+        highlight: Some(bettercut_text::Rgba::opaque(255, 214, 10)),
         counter: Some(bettercut_timeline::Counter {
             direction: bettercut_timeline::CountDirection::Up,
             from: seconds(90),
@@ -486,11 +507,13 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
             corner_radius: 18.0,
         }),
         animation: TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(MotionKind::Pop, TimelineTime::from_millis(500))),
             outro: Some(Motion::new(
                 MotionKind::Typewriter,
                 TimelineTime::from_millis(900),
             )),
+            looping: None,
         },
         motion_blur: true,
 
@@ -512,10 +535,28 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
     )
     .unwrap();
     let sound = AudioClip {
+        keep_pitch: true,
+        fade_shape: Default::default(),
         gain: 0.45,
         denoise: 65.0,
+        channels: bettercut_timeline::ChannelMode::LeftToBoth,
+        pitch: -3.5,
+        leveller: 40.0,
+        de_ess: 55.0,
+        muted: true,
+        space: bettercut_timeline::ClipSpace {
+            kind: bettercut_timeline::SpaceKind::Hall,
+            mix: 0.4,
+        },
+        eq: bettercut_timeline::ClipEq {
+            low_cut: 120.0,
+            high_cut: 9_000.0,
+            presence: 3.5,
+            hum: 50.0,
+        },
         fade_in: TimelineTime::from_millis(750),
         fade_out: TimelineTime::from_millis(1250),
+        crossfade_out: TimelineTime::from_millis(500),
         speed: Rational::new(4, 5).unwrap(),
         reversed: true,
         color_label: bettercut_timeline::ColorLabel::Purple,

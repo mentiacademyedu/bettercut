@@ -53,17 +53,25 @@ use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
 use bettercut_timeline::{Resolution, Sequence, TimelineRange};
 
+mod bounce;
+mod colour_match;
+mod contact_sheet;
 mod error;
+mod frames;
 mod gif;
 mod job;
 mod readback;
 mod still;
 mod wav;
 
+pub use bounce::{BounceJob, only_this_lane, track_span};
+pub use colour_match::{ColourMatchJob, MatchedGrade, colour_match};
+pub use contact_sheet::{ContactSheetJob, MAX_TILES, SheetSettings, contact_sheet, shrink};
 pub use error::ExportError;
+pub use frames::{FRAMES_ENCODER, export_frames, frame_file, frames_folder};
 pub use gif::{GIF_ENCODER, GifWriter, MAX_COLOURS, export_gif, frame_delay, quantize};
 pub use job::{ExportJob, Outcome};
-pub use still::{StillJob, render_still, save_still, write_png};
+pub use still::{FrameGrabJob, RenderedFrame, StillJob, render_still, save_still, write_png};
 pub use wav::{WAV_ENCODER, WavWriter, export_sound};
 
 /// What to export, and where.
@@ -90,6 +98,21 @@ pub struct ExportSettings {
     /// Write a looping animated GIF at `path` (`gif.rs`): the picture at
     /// `resolution` and `frame_rate`, no sound, and no codec or bitrate.
     pub gif: bool,
+    /// Write every frame as a numbered PNG in a folder named after `path`
+    /// (`frames.rs`): the picture at `resolution` and `frame_rate`, no sound.
+    pub image_sequence: bool,
+    /// Write the picture with no sound stream at all.
+    ///
+    /// What render in place bakes (`bettercut_timeline::render`): a bake
+    /// stands in for the *picture* of a stretch, and the sound is mixed live
+    /// from the edit as always — so re-cutting the music costs nothing, and a
+    /// bake that carried sound would only be a second copy of it to keep in
+    /// step.
+    pub picture_only: bool,
+
+    /// Write a video with a see-through background at `path` (a `.webm`):
+    /// VP9 with alpha, no sound. What no clip covers is transparent.
+    pub transparent: bool,
 }
 
 impl ExportSettings {
@@ -108,7 +131,10 @@ impl ExportSettings {
             },
             threads: 2,
             sound_only: false,
+            picture_only: false,
             gif: false,
+            image_sequence: false,
+            transparent: false,
         }
     }
 }
@@ -216,11 +242,29 @@ pub fn export(
     on_progress: &mut dyn FnMut(ExportProgress),
     cancel: &dyn CancellationToken,
 ) -> Result<ExportSummary, ExportError> {
+    // A bake is written at the sequence's own size (`timeline::render`).
+    // Asked for a different size, the export composites the edit again rather
+    // than scaling a finished picture up: §46 promises the same picture as the
+    // preview, and a soft one is not it. The copy costs nothing — a sequence
+    // is references and numbers, never media.
+    let full_size;
+    let sequence = if settings.resolution == sequence.resolution || sequence.renders.is_empty() {
+        sequence
+    } else {
+        let mut copy = sequence.clone();
+        copy.renders.clear();
+        full_size = copy;
+        &full_size
+    };
+
     if settings.sound_only {
         return export_sound(project, sequence, settings, on_progress, cancel);
     }
     if settings.gif {
         return export_gif(project, sequence, settings, on_progress, cancel);
+    }
+    if settings.image_sequence {
+        return export_frames(project, sequence, settings, on_progress, cancel);
     }
 
     // The *output* rate, which need not be the sequence's: a 60 fps timeline
@@ -238,7 +282,11 @@ pub fn export(
     // end is a frame the user asked for; one beginning at the end is not.
     let total_frames = (span + ticks_per_frame - 1) / ticks_per_frame;
     let total_frames = total_frames.max(1) as u64;
-    let channels = audio_channels(sequence);
+    let channels = if settings.picture_only {
+        0
+    } else {
+        audio_channels(sequence)
+    };
 
     let (device, queue) = open_device()?;
     let mut compositor = Compositor::new(
@@ -248,6 +296,7 @@ pub fn export(
         RenderConfig::export_to_texture(settings.resolution),
     )?;
     let mut readback = readback::Readback::new(&device, settings.resolution);
+    compositor.set_transparent(settings.transparent);
     // Every table the project names, once, before the first frame.
     bettercut_playback::load_luts(project, &mut std::collections::HashSet::new(), |id, lut| {
         compositor.load_lut(id, lut);
@@ -256,6 +305,7 @@ pub fn export(
     let mut writer = VideoWriter::create(
         &settings.path,
         ExportFormat {
+            transparent: settings.transparent,
             width: settings.resolution.width,
             height: settings.resolution.height,
             frame_rate: settings.frame_rate,
@@ -310,7 +360,13 @@ pub fn export(
             &queue,
             cancel,
         )?;
-        writer.push_frame(&rgba)?;
+        if settings.transparent {
+            let mut straight = rgba;
+            unpremultiply(&mut straight);
+            writer.push_frame(&straight)?;
+        } else {
+            writer.push_frame(&rgba)?;
+        }
 
         // Samples up to the *end* of this frame, from ticks rather than from a
         // running float — see the module docs.
@@ -396,6 +452,18 @@ fn render_frame(
             // §26.1: the same rasterizer the preview uses, so the exported
             // title is the one the user watched. Cached across frames, because
             // a three-second title is the same picture ninety times over.
+            // The burn-in: built here from the same function the preview
+            // calls, so the copy sent out says what the editor was looking at.
+            LayerSource::BurnIn => {
+                if let Some(clip) = bettercut_playback::engine::burn_in_clip(
+                    project,
+                    sequence,
+                    TimelineTime::from_ticks(request.source_time.ticks()),
+                ) && let Some(frame) = titles.frame_for(&clip, None)
+                {
+                    decoded.push((request, frame));
+                }
+            }
             LayerSource::Text(clip) => {
                 if let Some(text) = sequence.text_clip(clip)
                     && let Some(frame) = titles.frame_at(
@@ -423,6 +491,7 @@ fn render_frame(
             // differ from the request, and they work it out with the same
             // shared function.
             look: bettercut_timeline::ClipLook {
+                corner_pin: Default::default(),
                 transform: layer_transform(request, frame, sequence.resolution),
                 ..request.look
             },
@@ -544,6 +613,48 @@ fn open_device() -> Result<(wgpu::Device, wgpu::Queue), ExportError> {
         ..Default::default()
     }))
     .map_err(|err| ExportError::NoGpu(err.to_string()))
+}
+
+/// Premultiplied sRGB-encoded RGBA, as the compositor reads back, turned into
+/// straight alpha for an encoder that stores colour and alpha apart.
+///
+/// Divided in linear light: the premultiplying happened there, before the
+/// target encoded it, so dividing the encoded bytes would come out too dark at
+/// every soft edge.
+pub fn unpremultiply(rgba: &mut [u8]) {
+    let to_linear: Vec<f32> = (0..256)
+        .map(|v| {
+            let c = v as f32 / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .collect();
+    let to_srgb = |linear: f32| -> u8 {
+        let c = linear.clamp(0.0, 1.0);
+        let encoded = if c <= 0.003_130_8 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    for pixel in rgba.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        if alpha == 255 {
+            continue;
+        }
+        if alpha == 0 {
+            pixel[..3].fill(0);
+            continue;
+        }
+        let a = f32::from(alpha) / 255.0;
+        for channel in &mut pixel[..3] {
+            *channel = to_srgb(to_linear[usize::from(*channel)] / a);
+        }
+    }
 }
 
 #[cfg(test)]

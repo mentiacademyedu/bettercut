@@ -77,6 +77,24 @@ impl TextFrames {
         reveal: Option<usize>,
         into_clip: bettercut_foundation::TimelineTime,
     ) -> Option<Arc<VideoFrame>> {
+        if let Some(colour) = clip.highlight
+            && clip.counter.is_none()
+            && clip.shape.is_none()
+            && let Some(word) = bettercut_timeline::karaoke::word_at(
+                &clip.text,
+                into_clip,
+                clip.timeline.duration(),
+            )
+        {
+            return self.frame_marked(
+                clip,
+                reveal,
+                Some(bettercut_text::Mark {
+                    chars: word,
+                    color: colour,
+                }),
+            );
+        }
         if clip.counter.is_some() && clip.shape.is_none() {
             let mut shown = clip.clone();
             shown.text = clip.shown_text(into_clip).into_owned();
@@ -88,6 +106,17 @@ impl TextFrames {
     }
 
     pub fn frame_for(&mut self, clip: &TextClip, reveal: Option<usize>) -> Option<Arc<VideoFrame>> {
+        self.frame_marked(clip, reveal, None)
+    }
+
+    /// [`Self::frame_for`], with some characters in their own colour. Each
+    /// word lit is its own picture in the cache.
+    pub fn frame_marked(
+        &mut self,
+        clip: &TextClip,
+        reveal: Option<usize>,
+        mark: Option<bettercut_text::Mark>,
+    ) -> Option<Arc<VideoFrame>> {
         // A shape is drawn, not typeset: no font, no reveal, and never empty.
         if let Some(shape) = &clip.shape {
             let key = shape.key();
@@ -121,6 +150,19 @@ impl TextFrames {
                 hasher.finish()
             }
         };
+        // A lit word is a different picture from the plain one, and from
+        // every other word lit.
+        let key = match &mark {
+            None => key,
+            Some(mark) => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut hasher);
+                mark.chars.hash(&mut hasher);
+                mark.color.hash(&mut hasher);
+                hasher.finish()
+            }
+        };
         if let Some(frame) = self.cache.get(&key) {
             return Some(Arc::clone(frame));
         }
@@ -130,7 +172,7 @@ impl TextFrames {
 
         match self
             .renderer
-            .rasterize_revealed(&clip.text, &clip.style, reveal)
+            .rasterize_marked(&clip.text, &clip.style, reveal, mark)
         {
             Ok(bitmap) => {
                 let frame = Arc::new(VideoFrame {
@@ -178,6 +220,17 @@ impl TextFrames {
     /// one built for the purpose: a `FontSystem` reads every font directory on
     /// the machine, and doing that twice costs the startup time twice and the
     /// memory twice for an identical answer.
+    /// Load an imported font file, so titles set in it draw from now on.
+    /// Forgets the titles that drew nothing, since the new font may have the
+    /// glyphs they were missing.
+    pub fn add_font_file(&mut self, path: &std::path::Path) -> Result<Vec<String>, TextError> {
+        let families = self.renderer.add_font_file(path)?;
+        self.barren.clear();
+        self.cache.clear();
+        self.order.clear();
+        Ok(families)
+    }
+
     pub fn families(&self) -> Vec<String> {
         self.renderer.families()
     }

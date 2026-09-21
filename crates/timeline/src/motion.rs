@@ -140,6 +140,105 @@ pub struct TextAnimation {
     pub intro: Option<Motion>,
     #[serde(default)]
     pub outro: Option<Motion>,
+    /// A movement that repeats the whole time the title is on screen, on top
+    /// of its entrance and exit.
+    #[serde(default)]
+    pub looping: Option<LoopMotion>,
+    /// Carried across the frame for the whole time the title is up: credits
+    /// rolling up, or a ticker running along.
+    #[serde(default)]
+    pub scroll: Option<Scroll>,
+}
+
+/// Which way a scrolling title travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scroll {
+    /// Up from below the frame to above it, like end credits.
+    Credits,
+    /// Right to left across the frame, like a news ticker.
+    Ticker,
+}
+
+impl Scroll {
+    pub const ALL: [Self; 2] = [Self::Credits, Self::Ticker];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Credits => "Credits",
+            Self::Ticker => "Ticker",
+        }
+    }
+
+    /// Carry `look` to where the scroll has it `progress` (0–1) through the
+    /// title. The text enters wholly off one edge and leaves wholly off the
+    /// other, whatever its size: the anchor slides from the text's leading
+    /// edge to its trailing one as the position crosses the frame, so no
+    /// measurement of the text is needed here.
+    pub fn apply(self, look: &mut TextLook, progress: f32) {
+        let p = progress.clamp(0.0, 1.0);
+        match self {
+            Self::Credits => {
+                look.transform.anchor.y = p;
+                look.transform.position.y = 0.5 - p;
+            }
+            Self::Ticker => {
+                look.transform.anchor.x = p;
+                look.transform.position.x = 0.5 - p;
+            }
+        }
+    }
+}
+
+/// A movement a title or sticker keeps making while it is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopMotion {
+    /// Swells and settles, like a heartbeat.
+    Pulse,
+    /// Rocks side to side.
+    Wiggle,
+    /// Turns round and round.
+    Spin,
+    /// Bobs gently up and down.
+    Float,
+}
+
+impl LoopMotion {
+    pub const ALL: [Self; 4] = [Self::Pulse, Self::Wiggle, Self::Spin, Self::Float];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pulse => "Pulse",
+            Self::Wiggle => "Wiggle",
+            Self::Spin => "Spin",
+            Self::Float => "Float",
+        }
+    }
+
+    /// Move `look` to where the loop has it `seconds` after the title starts.
+    /// A function of time alone, so preview and export agree (§46), and at
+    /// the first instant every loop is at rest, so nothing jumps on arrival.
+    pub fn apply(self, look: &mut TextLook, seconds: f32) {
+        use std::f32::consts::TAU;
+        let t = seconds.max(0.0);
+        match self {
+            Self::Pulse => {
+                let swell = 1.0 + 0.08 * (TAU * t / 0.9).sin().max(0.0);
+                look.transform.scale.x *= swell;
+                look.transform.scale.y *= swell;
+            }
+            Self::Wiggle => {
+                look.transform.rotation_degrees += 7.0 * (TAU * t / 0.6).sin();
+            }
+            Self::Spin => {
+                look.transform.rotation_degrees += 180.0 * t;
+            }
+            Self::Float => {
+                look.transform.position.y -= 0.02 * (TAU * t / 2.4).sin();
+            }
+        }
+    }
 }
 
 /// What a title looks like at one instant.
@@ -153,7 +252,10 @@ pub struct TextLook {
 
 impl TextAnimation {
     pub fn is_none(&self) -> bool {
-        self.intro.is_none() && self.outro.is_none()
+        self.intro.is_none()
+            && self.outro.is_none()
+            && self.looping.is_none()
+            && self.scroll.is_none()
     }
 
     /// Every length inside the allowed range. Applied by the edit, not the
@@ -164,6 +266,8 @@ impl TextAnimation {
         Self {
             intro: fix(self.intro),
             outro: fix(self.outro),
+            looping: self.looping,
+            scroll: self.scroll,
         }
     }
 
@@ -178,7 +282,7 @@ impl TextAnimation {
         position: TimelineTime,
         chars: usize,
     ) -> TextLook {
-        evaluate(
+        let mut look = evaluate(
             self.intro,
             self.outro,
             transform,
@@ -187,7 +291,18 @@ impl TextAnimation {
             position,
             chars,
             TITLE_TRAVEL,
-        )
+        );
+        if let Some(looping) = self.looping {
+            let seconds = (position.ticks() - span.start.ticks()) as f32
+                / bettercut_foundation::TICKS_PER_SECOND as f32;
+            looping.apply(&mut look, seconds);
+        }
+        if let Some(scroll) = self.scroll {
+            let progress = (position.ticks() - span.start.ticks()) as f32
+                / span.duration().ticks().max(1) as f32;
+            scroll.apply(&mut look, progress);
+        }
+        look
     }
 }
 
@@ -438,8 +553,10 @@ mod tests {
 
     fn animated(intro: MotionKind, outro: MotionKind) -> TextAnimation {
         TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(intro, secs(1))),
             outro: Some(Motion::new(outro, secs(1))),
+            looping: None,
         }
     }
 
@@ -505,8 +622,10 @@ mod tests {
         // Two 3 s motions on a 4 s clip: each shrinks to 2 s, so the title is
         // fully present exactly at the middle rather than never.
         let long = TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(MotionKind::Fade, secs(3))),
             outro: Some(Motion::new(MotionKind::Fade, secs(3))),
+            looping: None,
         };
         assert_eq!(at(long, 2000).opacity, 1.0);
         assert!((at(long, 1000).opacity - 0.5).abs() < 1e-6);
@@ -620,6 +739,7 @@ mod tests {
     #[test]
     fn lengths_are_kept_in_range() {
         let wild = TextAnimation {
+            scroll: None,
             intro: Some(Motion {
                 kind: MotionKind::Fade,
                 duration: TimelineTime::ZERO,
@@ -628,9 +748,76 @@ mod tests {
                 kind: MotionKind::Fade,
                 duration: secs(600),
             }),
+            looping: None,
         }
         .sanitized();
         assert_eq!(wild.intro.unwrap().duration, MIN_MOTION);
         assert_eq!(wild.outro.unwrap().duration, MAX_MOTION);
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use bettercut_foundation::TICKS_PER_SECOND;
+
+    fn at(looping: LoopMotion, seconds: f32) -> TextLook {
+        let animation = TextAnimation {
+            scroll: None,
+            intro: None,
+            outro: None,
+            looping: Some(looping),
+        };
+        let span = TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_seconds(10)).unwrap();
+        let position = TimelineTime::from_ticks((seconds * TICKS_PER_SECOND as f32) as i64);
+        animation.look(Transform::default(), 1.0, span, position, 5)
+    }
+
+    /// Every loop is at rest the instant the title starts, and moves after.
+    #[test]
+    fn loops_start_at_rest_and_move() {
+        let rest = Transform::default();
+        for kind in LoopMotion::ALL {
+            let start = at(kind, 0.0).transform;
+            assert!((start.scale.x - rest.scale.x).abs() < 1e-4, "{kind:?}");
+            assert!(start.rotation_degrees.abs() < 1e-3, "{kind:?}");
+            assert!(
+                (start.position.y - rest.position.y).abs() < 1e-4,
+                "{kind:?}"
+            );
+            let moved = (0..40).any(|i| {
+                let later = at(kind, i as f32 * 0.07).transform;
+                (later.scale.x - 1.0).abs() > 0.01
+                    || later.rotation_degrees.abs() > 0.5
+                    || (later.position.y - rest.position.y).abs() > 0.005
+            });
+            assert!(moved, "{kind:?} never moved");
+        }
+    }
+
+    /// A pulse only ever swells; a spin keeps turning the same way.
+    #[test]
+    fn pulse_swells_and_spin_turns() {
+        for i in 0..50 {
+            assert!(at(LoopMotion::Pulse, i as f32 * 0.05).transform.scale.x >= 1.0 - 1e-6);
+        }
+        assert!(
+            at(LoopMotion::Spin, 2.0).transform.rotation_degrees
+                > at(LoopMotion::Spin, 1.0).transform.rotation_degrees
+        );
+    }
+
+    /// A loop is kept through sanitizing, and a title with only a loop is
+    /// not "no animation".
+    #[test]
+    fn a_loop_survives_sanitizing() {
+        let animation = TextAnimation {
+            scroll: None,
+            intro: None,
+            outro: None,
+            looping: Some(LoopMotion::Float),
+        };
+        assert_eq!(animation.sanitized().looping, Some(LoopMotion::Float));
+        assert!(!animation.is_none());
     }
 }

@@ -371,3 +371,81 @@ fn exports_asked_for_together_run_one_after_another() {
         "the queue did not drain in order: {waiting_seen:?}"
     );
 }
+
+/// A frame grab for a sequence that is not there fails, and says it was the
+/// copy that failed.
+#[test]
+fn a_frame_grab_that_fails_is_reported() {
+    use bettercut_editor_core::foundation::{SequenceId, TimelineTime};
+    use bettercut_export::FrameGrabJob;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let (editor, _events) = Editor::new_project("Grab");
+    manager.submit_frame_grab(FrameGrabJob::new(
+        editor.project().clone(),
+        SequenceId::new(),
+        TimelineTime::ZERO,
+    ));
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut failures = Vec::new();
+    while Instant::now() < deadline && failures.is_empty() {
+        failures.extend(manager.poll().failures);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].starts_with("Could not copy the frame"),
+        "{failures:?}"
+    );
+}
+
+/// A frame grab comes back as the sequence's full-size picture — here a title
+/// on black, so something is drawn — ready for the clipboard. Skips without a
+/// GPU.
+#[test]
+fn a_frame_grab_hands_back_the_full_size_picture() {
+    use bettercut_editor_core::foundation::TimelineTime;
+    use bettercut_export::FrameGrabJob;
+
+    let gpu = pollster::block_on(
+        bettercut_renderer::wgpu::Instance::new(
+            bettercut_renderer::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+        )
+        .request_adapter(&bettercut_renderer::wgpu::RequestAdapterOptions::default()),
+    )
+    .is_ok();
+    if !gpu {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 1, 1);
+    let (mut editor, _events) = Editor::new_project("Grab");
+    editor.add_text("COPY ME").unwrap();
+    let sequence = editor.active_sequence().unwrap();
+    let (id, size) = (sequence.id, sequence.resolution);
+    manager.submit_frame_grab(FrameGrabJob::new(
+        editor.project().clone(),
+        id,
+        TimelineTime::from_seconds(1),
+    ));
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut copied = None;
+    while Instant::now() < deadline && copied.is_none() {
+        let update = manager.poll();
+        assert!(update.failures.is_empty(), "{:?}", update.failures);
+        copied = update.copied_frame;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (width, height, rgba) = copied.expect("no frame came back");
+    assert_eq!((width, height), (size.width, size.height));
+    assert_eq!(rgba.len(), (width * height * 4) as usize);
+    assert!(
+        rgba.chunks(4).any(|p| p[0] > 128),
+        "the title was not drawn"
+    );
+}

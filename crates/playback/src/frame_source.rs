@@ -96,6 +96,10 @@ impl FrameSource {
         mode: SeekMode,
         cancel: &dyn CancellationToken,
     ) -> Result<Arc<VideoFrame>, PlaybackError> {
+        // Made, not read — and made fresh, so a changed colour shows at once.
+        if let Some(frame) = asset.generated_frame() {
+            return Ok(Arc::new(frame));
+        }
         if asset.is_still() {
             return self.still(asset, cancel);
         }
@@ -138,6 +142,17 @@ impl FrameSource {
         let frame = if is_next_frame(decoder, source_time) {
             decoder.decode_frame_at(source_time, cancel)?
         } else {
+            // A `Playback` request that is not the next frame has skipped
+            // ahead — an export at a lower rate than its source, or playback
+            // that dropped frames. A playback seek lands on the keyframe and
+            // stops there, which would hand back the keyframe's picture for
+            // every frame until the next one; landing exactly costs a walk
+            // from the keyframe, and is the only correct answer.
+            let mode = if mode == SeekMode::Playback {
+                SeekMode::Precise
+            } else {
+                mode
+            };
             decoder.seek(source_time, mode)?;
             decoder.decode_frame(cancel)?
         };

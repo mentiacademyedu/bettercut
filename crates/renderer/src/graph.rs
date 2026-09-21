@@ -93,6 +93,14 @@ pub struct EffectParams {
     /// RGB split and glitch, each 0–100 (`crate::glitch`).
     pub rgb_split: f32,
     pub glitch: f32,
+    /// Pixelate, 0–100 (`crate::glitch`): the picture in square blocks.
+    pub pixelate: f32,
+    /// Zoom blur, 0–100 (`crate::glitch`): streaks out from the middle.
+    pub zoom_blur: f32,
+    /// Glow, 0–100 (`crate::glitch`): bright parts bleed light.
+    pub glow: f32,
+    /// Old film, 0–100 (`crate::glitch`): scratches, dust, flicker.
+    pub old_film: f32,
     /// A reflection (`crate::reflect`).
     pub reflection: bettercut_timeline::Reflection,
     /// The frame being drawn, for effects that change every frame.
@@ -108,6 +116,10 @@ impl EffectParams {
             && self.lut.is_none_or(|lut| lut.clamped().strength <= 0.0)
             && self.rgb_split <= 0.0
             && self.glitch <= 0.0
+            && self.pixelate <= 0.0
+            && self.zoom_blur <= 0.0
+            && self.glow <= 0.0
+            && self.old_film <= 0.0
             && self.reflection == bettercut_timeline::Reflection::None
     }
 }

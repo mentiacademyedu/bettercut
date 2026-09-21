@@ -4,27 +4,43 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod bounce;
 pub mod caption_list;
 pub mod context_menu;
 pub mod effects;
 pub mod export_dialog;
+pub mod export_presets;
+pub mod export_queue;
 pub mod file_drop;
 pub mod history_panel;
+pub mod keymap;
+pub mod looks;
+pub mod loudness;
 pub mod marker_list;
 pub mod media_jobs;
 pub mod panels;
 pub mod preview;
 pub mod preview_overlay;
 pub mod recent;
+pub mod render;
 pub mod scene_dialog;
+pub mod scopes;
 pub mod shortcuts;
 pub mod shuttle;
 pub mod silence_dialog;
+pub mod speech;
 pub mod state;
+pub mod storyboard;
 pub mod template_dialog;
 pub mod theme;
 pub mod thumbnails;
 pub mod timeline;
+pub mod title_styles;
+pub mod tracking;
+pub mod trim_view;
+pub mod version_changes;
+pub mod voiceover;
+pub mod waveform_view;
 pub mod waveforms;
 
 pub use media_jobs::{MediaJobs, MediaUpdate};
@@ -62,6 +78,21 @@ pub fn draw(
     let mut preview = preview;
     shortcuts::handle(ui.ctx(), editor, state, preview.as_deref_mut());
 
+    // Full screen: the window goes full screen and the picture is all there is.
+    if state.fullscreen != state.fullscreen_applied {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(state.fullscreen));
+        state.fullscreen_applied = state.fullscreen;
+    }
+    if state.fullscreen {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .show(ui, |ui| {
+                panels::fullscreen_preview(ui, editor, state, preview.as_deref());
+            });
+        return;
+    }
+
     egui::Panel::top("toolbar").show(ui, |ui| {
         panels::toolbar(ui, editor, state, preview.as_deref_mut());
     });
@@ -77,6 +108,7 @@ pub fn draw(
         .default_size(320.0)
         .min_size(140.0)
         .show(ui, |ui| {
+            panels::sequence_tabs(ui, editor, state);
             panels::transport(ui, editor, state, preview.as_deref_mut());
             ui.separator();
             timeline::draw(ui, editor, state);
@@ -114,7 +146,13 @@ pub fn draw(
     scene_dialog::show(ui.ctx(), editor, state);
     caption_list::show(ui.ctx(), editor, state);
     marker_list::show(ui.ctx(), editor, state);
+    export_queue::show(ui.ctx(), state);
+    scopes::show(ui.ctx(), editor, state);
+    waveform_view::show(ui.ctx(), editor, state);
+    storyboard::show(ui.ctx(), editor, state);
+    trim_view::show(ui.ctx(), editor, state);
     history_panel::show(ui.ctx(), editor, state);
+    version_changes::show(ui.ctx(), state);
     file_drop::handle(ui.ctx(), editor, state, timeline_rect);
 }
 

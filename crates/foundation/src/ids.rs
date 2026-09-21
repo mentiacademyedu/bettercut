@@ -31,6 +31,12 @@ macro_rules! define_id {
                 Self(uuid)
             }
 
+            /// An ID made from 128 bits the caller derived — for ids that
+            /// stand for a value, such as a table generated from settings.
+            pub const fn from_u128(bits: u128) -> Self {
+                Self(uuid::Uuid::from_u128(bits))
+            }
+
             pub const fn as_uuid(self) -> uuid::Uuid {
                 self.0
             }

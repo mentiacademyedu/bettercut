@@ -67,7 +67,15 @@ impl Effect {
             Self::Blend => (clip.blend != BlendMode::Normal).then(|| clip.blend.label()),
             Self::Mask => clip.mask.is_some().then_some("mask"),
             Self::ChromaKey => clip.chroma_key.is_some().then_some("key"),
-            Self::Glitch => (clip.rgb_split > 0.0 || clip.glitch > 0.0).then_some("glitch"),
+            Self::Glitch => (clip.rgb_split > 0.0
+                || clip.glitch > 0.0
+                || clip.pixelate > 0.0
+                || clip.zoom_blur > 0.0
+                || clip.glow > 0.0
+                || clip.old_film > 0.0
+                || clip.light_leak > 0.0
+                || clip.beat_pulse > 0.0)
+                .then_some("glitch"),
             Self::Mirror => (clip.reflection != Reflection::None).then_some("mirror"),
         }
     }

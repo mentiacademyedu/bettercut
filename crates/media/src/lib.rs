@@ -12,6 +12,8 @@ pub mod color;
 pub mod decoder;
 pub mod error;
 pub mod ffmpeg;
+pub mod generated;
+pub mod generated_sound;
 pub mod proxy;
 
 pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, fit_within};
@@ -25,4 +27,6 @@ pub use ffmpeg::{
     EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, ExportFormat, FfmpegDecoder,
     FfmpegProber, RateControl, VideoCodec, VideoWriter, generate_proxy, probe_all,
 };
+pub use generated::Generated;
+pub use generated_sound::{GeneratedSound, LINE_UP_DB, LINE_UP_HZ};
 pub use proxy::{ProxyAsset, ProxyResolution, ProxySpec, ProxyStatus};

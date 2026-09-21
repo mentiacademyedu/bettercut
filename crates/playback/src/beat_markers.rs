@@ -14,6 +14,54 @@ use bettercut_timeline::{AudioClip, timeline_ticks_for};
 /// Only the part of the file the clip plays is analysed, so a song trimmed to
 /// its chorus is marked on the chorus's beats, and nothing lands outside the
 /// clip.
+/// A sound clip's loudness for a visualizer: where on the timeline it starts,
+/// and [`bettercut_timeline::visualizer::LEVELS_PER_SECOND`] levels a second,
+/// scaled so the loudest is 1. `None` for a clip with nothing to hear.
+pub fn visualizer_levels(
+    clip: &AudioClip,
+    waveform: &Waveform,
+) -> Option<(TimelineTime, Vec<f32>)> {
+    use bettercut_timeline::visualizer::LEVELS_PER_SECOND;
+    let rate = f64::from(waveform.peaks_per_second.max(1));
+    let length = clip.timeline.duration().ticks();
+    let steps = (length * i64::from(LEVELS_PER_SECOND) / TICKS_PER_SECOND).max(0) as usize;
+    if steps == 0 {
+        return None;
+    }
+    let mut levels: Vec<f32> = (0..steps)
+        .map(|step| {
+            // This step's slice of the timeline, back through the speed to
+            // the source, as every other mapping does.
+            let into = |s: usize| {
+                let timeline = s as i64 * TICKS_PER_SECOND / i64::from(LEVELS_PER_SECOND);
+                let source = bettercut_timeline::source_time(
+                    clip.source,
+                    clip.speed,
+                    clip.reversed,
+                    timeline,
+                );
+                (source.ticks().max(0) as f64 / TICKS_PER_SECOND as f64 * rate) as usize
+            };
+            let (a, b) = (into(step), into(step + 1));
+            let (from, to) = (a.min(b), a.max(b).max(a.min(b) + 1));
+            waveform
+                .peaks
+                .get(from.min(waveform.peaks.len())..to.min(waveform.peaks.len()))
+                .map_or(0.0, |peaks| {
+                    peaks.iter().map(|p| p.magnitude()).fold(0.0_f32, f32::max)
+                })
+        })
+        .collect();
+    let loudest = levels.iter().copied().fold(0.0_f32, f32::max);
+    if loudest <= 0.0 {
+        return None;
+    }
+    for level in &mut levels {
+        *level /= loudest;
+    }
+    Some((clip.timeline.start, levels))
+}
+
 pub fn beat_markers(clip: &AudioClip, waveform: &Waveform) -> Option<(Vec<TimelineTime>, f64)> {
     let rate = i64::from(waveform.peaks_per_second.max(1));
     // Envelope indices of the clip's source range. Integer division: a bucket

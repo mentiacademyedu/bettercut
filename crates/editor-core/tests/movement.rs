@@ -134,3 +134,72 @@ fn the_picture_really_grows_across_the_clip() {
     assert!(at(4) < at(7));
     assert_eq!(video.timeline.duration(), TimelineTime::from_seconds(8));
 }
+
+fn keys_of(editor: &Editor, clip: ClipId, parameter: AnimatedParameter) -> Vec<f32> {
+    editor
+        .video_clip(clip)
+        .unwrap()
+        .keyframes
+        .track(parameter)
+        .map(|t| t.keys().iter().map(|k| k.value).collect())
+        .unwrap_or_default()
+}
+
+/// A pan holds the picture a little enlarged and slides it across the clip,
+/// no further than the extra size covers.
+#[test]
+fn a_pan_slides_the_enlarged_picture_and_is_recognised() {
+    use bettercut_editor_core::timeline::PAN_SCALE;
+
+    let (mut editor, clip) = editor_with_clip();
+    editor.set_movement(clip, Movement::PanLeft).unwrap();
+    assert_eq!(
+        keys_of(&editor, clip, AnimatedParameter::ScaleX),
+        vec![PAN_SCALE, PAN_SCALE]
+    );
+    let slide = keys_of(&editor, clip, AnimatedParameter::PositionX);
+    let room = (PAN_SCALE - 1.0) / 2.0;
+    assert_eq!(slide.len(), 2);
+    assert!(
+        (slide[0] - room).abs() < 1e-5 && (slide[1] + room).abs() < 1e-5,
+        "{slide:?}"
+    );
+    assert!(keys_of(&editor, clip, AnimatedParameter::PositionY).is_empty());
+    assert_eq!(editor.movement_of(clip), Some(Movement::PanLeft));
+
+    // Switching to another pan replaces the slide rather than adding to it.
+    editor.set_movement(clip, Movement::PanDown).unwrap();
+    assert!(keys_of(&editor, clip, AnimatedParameter::PositionX).is_empty());
+    let down = keys_of(&editor, clip, AnimatedParameter::PositionY);
+    assert!(down[0] < down[1]);
+    assert_eq!(editor.movement_of(clip), Some(Movement::PanDown));
+
+    // And back to none clears both.
+    editor.set_movement(clip, Movement::None).unwrap();
+    assert!(keys_of(&editor, clip, AnimatedParameter::PositionY).is_empty());
+    assert!(keys_of(&editor, clip, AnimatedParameter::ScaleX).is_empty());
+    assert_eq!(editor.movement_of(clip), Some(Movement::None));
+
+    for pan in [Movement::PanRight, Movement::PanUp] {
+        editor.set_movement(clip, pan).unwrap();
+        assert_eq!(editor.movement_of(clip), Some(pan));
+    }
+}
+
+/// A position animated by hand is not a pan's to overwrite.
+#[test]
+fn a_pan_leaves_a_hand_made_move_alone() {
+    let (mut editor, clip) = editor_with_clip();
+    editor
+        .set_shake(
+            clip,
+            Some(bettercut_editor_core::timeline::ShakeStrength::Gentle),
+        )
+        .unwrap();
+    assert!(matches!(
+        editor.set_movement(clip, Movement::PanLeft),
+        Err(bettercut_editor_core::EditorError::AlreadyAnimated(
+            "position"
+        ))
+    ));
+}

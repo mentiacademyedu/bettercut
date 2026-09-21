@@ -15,16 +15,20 @@
 pub mod audio_source;
 pub mod beat_markers;
 pub mod cache;
+pub mod compound;
 pub mod duck;
 pub mod engine;
 pub mod error;
 pub mod filmstrip_job;
 pub mod frame_source;
+pub mod lane_meters;
+pub mod loudness_mix;
 pub mod mixer;
 pub mod normalise;
 pub mod prefetch;
 pub mod prefetcher;
 pub mod proxy_job;
+pub mod rendered;
 pub mod scene_job;
 pub mod scenes;
 pub mod silence;
@@ -32,10 +36,11 @@ pub mod speech;
 pub mod sync;
 pub mod text_frames;
 pub mod thumbnail_job;
+pub mod tracker;
 pub mod waveform_job;
 
 pub use audio_source::AudioSource;
-pub use beat_markers::beat_markers;
+pub use beat_markers::{beat_markers, visualizer_levels};
 pub use cache::{FrameCache, FrameKey};
 pub use duck::{DuckSettings, duck_envelope};
 pub use engine::{

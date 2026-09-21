@@ -79,6 +79,7 @@ fn sweeping_bar(path: &Path) {
     let mut writer = VideoWriter::create(
         path,
         ExportFormat {
+            transparent: false,
             width,
             height,
             frame_rate: FrameRate::FPS_30,

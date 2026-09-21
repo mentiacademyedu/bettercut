@@ -161,10 +161,18 @@ fn plain(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         frame,
         look: ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
             sharpen: 0.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
             transform: Transform::default(),
@@ -181,6 +189,7 @@ fn plain(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn transformed(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             transform: Transform {
                 position: Vec2::new(0.15, -0.1),
                 scale: Vec2::new(0.7, 0.7),
@@ -201,6 +210,7 @@ fn transformed(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn mirrored(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             transform: Transform {
                 position: Vec2::new(-0.12, 0.08),
                 scale: Vec2::new(0.65, 0.65),
@@ -221,6 +231,7 @@ fn mirrored(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn cropped(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             crop: bettercut_timeline::Crop {
                 left: 0.12,
                 top: 0.3,
@@ -244,12 +255,14 @@ fn cropped(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn colour_graded(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             color: ColorAdjust {
                 brightness: 1.3,
                 contrast: 1.4,
                 saturation: 0.6,
                 temperature: 0.5,
                 tint: -0.25,
+                vibrance: 0.0,
             },
             ..plain(frame).remove(0).look
         },
@@ -260,6 +273,7 @@ fn colour_graded(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn blurred(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             blur: 45.0,
             ..plain(frame).remove(0).look
         },
@@ -272,6 +286,7 @@ fn blurred(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn kaleidoscoped(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             reflection: bettercut_timeline::Reflection::Kaleidoscope,
             ..plain(frame).remove(0).look
         },
@@ -284,10 +299,14 @@ fn kaleidoscoped(frame: &VideoFrame) -> Vec<Layer<'_>> {
 fn sharpened(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![Layer {
         look: ClipLook {
+            corner_pin: Default::default(),
             sharpen: 70.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             ..plain(frame).remove(0).look
         },
@@ -302,6 +321,7 @@ fn two_tracks(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 color: ColorAdjust {
                     brightness: 0.4,
                     ..ColorAdjust::default()
@@ -312,6 +332,7 @@ fn two_tracks(frame: &VideoFrame) -> Vec<Layer<'_>> {
         },
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 transform: Transform {
                     position: Vec2::new(-0.2, 0.15),
                     scale: Vec2::new(0.55, 0.55),
@@ -334,6 +355,7 @@ fn masked(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 color: ColorAdjust {
                     brightness: 0.35,
                     ..ColorAdjust::default()
@@ -344,6 +366,7 @@ fn masked(frame: &VideoFrame) -> Vec<Layer<'_>> {
         },
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 mask: Some(Mask {
                     shape: MaskShape::Ellipse,
                     center: [0.45, 0.55],
@@ -365,6 +388,7 @@ fn keyed(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 color: ColorAdjust {
                     brightness: 0.5,
                     saturation: 1.4,
@@ -376,6 +400,7 @@ fn keyed(frame: &VideoFrame) -> Vec<Layer<'_>> {
         },
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 chroma_key: Some(ChromaKey {
                     // Keyed off a colour the fixture actually contains, so the
                     // case has both kept and removed pixels in it.
@@ -415,10 +440,18 @@ fn flashed(frame: &VideoFrame) -> Vec<Layer<'_>> {
         Layer {
             frame: white,
             look: ClipLook {
+                corner_pin: Default::default(),
+                old_film: 0.0,
+                glow: 0.0,
+                shadow: Default::default(),
+                border: Default::default(),
                 sharpen: 0.0,
                 lut: None,
                 rgb_split: 0.0,
                 glitch: 0.0,
+                pixelate: 0.0,
+                zoom_blur: 0.0,
+                vignette: 0.0,
                 reflection: bettercut_timeline::Reflection::None,
                 crop: bettercut_timeline::Crop::NONE,
                 transform: flash_transform(white),
@@ -438,6 +471,7 @@ fn flash_transform(white: &VideoFrame) -> Transform {
     use bettercut_playback::{LayerRequest, LayerSource};
 
     let request = LayerRequest {
+        angle: None,
         clip: bettercut_foundation::ClipId::new(),
         track: bettercut_foundation::TrackId::new(),
         source: LayerSource::Solid {
@@ -445,10 +479,18 @@ fn flash_transform(white: &VideoFrame) -> Transform {
         },
         source_time: bettercut_foundation::MediaTime::ZERO,
         look: bettercut_timeline::ClipLook {
+            corner_pin: Default::default(),
+            old_film: 0.0,
+            glow: 0.0,
+            shadow: Default::default(),
+            border: Default::default(),
             sharpen: 0.0,
             lut: None,
             rgb_split: 0.0,
             glitch: 0.0,
+            pixelate: 0.0,
+            zoom_blur: 0.0,
+            vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
             transform: Transform::default(),
@@ -478,6 +520,7 @@ fn smeared(frame: &VideoFrame) -> Vec<Layer<'_>> {
             let t = index as f32 / 2.0;
             Layer {
                 look: ClipLook {
+                    corner_pin: Default::default(),
                     transform: Transform {
                         position: Vec2::new(-0.18 + 0.18 * t, 0.0),
                         scale: Vec2::new(0.6, 0.6),
@@ -496,6 +539,7 @@ fn blended(frame: &VideoFrame) -> Vec<Layer<'_>> {
     vec![
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 color: ColorAdjust {
                     brightness: 0.45,
                     ..ColorAdjust::default()
@@ -506,6 +550,7 @@ fn blended(frame: &VideoFrame) -> Vec<Layer<'_>> {
         },
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 transform: Transform {
                     position: Vec2::new(-0.15, 0.0),
                     scale: Vec2::new(0.6, 0.6),
@@ -519,6 +564,7 @@ fn blended(frame: &VideoFrame) -> Vec<Layer<'_>> {
         },
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 transform: Transform {
                     position: Vec2::new(0.15, 0.0),
                     scale: Vec2::new(0.6, 0.6),
@@ -540,6 +586,7 @@ fn everything(frame: &VideoFrame) -> Vec<Layer<'_>> {
         two_tracks(frame).remove(0),
         Layer {
             look: ClipLook {
+                corner_pin: Default::default(),
                 transform: Transform {
                     position: Vec2::new(-0.2, 0.15),
                     scale: Vec2::new(0.55, 0.55),
@@ -555,6 +602,7 @@ fn everything(frame: &VideoFrame) -> Vec<Layer<'_>> {
                     saturation: 1.5,
                     temperature: -0.35,
                     tint: 0.2,
+                    vibrance: 0.0,
                 },
                 blur: 25.0,
                 ..plain(frame).remove(0).look
@@ -603,6 +651,7 @@ const ADJUSTMENT: &[Grade] = &[Grade {
             saturation: 0.4,
             temperature: -0.3,
             tint: 0.0,
+            vibrance: 0.0,
         },
         blur: 12.0,
         strength: 0.85,
@@ -624,6 +673,7 @@ const VIGNETTE: &[Grade] = &[Grade {
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         },
         blur: 0.0,
         strength: 1.0,
@@ -644,6 +694,7 @@ const GRAIN: &[Grade] = &[Grade {
             saturation: 1.0,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         },
         blur: 0.0,
         strength: 1.0,
@@ -897,6 +948,7 @@ fn each_effect_case_would_notice_losing_its_effect() {
         ("smeared", smeared as Build, |frame| {
             vec![Layer {
                 look: ClipLook {
+                    corner_pin: Default::default(),
                     transform: Transform {
                         scale: Vec2::new(0.6, 0.6),
                         ..Transform::default()

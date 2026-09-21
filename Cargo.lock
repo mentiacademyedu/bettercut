@@ -616,6 +616,8 @@ dependencies = [
  "bettercut-project-format",
  "bettercut-text",
  "bettercut-timeline",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",
@@ -670,6 +672,7 @@ dependencies = [
  "bettercut-foundation",
  "cosmic-text",
  "serde",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -702,6 +705,7 @@ dependencies = [
  "egui",
  "pollster 0.4.0",
  "rfd",
+ "serde_json",
  "tempfile",
  "tracing",
 ]

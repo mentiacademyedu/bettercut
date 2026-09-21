@@ -563,3 +563,60 @@ fn ctrl_g_groups_and_ctrl_shift_g_ungroups() {
         "Ctrl+Shift+G did not ungroup"
     );
 }
+
+/// Ctrl+Shift+V pastes and pushes what follows along; Ctrl+V would have
+/// refused, the space being taken.
+#[test]
+fn ctrl_shift_v_pastes_and_makes_room() {
+    let mut editor = two_clips(); // 0–4 s and 4–10 s
+    let mut state = UiState::default();
+    let first = editor.active_sequence().unwrap().video_tracks[0].clips()[0].id;
+    editor.copy_clips(&[first]);
+    editor.set_playhead(TimelineTime::from_seconds(4));
+
+    press_with(
+        &mut editor,
+        &mut state,
+        Key::V,
+        Modifiers::COMMAND | Modifiers::SHIFT,
+    );
+    let starts: Vec<i64> = editor.active_sequence().unwrap().video_tracks[0]
+        .clips()
+        .iter()
+        .map(|c| c.timeline.start.ticks() / 960_000)
+        .collect();
+    assert_eq!(starts, vec![0, 4, 8]);
+}
+
+/// A shortcut moved to another key: the new key does its job, the old key does
+/// nothing, and the next key pressed after asking is the one taken.
+#[test]
+fn a_moved_shortcut_answers_to_its_new_key() {
+    let mut editor = two_clips();
+    let mut state = UiState::default();
+    editor.set_playhead(TimelineTime::from_seconds(1));
+
+    // Ask to move "M" (add a marker), then press B.
+    state.rebinding = Some(Key::M);
+    press(&mut editor, &mut state, Key::B);
+    assert_eq!(state.rebinding, None);
+    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+    assert!(
+        editor.markers().is_empty(),
+        "the key pressed to choose did something"
+    );
+
+    press(&mut editor, &mut state, Key::M);
+    assert!(editor.markers().is_empty(), "the old key still marks");
+    press(&mut editor, &mut state, Key::B);
+    assert_eq!(editor.markers().len(), 1, "the new key does not mark");
+
+    // A key another shortcut uses is refused, and Escape cancels.
+    state.rebinding = Some(Key::M);
+    press(&mut editor, &mut state, Key::S);
+    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+    state.rebinding = Some(Key::M);
+    press(&mut editor, &mut state, Key::Escape);
+    assert_eq!(state.rebinding, None);
+    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+}

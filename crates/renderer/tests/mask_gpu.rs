@@ -94,10 +94,18 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, mask: Option<Mask>) -> Vec
                     frame: &ground,
 
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
                         transform: Transform::default(),
@@ -113,10 +121,18 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, mask: Option<Mask>) -> Vec
                     frame: &subject,
 
                     look: ClipLook {
+                        corner_pin: Default::default(),
+                        old_film: 0.0,
+                        glow: 0.0,
+                        shadow: Default::default(),
+                        border: Default::default(),
                         sharpen: 0.0,
                         lut: None,
                         rgb_split: 0.0,
                         glitch: 0.0,
+                        pixelate: 0.0,
+                        zoom_blur: 0.0,
+                        vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
                         transform: Transform::default(),
@@ -379,4 +395,49 @@ fn feathering_softens_the_edge_without_moving_it() {
         (60..200).contains(&middling),
         "the feathered edge is still a step: {middling}"
     );
+}
+
+/// A star keeps its points and its middle, and not the gaps between points.
+#[test]
+fn a_star_keeps_its_points_not_the_gaps() {
+    let (device, queue) = gpu_or_skip!();
+    let pixels = render(
+        &device,
+        &queue,
+        Some(Mask {
+            shape: MaskShape::Star,
+            center: [0.5, 0.5],
+            size: [0.4, 0.4],
+            feather: 0.0,
+            ..Mask::default()
+        }),
+    );
+    assert!(at(&pixels, 0.5, 0.5) > 200, "the middle was removed");
+    assert!(at(&pixels, 0.5, 0.22) > 200, "the top point was removed");
+    // Between the top point and the one to its right, well out from the middle.
+    assert!(at(&pixels, 0.665, 0.273) < 60, "the gap was kept");
+    assert!(at(&pixels, 0.05, 0.05) < 60);
+}
+
+/// A heart keeps its two lobes and its middle, not the notch between the lobes
+/// or the corners either side of its point.
+#[test]
+fn a_heart_is_heart_shaped() {
+    let (device, queue) = gpu_or_skip!();
+    let pixels = render(
+        &device,
+        &queue,
+        Some(Mask {
+            shape: MaskShape::Heart,
+            center: [0.5, 0.5],
+            size: [0.4, 0.4],
+            feather: 0.0,
+            ..Mask::default()
+        }),
+    );
+    assert!(at(&pixels, 0.5, 0.62) > 200, "the middle was removed");
+    assert!(at(&pixels, 0.7, 0.22) > 200, "the right lobe was removed");
+    assert!(at(&pixels, 0.3, 0.22) > 200, "the left lobe was removed");
+    assert!(at(&pixels, 0.5, 0.08) < 60, "the notch was kept");
+    assert!(at(&pixels, 0.86, 0.82) < 60, "beside the point was kept");
 }

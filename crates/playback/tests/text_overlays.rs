@@ -146,6 +146,7 @@ fn a_titles_entrance_reaches_the_layer() {
         .text_clip_mut(title)
         .expect("clip")
         .animation = TextAnimation {
+        scroll: None,
         intro: Some(Motion::new(
             MotionKind::Fade,
             TimelineTime::from_millis(400),
@@ -154,6 +155,7 @@ fn a_titles_entrance_reaches_the_layer() {
             MotionKind::Typewriter,
             TimelineTime::from_millis(400),
         )),
+        looping: None,
     };
     let sequence = project.active().expect("sequence");
     let title_at = |ms: i64| {

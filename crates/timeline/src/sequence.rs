@@ -132,6 +132,21 @@ pub struct Sequence {
     #[serde(default)]
     pub markers: Vec<crate::marker::Marker>,
 
+    /// Bars that jump with a sound, over the whole picture. Defaulted, so
+    /// older projects have none.
+    #[serde(default)]
+    pub visualizer: Option<crate::visualizer::Visualizer>,
+
+    /// A logo in a corner of every frame. Defaulted, so older projects have
+    /// none.
+    #[serde(default)]
+    pub watermark: Option<crate::watermark::Watermark>,
+
+    /// The frame chosen as the video's cover, saved as a picture beside its
+    /// exports. Defaulted, so older projects have none.
+    #[serde(default)]
+    pub cover_frame: Option<bettercut_foundation::TimelineTime>,
+
     /// Clips grouped to move together, each group a list of clip ids. A clip
     /// is in at most one. Ids of clips since deleted or split are ignored where
     /// groups are read, not cleaned out here. Defaulted: older projects have
@@ -147,6 +162,11 @@ pub struct Sequence {
 
     /// The in and out marks: a stretch of the sequence picked out to export on
     /// its own. Either may be unset; the range exists when both are, in order.
+    /// Stretches of this sequence already rendered to a file
+    /// (`crate::render`). Defaulted: older projects have none.
+    #[serde(default)]
+    pub renders: Vec<crate::render::RenderedRange>,
+
     #[serde(default)]
     pub mark_in: Option<TimelineTime>,
     #[serde(default)]
@@ -189,8 +209,12 @@ impl Sequence {
             text_tracks: Vec::new(),
             adjustment_tracks: Vec::new(),
             markers: Vec::new(),
+            visualizer: None,
+            watermark: None,
+            cover_frame: None,
             groups: Vec::new(),
             notes: Vec::new(),
+            renders: Vec::new(),
             mark_in: None,
             mark_out: None,
         })
@@ -375,6 +399,96 @@ impl Sequence {
         } else {
             None
         }
+    }
+
+    /// The bake covering `position`, if one does — whether or not it is
+    /// still current; `bettercut_playback::rendered` decides that.
+    pub fn render_at(&self, position: TimelineTime) -> Option<&crate::render::RenderedRange> {
+        self.renders.iter().find(|render| render.covers(position))
+    }
+
+    /// Every track of `kind`, in the order they are stacked.
+    pub fn tracks_of(&self, kind: TrackKind) -> Vec<TrackId> {
+        match kind {
+            TrackKind::Video => self.video_tracks.iter().map(|t| t.id).collect(),
+            TrackKind::Audio => self.audio_tracks.iter().map(|t| t.id).collect(),
+            TrackKind::Text => self.text_tracks.iter().map(|t| t.id).collect(),
+            TrackKind::Adjustment => self.adjustment_tracks.iter().map(|t| t.id).collect(),
+        }
+    }
+
+    /// Whether `track` is the one new clips of its kind land on.
+    pub fn track_targeted(&self, track: TrackId) -> bool {
+        self.video_tracks
+            .iter()
+            .find(|t| t.id == track)
+            .map(|t| t.targeted)
+            .or_else(|| {
+                self.audio_tracks
+                    .iter()
+                    .find(|t| t.id == track)
+                    .map(|t| t.targeted)
+            })
+            .or_else(|| {
+                self.text_tracks
+                    .iter()
+                    .find(|t| t.id == track)
+                    .map(|t| t.targeted)
+            })
+            .or_else(|| {
+                self.adjustment_tracks
+                    .iter()
+                    .find(|t| t.id == track)
+                    .map(|t| t.targeted)
+            })
+            .unwrap_or(false)
+    }
+
+    /// The track of `kind` flagged as the target, if one is.
+    ///
+    /// The first flagged, of however many are: the editor keeps it to one, and
+    /// a project hand-edited into having two should still answer the question.
+    pub fn targeted_track(&self, kind: TrackKind) -> Option<TrackId> {
+        self.tracks_of(kind)
+            .into_iter()
+            .find(|track| self.track_targeted(*track))
+    }
+
+    /// The track a new clip of `kind` lands on: the targeted one, or the first
+    /// of its kind (§10's track targeting).
+    pub fn target_track(&self, kind: TrackKind) -> Option<TrackId> {
+        self.targeted_track(kind).or_else(|| match kind {
+            TrackKind::Video => self.video_tracks.first().map(|t| t.id),
+            TrackKind::Audio => self.audio_tracks.first().map(|t| t.id),
+            TrackKind::Text => self.text_tracks.first().map(|t| t.id),
+            TrackKind::Adjustment => self.adjustment_tracks.first().map(|t| t.id),
+        })
+    }
+
+    /// Every track that rides along with a ripple edit made somewhere else
+    /// (§10's sync lock), in stacking order.
+    pub fn sync_locked_tracks(&self) -> Vec<TrackId> {
+        let video = self
+            .video_tracks
+            .iter()
+            .filter(|t| t.sync_lock)
+            .map(|t| t.id);
+        let audio = self
+            .audio_tracks
+            .iter()
+            .filter(|t| t.sync_lock)
+            .map(|t| t.id);
+        let text = self
+            .text_tracks
+            .iter()
+            .filter(|t| t.sync_lock)
+            .map(|t| t.id);
+        let adjustment = self
+            .adjustment_tracks
+            .iter()
+            .filter(|t| t.sync_lock)
+            .map(|t| t.id);
+        video.chain(audio).chain(text).chain(adjustment).collect()
     }
 
     /// Every clip on every lane, in compositing order: video, audio, text,

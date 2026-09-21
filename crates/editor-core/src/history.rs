@@ -66,6 +66,31 @@ impl History {
         Ok(())
     }
 
+    /// Execute `command` as part of the step on top of the stack, so one undo
+    /// takes both back — for a consequence of an edit, like a magnetic
+    /// timeline closing the gap a delete left. With nothing on the stack it is
+    /// a step of its own.
+    pub fn amend_top(
+        &mut self,
+        mut command: Box<dyn EditorCommand>,
+        project: &mut Project,
+    ) -> Result<(), EditorError> {
+        command.execute(project)?;
+        self.redo.clear();
+        let merged: Box<dyn EditorCommand> = match self.undo.pop_back() {
+            Some(top) => {
+                let label = top.label();
+                Box::new(crate::command::CommandGroup::already_run(
+                    label,
+                    vec![top, command],
+                ))
+            }
+            None => command,
+        };
+        self.undo.push_back(merged);
+        Ok(())
+    }
+
     /// Execute a command that continues the gesture already on top of the
     /// stack, replacing that entry instead of adding one (§11).
     ///

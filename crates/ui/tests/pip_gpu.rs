@@ -63,6 +63,11 @@ fn flat(rgb: [u8; 3]) -> VideoFrame {
 
 fn look(scale: f32, position: [f32; 2]) -> ClipLook {
     ClipLook {
+        corner_pin: Default::default(),
+        old_film: 0.0,
+        glow: 0.0,
+        shadow: Default::default(),
+        border: Default::default(),
         crop: Crop::NONE,
         transform: Transform {
             position: Vec2::new(position[0], position[1]),
@@ -76,6 +81,9 @@ fn look(scale: f32, position: [f32; 2]) -> ClipLook {
         lut: None,
         rgb_split: 0.0,
         glitch: 0.0,
+        pixelate: 0.0,
+        zoom_blur: 0.0,
+        vignette: 0.0,
         reflection: bettercut_editor_core::timeline::Reflection::None,
         chroma_key: None,
         mask: None,

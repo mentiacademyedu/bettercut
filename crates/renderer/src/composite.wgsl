@@ -76,6 +76,81 @@ struct Layer {
     grain: f32,
     grain_seed: f32,
     grain_cell: f32,
+    // Rounded corners (0–1, 1 a half circle on the shorter side) at 160 and
+    // the border's width in shorter sides at 164; its colour, linear, at
+    // 168–176; the picture's drawn width over height at 180. The struct
+    // rounds to 192.
+    border_radius: f32,
+    border_width: f32,
+    border_r: f32,
+    border_g: f32,
+    border_b: f32,
+    picture_aspect: f32,
+    // A drop shadow's own layer (1.0 at 188): the picture's rounded shape,
+    // grown by its softness (at 184, in shorter sides) and drawn in the colour
+    // the border slots carry, instead of the picture.
+    shadow_softness: f32,
+    shadow_mode: f32,
+    // Cinematic bars, as the share of the frame's height each covers (at 192;
+    // the struct rounds to 208). Only ever set on the master draw.
+    bars: f32,
+    // Vibrance, -1..1, at 196 — inside the padding the struct already had, so
+    // it is still 208 bytes.
+    vibrance: f32,
+    // §45's corner pin: each corner of the quad moved, in clip-space units, in
+    // the order the unit quad names them — (0,0), (1,0), (1,1), (0,1). A
+    // `vec2` aligns to 8, so these start at 200, right after `vibrance`, and
+    // the struct runs to 232 — rounding to 240.
+    //
+    // Zero for every layer that is still a rectangle, which is almost all of
+    // them: the vertex shader takes the plain path when they are.
+    corner_a: vec2<f32>,
+    corner_b: vec2<f32>,
+    corner_c: vec2<f32>,
+    corner_d: vec2<f32>,
+}
+
+// The weight each corner of a pinned quad carries, so the texture follows the
+// shape rather than being stretched across two triangles.
+//
+// Where the diagonals cross divides each of them in some ratio; those ratios
+// *are* the perspective. A quad whose diagonals bisect each other is a
+// parallelogram and every weight comes out 1, which is the flat case.
+fn corner_weights(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>) -> vec4<f32> {
+    let ac = c - a;
+    let bd = d - b;
+    let ab = b - a;
+    let denom = ac.x * bd.y - ac.y * bd.x;
+    if abs(denom) < 0.000001 {
+        return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    }
+    // How far along each diagonal the crossing point is.
+    let s = (ab.x * bd.y - ab.y * bd.x) / denom;
+    let t = (ab.x * ac.y - ab.y * ac.x) / denom;
+    if s <= 0.0 || s >= 1.0 || t <= 0.0 || t >= 1.0 {
+        // A quad folded over itself has no crossing inside it; drawing it flat
+        // is wrong but finite, which is what a dragged corner needs while it
+        // is passing through.
+        return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    }
+    return vec4<f32>(1.0 / (1.0 - s), 1.0 / (1.0 - t), 1.0 / s, 1.0 / t);
+}
+
+// The picture's size in units of its shorter side.
+fn picture_size(layer: Layer) -> vec2<f32> {
+    let aspect = max(layer.picture_aspect, 0.0001);
+    return select(vec2<f32>(1.0, 1.0 / aspect), vec2<f32>(aspect, 1.0), aspect >= 1.0);
+}
+
+// How far `local` is from the picture's rounded edge, in units of its shorter
+// side: negative inside, zero on the edge. A rounded-box distance, so one
+// rule gives square corners at radius zero and a circle at one.
+fn picture_edge(local: vec2<f32>, layer: Layer) -> f32 {
+    let size = picture_size(layer);
+    let p = (local - vec2<f32>(0.5)) * size;
+    let radius = clamp(layer.border_radius, 0.0, 1.0) * 0.5;
+    let q = abs(p) - size * 0.5 + vec2<f32>(radius);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
 // How far the heaviest grain moves a mid-grey, in linear light.
@@ -133,6 +208,43 @@ const MASK_NONE: u32 = 0u;
 const MASK_LINEAR: u32 = 1u;
 const MASK_RECTANGLE: u32 = 2u;
 const MASK_ELLIPSE: u32 = 3u;
+const MASK_STAR: u32 = 4u;
+const MASK_HEART: u32 = 5u;
+
+// Distance to a five-pointed star of outer radius 1, point up, in y-down
+// units (after Inigo Quilez's star distance). Negative inside.
+fn star_distance(q: vec2<f32>) -> f32 {
+    let k1 = vec2<f32>(0.809016994375, -0.587785252292);
+    let k2 = vec2<f32>(-k1.x, k1.y);
+    // Flipped to y-up, where the formula's point is at the top.
+    var p = vec2<f32>(abs(q.x), -q.y);
+    p = p - 2.0 * max(dot(k1, p), 0.0) * k1;
+    p = p - 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y = p.y - 1.0;
+    let inner = 0.45;
+    let ba = inner * vec2<f32>(-k1.y, k1.x) - vec2<f32>(0.0, 1.0);
+    let h = clamp(dot(p, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+
+// Distance to a heart filling the -1..1 box, point down, in y-down units
+// (after Inigo Quilez's heart distance, which spans about 1.2 across and 1.05
+// up from its point). Negative inside.
+fn heart_distance(q: vec2<f32>) -> f32 {
+    let scale = 0.58;
+    var p = vec2<f32>(abs(q.x) * scale, (1.0 - q.y) * 0.525);
+    var d = 0.0;
+    if p.y + p.x > 1.0 {
+        let c = p - vec2<f32>(0.25, 0.75);
+        d = sqrt(dot(c, c)) - sqrt(2.0) / 4.0;
+    } else {
+        let a = p - vec2<f32>(0.0, 1.0);
+        let b = p - 0.5 * max(p.x + p.y, 0.0);
+        d = sqrt(min(dot(a, a), dot(b, b))) * sign(p.x - p.y);
+    }
+    return d / scale;
+}
 
 // Linear mid-grey.
 //
@@ -178,6 +290,17 @@ fn adjust_colour(rgb: vec3<f32>, layer: Layer) -> vec3<f32> {
 
     let luma = dot(out, LUMA);
     out = mix(vec3<f32>(luma), out, layer.saturation);
+
+    // Vibrance: the same mix again, but by how little colour a pixel has
+    // already. A grey pixel gets the whole push, one that is already vivid
+    // gets almost none — which is what keeps skin from going orange while a
+    // flat sky comes back.
+    if layer.vibrance != 0.0 {
+        let after = dot(out, LUMA);
+        let spread = max(out.r, max(out.g, out.b)) - min(out.r, min(out.g, out.b));
+        let room = 1.0 - clamp(spread, 0.0, 1.0);
+        out = mix(vec3<f32>(after), out, 1.0 + layer.vibrance * room);
+    }
 
     // Contrast and saturation can both push a channel negative, which becomes
     // NaN once the sRGB encode takes a root of it.
@@ -264,6 +387,12 @@ fn mask_alpha(uv: vec2<f32>, layer: Layer) -> f32 {
         // The larger of the two axis overshoots: inside only where both are.
         let over = abs(local) - half;
         distance = max(over.x, over.y);
+    } else if layer.mask_shape == MASK_STAR {
+        let half = max(layer.mask_size, vec2<f32>(0.0001, 0.0001));
+        distance = star_distance(local / half) * min(half.x, half.y);
+    } else if layer.mask_shape == MASK_HEART {
+        let half = max(layer.mask_size, vec2<f32>(0.0001, 0.0001));
+        distance = heart_distance(local / half) * min(half.x, half.y);
     } else {
         let half = max(layer.mask_size, vec2<f32>(0.0001, 0.0001));
         // Scaled into a circle, so an ellipse needs no special case.
@@ -283,13 +412,17 @@ fn mask_alpha(uv: vec2<f32>, layer: Layer) -> f32 {
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
-    /// Where to sample the source: inside the crop.
-    @location(0) uv: vec2<f32>,
     /// Where this pixel is in the *visible* picture, 0..1 across whatever the
-    /// crop left. The mask uses this rather than `uv`, so a mask drawn on a
-    /// cropped shot stays where it was drawn instead of shrinking into the
-    /// corner along with the sampling window.
-    @location(1) local: vec2<f32>,
+    /// crop left, times its corner's weight — and that weight as `z`.
+    ///
+    /// Divided back out in the fragment shader, which is what makes a pinned
+    /// quad's texture follow its shape (`corner_weights`). Every other layer
+    /// carries a weight of one, so the divide changes nothing.
+    ///
+    /// The mask and the border read this rather than the sampling position, so
+    /// a mask drawn on a cropped shot stays where it was drawn instead of
+    /// shrinking into the corner along with the window.
+    @location(0) uvw: vec3<f32>,
 }
 
 // A unit quad from the vertex index. No vertex buffer: for a full-screen-ish
@@ -306,22 +439,72 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
         vec2<f32>(0.0, 1.0),
     );
 
-    let corner = corners[index];
-    let placed = layer.transform * vec3<f32>(corner, 1.0);
+    // Which of the quad's four corners this vertex is, in the order the pin
+    // names them.
+    var which = array<u32, 6>(0u, 1u, 3u, 1u, 2u, 3u);
+    var corner = corners[index];
+    // A shadow's edge fades outwards past the picture, so its quad is grown by
+    // the softness on every side; `local` then runs past 0..1 there, which
+    // `picture_edge` measures as outside.
+    if layer.shadow_mode > 0.5 {
+        let size = picture_size(layer);
+        let grow = (size + vec2<f32>(2.0 * max(layer.shadow_softness, 0.0))) / size;
+        corner = (corner - vec2<f32>(0.5)) * grow + vec2<f32>(0.5);
+    }
+    let pinned = any(layer.corner_a != vec2<f32>(0.0))
+        || any(layer.corner_b != vec2<f32>(0.0))
+        || any(layer.corner_c != vec2<f32>(0.0))
+        || any(layer.corner_d != vec2<f32>(0.0));
 
     var out: VsOut;
+    if pinned {
+        // §45's corner pin: the quad's own four corners, each moved.
+        let a = (layer.transform * vec3<f32>(0.0, 0.0, 1.0)).xy + layer.corner_a;
+        let b = (layer.transform * vec3<f32>(1.0, 0.0, 1.0)).xy + layer.corner_b;
+        let c = (layer.transform * vec3<f32>(1.0, 1.0, 1.0)).xy + layer.corner_c;
+        let d = (layer.transform * vec3<f32>(0.0, 1.0, 1.0)).xy + layer.corner_d;
+        var quad = array<vec2<f32>, 4>(a, b, c, d);
+        var uvs = array<vec2<f32>, 4>(
+            vec2<f32>(0.0, 0.0),
+            vec2<f32>(1.0, 0.0),
+            vec2<f32>(1.0, 1.0),
+            vec2<f32>(0.0, 1.0),
+        );
+        let weights = corner_weights(a, b, c, d);
+        let at = which[index];
+        let w = weights[at];
+        out.position = vec4<f32>(quad[at], 0.0, 1.0);
+        out.uvw = vec3<f32>(uvs[at] * w, w);
+        return out;
+    }
+
+    let placed = layer.transform * vec3<f32>(corner, 1.0);
     out.position = vec4<f32>(placed.xy, 0.0, 1.0);
     // Texture v runs top-down while clip space y runs bottom-up.
-    out.local = vec2<f32>(corner.x, corner.y);
-    // §22's crop is here, ahead of everything else the fragment does: the quad
-    // is unchanged and the window it reads through is not.
-    out.uv = layer.crop_origin + out.local * layer.crop_size;
+    out.uvw = vec3<f32>(corner.x, corner.y, 1.0);
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(source, samp, in.uv);
+    // The corner weight divided back out: for every layer but a pinned one it
+    // is 1 and this is the position the vertex shader already had.
+    let local = in.uvw.xy / max(in.uvw.z, 0.000001);
+    // §22's crop: the quad is unchanged and the window it reads through is not.
+    let uv = layer.crop_origin + local * layer.crop_size;
+    let texel = textureSample(source, samp, uv);
+    // Up here, outside every branch: a derivative is only defined in uniform
+    // control flow. One pixel's worth of distance, for smooth edges.
+    let edge = picture_edge(local, layer);
+    let pixel = max(fwidth(edge), 0.00001);
+
+    // A shadow is only its shape: solid inside, fading across its softness
+    // centred on the picture's edge.
+    if layer.shadow_mode > 0.5 {
+        let soft = max(layer.shadow_softness, pixel);
+        let shade = layer.opacity * (1.0 - smoothstep(-soft, soft, edge));
+        return vec4<f32>(vec3<f32>(layer.border_r, layer.border_g, layer.border_b) * shade, shade);
+    }
     var rgb = texel.rgb;
     var alpha = texel.a * layer.opacity;
 
@@ -334,10 +517,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         alpha = alpha * kept;
     }
 
-    // The mask is geometry, not colour: it decides what of this layer exists
-    // at all, so it multiplies the alpha after everything else has decided
-    // what the pixel looks like.
-    alpha = alpha * mask_alpha(in.local, layer);
 
     // **Premultiplied**: the colour is scaled by its own alpha before it
     // leaves the shader.
@@ -350,10 +529,36 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // In linear light, like every other grade here: a gain, so black stays
     // black and the darkening looks like light falling off rather than a grey
     // wash laid over the corners.
-    let colour = add_grain(
-        adjust_colour(rgb, layer) * vignette_keep(in.local, layer.vignette),
+    var colour = add_grain(
+        adjust_colour(rgb, layer) * vignette_keep(local, layer.vignette),
         in.position.xy,
         layer,
     );
+
+    // The border is laid on the finished picture — a frame is not graded
+    // with the shot — and is solid even where a key took the picture away.
+    // Then everything outside the rounded corners is dropped.
+    if layer.border_radius > 0.0 || layer.border_width > 0.0 {
+        if layer.border_width > 0.0 {
+            let ring = smoothstep(
+                -layer.border_width - pixel * 0.5,
+                -layer.border_width + pixel * 0.5,
+                edge,
+            );
+            colour = mix(colour, vec3<f32>(layer.border_r, layer.border_g, layer.border_b), ring);
+            alpha = mix(alpha, layer.opacity, ring);
+        }
+        alpha = alpha * (1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, edge));
+    }
+
+    // The mask is geometry, not colour: it decides what of this layer exists
+    // at all, so it multiplies the alpha after everything else has decided
+    // what the pixel looks like.
+    alpha = alpha * mask_alpha(local, layer);
+
+    // Cinematic bars: solid black over whatever the frame holds there.
+    if layer.bars > 0.0 && (local.y < layer.bars || local.y > 1.0 - layer.bars) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
     return vec4<f32>(colour * alpha, alpha);
 }

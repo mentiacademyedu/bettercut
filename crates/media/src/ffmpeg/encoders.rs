@@ -383,6 +383,69 @@ pub fn open_best(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), 
     )))
 }
 
+/// The encoder for a video with a transparent background: VP9 with an alpha
+/// plane, which WebM carries and browsers and editors read. `libvpx-vp9` is
+/// BSD-licensed, so §0.1's rule holds.
+pub const VP9_ALPHA: EncoderChoice = EncoderChoice {
+    name: "libvpx-vp9",
+    label: "VP9 with transparency",
+    kind: EncoderKind::Software,
+    codec: VideoCodec::H264,
+};
+
+/// Open [`VP9_ALPHA`] at the target's size and rate, for 4:2:0 with alpha.
+pub fn open_vp9_alpha(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), MediaError> {
+    let _guard = OPENING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let context = CodecContext::encoder(VP9_ALPHA.name, target.threads)?;
+    let rate = av_rational(target.frame_rate);
+
+    // SAFETY: allocated and not yet opened, which is when these may be set.
+    unsafe {
+        let ctx = &mut *context.as_ptr();
+        ctx.width = target.width as i32;
+        ctx.height = target.height as i32;
+        ctx.pix_fmt = ffi::AV_PIX_FMT_YUVA420P;
+        ctx.time_base = ffi::AVRational {
+            num: rate.den,
+            den: rate.num,
+        };
+        ctx.framerate = rate;
+        ctx.gop_size = keyframe_interval(rate);
+        ctx.max_b_frames = 0;
+        ctx.color_range = ffi::AVCOL_RANGE_MPEG;
+        ctx.color_primaries = ffi::AVCOL_PRI_BT709;
+        ctx.color_trc = ffi::AVCOL_TRC_BT709;
+        ctx.colorspace = ffi::AVCOL_SPC_BT709;
+        ctx.bit_rate = target
+            .bitrate
+            .filter(|rate| *rate > 0)
+            .unwrap_or_else(|| bitrate_for(target.width, target.height, rate, VideoCodec::H264));
+        if target.global_header {
+            ctx.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+        }
+    }
+    // Speed over the last few percent of size: VP9's defaults are slow enough
+    // to make a short export feel stuck.
+    for (name, value) in [("deadline", "good"), ("cpu-used", "4"), ("row-mt", "1")] {
+        let (Ok(name_c), Ok(value_c)) =
+            (std::ffi::CString::new(name), std::ffi::CString::new(value))
+        else {
+            continue;
+        };
+        // SAFETY: allocated and not yet opened; a null `priv_data` is skipped.
+        unsafe {
+            let priv_data = (*context.as_ptr()).priv_data;
+            if !priv_data.is_null() {
+                let _ = ffi::av_opt_set(priv_data, name_c.as_ptr(), value_c.as_ptr(), 0);
+            }
+        }
+    }
+    context.open_encoder()?;
+    Ok((VP9_ALPHA, context))
+}
+
 /// Serialises hardware-encoder initialisation.
 ///
 /// Opening these is not a pure FFmpeg operation: it initialises a vendor

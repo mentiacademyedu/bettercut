@@ -684,6 +684,7 @@ mod look_strength {
             saturation: 1.4,
             temperature: 0.0,
             tint: 0.0,
+            vibrance: 0.0,
         };
         assert_eq!(bettercut_ui::panels::look_of(hand_made), None);
     }
@@ -745,4 +746,26 @@ mod tabs {
     fn effects_sits_next_to_video() {
         assert_eq!(InspectorTab::ALL[1], InspectorTab::Effects);
     }
+}
+
+/// The curves editor grabs the handle nearest the pointer, and none when the
+/// pointer is far from every handle.
+#[test]
+fn a_curve_handle_is_grabbed_where_it_is_drawn() {
+    use bettercut_editor_core::timeline::curves::STRAIGHT;
+    use bettercut_ui::panels::curve_handle_at;
+    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
+    // The middle handle of a straight line sits in the middle of the square.
+    assert_eq!(
+        curve_handle_at(&STRAIGHT, rect, egui::pos2(100.0, 100.0)),
+        Some(2)
+    );
+    assert_eq!(
+        curve_handle_at(&STRAIGHT, rect, egui::pos2(3.0, 197.0)),
+        Some(0)
+    );
+    assert_eq!(
+        curve_handle_at(&STRAIGHT, rect, egui::pos2(100.0, 20.0)),
+        None
+    );
 }

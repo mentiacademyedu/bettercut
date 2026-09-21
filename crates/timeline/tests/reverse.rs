@@ -65,6 +65,8 @@ fn a_reversed_clip_runs_its_material_from_the_end() {
         );
 
         let forward = VideoClip {
+            corner_pin: Default::default(),
+            angle: None,
             reversed: false,
             ..clip.clone()
         };

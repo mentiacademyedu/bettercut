@@ -741,6 +741,29 @@ impl Muxer {
         Ok(())
     }
 
+    /// Mark the video stream as carrying an alpha plane. WebM readers look
+    /// for this tag before they decode the alpha at all; the encoder alone
+    /// does not set it. Call after [`Self::add_video`], before [`Self::begin`].
+    pub(super) fn mark_video_alpha(&mut self) -> Result<(), MediaError> {
+        let Some(index) = self.video_stream else {
+            return Ok(());
+        };
+        let (key, value) = (c"alpha_mode", c"1");
+        // SAFETY: `context` is allocated and `index` names one of its streams,
+        // added by this muxer; the dictionary copies both strings.
+        let code = unsafe {
+            let stream = *(*self.context).streams.add(index as usize);
+            ffi::av_dict_set(&mut (*stream).metadata, key.as_ptr(), value.as_ptr(), 0)
+        };
+        if code < 0 {
+            return Err(MediaError::DecodeFailed(format!(
+                "could not mark the video as transparent: {}",
+                error_string(code)
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn add_audio(
         &mut self,
         encoder: *mut ffi::AVCodecContext,

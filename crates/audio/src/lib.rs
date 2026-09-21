@@ -17,17 +17,30 @@
 
 pub mod beats;
 pub mod clock;
+pub mod deesser;
+pub mod eq;
 pub mod error;
+pub mod leveller;
+pub mod loudness;
 pub mod mixer;
 pub mod output;
+pub mod pitch;
+pub mod recorder;
 pub mod resample;
+pub mod space;
 pub mod voice;
 
 pub use clock::AudioClock;
+pub use deesser::{DeEsser, ESS_HZ, MAX_REDUCTION_DB};
+pub use eq::{Equalizer, PRESENCE_HZ};
 pub use error::AudioError;
-pub use mixer::{Fades, GainRamp, MixParams, finish, mix_into, peaks};
+pub use leveller::Leveller;
+pub use mixer::{FadeCurve, Fades, GainRamp, MixParams, finish, mix_into, peaks};
 pub use output::{AudioOutput, AudioSink};
+pub use pitch::{MAX_SEMITONES, PitchShifter};
+pub use recorder::{Recorder, Recording};
 pub use resample::{input_frames_needed, resample};
+pub use space::{Place, Space};
 pub use voice::{MAX_DENOISE, VoiceCleaner};
 
 use std::sync::Arc;

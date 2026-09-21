@@ -30,6 +30,15 @@ use bettercut_jobs::{JobEvent, JobId, JobScheduler};
 use bettercut_playback::{FilmstripJob, ProxyJob, ProxySource, ThumbnailJob, WaveformJob};
 
 /// What finished this frame, for the caller to act on.
+/// A bounce in flight: the lane, where its sound starts, the file being
+/// written, and where the job leaves its answer.
+type Bounce = (
+    bettercut_editor_core::foundation::TrackId,
+    bettercut_editor_core::foundation::TimelineTime,
+    std::path::PathBuf,
+    std::sync::Arc<std::sync::Mutex<Option<Result<std::path::PathBuf, String>>>>,
+);
+
 #[derive(Debug, Default)]
 pub struct MediaUpdate {
     /// Proxies that became usable; their decoders must be reopened.
@@ -41,6 +50,39 @@ pub struct MediaUpdate {
     /// Messages worth showing.
     pub messages: Vec<String>,
     pub failures: Vec<String>,
+    /// A frame rendered for the clipboard: width, height and RGBA rows.
+    pub copied_frame: Option<(u32, u32, Vec<u8>)>,
+    /// A frame rendered for the scopes: where it was, its size and its rows.
+    pub scope_frame: Option<(
+        bettercut_editor_core::foundation::TimelineTime,
+        u32,
+        u32,
+        Vec<u8>,
+    )>,
+    /// The scopes' frame could not be rendered.
+    pub scope_failed: bool,
+    /// Lanes that finished bouncing (`editor_core::bounce`): the lane, where
+    /// its sound starts, and the file it was mixed into.
+    pub bounced: Vec<(
+        bettercut_editor_core::foundation::TrackId,
+        bettercut_editor_core::foundation::TimelineTime,
+        std::path::PathBuf,
+    )>,
+    /// Stretches that finished baking (`editor_core::render_in_place`): the
+    /// stretch, the file it went to and what the edit hashed to when the bake
+    /// began.
+    pub rendered: Vec<(
+        bettercut_editor_core::timeline::TimelineRange,
+        std::path::PathBuf,
+        u64,
+    )>,
+    /// The trim window's frames: which side of the cut, its size and its rows.
+    pub trim_frames: Vec<(bool, u32, u32, Vec<u8>)>,
+    /// A finished colour match: the clip and the grade that matches it.
+    pub colour_match: Option<(
+        bettercut_editor_core::foundation::ClipId,
+        bettercut_editor_core::timeline::ColorAdjust,
+    )>,
 }
 
 impl MediaUpdate {
@@ -50,6 +92,13 @@ impl MediaUpdate {
             && self.waveforms.is_empty()
             && self.messages.is_empty()
             && self.failures.is_empty()
+            && self.copied_frame.is_none()
+            && self.scope_frame.is_none()
+            && !self.scope_failed
+            && self.colour_match.is_none()
+            && self.rendered.is_empty()
+            && self.bounced.is_empty()
+            && self.trim_frames.is_empty()
     }
 }
 
@@ -88,9 +137,40 @@ pub struct MediaJobs {
     /// a decoder pool and an encoder, and running three side by side makes all
     /// three slower than running them in turn, on the laptops this is for.
     waiting_exports: std::collections::VecDeque<ExportJob>,
+    /// The running export's status line, kept because the job itself has gone
+    /// to the scheduler.
+    running_export: Option<String>,
     /// Frames being saved as pictures, with where each goes, so the finish can
     /// say where to find it.
     stills: HashMap<JobId, std::path::PathBuf>,
+    /// Frames being rendered for the clipboard, and where each will land.
+    grabs: HashMap<JobId, bettercut_export::RenderedFrame>,
+    /// The trim window's pair, each with which side of the cut it is.
+    trim_grabs: HashMap<JobId, (bool, bettercut_export::RenderedFrame)>,
+    /// Frames being rendered for the scopes, with the time each is of.
+    scope_grabs: HashMap<
+        JobId,
+        (
+            bettercut_editor_core::foundation::TimelineTime,
+            bettercut_export::RenderedFrame,
+        ),
+    >,
+    /// Colour matches being worked out, and where each grade will land.
+    matches: HashMap<JobId, bettercut_export::MatchedGrade>,
+    /// Lanes being bounced, with what to do with each when it lands.
+    bounces: HashMap<JobId, Bounce>,
+    /// Stretches being baked: the stretch, where the file is going, and the
+    /// hash of the edit the bake was started from. Kept apart from exports
+    /// because a bake is not a file the user asked for — it finishes into the
+    /// project rather than into a message.
+    renders: HashMap<
+        JobId,
+        (
+            bettercut_editor_core::timeline::TimelineRange,
+            std::path::PathBuf,
+            u64,
+        ),
+    >,
     /// Assets already considered, so re-importing does not requeue.
     considered: std::collections::HashSet<MediaId>,
     /// True once §67's limit has been reported, so the warning appears once
@@ -113,7 +193,14 @@ impl MediaJobs {
             progress: HashMap::new(),
             exports: HashMap::new(),
             waiting_exports: std::collections::VecDeque::new(),
+            running_export: None,
             stills: HashMap::new(),
+            grabs: HashMap::new(),
+            scope_grabs: HashMap::new(),
+            matches: HashMap::new(),
+            renders: HashMap::new(),
+            trim_grabs: HashMap::new(),
+            bounces: HashMap::new(),
             considered: std::collections::HashSet::new(),
             warned_about_space: false,
         }
@@ -204,6 +291,16 @@ impl MediaJobs {
             if !self.considered.insert(asset.id) {
                 continue;
             }
+            // A colour clip has no file for a thumbnail, waveform or proxy.
+            if asset.generated.is_some() {
+                continue;
+            }
+            // Nor does a baked stretch of the edit want any of the three: it
+            // is never browsed, and a proxy of it would be a smaller copy of
+            // a file that exists to be played at full size.
+            if asset.baked {
+                continue;
+            }
 
             if let Some(job) = ThumbnailJob::new(asset, THUMBNAIL_WIDTH, &self.cache, 1) {
                 let media = job.media();
@@ -282,6 +379,40 @@ impl MediaJobs {
         }
     }
 
+    /// Mix one sound lane down to a file in the background
+    /// (`editor_core::bounce`).
+    pub fn submit_bounce(&mut self, job: bettercut_export::BounceJob) {
+        let (track, range, path) = (job.track(), job.range(), job.path().to_path_buf());
+        let outcome = job.outcome();
+        let id = self.scheduler.submit(Box::new(job));
+        self.bounces.insert(id, (track, range.start, path, outcome));
+    }
+
+    /// Bake a stretch of the edit in the background: an ordinary export, over
+    /// a range, with no sound (`editor_core::render_in_place`).
+    ///
+    /// Straight onto the scheduler rather than into the export queue: the user
+    /// is not waiting on a file, and a render that waited behind a twenty
+    /// minute export would arrive long after the edit it was for.
+    pub fn submit_render(
+        &mut self,
+        job: ExportJob,
+        range: bettercut_editor_core::timeline::TimelineRange,
+        path: std::path::PathBuf,
+        fingerprint: u64,
+    ) {
+        let id = self.scheduler.submit(Box::new(job));
+        self.renders.insert(id, (range, path, fingerprint));
+    }
+
+    /// Make a contact sheet in the background: a render a tile, so it is a
+    /// job like any other (`bettercut_export::contact_sheet`).
+    pub fn submit_still_sheet(&mut self, job: bettercut_export::ContactSheetJob) {
+        let path = job.path().to_path_buf();
+        let id = self.scheduler.submit(Box::new(job));
+        self.stills.insert(id, path);
+    }
+
     /// Save a frame as a PNG in the background (§74).
     pub fn submit_still(&mut self, job: bettercut_export::StillJob) {
         let path = job.path().to_path_buf();
@@ -289,13 +420,80 @@ impl MediaJobs {
         self.stills.insert(id, path);
     }
 
+    /// Render a frame for the clipboard in the background; it comes back as
+    /// [`MediaUpdate::copied_frame`].
+    pub fn submit_frame_grab(&mut self, job: bettercut_export::FrameGrabJob) {
+        let slot = job.slot();
+        let id = self.scheduler.submit(Box::new(job));
+        self.grabs.insert(id, slot);
+    }
+
+    /// Render one side of the cut for the trim window; it comes back as
+    /// [`MediaUpdate::trim_frames`].
+    pub fn submit_trim_grab(&mut self, incoming: bool, job: bettercut_export::FrameGrabJob) {
+        let slot = job.slot();
+        let id = self.scheduler.submit(Box::new(job));
+        self.trim_grabs.insert(id, (incoming, slot));
+    }
+
+    /// Render the frame at `at` for the scopes; it comes back as
+    /// [`MediaUpdate::scope_frame`].
+    pub fn submit_scope_grab(
+        &mut self,
+        at: bettercut_editor_core::foundation::TimelineTime,
+        job: bettercut_export::FrameGrabJob,
+    ) {
+        let slot = job.slot();
+        let id = self.scheduler.submit(Box::new(job));
+        self.scope_grabs.insert(id, (at, slot));
+    }
+
+    /// Work out a colour match in the background; the grade comes back as
+    /// [`MediaUpdate::colour_match`].
+    pub fn submit_colour_match(&mut self, job: bettercut_export::ColourMatchJob) {
+        let slot = job.slot();
+        let id = self.scheduler.submit(Box::new(job));
+        self.matches.insert(id, slot);
+    }
+
     /// How many exports are queued behind the running one.
     pub fn exports_waiting(&self) -> usize {
         self.waiting_exports.len()
     }
 
+    /// The running export's status line, while one runs.
+    pub fn running_export_label(&self) -> Option<String> {
+        if self.exports.is_empty() {
+            None
+        } else {
+            self.running_export.clone()
+        }
+    }
+
+    /// Each waiting export's status line, in the order they will run.
+    pub fn waiting_export_labels(&self) -> Vec<String> {
+        self.waiting_exports
+            .iter()
+            .map(ExportJob::label_for_status)
+            .collect()
+    }
+
+    /// Take the waiting export at `index` off the queue. Returns whether one
+    /// was there.
+    pub fn remove_waiting_export(&mut self, index: usize) -> bool {
+        self.waiting_exports.remove(index).is_some()
+    }
+
+    /// Take every waiting export off the queue. Returns how many.
+    pub fn clear_waiting_exports(&mut self) -> usize {
+        let count = self.waiting_exports.len();
+        self.waiting_exports.clear();
+        count
+    }
+
     fn start_export(&mut self, job: ExportJob) {
         let outcome = job.outcome();
+        self.running_export = Some(job.label_for_status());
         let id = self.scheduler.submit(Box::new(job));
         self.exports.insert(id, outcome);
     }
@@ -347,6 +545,51 @@ impl MediaJobs {
                             .push(format!("Frame saved to {}", path.display()));
                         continue;
                     }
+                    if let Some(slot) = self.matches.remove(&id) {
+                        if let Some(found) = slot.lock().ok().and_then(|mut s| s.take()) {
+                            update.colour_match = Some(found);
+                        }
+                        continue;
+                    }
+                    if let Some((incoming, slot)) = self.trim_grabs.remove(&id) {
+                        if let Some((size, rgba)) = slot.lock().ok().and_then(|mut s| s.take()) {
+                            update
+                                .trim_frames
+                                .push((incoming, size.width, size.height, rgba));
+                        }
+                        continue;
+                    }
+                    if let Some((at, slot)) = self.scope_grabs.remove(&id) {
+                        match slot.lock().ok().and_then(|mut s| s.take()) {
+                            Some((size, rgba)) => {
+                                update.scope_frame = Some((at, size.width, size.height, rgba));
+                            }
+                            None => update.scope_failed = true,
+                        }
+                        continue;
+                    }
+                    if let Some(slot) = self.grabs.remove(&id) {
+                        if let Some((size, rgba)) = slot.lock().ok().and_then(|mut s| s.take()) {
+                            update.copied_frame = Some((size.width, size.height, rgba));
+                        }
+                        continue;
+                    }
+                    if let Some((track, at, path, outcome)) = self.bounces.remove(&id) {
+                        // A bounce that failed says so through the job, not
+                        // through a missing file: the lane is still there and
+                        // still plays, so this is a message, not a disaster.
+                        match outcome.lock().ok().and_then(|mut slot| slot.take()) {
+                            Some(Ok(_)) | None => update.bounced.push((track, at, path)),
+                            Some(Err(message)) => update
+                                .failures
+                                .push(format!("Could not bounce that track: {message}")),
+                        }
+                        continue;
+                    }
+                    if let Some((range, path, fingerprint)) = self.renders.remove(&id) {
+                        update.rendered.push((range, path, fingerprint));
+                        continue;
+                    }
                     if let Some(slot) = self.exports.remove(&id) {
                         update.messages.push(describe_export(&slot));
                         self.start_next_export();
@@ -373,6 +616,44 @@ impl MediaJobs {
                         update
                             .failures
                             .push(format!("Could not save the frame: {message}"));
+                        continue;
+                    }
+                    if self.matches.remove(&id).is_some() {
+                        update
+                            .failures
+                            .push(format!("Could not match the colour: {message}"));
+                        continue;
+                    }
+                    if self.grabs.remove(&id).is_some() {
+                        update
+                            .failures
+                            .push(format!("Could not copy the frame: {message}"));
+                        continue;
+                    }
+                    if self.trim_grabs.remove(&id).is_some() {
+                        // The window says "rendering…" until one arrives, and
+                        // the next move of the cut asks again.
+                        continue;
+                    }
+                    if self.scope_grabs.remove(&id).is_some() {
+                        // Quietly: the scopes say so themselves, and the next
+                        // move of the playhead tries again.
+                        update.scope_failed = true;
+                        continue;
+                    }
+                    if self.bounces.remove(&id).is_some() {
+                        update
+                            .failures
+                            .push(format!("Could not bounce that track: {message}"));
+                        continue;
+                    }
+                    if self.renders.remove(&id).is_some() {
+                        // Nothing is lost: the stretch plays the way it always
+                        // did, by compositing. Worth saying, though, since the
+                        // user pressed a button and is waiting for the bar.
+                        update
+                            .failures
+                            .push(format!("Could not render that stretch: {message}"));
                         continue;
                     }
                     if self.exports.remove(&id).is_some() {
@@ -408,6 +689,9 @@ impl MediaJobs {
                 JobEvent::Cancelled { id } => {
                     self.progress.remove(&id);
                     self.stills.remove(&id);
+                    self.renders.remove(&id);
+                    self.bounces.remove(&id);
+                    self.trim_grabs.remove(&id);
                     if self.exports.remove(&id).is_some() {
                         // Stop means stop: the shapes still waiting were part
                         // of the same request, and starting the next one the

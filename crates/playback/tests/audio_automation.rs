@@ -36,6 +36,34 @@ fn track_with_clip(build: impl FnOnce(&mut AudioClip)) -> Vec<AudioTrack> {
     vec![track]
 }
 
+/// Every audible clip says which lane it came from, counted from the top: the
+/// meters in the track heads have no other way to know whose sound is whose.
+#[test]
+fn an_audible_clip_knows_its_lane() {
+    let mut tracks = Vec::new();
+    for name in ["A1", "A2", "A3"] {
+        let mut track = AudioTrack::new(name);
+        track
+            .insert(
+                AudioClip::new(
+                    MediaId::new(),
+                    TimelineTime::ZERO,
+                    SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(10)).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        tracks.push(track);
+    }
+    // The middle lane muted: the lanes below it keep their own numbers, or
+    // every meter under a muted track would show the wrong lane's sound.
+    tracks[1].enabled = false;
+
+    let audible = resolve_audio_tracks(&tracks, TimelineTime::ZERO, TimelineTime::from_millis(10));
+    let lanes: Vec<usize> = audible.iter().map(|clip| clip.lane).collect();
+    assert_eq!(lanes, vec![0, 2]);
+}
+
 #[test]
 fn a_clip_with_no_keyframes_has_no_envelope() {
     let tracks = track_with_clip(|clip| clip.gain = 0.5);

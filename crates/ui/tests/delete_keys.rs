@@ -186,3 +186,35 @@ fn ripple_deleting_a_linked_pair_closes_both_tracks() {
         "one undo did not restore the whole ripple"
     );
 }
+
+/// On a magnetic timeline, Delete closes the gap it leaves on the main track.
+#[test]
+fn delete_on_a_magnetic_timeline_closes_up() {
+    let (mut editor, _rx) = Editor::new_project("Magnet");
+    let mut placed = Vec::new();
+    for name in ["a", "b"] {
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            format!("C:/media/{name}.mp4"),
+            MediaTime::from_seconds(3),
+        ));
+        placed.push(editor.place_media(media).unwrap()[0]);
+    }
+    editor
+        .dispatch(bettercut_editor_core::Command::ChangeSetting {
+            change: bettercut_editor_core::SettingChange::MagneticTimeline(true),
+        })
+        .unwrap();
+    let mut state = UiState::default();
+    state.selected_clips.insert(placed[0]);
+
+    press(&mut editor, &mut state, Key::Delete, Modifiers::NONE);
+
+    let sequence = editor.active_sequence().unwrap();
+    let left = &sequence.video_tracks[0].clips()[0];
+    assert_eq!(left.id, placed[1]);
+    assert_eq!(
+        left.timeline.start,
+        bettercut_editor_core::foundation::TimelineTime::ZERO
+    );
+}

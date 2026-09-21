@@ -250,8 +250,10 @@ mod titles {
                 .expect("valid title");
         title.motion_blur = blur;
         title.animation = TextAnimation {
+            scroll: None,
             intro: Some(Motion::new(MotionKind::Spin, TimelineTime::from_seconds(1))),
             outro: None,
+            looping: None,
         };
         sequence.text_tracks[0].insert(title).expect("empty track");
         project

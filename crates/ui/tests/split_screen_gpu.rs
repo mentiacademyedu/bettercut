@@ -84,6 +84,11 @@ fn two_shots_side_by_side_fill_their_halves() {
             Layer {
                 frame,
                 look: ClipLook {
+                    corner_pin: Default::default(),
+                    old_film: 0.0,
+                    glow: 0.0,
+                    shadow: Default::default(),
+                    border: Default::default(),
                     crop,
                     transform: Transform {
                         position: Vec2::new(x, y),
@@ -97,6 +102,9 @@ fn two_shots_side_by_side_fill_their_halves() {
                     lut: None,
                     rgb_split: 0.0,
                     glitch: 0.0,
+                    pixelate: 0.0,
+                    zoom_blur: 0.0,
+                    vignette: 0.0,
                     reflection: bettercut_editor_core::timeline::Reflection::None,
                     chroma_key: None,
                     mask: None,

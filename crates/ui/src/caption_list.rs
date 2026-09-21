@@ -13,6 +13,16 @@
 //! The list is a *view*, not a copy. Every row reads the clip on each frame and
 //! every keystroke goes through the editor, so an edit made here and an edit
 //! made on the timeline cannot disagree.
+//!
+//! # Cutting by the words
+//!
+//! A caption is a line of speech *and* the stretch of timeline it was said in,
+//! which makes the list the fastest way to cut an interview: the line that
+//! rambles is the stretch to take out. ✂ on a row does exactly that —
+//! `Editor::remove_time` over the caption's span, so the picture, the sound,
+//! the captions after it and the markers all close up together, as one undo
+//! step. It is the edit a user would otherwise make by marking in and out on
+//! the timeline and counting on having got the ends right.
 
 use bettercut_editor_core::Editor;
 use bettercut_editor_core::command::TextProperty;
@@ -109,10 +119,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     // applied after the loop, because the rows borrow the editor.
     let mut edit: Option<(ClipId, String, bool)> = None;
     let mut jump: Option<TimelineTime> = None;
+    // The stretch a row asked to have taken out of the cut.
+    let mut cut: Option<bettercut_editor_core::timeline::TimelineRange> = None;
     let mut focus_next = false;
     let mut typing = state.caption_typing;
     let mut look: Option<bettercut_editor_core::text::CaptionLook> = None;
     let current_look = lane_look(editor, &rows);
+    // A change to the lane's word highlight: `Some(None)` turns it off.
+    let mut highlight: Option<Option<bettercut_editor_core::text::Rgba>> = None;
+    let current_highlight = editor.caption_highlight();
 
     egui::Window::new("Captions")
         .open(&mut open)
@@ -153,6 +168,26 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     }
                 }
             });
+            // Karaoke-style: the word being said lit in its own colour.
+            ui.horizontal(|ui| {
+                let mut on = current_highlight.is_some();
+                if ui
+                    .checkbox(&mut on, "light each word")
+                    .on_hover_text("Colour each word as it is said, the way karaoke captions do")
+                    .changed()
+                {
+                    highlight = Some(on.then_some(Editor::DEFAULT_HIGHLIGHT));
+                }
+                if let Some(colour) = current_highlight {
+                    let mut rgba = egui::Color32::from_rgba_unmultiplied(
+                        colour.r, colour.g, colour.b, colour.a,
+                    );
+                    if ui.color_edit_button_srgba(&mut rgba).changed() {
+                        let [r, g, b, a] = rgba.to_srgba_unmultiplied();
+                        highlight = Some(Some(bettercut_editor_core::text::Rgba::new(r, g, b, a)));
+                    }
+                }
+            });
             ui.add_space(6.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -170,6 +205,19 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                             .clicked()
                         {
                             jump = Some(row.start);
+                        }
+
+                        // Taking the line out takes the stretch of the cut
+                        // it was said in: the point of editing by the words.
+                        if ui
+                            .add(egui::Button::new("✂").frame(false))
+                            .on_hover_text("Cut this line out of the video and close the gap")
+                            .clicked()
+                        {
+                            cut = Some(bettercut_editor_core::timeline::TimelineRange {
+                                start: row.start,
+                                end: row.end,
+                            });
                         }
 
                         let id = egui::Id::new(("caption", row.clip));
@@ -207,10 +255,34 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             });
         });
 
+    if let Some(range) = cut {
+        match editor.remove_time(range) {
+            Ok(0) => state.info("That line covers nothing to cut"),
+            Ok(_) => {
+                // The playhead follows the join, which is the next thing to
+                // watch.
+                editor.set_playhead(range.start);
+                state.needs_repaint = true;
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
     if let Some((clip, text, continuing)) = edit
         && let Err(err) = editor.set_text_property(clip, TextProperty::Content(text), continuing)
     {
         state.error(err.to_string());
+    }
+    if let Some(colour) = highlight {
+        match editor.set_caption_highlight(colour) {
+            Ok(0) => {}
+            Ok(n) => state.info(if colour.is_some() {
+                format!("{n} captions light each word")
+            } else {
+                format!("{n} captions back to plain")
+            }),
+            Err(err) => state.error(err.to_string()),
+        }
+        state.needs_repaint = true;
     }
     if let Some(look) = look {
         match editor.set_caption_look(look) {
