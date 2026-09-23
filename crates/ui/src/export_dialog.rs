@@ -316,6 +316,9 @@ pub struct ExportRequest {
 #[derive(Debug, Default)]
 pub struct ExportDialog {
     pub open: bool,
+    /// Export as soon as `show` is next called, without drawing the window:
+    /// Quick Export, which is the settings and the folder from last time.
+    quick: bool,
     /// The file name without its extension. Separate from the folder so the
     /// common edit — renaming the output — does not mean reopening a file
     /// picker.
@@ -341,6 +344,10 @@ pub struct ExportDialog {
     /// one field most likely to be copied from somewhere else.
     custom_kbps: Option<u32>,
     rate_control: RateControl,
+    /// Bring the mix to this loudness on the way out, or leave it as mixed.
+    loudness_target: Option<f32>,
+    /// The sound's bitrate, or the default.
+    audio_bitrate: Option<i64>,
     /// Other shapes to write alongside the main file, as width:height ratios.
     ///
     /// Kept across openings, unlike the format: someone who posts every video
@@ -355,9 +362,15 @@ pub struct ExportDialog {
     /// Set on opening whenever marks exist, since marking a range is usually
     /// done in order to export it.
     only_marked: bool,
+    /// Write just the span the selected clips cover, rather than the whole
+    /// sequence or the marked range.
+    only_selection: bool,
     /// Export every sequence in the project with these settings, each file
     /// named for its sequence, rather than only the one on screen.
     every_sequence: bool,
+    /// Write each chapter of the sequence as a file of its own, named after
+    /// the chapter and numbered in order (`chapter_requests`).
+    per_chapter: bool,
     /// The preset last chosen, as an index into [`PLATFORMS`].
     ///
     /// Three of them ask for the same file — vertical, 1080×1920, 30 fps —
@@ -375,6 +388,22 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
+    /// Export straight away with the settings and folder from last time.
+    ///
+    /// The window's own defaults still apply — the format follows the
+    /// sequence, as it does whenever the window opens — so this means "the
+    /// file I wrote last time, from this cut as it is now".
+    pub fn quick_export(&mut self, editor: &Editor) {
+        self.open(editor);
+        self.quick = true;
+    }
+
+    /// Whether a file has been written from here before, which is what
+    /// makes Quick Export mean anything.
+    pub fn has_exported(&self) -> bool {
+        self.folder.is_some() && !self.name.trim().is_empty()
+    }
+
     /// Open the window, defaulting everything to the sequence.
     pub fn open(&mut self, editor: &Editor) {
         self.open = true;
@@ -402,6 +431,7 @@ impl ExportDialog {
         self.custom_kbps = None;
         self.main_shape = None;
         self.only_marked = sequence.marked_range().is_some();
+        self.only_selection = false;
 
         // Probed once, here, rather than per frame: each check opens a real
         // encoder. `codec_is_available` caches, so reopening is free.
@@ -756,6 +786,8 @@ impl ExportDialog {
                         picture_only: false,
                         gif: self.gif(),
                         image_sequence: self.image_sequence(),
+                        loudness_target: self.loudness_target,
+                        audio_bitrate: self.audio_bitrate,
                         transparent: self.transparent(),
                     },
                     shape,
@@ -770,6 +802,48 @@ impl ExportDialog {
 /// to export them all: each written whole, in its own shape and rate, with its
 /// name added to the file name. An empty sequence is skipped rather than
 /// failing the rest.
+/// One request per chapter of the sequence on screen, each the whole
+/// dialog's settings over that chapter's stretch and named
+/// `name-01-Chapter.ext`, in order. Chapters are cut to `range`, so a marked
+/// stretch exports only the chapters — or parts of chapters — inside it.
+/// Empty unless the tick is set or there is nothing to cut into.
+fn chapter_requests(
+    dialog: &ExportDialog,
+    editor: &Editor,
+    native: Resolution,
+    native_rate: FrameRate,
+    range: TimelineRange,
+) -> Vec<ExportRequest> {
+    if !dialog.per_chapter {
+        return Vec::new();
+    }
+    let Some(sequence) = editor.active_sequence() else {
+        return Vec::new();
+    };
+    let chapters =
+        bettercut_editor_core::timeline::chapter_ranges(&sequence.markers, sequence.duration());
+    if chapters.len() < 2 {
+        return Vec::new();
+    }
+    let mut requests = Vec::new();
+    for (index, (title, chapter)) in chapters.iter().enumerate() {
+        let start = chapter.start.max(range.start);
+        let end = chapter.end.min(range.end);
+        let Some(inside) = TimelineRange::new(start, end)
+            .ok()
+            .filter(|r| r.duration() > TimelineTime::ZERO)
+        else {
+            continue;
+        };
+        let part = format!("{:02}-{}", index + 1, file_part(title));
+        for mut request in dialog.requests(native, native_rate, inside) {
+            request.settings.path = with_suffix(&request.settings.path, &part);
+            requests.push(request);
+        }
+    }
+    requests
+}
+
 fn other_sequence_requests(dialog: &ExportDialog, editor: &Editor) -> Vec<ExportRequest> {
     if !dialog.every_sequence {
         return Vec::new();
@@ -866,6 +940,15 @@ pub fn show(
         return Vec::new();
     };
 
+    // Quick Export: what follows runs as if the button had been pressed,
+    // and the window is not drawn at all.
+    let quick = std::mem::take(&mut dialog.quick);
+    if quick && exporting {
+        dialog.open = false;
+        state.error("An export is already running");
+        return Vec::new();
+    }
+
     let native = sequence.resolution;
     let native_rate = sequence.frame_rate;
     let duration = sequence.duration();
@@ -876,15 +959,24 @@ pub fn show(
     // than left for the user to discover in the file.
     let soloed = soloed_lanes(sequence);
     let marked = sequence.marked_range();
+    // What the clips selected on the timeline cover, for the range choice.
+    let selected = state.selection_range(editor);
     // What the export will actually be long, which is what a site's limit is
     // about: the marked span when one is being sent, the whole cut otherwise.
-    let export_length = export_range(dialog.only_marked, marked, duration)
-        .map_or(duration, |range| range.duration());
+    let export_length = export_range(
+        dialog.only_marked,
+        dialog.only_selection,
+        marked,
+        selected,
+        duration,
+    )
+    .map_or(duration, |range| range.duration());
     let has_sound = sequence.audio_tracks.iter().any(|track| track.enabled);
     let mut start = None;
 
     let mut open = dialog.open;
-    egui::Window::new("Export")
+    if !quick {
+        egui::Window::new("Export")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -894,7 +986,7 @@ pub fn show(
             ui.add_space(2.0);
 
             row(ui, "Export timeline", |ui| {
-                ui.label(egui::RichText::new(&sequence_name).color(theme::DISABLED));
+                ui.label(egui::RichText::new(&sequence_name).color(theme::disabled()));
             });
             row(ui, "Name", |ui| {
                 ui.add(
@@ -905,7 +997,7 @@ pub fn show(
             });
             destination_row(ui, dialog);
             container_row(ui, dialog);
-            range_row(ui, dialog, marked, duration);
+            range_row(ui, dialog, marked, selected, duration);
 
             ui.add_space(6.0);
             ui.separator();
@@ -918,7 +1010,7 @@ pub fn show(
                 row(ui, "Written as", |ui| {
                     ui.label(
                         egui::RichText::new("WAV · 48 kHz · 16-bit · stereo")
-                            .color(theme::DISABLED),
+                            .color(theme::disabled()),
                     );
                 });
             } else if dialog.gif() {
@@ -935,7 +1027,7 @@ pub fn show(
                 row(ui, "Written as", |ui| {
                     ui.label(
                         egui::RichText::new("VP9 WebM · see-through where nothing is drawn · no sound")
-                            .color(theme::DISABLED),
+                            .color(theme::disabled()),
                     );
                 });
             } else if dialog.image_sequence() {
@@ -947,7 +1039,7 @@ pub fn show(
                 row(ui, "Written as", |ui| {
                     ui.label(
                         egui::RichText::new("PNG · lossless · one file a frame · no sound")
-                            .color(theme::DISABLED),
+                            .color(theme::disabled()),
                     );
                 });
             } else {
@@ -965,7 +1057,7 @@ pub fn show(
                 also_row(ui, dialog, native);
 
                 row(ui, "Colour space", |ui| {
-                    ui.label(egui::RichText::new("Rec. 709 SDR").color(theme::DISABLED))
+                    ui.label(egui::RichText::new("Rec. 709 SDR").color(theme::disabled()))
                         .on_hover_text(
                             "§21a fixes the working space and tags every export to \
                          match, so players do not have to guess.",
@@ -975,6 +1067,31 @@ pub fn show(
 
             // More than one sequence: all of them in one press, each named
             // for its sequence.
+            // The loudness the file is delivered at: measured over the range
+            // first, then gained to the target, then limited. What a platform
+            // would otherwise do to it, done here where it can be heard.
+            ui.horizontal(|ui| {
+                ui.label("loudness");
+                let label = match dialog.loudness_target {
+                    None => "as mixed".to_owned(),
+                    Some(target) => format!("{target:.0} LUFS"),
+                };
+                egui::ComboBox::from_id_salt("export_loudness")
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut dialog.loudness_target, None, "As mixed");
+                        for (name, target) in bettercut_audio::loudness::LOUDNESS_TARGETS {
+                            ui.selectable_value(
+                                &mut dialog.loudness_target,
+                                Some(target),
+                                format!("{name} · {target:.0} LUFS"),
+                            );
+                        }
+                    });
+            })
+            .response
+            .on_hover_text("Measure the whole mix first, then bring it to the loudness a platform expects, so it is not turned down on delivery");
+
             let sequences = editor.sequence_list().len();
             if sequences > 1 {
                 ui.add_space(4.0);
@@ -987,26 +1104,52 @@ pub fn show(
                 );
             }
 
+            // One file a chapter: what a series, a course or a set of shorts
+            // cut from one timeline is delivered as.
+            let chapters = editor.active_sequence().map_or(0, |sequence| {
+                bettercut_editor_core::timeline::chapter_ranges(
+                    &sequence.markers,
+                    sequence.duration(),
+                )
+                .len()
+            });
+            if chapters > 1 {
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut dialog.per_chapter,
+                    format!("One file per chapter ({chapters})"),
+                )
+                .on_hover_text(
+                    "Write each chapter as its own file, numbered and named after its marker. Only the chapters inside the marked range, when there is one.",
+                );
+            }
+
             if let Some(what) = &soloed {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(format!(
                         "{what} soloed — the export will contain only that, as the preview does"
                     ))
-                    .color(theme::ERROR_TEXT),
+                    .color(theme::error_text()),
                 );
             }
 
             if let Some(complaint) = &dialog.complaint {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(complaint).color(theme::ERROR_TEXT));
+                ui.label(egui::RichText::new(complaint).color(theme::error_text()));
             }
 
             ui.add_space(6.0);
             ui.separator();
             ui.horizontal(|ui| {
                 // The length that will be written, so the size estimate is too.
-                let length = export_range(dialog.only_marked, marked, duration)
+                let length = export_range(
+        dialog.only_marked,
+        dialog.only_selection,
+        marked,
+        selected,
+        duration,
+    )
                     .map_or(duration, |range| range.duration());
                 summary(ui, dialog, native, length);
 
@@ -1026,19 +1169,26 @@ pub fn show(
                 ui.label(
                     egui::RichText::new("An export is already running.")
                         .small()
-                        .color(theme::DISABLED),
+                        .color(theme::disabled()),
                 );
             }
         });
+    }
     dialog.open &= open;
 
-    if start.is_none() {
+    if start.is_none() && !quick {
         return Vec::new();
     }
 
     // An empty sequence has nothing to write. Refusing here is the difference
     // between a message beside the button and a failure a minute later.
-    let Some(range) = export_range(dialog.only_marked, marked, duration) else {
+    let Some(range) = export_range(
+        dialog.only_marked,
+        dialog.only_selection,
+        marked,
+        selected,
+        duration,
+    ) else {
         dialog.complaint = Some("This sequence is empty — add a clip first.".to_owned());
         return Vec::new();
     };
@@ -1051,7 +1201,10 @@ pub fn show(
         return Vec::new();
     }
 
-    let mut requests = dialog.requests(native, native_rate, range);
+    let mut requests = chapter_requests(dialog, editor, native, native_rate, range);
+    if requests.is_empty() {
+        requests = dialog.requests(native, native_rate, range);
+    }
     requests.extend(other_sequence_requests(dialog, editor));
     if !requests.is_empty() {
         dialog.open = false;
@@ -1059,46 +1212,77 @@ pub fn show(
     requests
 }
 
-/// What an export writes: the marked span when asked for and there is one,
-/// otherwise the whole sequence. `None` for an empty sequence with no marks.
+/// What an export writes: the selected clips' span or the marked one when
+/// asked for and there is one, otherwise the whole sequence. `None` for an
+/// empty sequence with nothing marked or selected.
 fn export_range(
     only_marked: bool,
+    only_selection: bool,
     marked: Option<TimelineRange>,
+    selected: Option<TimelineRange>,
     duration: TimelineTime,
 ) -> Option<TimelineRange> {
+    // The selection wins when it is what was asked for: it is the more
+    // specific answer, and a person who ticked it has just clicked the clips.
+    if only_selection && let Some(range) = selected {
+        return Some(range);
+    }
     match marked {
         Some(range) if only_marked => Some(range),
         _ => TimelineRange::new(TimelineTime::ZERO, duration).ok(),
     }
 }
 
-/// Whole sequence, or just the marked span — offered only when there is one.
+/// Whole sequence, the marked span, or the selected clips' — each offered
+/// only when there is one.
 fn range_row(
     ui: &mut egui::Ui,
     dialog: &mut ExportDialog,
     marked: Option<TimelineRange>,
+    selected: Option<TimelineRange>,
     duration: TimelineTime,
 ) {
     row(ui, "Range", |ui| {
-        let Some(range) = marked else {
+        if marked.is_none() && selected.is_none() {
             ui.label(
                 egui::RichText::new(format!("Whole sequence · {}", duration.format_timecode()))
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
             )
-            .on_hover_text("Mark in and out with I and O to export part of it");
+            .on_hover_text("Mark in and out with I and O, or select clips, to export part of it");
             return;
+        }
+        let mut choice = match (dialog.only_selection, dialog.only_marked) {
+            (true, _) if selected.is_some() => 2,
+            (_, true) if marked.is_some() => 1,
+            _ => 0,
         };
-        ui.radio_value(&mut dialog.only_marked, false, "Whole sequence");
-        ui.radio_value(
-            &mut dialog.only_marked,
-            true,
-            format!("In to out · {}", range.duration().format_timecode()),
-        )
-        .on_hover_text(format!(
-            "{} to {}",
-            range.start.format_timecode(),
-            range.end.format_timecode()
-        ));
+        ui.radio_value(&mut choice, 0, "Whole sequence");
+        if let Some(range) = marked {
+            ui.radio_value(
+                &mut choice,
+                1,
+                format!("In to out · {}", range.duration().format_timecode()),
+            )
+            .on_hover_text(format!(
+                "{} to {}",
+                range.start.format_timecode(),
+                range.end.format_timecode()
+            ));
+        }
+        if let Some(range) = selected {
+            ui.radio_value(
+                &mut choice,
+                2,
+                format!("Selection · {}", range.duration().format_timecode()),
+            )
+            .on_hover_text(format!(
+                "The clips selected on the timeline: {} to {}",
+                range.start.format_timecode(),
+                range.end.format_timecode()
+            ));
+        }
+        dialog.only_marked = choice == 1;
+        dialog.only_selection = choice == 2;
     });
 }
 
@@ -1160,7 +1344,7 @@ fn platform_checks_row(
                     short_span(length),
                     platform.label
                 ))
-                .color(theme::OK_TEXT),
+                .color(theme::ok_text()),
             );
         });
         return;
@@ -1168,14 +1352,14 @@ fn platform_checks_row(
     row(ui, "Checks", |ui| {
         ui.vertical(|ui| {
             for complaint in complaints {
-                ui.label(egui::RichText::new(complaint).color(theme::CAUTION));
+                ui.label(egui::RichText::new(complaint).color(theme::caution()));
             }
             ui.label(
                 egui::RichText::new(
                     "The file is written anyway — mark in and out to send part of it",
                 )
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
             );
         });
     });
@@ -1197,7 +1381,7 @@ fn own_presets_row(
                 ui.label(
                     egui::RichText::new("name these settings below to use them again")
                         .small()
-                        .color(theme::DISABLED),
+                        .color(theme::disabled()),
                 );
             }
             ui.horizontal_wrapped(|ui| {
@@ -1337,7 +1521,7 @@ fn also_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
                 names.join(", ")
             ))
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
     }
 }
@@ -1487,7 +1671,7 @@ fn resolution_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resoluti
             ui.label(
                 egui::RichText::new("keeps the sequence's shape")
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
             );
         });
     }
@@ -1543,6 +1727,32 @@ fn bitrate_rows(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution
             response.on_hover_text("Higher is better looking and larger. 8000 suits 1080p.");
         });
         dialog.custom_kbps = Some(kbps);
+    }
+
+    // The sound's own bitrate: worth a choice for music, and for a file that
+    // has to be small.
+    if !dialog.sound_only() && !dialog.gif() && !dialog.image_sequence() {
+        row(ui, "Sound", |ui| {
+            let current = dialog
+                .audio_bitrate
+                .unwrap_or(bettercut_editor_core::media::DEFAULT_AUDIO_BITRATE);
+            egui::ComboBox::from_id_salt("export_audio_bitrate")
+                .selected_text(format!("{} kb/s", current / 1000))
+                .width(FIELD_WIDTH)
+                .show_ui(ui, |ui| {
+                    for kbps in bettercut_editor_core::media::AUDIO_BITRATES_KBPS {
+                        let bps = kbps * 1000;
+                        let label = if bps == bettercut_editor_core::media::DEFAULT_AUDIO_BITRATE {
+                            format!("{kbps} kb/s  —  the usual")
+                        } else {
+                            format!("{kbps} kb/s")
+                        };
+                        if ui.selectable_label(current == bps, label).clicked() {
+                            dialog.audio_bitrate = Some(bps);
+                        }
+                    }
+                });
+        });
     }
 
     // Offered for every rate the user has taken a view on, and hidden only for
@@ -1693,7 +1903,7 @@ fn gif_rows(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
     row(ui, "Written as", |ui| {
         ui.label(
             egui::RichText::new("GIF · 256 colours a frame · loops · no sound")
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
     });
 }
@@ -1710,7 +1920,7 @@ fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duratio
                 size.height
             ))
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
         return;
     }
@@ -1725,7 +1935,7 @@ fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duratio
                 duration.format_timecode()
             ))
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
         return;
     }
@@ -1739,7 +1949,7 @@ fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duratio
                 duration.format_timecode()
             ))
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
         return;
     }
@@ -1763,7 +1973,7 @@ fn summary(ui: &mut egui::Ui, dialog: &ExportDialog, native: Resolution, duratio
             size.height,
         ))
         .small()
-        .color(theme::DISABLED),
+        .color(theme::disabled()),
     )
     .on_hover_text("Export always reads your original files, never the proxies used for editing.");
 }
@@ -2157,6 +2367,76 @@ mod tests {
     /// With every sequence ticked, each other sequence that has something in
     /// it adds its own file, named for it, in its own shape; an empty one adds
     /// none, and unticked adds nothing.
+    /// One file a chapter, numbered and named, each over its own stretch —
+    /// and only the chapters inside the marked range when there is one.
+    #[test]
+    fn per_chapter_adds_a_file_per_chapter() {
+        use bettercut_editor_core::media::{MediaAsset, MediaKind};
+
+        let (mut editor, _events) = Editor::new_project("Course");
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            "C:/media/a.mp4",
+            bettercut_editor_core::foundation::MediaTime::from_seconds(6),
+        ));
+        editor.place_media(media).unwrap();
+        editor
+            .add_markers(&[TimelineTime::from_seconds(2), TimelineTime::from_seconds(4)])
+            .unwrap();
+        editor
+            .set_marker_label(TimelineTime::from_seconds(2), "Second part")
+            .unwrap();
+        let (native, native_rate) = {
+            let sequence = editor.active_sequence().unwrap();
+            (sequence.resolution, sequence.frame_rate)
+        };
+        let whole = TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_seconds(6)).unwrap();
+
+        let mut dialog = ExportDialog {
+            name: "trip".to_owned(),
+            folder: Some(std::path::PathBuf::from("/out")),
+            height_preset: Some(2),
+            ..ExportDialog::default()
+        };
+        assert!(chapter_requests(&dialog, &editor, native, native_rate, whole).is_empty());
+
+        dialog.per_chapter = true;
+        let files = chapter_requests(&dialog, &editor, native, native_rate, whole);
+        let names: Vec<String> = files
+            .iter()
+            .map(|r| {
+                r.settings
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "trip-01-Intro.mp4",
+                "trip-02-Second-part.mp4",
+                "trip-03-Chapter-3.mp4"
+            ]
+        );
+        assert_eq!(files[1].settings.range.start, TimelineTime::from_seconds(2));
+        assert_eq!(files[1].settings.range.end, TimelineTime::from_seconds(4));
+
+        // A marked stretch keeps only what falls inside it, cut to fit.
+        let marked =
+            TimelineRange::new(TimelineTime::from_seconds(3), TimelineTime::from_seconds(6))
+                .unwrap();
+        let inside = chapter_requests(&dialog, &editor, native, native_rate, marked);
+        assert_eq!(inside.len(), 2, "{inside:?}");
+        assert_eq!(
+            inside[0].settings.range.start,
+            TimelineTime::from_seconds(3)
+        );
+        assert_eq!(inside[0].settings.range.end, TimelineTime::from_seconds(4));
+    }
+
     #[test]
     fn every_sequence_adds_a_file_per_other_sequence() {
         use bettercut_editor_core::media::{MediaAsset, MediaKind};
@@ -2628,13 +2908,46 @@ mod tests {
                 .unwrap();
         let everything = TimelineRange::new(TimelineTime::ZERO, whole).unwrap();
 
-        assert_eq!(export_range(true, Some(marked), whole), Some(marked));
-        assert_eq!(export_range(false, Some(marked), whole), Some(everything));
-        assert_eq!(export_range(true, None, whole), Some(everything));
-        assert_eq!(export_range(true, None, TimelineTime::ZERO), None);
+        let selected = TimelineRange::new(
+            TimelineTime::from_seconds(12),
+            TimelineTime::from_seconds(15),
+        )
+        .unwrap();
+
+        assert_eq!(
+            export_range(true, false, Some(marked), None, whole),
+            Some(marked)
+        );
+        assert_eq!(
+            export_range(false, false, Some(marked), None, whole),
+            Some(everything)
+        );
+        assert_eq!(
+            export_range(true, false, None, None, whole),
+            Some(everything)
+        );
+        assert_eq!(
+            export_range(true, false, None, None, TimelineTime::ZERO),
+            None
+        );
         // Marks on an empty sequence still make something to export.
         assert_eq!(
-            export_range(true, Some(marked), TimelineTime::ZERO),
+            export_range(true, false, Some(marked), None, TimelineTime::ZERO),
+            Some(marked)
+        );
+
+        // The selection is what is written when it is what was asked for,
+        // marks or no marks; asking for it without one falls back.
+        assert_eq!(
+            export_range(false, true, None, Some(selected), whole),
+            Some(selected)
+        );
+        assert_eq!(
+            export_range(true, true, Some(marked), Some(selected), whole),
+            Some(selected)
+        );
+        assert_eq!(
+            export_range(true, true, Some(marked), None, whole),
             Some(marked)
         );
     }

@@ -123,7 +123,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             egui::RichText::new(
                 "No cut to trim: the first picture lane needs two shots that touch.",
             )
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
         return;
     };
@@ -157,7 +157,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 "no footage to trim into".to_owned()
             })
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
         );
     });
 
@@ -169,11 +169,11 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         ] {
             ui.vertical(|ui| {
                 ui.set_width(width);
-                ui.label(egui::RichText::new(label).small().color(theme::DISABLED));
+                ui.label(egui::RichText::new(label).small().color(theme::disabled()));
                 let size = egui::vec2(width, width * 9.0 / 16.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 ui.painter()
-                    .rect_filled(rect, 3, theme::TIMELINE_BACKGROUND);
+                    .rect_filled(rect, 3, theme::timeline_background());
                 match texture {
                     Some(texture) => {
                         let picture = texture.size_vec2();
@@ -191,7 +191,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                             egui::Align2::CENTER_CENTER,
                             "rendering…",
                             egui::FontId::proportional(12.0),
-                            theme::DISABLED,
+                            theme::disabled(),
                         );
                     }
                 }
@@ -225,7 +225,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         ui.label(
             egui::RichText::new("the shots either side grow and shrink; the rest stays put")
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
     });
 

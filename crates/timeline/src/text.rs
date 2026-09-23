@@ -65,6 +65,11 @@ pub struct TextClip {
     /// A colour tag for organising the edit.
     #[serde(default)]
     pub color_label: crate::clip::ColorLabel,
+    /// A name of the clip's own, shown on the timeline instead of the
+    /// file's: "interview wide", not "C0042.MP4". `None` is the file's name.
+    /// Defaulted: older projects have none.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Draw a shape instead of the text (`bettercut_text::shape`). Everything
     /// else about the clip — placement, animation, the lane — is a title's.
     #[serde(default)]
@@ -126,6 +131,7 @@ impl TextClip {
             animation: TextAnimation::default(),
             motion_blur: false,
             color_label: crate::clip::ColorLabel::None,
+            name: None,
             shape: None,
             counter: None,
             highlight: None,

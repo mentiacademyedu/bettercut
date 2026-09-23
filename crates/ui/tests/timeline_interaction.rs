@@ -1706,6 +1706,50 @@ fn every_lane_height_lays_out_and_clicks_the_same() {
     assert!(LaneHeight::Normal.pixels() < LaneHeight::Tall.pixels());
 }
 
+/// One lane given a height of its own: the lanes below it move down by the
+/// difference, and clicks land where they are drawn.
+#[test]
+fn a_lane_with_its_own_height_moves_the_lanes_below_it() {
+    use bettercut_ui::state::LaneHeight;
+
+    let mut h = Harness::new();
+    h.state.lane_height = LaneHeight::Compact;
+    let (video, sound) = h
+        .editor
+        .active_sequence()
+        .map(|s| (s.video_tracks[0].id, s.audio_tracks[0].id))
+        .unwrap();
+    let clip = h.add_clip(0, 10);
+    let above = h
+        .editor
+        .active_sequence()
+        .map_or(0, |s| s.text_tracks.len() + s.adjustment_tracks.len()) as f32;
+    let short = LaneHeight::Compact.pixels();
+    let tall = LaneHeight::Tall.pixels();
+
+    // The video lane tall on its own: a click at the bottom of the tall lane
+    // is still the clip, where a short lane would already be past it.
+    h.state.set_lane_height(video, Some(LaneHeight::Tall));
+    assert_eq!(h.state.lane_height_for(video), tall);
+    assert_eq!(h.state.lane_height_for(sound), short);
+    let top = RULER_H + 2.0 + above * (short + 2.0);
+    h.click(Pos2::new(h.x_of(secs(5)), top + tall - 4.0));
+    assert!(
+        h.state.selected_clips.contains(&clip),
+        "the tall lane did not reach its own bottom"
+    );
+
+    // Back to following the others: that same spot is below the lane now.
+    h.state.set_lane_height(video, None);
+    assert_eq!(h.state.lane_height_for(video), short);
+    h.state.clear_selection();
+    h.click(Pos2::new(h.x_of(secs(5)), top + tall - 4.0));
+    assert!(
+        !h.state.selected_clips.contains(&clip),
+        "a short lane answered a click below it"
+    );
+}
+
 /// A title lane's header has a menu too — hide, lock, rename, duplicate —
 /// where it used to open empty.
 #[test]

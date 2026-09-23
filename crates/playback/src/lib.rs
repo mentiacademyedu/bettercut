@@ -21,6 +21,7 @@ pub mod engine;
 pub mod error;
 pub mod filmstrip_job;
 pub mod frame_source;
+pub mod highlights;
 pub mod lane_meters;
 pub mod loudness_mix;
 pub mod mixer;

@@ -87,6 +87,7 @@ fn sweeping_bar(path: &Path) {
             bitrate: Some(2_000_000),
             rate_control: bettercut_export::RateControl::Variable,
             channels: 0,
+            audio_bitrate: None,
             threads: 2,
         },
     )

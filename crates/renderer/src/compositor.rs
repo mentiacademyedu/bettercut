@@ -26,9 +26,17 @@ use crate::graph::{
     EffectContext, EffectInput, EffectNode, EffectParams, EffectTexture, TargetPool, run_chain,
 };
 
-/// Uniform stride. wgpu requires dynamic uniform offsets to be aligned, and
-/// 256 is the limit on every backend we target.
-const UNIFORM_STRIDE: u64 = 256;
+/// Uniform stride: the distance between one layer's uniform and the next.
+/// wgpu requires dynamic uniform offsets to be aligned, and 256 is the limit
+/// on every backend we target, so this is the first multiple of 256 that
+/// holds a whole [`UNIFORM_SIZE`]. The guard below is what keeps it honest:
+/// a struct that outgrows its slot reads the *next layer's* bytes as its own
+/// tail, which showed up once as a red gain from a neighbour's transform.
+const UNIFORM_STRIDE: u64 = 512;
+const _: () = assert!(
+    UNIFORM_SIZE <= UNIFORM_STRIDE,
+    "a layer's uniform must fit its stride"
+);
 
 /// How many layers one composite may draw before the uniform buffer grows.
 const INITIAL_LAYER_CAPACITY: u64 = 16;
@@ -590,6 +598,7 @@ impl Compositor {
                     opacity: layer.look.opacity,
                     color: layer.look.color,
                     key: layer.look.chroma_key,
+                    luma_key: layer.look.luma_key,
                     mask: layer.look.mask,
                     crop: layer.look.crop,
                     // The clip's own vignette, around its own picture; grain is
@@ -598,6 +607,8 @@ impl Compositor {
                     border: layer.look.border,
                     shadow: layer.look.shadow,
                     corner_pin: layer.look.corner_pin,
+                    lens: layer.look.lens,
+                    posterise: layer.look.posterise,
                     grain: 0.0,
                     grain_seed: 0,
                 },
@@ -627,6 +638,7 @@ impl Compositor {
                         // clip it was drawn on, and a crop to the shot it was set
                         // on — §36's canvas shape is how a sequence is re-framed.
                         key: None,
+                        luma_key: None,
                         mask: None,
                         crop: bettercut_timeline::Crop::NONE,
                         vignette,
@@ -638,6 +650,9 @@ impl Compositor {
                         grain_seed,
                         // A grade covers the whole frame; only a clip is pinned.
                         corner_pin: bettercut_timeline::CornerPin::NONE,
+                        // Nor shot through a lens.
+                        lens: 0.0,
+                        posterise: 0.0,
                     },
                     self.config.resolution.width,
                     self.config.resolution.height,
@@ -742,6 +757,8 @@ impl Compositor {
                     glitch: layer.look.glitch,
                     pixelate: layer.look.pixelate,
                     zoom_blur: layer.look.zoom_blur,
+                    tilt_band: layer.look.tilt_band,
+                    tilt_centre: layer.look.tilt_centre,
                     glow: layer.look.glow,
                     old_film: layer.look.old_film,
                     reflection: layer.look.reflection,
@@ -879,6 +896,8 @@ impl Compositor {
                     glitch: 0.0,
                     pixelate: 0.0,
                     zoom_blur: 0.0,
+                    tilt_band: 0.0,
+                    tilt_centre: 0.5,
                     reflection: bettercut_timeline::Reflection::None,
                     seed: 0,
                 };
@@ -962,6 +981,8 @@ impl Compositor {
                     glitch: 0.0,
                     pixelate: 0.0,
                     zoom_blur: 0.0,
+                    tilt_band: 0.0,
+                    tilt_centre: 0.5,
                     reflection: bettercut_timeline::Reflection::None,
                     seed: 0,
                 };
@@ -1223,7 +1244,7 @@ impl Compositor {
 /// 136 — which is why this is 144 and not 136: the struct aligns to 16.
 /// Then vignette and grain to 160, the border and shadow to 192, and the
 /// cinematic bars at 192, rounding to 208.
-const UNIFORM_SIZE: u64 = 240;
+const UNIFORM_SIZE: u64 = 320;
 
 fn create_target(
     device: &wgpu::Device,
@@ -1366,6 +1387,8 @@ struct LayerLook {
     opacity: f32,
     color: bettercut_timeline::ColorAdjust,
     key: Option<bettercut_timeline::ChromaKey>,
+    /// The luma key, or none (`VideoClip::luma_key`).
+    luma_key: Option<bettercut_timeline::LumaKey>,
     mask: Option<bettercut_timeline::Mask>,
     /// §22's first stage. Here rather than a parameter of its own for the
     /// reason above: it is part of how this layer is drawn.
@@ -1384,6 +1407,10 @@ struct LayerLook {
     grain_seed: u32,
     /// §45's corner pin: each corner moved, in output-frame units.
     corner_pin: bettercut_timeline::CornerPin,
+    /// Lens correction, -1..1 (`VideoClip::lens`).
+    lens: f32,
+    /// Posterise: levels a channel, 2..16; below 2 is off (`VideoClip::posterise`).
+    posterise: f32,
 }
 
 fn layer_uniform(
@@ -1397,6 +1424,7 @@ fn layer_uniform(
         opacity,
         color,
         key,
+        luma_key,
         mask,
         crop,
         vignette,
@@ -1406,6 +1434,8 @@ fn layer_uniform(
         grain,
         grain_seed,
         corner_pin,
+        lens,
+        posterise,
     } = look;
     // §22 crops *before* transforming, and that ordering is visible right here:
     // the aspect fitted to the frame is the **cropped** picture's, not the
@@ -1509,6 +1539,62 @@ fn layer_uniform(
         let at = 200 + index * 8;
         bytes[at..at + 4].copy_from_slice(&(corner[0] * 2.0).to_ne_bytes());
         bytes[at + 4..at + 8].copy_from_slice(&(-corner[1] * 2.0).to_ne_bytes());
+    }
+    // The wheels: nine scalars from 232 — lift, gamma, gain, each r, g, b —
+    // taking the struct to 268, which rounds to 272. Held to their range
+    // here, like the rest of the grade, so a project file cannot ask the
+    // shader for a power it would turn into NaN.
+    let wheels = color.wheels.clamped();
+    for (index, value) in wheels
+        .lift
+        .iter()
+        .chain(wheels.gamma.iter())
+        .chain(wheels.gain.iter())
+        .enumerate()
+    {
+        let at = 232 + index * 4;
+        bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    // The secondary: five scalars from 268 — the pick's hue and width, then
+    // the three shifts — taking the struct to 288.
+    let pick = color.secondary.clamped();
+    for (index, value) in [
+        pick.hue,
+        pick.width,
+        pick.hue_shift,
+        pick.saturation,
+        pick.luminance,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = 268 + index * 4;
+        bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    // The lens, one scalar at 288: the struct ends at 292 and rounds to 304.
+    let lens = if lens.is_finite() {
+        lens.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    bytes[288..292].copy_from_slice(&lens.to_ne_bytes());
+    // Posterise levels at 292, in what was the padding: off below 2, and
+    // never more levels than a channel could show anyway.
+    let posterise = if posterise.is_finite() && posterise >= 2.0 {
+        posterise.min(256.0).floor()
+    } else {
+        0.0
+    };
+    bytes[292..296].copy_from_slice(&posterise.to_ne_bytes());
+
+    // The luma key at 296: threshold, softness, and which side is kept (1
+    // keeps the bright, 2 the dark; 0 is no key). The struct ends at 308
+    // and rounds to 320.
+    if let Some(key) = luma_key.map(bettercut_timeline::LumaKey::clamped) {
+        bytes[296..300].copy_from_slice(&key.threshold.to_ne_bytes());
+        bytes[300..304].copy_from_slice(&key.softness.to_ne_bytes());
+        let mode: f32 = if key.keep_bright { 1.0 } else { 2.0 };
+        bytes[304..308].copy_from_slice(&mode.to_ne_bytes());
     }
 
     // The chroma key, or zeroes — which the shader reads as "no key", because
@@ -1693,8 +1779,11 @@ mod tests {
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
                 corner_pin: bettercut_timeline::CornerPin::NONE.with_corner(0, [-0.25, -0.25]),
+                lens: 0.0,
+                posterise: 0.0,
             },
             1920,
             1080,
@@ -1720,10 +1809,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -1763,10 +1855,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1440,
@@ -1798,10 +1893,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -1832,10 +1930,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -1869,10 +1970,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -1902,6 +2006,18 @@ mod tests {
             temperature: -0.6,
             tint: 0.4,
             vibrance: 0.3,
+            wheels: bettercut_timeline::ColorWheels {
+                lift: [0.25, 0.0, 0.0],
+                gamma: [0.0, -0.5, 0.0],
+                gain: [0.0, 0.0, 0.75],
+            },
+            secondary: bettercut_timeline::HslSecondary {
+                hue: 0.5,
+                width: 0.1,
+                hue_shift: -0.25,
+                saturation: 0.5,
+                luminance: 0.125,
+            },
         };
         let bytes = layer_uniform(
             Transform::default(),
@@ -1913,10 +2029,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 0.5,
                 color,
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -1942,10 +2061,18 @@ mod tests {
         assert_eq!(read(144), 0.0, "the vignette is not at offset 144");
         // Vibrance, in the padding the cinematic bars left behind at 196.
         assert_eq!(read(196), 0.3, "vibrance is not at offset 196");
+        // The wheels, nine scalars from 232 after the four corner pins.
+        assert_eq!(read(232), 0.25, "the red lift is not at offset 232");
+        assert_eq!(read(248), -0.5, "the green gamma is not at offset 248");
+        assert_eq!(read(264), 0.75, "the blue gain is not at offset 264");
+        // The secondary, five scalars from 268.
+        assert_eq!(read(268), 0.5, "the pick's hue is not at offset 268");
+        assert_eq!(read(276), -0.25, "the hue shift is not at offset 276");
+        assert_eq!(read(284), 0.125, "the luminance is not at offset 284");
         assert_eq!(bytes.len(), UNIFORM_SIZE as usize);
         assert_eq!(
-            UNIFORM_SIZE, 240,
-            "the WGSL struct is declared as 240 bytes"
+            UNIFORM_SIZE, 320,
+            "the WGSL struct is declared as 320 bytes"
         );
     }
 
@@ -1963,10 +2090,13 @@ mod tests {
                 grain: 0.6,
                 grain_seed: 1234,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::IDENTITY,
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             3840,
@@ -1983,8 +2113,8 @@ mod tests {
         );
         assert_eq!(bytes.len(), UNIFORM_SIZE as usize);
         assert_eq!(
-            UNIFORM_SIZE, 240,
-            "the WGSL struct is declared as 240 bytes"
+            UNIFORM_SIZE, 320,
+            "the WGSL struct is declared as 320 bytes"
         );
     }
 
@@ -2046,10 +2176,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: Some(key),
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -2081,10 +2214,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -2113,6 +2249,8 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2120,6 +2258,7 @@ mod tests {
                     color: [0.5, 0.5, 0.5],
                     ..bettercut_timeline::ChromaKey::default()
                 }),
+                luma_key: None,
                 mask: None,
             },
             1920,
@@ -2147,6 +2286,8 @@ mod tests {
             temperature: -40.0,
             tint: 12.0,
             vibrance: 0.0,
+            wheels: Default::default(),
+            secondary: bettercut_timeline::HslSecondary::IDENTITY,
         };
         let bytes = layer_uniform(
             Transform::default(),
@@ -2158,10 +2299,13 @@ mod tests {
                 grain: 0.0,
                 grain_seed: 0,
                 corner_pin: bettercut_timeline::CornerPin::NONE,
+                lens: 0.0,
+                posterise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color,
                 key: None,
+                luma_key: None,
                 mask: None,
             },
             1920,

@@ -54,6 +54,7 @@ fn format(channels: usize) -> ExportFormat {
         bitrate: None,
         rate_control: bettercut_media::RateControl::Variable,
         channels,
+        audio_bitrate: None,
         threads: 2,
     }
 }
@@ -64,6 +65,49 @@ fn format(channels: usize) -> ExportFormat {
 /// Moving matters. A constant picture encodes to almost nothing and would still
 /// produce a valid file if the writer sent the same frame every time, so the
 /// motion is what makes "the video is 48 distinct frames" checkable.
+/// Chapters given to the writer come back from the file, titles and times.
+#[test]
+fn chapters_are_written_into_the_file_and_read_back() {
+    let scratch = Scratch::new("chapters");
+    let marks = vec![
+        bettercut_media::ChapterMark {
+            title: "Intro".to_owned(),
+            start: bettercut_foundation::MediaTime::ZERO,
+            end: bettercut_foundation::MediaTime::from_millis(500),
+        },
+        bettercut_media::ChapterMark {
+            title: "The rest".to_owned(),
+            start: bettercut_foundation::MediaTime::from_millis(500),
+            end: bettercut_foundation::MediaTime::from_seconds(2),
+        },
+    ];
+    let mut writer =
+        VideoWriter::create_with_chapters(scratch.path(), format(0), &marks).expect("writer");
+    for index in 0..FRAMES {
+        writer.push_frame(&frame(index)).expect("frame");
+    }
+    writer.finish().expect("finish");
+
+    let back = bettercut_media::probe_chapters(scratch.path()).expect("probe");
+    assert_eq!(back, marks, "the chapters did not survive the file");
+}
+
+/// A file written without chapters has none, and says so plainly.
+#[test]
+fn a_file_without_chapters_has_none() {
+    let scratch = Scratch::new("no-chapters");
+    let mut writer = VideoWriter::create(scratch.path(), format(0)).expect("writer");
+    for index in 0..4 {
+        writer.push_frame(&frame(index)).expect("frame");
+    }
+    writer.finish().expect("finish");
+    assert!(
+        bettercut_media::probe_chapters(scratch.path())
+            .expect("probe")
+            .is_empty()
+    );
+}
+
 fn frame(index: usize) -> Vec<u8> {
     let mut data = vec![0_u8; (WIDTH * HEIGHT * 4) as usize];
     let block = WIDTH / 6;

@@ -5,71 +5,367 @@
 
 use egui::Color32;
 
-pub const BACKGROUND: Color32 = Color32::from_rgb(24, 25, 28);
-pub const PANEL: Color32 = Color32::from_rgb(31, 33, 37);
-pub const TIMELINE_BACKGROUND: Color32 = Color32::from_rgb(20, 21, 24);
-pub const TRACK_HEADER: Color32 = Color32::from_rgb(35, 37, 42);
-pub const TRACK_LANE: Color32 = Color32::from_rgb(27, 29, 33);
-pub const TRACK_LANE_ALT: Color32 = Color32::from_rgb(30, 32, 37);
-pub const GRID_LINE: Color32 = Color32::from_rgb(45, 48, 54);
-pub const RULER_TEXT: Color32 = Color32::from_rgb(150, 155, 165);
+use std::sync::atomic::{AtomicBool, Ordering};
 
-pub const VIDEO_CLIP: Color32 = Color32::from_rgb(64, 116, 190);
-pub const VIDEO_CLIP_TOP: Color32 = Color32::from_rgb(86, 142, 219);
-pub const AUDIO_CLIP: Color32 = Color32::from_rgb(58, 150, 118);
-pub const AUDIO_CLIP_TOP: Color32 = Color32::from_rgb(78, 178, 142);
-pub const CLIP_TEXT: Color32 = Color32::from_rgb(238, 242, 248);
-pub const SELECTION: Color32 = Color32::from_rgb(255, 196, 84);
+/// Every colour the interface draws with, as one set, so a theme is a
+/// palette and not thirty scattered numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub background: Color32,
+    pub panel: Color32,
+    pub timeline_background: Color32,
+    pub track_header: Color32,
+    pub track_lane: Color32,
+    pub track_lane_alt: Color32,
+    pub grid_line: Color32,
+    pub ruler_text: Color32,
+    pub video_clip: Color32,
+    pub video_clip_top: Color32,
+    pub audio_clip: Color32,
+    pub audio_clip_top: Color32,
+    pub clip_text: Color32,
+    pub selection: Color32,
+    pub playhead: Color32,
+    pub marker: Color32,
+    pub keyframe: Color32,
+    pub automation: Color32,
+    pub transition: Color32,
+    pub text_clip: Color32,
+    pub text_clip_top: Color32,
+    pub in_out_mark: Color32,
+    pub in_out_span: Color32,
+    pub track_automation: Color32,
+    pub rendered: Color32,
+    pub rendered_stale: Color32,
+    pub fade_handle: Color32,
+    pub adjustment_clip: Color32,
+    pub adjustment_clip_top: Color32,
+    pub disabled: Color32,
+    pub error_text: Color32,
+    pub caution: Color32,
+    pub ok_text: Color32,
+}
 
-pub const PLAYHEAD: Color32 = Color32::from_rgb(238, 92, 92);
-/// Markers (`timeline::marker`). Green, so a mark never reads as the playhead
-/// (red), a selection (amber) or a keyframe (blue).
-pub const MARKER: Color32 = Color32::from_rgb(120, 214, 120);
-/// Keyframes, in the inspector and on the clip (§24). Deliberately not the
-/// selection colour: a key and a selected clip are often on screen together.
-pub const KEYFRAME: Color32 = Color32::from_rgb(126, 200, 255);
+/// The dark palette: what the editor has always looked like.
+pub const DARK: Palette = Palette {
+    background: Color32::from_rgb(24, 25, 28),
+    panel: Color32::from_rgb(31, 33, 37),
+    timeline_background: Color32::from_rgb(20, 21, 24),
+    track_header: Color32::from_rgb(35, 37, 42),
+    track_lane: Color32::from_rgb(27, 29, 33),
+    track_lane_alt: Color32::from_rgb(30, 32, 37),
+    grid_line: Color32::from_rgb(45, 48, 54),
+    ruler_text: Color32::from_rgb(150, 155, 165),
+    video_clip: Color32::from_rgb(64, 116, 190),
+    video_clip_top: Color32::from_rgb(86, 142, 219),
+    audio_clip: Color32::from_rgb(58, 150, 118),
+    audio_clip_top: Color32::from_rgb(78, 178, 142),
+    clip_text: Color32::from_rgb(238, 242, 248),
+    selection: Color32::from_rgb(255, 196, 84),
+    playhead: Color32::from_rgb(238, 92, 92),
+    marker: Color32::from_rgb(120, 214, 120),
+    keyframe: Color32::from_rgb(126, 200, 255),
+    automation: Color32::from_rgb(250, 226, 138),
+    transition: Color32::from_rgb(214, 226, 240),
+    text_clip: Color32::from_rgb(126, 96, 178),
+    text_clip_top: Color32::from_rgb(152, 120, 206),
+    in_out_mark: Color32::from_rgb(120, 200, 255),
+    in_out_span: Color32::from_rgba_premultiplied(20, 40, 60, 40),
+    track_automation: Color32::from_rgb(138, 214, 250),
+    rendered: Color32::from_rgb(90, 190, 110),
+    rendered_stale: Color32::from_rgb(200, 160, 70),
+    fade_handle: Color32::from_rgb(240, 240, 240),
+    adjustment_clip: Color32::from_rgb(168, 124, 52),
+    adjustment_clip_top: Color32::from_rgb(198, 152, 74),
+    disabled: Color32::from_rgb(96, 100, 108),
+    error_text: Color32::from_rgb(240, 120, 120),
+    caution: Color32::from_rgb(230, 180, 90),
+    ok_text: Color32::from_rgb(140, 200, 150),
+};
 
-/// A volume envelope drawn across a sound clip (§24 on §20a.4's clip-gain
-/// stage). Pale yellow: it is drawn over a green clip and a grey waveform, and
-/// the keyframe blue would read as a picture keyframe rather than a level.
-pub const AUTOMATION: Color32 = Color32::from_rgb(250, 226, 138);
+/// The light palette: the same roles on a white ground, for a bright room
+/// or a bright screen. Clips keep their hues, a shade deeper so their light
+/// text still reads; the accents come down from neon to ink.
+pub const LIGHT: Palette = Palette {
+    background: Color32::from_rgb(244, 245, 248),
+    panel: Color32::from_rgb(252, 252, 253),
+    timeline_background: Color32::from_rgb(232, 234, 238),
+    track_header: Color32::from_rgb(224, 227, 232),
+    track_lane: Color32::from_rgb(240, 241, 244),
+    track_lane_alt: Color32::from_rgb(234, 236, 240),
+    grid_line: Color32::from_rgb(200, 204, 211),
+    ruler_text: Color32::from_rgb(84, 90, 100),
+    video_clip: Color32::from_rgb(96, 146, 216),
+    video_clip_top: Color32::from_rgb(70, 120, 192),
+    audio_clip: Color32::from_rgb(84, 176, 142),
+    audio_clip_top: Color32::from_rgb(58, 148, 114),
+    clip_text: Color32::from_rgb(22, 26, 32),
+    selection: Color32::from_rgb(214, 132, 0),
+    playhead: Color32::from_rgb(208, 58, 58),
+    marker: Color32::from_rgb(44, 150, 44),
+    keyframe: Color32::from_rgb(30, 120, 200),
+    automation: Color32::from_rgb(160, 132, 10),
+    transition: Color32::from_rgb(64, 84, 112),
+    text_clip: Color32::from_rgb(136, 108, 186),
+    text_clip_top: Color32::from_rgb(108, 80, 158),
+    in_out_mark: Color32::from_rgb(30, 120, 200),
+    in_out_span: Color32::from_rgba_premultiplied(30, 60, 120, 40),
+    track_automation: Color32::from_rgb(30, 120, 180),
+    rendered: Color32::from_rgb(44, 150, 74),
+    rendered_stale: Color32::from_rgb(176, 126, 30),
+    fade_handle: Color32::from_rgb(40, 40, 44),
+    adjustment_clip: Color32::from_rgb(196, 146, 66),
+    adjustment_clip_top: Color32::from_rgb(170, 124, 50),
+    disabled: Color32::from_rgb(128, 134, 144),
+    error_text: Color32::from_rgb(188, 48, 48),
+    caution: Color32::from_rgb(166, 108, 16),
+    ok_text: Color32::from_rgb(40, 128, 70),
+};
 
-/// §25's transitions, drawn over the cut. Pale and cool so it reads as an
-/// overlay on the clips rather than as a third clip between them.
-pub const TRANSITION: Color32 = Color32::from_rgb(214, 226, 240);
+static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
-/// §26's text overlays. A different hue from the video and audio clips, because
-/// a title is a different kind of thing and the lane is read at a glance.
-pub const TEXT_CLIP: Color32 = Color32::from_rgb(126, 96, 178);
-pub const TEXT_CLIP_TOP: Color32 = Color32::from_rgb(152, 120, 206);
+/// Choose the light palette (or the dark one). Takes effect for everything
+/// drawn after; call [`apply`] too, so egui's own widgets follow.
+pub fn set_light(light: bool) {
+    LIGHT_MODE.store(light, Ordering::Relaxed);
+}
 
-/// Adjustment clips: amber, because an adjustment changes the colour of what is
-/// beneath it, and it has to read at a glance as neither a picture nor a title.
-/// The in and out marks, and the span between them across the lanes.
-pub const IN_OUT_MARK: Color32 = Color32::from_rgb(120, 200, 255);
-pub const IN_OUT_SPAN: Color32 = Color32::from_rgba_premultiplied(20, 40, 60, 40);
+pub fn is_light() -> bool {
+    LIGHT_MODE.load(Ordering::Relaxed)
+}
 
-/// A whole lane's volume line, apart from a clip's own (`AUTOMATION`) so the
-/// two read as the different things they are.
-pub const TRACK_AUTOMATION: Color32 = Color32::from_rgb(138, 214, 250);
+/// The palette in force.
+pub fn palette() -> Palette {
+    if is_light() { LIGHT } else { DARK }
+}
 
-/// The render bar under the ruler: a stretch already baked to a file, and one
-/// whose edit has moved on since. Green and amber, as every editor draws them.
-pub const RENDERED: Color32 = Color32::from_rgb(90, 190, 110);
-pub const RENDERED_STALE: Color32 = Color32::from_rgb(200, 160, 70);
-
-/// A fade handle on a sound clip's corner: near-white, so it reads on any
-/// clip colour and is not mistaken for a volume point's yellow.
-pub const FADE_HANDLE: Color32 = Color32::from_rgb(240, 240, 240);
-
-pub const ADJUSTMENT_CLIP: Color32 = Color32::from_rgb(168, 124, 52);
-pub const ADJUSTMENT_CLIP_TOP: Color32 = Color32::from_rgb(198, 152, 74);
-pub const DISABLED: Color32 = Color32::from_rgb(96, 100, 108);
-pub const ERROR_TEXT: Color32 = Color32::from_rgb(240, 120, 120);
-/// Something worth knowing before pressing the button, which is not a failure:
-/// an export longer than the site it is made for accepts.
-pub const CAUTION: Color32 = Color32::from_rgb(230, 180, 90);
-pub const OK_TEXT: Color32 = Color32::from_rgb(140, 200, 150);
+pub fn background() -> Color32 {
+    if is_light() {
+        LIGHT.background
+    } else {
+        DARK.background
+    }
+}
+pub fn panel() -> Color32 {
+    if is_light() { LIGHT.panel } else { DARK.panel }
+}
+pub fn timeline_background() -> Color32 {
+    if is_light() {
+        LIGHT.timeline_background
+    } else {
+        DARK.timeline_background
+    }
+}
+pub fn track_header() -> Color32 {
+    if is_light() {
+        LIGHT.track_header
+    } else {
+        DARK.track_header
+    }
+}
+pub fn track_lane() -> Color32 {
+    if is_light() {
+        LIGHT.track_lane
+    } else {
+        DARK.track_lane
+    }
+}
+pub fn track_lane_alt() -> Color32 {
+    if is_light() {
+        LIGHT.track_lane_alt
+    } else {
+        DARK.track_lane_alt
+    }
+}
+pub fn grid_line() -> Color32 {
+    if is_light() {
+        LIGHT.grid_line
+    } else {
+        DARK.grid_line
+    }
+}
+pub fn ruler_text() -> Color32 {
+    if is_light() {
+        LIGHT.ruler_text
+    } else {
+        DARK.ruler_text
+    }
+}
+pub fn video_clip() -> Color32 {
+    if is_light() {
+        LIGHT.video_clip
+    } else {
+        DARK.video_clip
+    }
+}
+pub fn video_clip_top() -> Color32 {
+    if is_light() {
+        LIGHT.video_clip_top
+    } else {
+        DARK.video_clip_top
+    }
+}
+pub fn audio_clip() -> Color32 {
+    if is_light() {
+        LIGHT.audio_clip
+    } else {
+        DARK.audio_clip
+    }
+}
+pub fn audio_clip_top() -> Color32 {
+    if is_light() {
+        LIGHT.audio_clip_top
+    } else {
+        DARK.audio_clip_top
+    }
+}
+pub fn clip_text() -> Color32 {
+    if is_light() {
+        LIGHT.clip_text
+    } else {
+        DARK.clip_text
+    }
+}
+pub fn selection() -> Color32 {
+    if is_light() {
+        LIGHT.selection
+    } else {
+        DARK.selection
+    }
+}
+pub fn playhead() -> Color32 {
+    if is_light() {
+        LIGHT.playhead
+    } else {
+        DARK.playhead
+    }
+}
+pub fn marker() -> Color32 {
+    if is_light() {
+        LIGHT.marker
+    } else {
+        DARK.marker
+    }
+}
+pub fn keyframe() -> Color32 {
+    if is_light() {
+        LIGHT.keyframe
+    } else {
+        DARK.keyframe
+    }
+}
+pub fn automation() -> Color32 {
+    if is_light() {
+        LIGHT.automation
+    } else {
+        DARK.automation
+    }
+}
+pub fn transition() -> Color32 {
+    if is_light() {
+        LIGHT.transition
+    } else {
+        DARK.transition
+    }
+}
+pub fn text_clip() -> Color32 {
+    if is_light() {
+        LIGHT.text_clip
+    } else {
+        DARK.text_clip
+    }
+}
+pub fn text_clip_top() -> Color32 {
+    if is_light() {
+        LIGHT.text_clip_top
+    } else {
+        DARK.text_clip_top
+    }
+}
+pub fn in_out_mark() -> Color32 {
+    if is_light() {
+        LIGHT.in_out_mark
+    } else {
+        DARK.in_out_mark
+    }
+}
+pub fn in_out_span() -> Color32 {
+    if is_light() {
+        LIGHT.in_out_span
+    } else {
+        DARK.in_out_span
+    }
+}
+pub fn track_automation() -> Color32 {
+    if is_light() {
+        LIGHT.track_automation
+    } else {
+        DARK.track_automation
+    }
+}
+pub fn rendered() -> Color32 {
+    if is_light() {
+        LIGHT.rendered
+    } else {
+        DARK.rendered
+    }
+}
+pub fn rendered_stale() -> Color32 {
+    if is_light() {
+        LIGHT.rendered_stale
+    } else {
+        DARK.rendered_stale
+    }
+}
+pub fn fade_handle() -> Color32 {
+    if is_light() {
+        LIGHT.fade_handle
+    } else {
+        DARK.fade_handle
+    }
+}
+pub fn adjustment_clip() -> Color32 {
+    if is_light() {
+        LIGHT.adjustment_clip
+    } else {
+        DARK.adjustment_clip
+    }
+}
+pub fn adjustment_clip_top() -> Color32 {
+    if is_light() {
+        LIGHT.adjustment_clip_top
+    } else {
+        DARK.adjustment_clip_top
+    }
+}
+pub fn disabled() -> Color32 {
+    if is_light() {
+        LIGHT.disabled
+    } else {
+        DARK.disabled
+    }
+}
+pub fn error_text() -> Color32 {
+    if is_light() {
+        LIGHT.error_text
+    } else {
+        DARK.error_text
+    }
+}
+pub fn caution() -> Color32 {
+    if is_light() {
+        LIGHT.caution
+    } else {
+        DARK.caution
+    }
+}
+pub fn ok_text() -> Color32 {
+    if is_light() {
+        LIGHT.ok_text
+    } else {
+        DARK.ok_text
+    }
+}
 
 /// Width of the track-name column on the left of the timeline.
 pub const TRACK_HEADER_WIDTH: f32 = 148.0;
@@ -89,15 +385,24 @@ pub const CLIP_CORNER_RADIUS: u8 = 4;
 /// surroundings, and a bright shell shifts how footage looks (§21a is about
 /// getting colour right — the chrome should not fight it).
 pub fn apply(ctx: &egui::Context) {
-    ctx.set_theme(egui::ThemePreference::Dark);
+    let light = is_light();
+    ctx.set_theme(if light {
+        egui::ThemePreference::Light
+    } else {
+        egui::ThemePreference::Dark
+    });
 
     // Applied to both theme slots so the app looks the same even if something
     // else flips the preference.
     ctx.all_styles_mut(|style| {
-        style.visuals.dark_mode = true;
-        style.visuals.panel_fill = PANEL;
-        style.visuals.window_fill = PANEL;
-        style.visuals.extreme_bg_color = TIMELINE_BACKGROUND;
+        style.visuals = if light {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        style.visuals.panel_fill = panel();
+        style.visuals.window_fill = panel();
+        style.visuals.extreme_bg_color = timeline_background();
 
         // Roomier controls: the brief is an editor whose controls are easy to
         // understand, not one that fits the most knobs per square inch.
@@ -105,4 +410,29 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.interact_size.y = 26.0;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two palettes are two palettes: light on a light ground, dark on a
+    /// dark one, and no role left the same in both by accident.
+    #[test]
+    fn the_light_palette_is_light_and_differs_everywhere() {
+        assert!(LIGHT.background.r() > 200 && DARK.background.r() < 60);
+        assert!(LIGHT.clip_text.r() < 60 && DARK.clip_text.r() > 200);
+        assert_ne!(LIGHT, DARK);
+    }
+
+    /// The switch is what every token reads.
+    #[test]
+    fn the_switch_changes_what_the_tokens_say() {
+        set_light(false);
+        assert_eq!(background(), DARK.background);
+        set_light(true);
+        assert_eq!(background(), LIGHT.background);
+        assert_eq!(palette(), LIGHT);
+        set_light(false);
+    }
 }

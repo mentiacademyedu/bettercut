@@ -24,6 +24,8 @@ fn a_whole_grade_is_one_undo_step() {
         temperature: 0.25,
         tint: -0.1,
         vibrance: 0.0,
+        wheels: Default::default(),
+        secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
     };
     let depth = editor.undo_depth();
     editor.set_clip_grade(clip, grade, "Match Colour").unwrap();

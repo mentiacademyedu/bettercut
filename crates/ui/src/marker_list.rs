@@ -67,6 +67,10 @@ enum Action {
     MarkRange,
     ClearAll,
     CopyChapters,
+    /// Write the markers to a CSV or EDL file, after asking where.
+    ExportFile,
+    /// Read markers from a CSV, after asking which.
+    ImportFile,
 }
 
 /// What "Copy Chapters" says afterwards: how many were copied, and anything a
@@ -160,7 +164,26 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 }
                 if !rows.is_empty()
                     && ui
-                        .button(egui::RichText::new("Clear All").color(theme::ERROR_TEXT))
+                        .button("Export…")
+                        .on_hover_text(
+                            "Write the markers to a file: a CSV for a spreadsheet, or an EDL another editor reads markers from",
+                        )
+                        .clicked()
+                {
+                    actions.push(Action::ExportFile);
+                }
+                if ui
+                    .button("Import…")
+                    .on_hover_text(
+                        "Add markers from a CSV: the one Export writes, or any with a timecode or seconds column and a name",
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::ImportFile);
+                }
+                if !rows.is_empty()
+                    && ui
+                        .button(egui::RichText::new("Clear All").color(theme::error_text()))
                         .on_hover_text("Delete every marker. Undoable.")
                         .clicked()
                 {
@@ -177,7 +200,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                          beats on a music clip.",
                     )
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
                 );
                 return;
             }
@@ -189,7 +212,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     if rows.len() == 1 { "" } else { "s" }
                 ))
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
             );
             ui.add_space(4.0);
 
@@ -215,7 +238,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                             .response
                             .on_hover_text("Colour this marker");
                             let time = if current == Some(index) {
-                                time.color(theme::PLAYHEAD)
+                                time.color(theme::playhead())
                             } else {
                                 time.color(swatch)
                             };
@@ -297,6 +320,14 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 Ok(())
             }
             Action::ClearAll => editor.clear_markers(),
+            Action::ExportFile => {
+                export_marker_file(editor, state);
+                Ok(())
+            }
+            Action::ImportFile => {
+                import_marker_file(editor, state);
+                Ok(())
+            }
             Action::CopyChapters => {
                 let duration = editor
                     .active_sequence()
@@ -316,6 +347,43 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             state.error(err.to_string());
         }
         state.needs_repaint = true;
+    }
+}
+
+/// Ask where, then write the markers there. The format follows the extension
+/// chosen.
+fn export_marker_file(editor: &Editor, state: &mut UiState) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("CSV (spreadsheet)", &["csv"])
+        .add_filter("EDL (another editor)", &["edl"])
+        .set_file_name("markers.csv")
+        .save_file()
+    else {
+        return;
+    };
+    match editor.export_markers(&path) {
+        Ok(count) => state.info(format!("Wrote {count} markers to {}", path.display())),
+        Err(err) => state.error(format!("Could not write the markers: {err}")),
+    }
+}
+
+/// Ask which CSV, then add its markers.
+fn import_marker_file(editor: &mut Editor, state: &mut UiState) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("CSV", &["csv", "txt"])
+        .pick_file()
+    else {
+        return;
+    };
+    match editor.import_markers(&path) {
+        Ok(0) => {
+            state.info("No markers found in that file — it needs a timecode or seconds column")
+        }
+        Ok(count) => {
+            state.needs_repaint = true;
+            state.info(format!("Added {count} markers"));
+        }
+        Err(err) => state.error(format!("Could not read the markers: {err}")),
     }
 }
 

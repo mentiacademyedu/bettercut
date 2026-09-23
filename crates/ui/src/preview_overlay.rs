@@ -137,6 +137,17 @@ pub enum Gesture {
         /// The clip's rotation, which the picture turns about its own centre.
         degrees: f32,
     },
+    /// A key of the motion path picked up: the key at `time` (source time),
+    /// from `from`, grabbed at `grab` on the canvas
+    /// (`crate::motion_path`).
+    PathKey {
+        time: bettercut_editor_core::foundation::MediaTime,
+        from: Vec2,
+        grab: egui::Pos2,
+    },
+    /// The pivot handle picked up: the point the picture turns about, moved
+    /// without the picture moving (`editor_core::pivot`).
+    Pivot,
 }
 
 /// Which side of the crop is being dragged.
@@ -399,7 +410,12 @@ pub fn layer_box(source_aspect: f32, output_aspect: f32, transform: Transform) -
         fit_x * transform.scale.x / 2.0,
         fit_y * transform.scale.y / 2.0,
     );
-    let centre = egui::pos2(0.5 + transform.position.x, 0.5 + transform.position.y);
+    // The position is where the *pivot* sits; the box's middle is that, plus
+    // however far the pivot is from the middle of the picture.
+    let centre = egui::pos2(
+        0.5 + transform.position.x + (0.5 - transform.anchor.x) * half.x * 2.0,
+        0.5 + transform.position.y + (0.5 - transform.anchor.y) * half.y * 2.0,
+    );
     egui::Rect::from_center_size(centre, half * 2.0)
 }
 
@@ -501,12 +517,12 @@ pub fn draw_pin(painter: &egui::Painter, corners: [egui::Pos2; 4]) {
     for pair in 0..4 {
         painter.line_segment(
             [corners[pair], corners[(pair + 1) % 4]],
-            egui::Stroke::new(1.5, crate::theme::SELECTION),
+            egui::Stroke::new(1.5, crate::theme::selection()),
         );
     }
     for at in corners {
         painter.circle_filled(at, HANDLE_DRAW + 1.0, egui::Color32::from_black_alpha(160));
-        painter.circle_filled(at, HANDLE_DRAW, crate::theme::SELECTION);
+        painter.circle_filled(at, HANDLE_DRAW, crate::theme::selection());
     }
 }
 
@@ -592,6 +608,49 @@ pub fn rotate_about(point: egui::Pos2, centre: egui::Pos2, degrees: f32) -> egui
         centre.x + dx * cos - dy * sin,
         centre.y + dx * sin + dy * cos,
     )
+}
+
+/// Where a picture that turns about `pivot` sits: the same box, moved so that
+/// turning it about its own middle lands its corners where turning about the
+/// pivot would. Rotating a box about a point off its middle is rotating it
+/// about its middle *and* swinging the middle round the point; this does the
+/// swing, so every helper that rotates about the middle stays right.
+pub fn pivot_shifted(box_on_canvas: egui::Rect, pivot: egui::Pos2, degrees: f32) -> egui::Rect {
+    let centre = box_on_canvas.center();
+    let swung = rotate_about(centre, pivot, degrees);
+    box_on_canvas.translate(swung - centre)
+}
+
+/// How close a pointer has to be to the pivot handle, in points.
+pub const PIVOT_GRAB_PIXELS: f32 = 7.0;
+
+pub fn on_pivot(pivot: egui::Pos2, pointer: egui::Pos2) -> bool {
+    pivot.distance(pointer) <= PIVOT_GRAB_PIXELS
+}
+
+/// The pivot handle: a small target cross, so it is not mistaken for a corner
+/// or the rotate handle.
+pub fn draw_pivot(painter: &egui::Painter, at: egui::Pos2, active: bool) {
+    let colour = if active {
+        crate::theme::selection()
+    } else {
+        crate::theme::clip_text()
+    };
+    painter.circle_filled(
+        at,
+        PIVOT_GRAB_PIXELS * 0.55 + 1.0,
+        egui::Color32::from_black_alpha(160),
+    );
+    painter.circle_stroke(at, PIVOT_GRAB_PIXELS * 0.55, egui::Stroke::new(1.5, colour));
+    let arm = PIVOT_GRAB_PIXELS;
+    painter.line_segment(
+        [egui::pos2(at.x - arm, at.y), egui::pos2(at.x + arm, at.y)],
+        egui::Stroke::new(1.0, colour),
+    );
+    painter.line_segment(
+        [egui::pos2(at.x, at.y - arm), egui::pos2(at.x, at.y + arm)],
+        egui::Stroke::new(1.0, colour),
+    );
 }
 
 /// The four corners of a box turned by `degrees`, in [`Corner::ALL`] order.
@@ -778,9 +837,9 @@ pub fn scaled(from: Vec2, grab_distance: f32, centre: egui::Pos2, now: egui::Pos
 /// Draw the box, its four corner circles and the rotate handle.
 pub fn draw(painter: &egui::Painter, box_on_canvas: egui::Rect, degrees: f32, active: bool) {
     let colour = if active {
-        crate::theme::SELECTION
+        crate::theme::selection()
     } else {
-        crate::theme::CLIP_TEXT
+        crate::theme::clip_text()
     };
     let stroke = egui::Stroke::new(1.5, colour);
 
@@ -830,9 +889,9 @@ pub fn draw_crop(
     active: bool,
 ) {
     let colour = if active {
-        crate::theme::SELECTION
+        crate::theme::selection()
     } else {
-        crate::theme::CLIP_TEXT
+        crate::theme::clip_text()
     };
 
     let whole = uncropped_corners(picture, crop, degrees);
@@ -1048,7 +1107,10 @@ pub fn property_for(
         } => Some(ClipProperty::Crop(crop_dragged(
             edge, from, picture, degrees, now,
         ))),
-        Gesture::MaskMove { .. } | Gesture::MaskResize { .. } => None,
+        Gesture::MaskMove { .. }
+        | Gesture::MaskResize { .. }
+        | Gesture::PathKey { .. }
+        | Gesture::Pivot => None,
     }
 }
 

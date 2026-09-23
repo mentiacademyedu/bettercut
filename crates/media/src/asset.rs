@@ -121,6 +121,19 @@ pub struct MediaAsset {
     #[serde(default)]
     pub baked: bool,
 
+    /// Set for numbered stills read as one clip (`crate::image_sequence`):
+    /// `path` is the first frame, and this is how the rest are found. The
+    /// kind is then `Video`, with the rate the sequence was imported at.
+    #[serde(default)]
+    pub sequence: Option<crate::ImageSequence>,
+
+    /// Weave the fields of an interlaced original into whole frames as it is
+    /// decoded (yadif). Off unless asked: the combing of an old camcorder
+    /// tape is the one thing nobody wants to keep, but a progressive file
+    /// put through it loses a little sharpness for nothing. Defaulted.
+    #[serde(default)]
+    pub deinterlace: bool,
+
     /// What the editor thought of this take, 0–5, and zero for "not judged".
     ///
     /// The first pass through a shoot is not editing, it is *choosing*: three
@@ -164,6 +177,8 @@ impl MediaAsset {
             generated: None,
             generated_sound: None,
             baked: false,
+            sequence: None,
+            deinterlace: false,
             rating: 0,
         }
     }
@@ -218,6 +233,13 @@ impl MediaAsset {
         self.audio_sample_rate = Some(sample_rate);
         self.audio_channels = Some(channels);
         self
+    }
+
+    /// The `image2` pattern a sequence asset is read through, or `None` for
+    /// anything that is one file.
+    pub fn sequence_pattern(&self) -> Option<PathBuf> {
+        self.sequence
+            .and_then(|sequence| crate::image_sequence::pattern_for(&self.path, sequence.digits))
     }
 
     /// A still image: one picture, with no length of its own.

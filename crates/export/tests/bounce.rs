@@ -81,6 +81,8 @@ fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
         picture_only: false,
         gif: false,
         image_sequence: false,
+        loudness_target: None,
+        audio_bitrate: None,
     }
 }
 

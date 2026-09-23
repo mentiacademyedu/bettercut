@@ -63,6 +63,10 @@ pub enum AnimatedParameter {
     /// that list is what the Inspector offers for a *video* clip, and a volume
     /// row among opacity and blur would be a control with nothing to act on.
     Gain,
+    /// Where a clip sits between the speakers over time: -1 hard left, +1
+    /// hard right. Sound only, absent from [`Self::ALL`] for the same reason
+    /// as [`Self::Gain`]; a sound can cross the picture with its subject.
+    Pan,
 }
 
 impl AnimatedParameter {
@@ -107,6 +111,8 @@ impl AnimatedParameter {
             // The same ceiling a track's own volume has: four times is already
             // a long way past where most material starts to distort.
             Self::Gain => Some((0.0, crate::track::MAX_TRACK_GAIN)),
+            // Hard left to hard right; past either is not more of a side.
+            Self::Pan => Some((-1.0, 1.0)),
         }
     }
 
@@ -132,7 +138,8 @@ impl AnimatedParameter {
             | Self::Rotation
             | Self::Blur
             | Self::Temperature
-            | Self::Tint => 0.0,
+            | Self::Tint
+            | Self::Pan => 0.0,
         }
     }
 
@@ -166,6 +173,7 @@ impl AnimatedParameter {
             Self::Tint => "tint",
             Self::Blur => "blur",
             Self::Gain => "volume",
+            Self::Pan => "pan",
         }
     }
 }
@@ -1221,10 +1229,15 @@ mod default_tests {
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: crate::Reflection::None,
             crop: crate::Crop::NONE,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: crate::BlendMode::default(),
             transform: Transform::default(),

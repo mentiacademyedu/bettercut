@@ -110,13 +110,20 @@ impl BlurPlan {
         })
     }
 
-    fn write(self, step: [f32; 2]) -> [u8; PARAMS_SIZE as usize] {
+    /// `band` is the tilt-shift's `[centre, half height, soft edge]` in
+    /// texture v, a half height of zero meaning no band; it rides in what
+    /// was the struct's padding.
+    fn write(self, step: [f32; 2], band: [f32; 3]) -> [u8; PARAMS_SIZE as usize] {
         let mut bytes = [0_u8; PARAMS_SIZE as usize];
         bytes[0..4].copy_from_slice(&step[0].to_ne_bytes());
         bytes[4..8].copy_from_slice(&step[1].to_ne_bytes());
         bytes[8..12].copy_from_slice(&self.sigma.to_ne_bytes());
         bytes[12..16].copy_from_slice(&self.stride.to_ne_bytes());
         bytes[16..20].copy_from_slice(&self.half_taps.to_ne_bytes());
+        for (index, value) in band.into_iter().enumerate() {
+            let at = 20 + index * 4;
+            bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+        }
         // 20..32 is the explicit padding `blur.wgsl` declares.
         bytes
     }
@@ -344,15 +351,16 @@ impl EffectNode for BlurPass {
         // Step is one texel along the axis being blurred, derived from this
         // texture's own size — the other half of what makes a proxy and the
         // original agree.
+        let band = tilt_band(params.tilt_band, params.tilt_centre);
         ctx.queue().write_buffer(
             &self.uniforms,
             horizontal * UNIFORM_STRIDE,
-            &plan.write([1.0 / input.width.max(1) as f32, 0.0]),
+            &plan.write([1.0 / input.width.max(1) as f32, 0.0], band),
         );
         ctx.queue().write_buffer(
             &self.uniforms,
             vertical * UNIFORM_STRIDE,
-            &plan.write([0.0, 1.0 / input.height.max(1) as f32]),
+            &plan.write([0.0, 1.0 / input.height.max(1) as f32], band),
         );
 
         let first = ctx.acquire(input.width, input.height);
@@ -364,6 +372,25 @@ impl EffectNode for BlurPass {
         ctx.retire(first);
         Ok(Some(second))
     }
+}
+
+/// How far the blur's edge is softened past the band, as a fraction of the
+/// picture's height: a hard line between sharp and blurred reads as a cut.
+const TILT_SOFT_EDGE: f32 = 0.15;
+
+/// The tilt-shift band as the shader wants it: centre, half height, soft
+/// edge, all in texture v. Nothing (a half height of zero) unless a band was
+/// asked for.
+pub fn tilt_band(band: f32, centre: f32) -> [f32; 3] {
+    if !band.is_finite() || band <= 0.0 {
+        return [0.5, 0.0, 0.0];
+    }
+    let centre = if centre.is_finite() {
+        centre.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    [centre, band.clamp(0.0, 1.0) * 0.5, TILT_SOFT_EDGE]
 }
 
 fn params_bind_group(
@@ -475,7 +502,7 @@ mod tests {
             half_taps: 13,
             stride: 2.5,
         };
-        let bytes = plan.write([0.25, 0.0]);
+        let bytes = plan.write([0.25, 0.0], [0.5, 0.0, 0.0]);
 
         let float = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
         let int = |at: usize| i32::from_ne_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));

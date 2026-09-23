@@ -108,6 +108,36 @@ struct Layer {
     corner_b: vec2<f32>,
     corner_c: vec2<f32>,
     corner_d: vec2<f32>,
+    // The colour wheels, nine scalars from 232: lift, gamma, gain, each red,
+    // green, blue. Scalars rather than three `vec3`s, which would each align
+    // to 16 and waste a quarter of their space; the struct ends at 268 and
+    // rounds to 272.
+    lift_r: f32,
+    lift_g: f32,
+    lift_b: f32,
+    gamma_r: f32,
+    gamma_g: f32,
+    gamma_b: f32,
+    gain_r: f32,
+    gain_g: f32,
+    gain_b: f32,
+    // The secondary, five scalars from 268: the pick (hue, width) and the
+    // three shifts. The struct ends at 288, a multiple of 16 already.
+    pick_hue: f32,
+    pick_width: f32,
+    pick_hue_shift: f32,
+    pick_saturation: f32,
+    pick_luminance: f32,
+    // Lens correction, one scalar at 288.
+    lens: f32,
+    // Posterise levels at 292, zero for none.
+    posterise: f32,
+    // The luma key at 296: threshold, softness, and which side is kept — 1
+    // the bright, 2 the dark, 0 for no key. The struct ends at 308 and
+    // rounds to 320.
+    luma_threshold: f32,
+    luma_softness: f32,
+    luma_mode: f32,
 }
 
 // The weight each corner of a pinned quad carries, so the texture follows the
@@ -302,9 +332,95 @@ fn adjust_colour(rgb: vec3<f32>, layer: Layer) -> vec3<f32> {
         out = mix(vec3<f32>(after), out, 1.0 + layer.vibrance * room);
     }
 
+    // The wheels, last: they are a grade, built on the correction above. Lift
+    // raises the darks and fades out towards white, so a shadow's colour is
+    // not painted onto a highlight; gain scales the brights; gamma bends the
+    // middle with a per-channel power — plus one is a root, minus one a
+    // square, so the two directions are the same distance from doing nothing.
+    let lift = vec3<f32>(layer.lift_r, layer.lift_g, layer.lift_b);
+    let gamma = vec3<f32>(layer.gamma_r, layer.gamma_g, layer.gamma_b);
+    let gain = vec3<f32>(layer.gain_r, layer.gain_g, layer.gain_b);
+    if (any(lift != vec3<f32>(0.0)) || any(gamma != vec3<f32>(0.0)) || any(gain != vec3<f32>(0.0))) {
+        let held = clamp(out, vec3<f32>(0.0), vec3<f32>(1.0));
+        out = out * (vec3<f32>(1.0) + gain) + lift * (vec3<f32>(1.0) - held);
+        out = pow(max(out, vec3<f32>(0.0)), exp2(-gamma));
+    }
+
+    // The secondary, after the wheels: one range of hue picked out and
+    // moved. Everything about it happens in hue, saturation and value, and
+    // the weight is what keeps it a secondary — full inside the pick, fading
+    // to nothing at its edge, and nothing at all for grey, which has no hue
+    // to be picked by however wide the pick.
+    if (layer.pick_hue_shift != 0.0 || layer.pick_saturation != 0.0 || layer.pick_luminance != 0.0) {
+        let hsv = rgb_to_hsv(max(out, vec3<f32>(0.0)));
+        var away = abs(hsv.x - layer.pick_hue);
+        away = min(away, 1.0 - away);
+        let inside = 1.0 - smoothstep(layer.pick_width * 0.5, layer.pick_width, away);
+        let weight = inside * clamp(hsv.y * 4.0, 0.0, 1.0);
+        let hue = fract(hsv.x + layer.pick_hue_shift * 0.5 * weight + 1.0);
+        let sat = clamp(hsv.y * (1.0 + layer.pick_saturation * weight), 0.0, 1.0);
+        let val = max(hsv.z * (1.0 + layer.pick_luminance * weight), 0.0);
+        out = hsv_to_rgb(vec3<f32>(hue, sat, val));
+    }
+
     // Contrast and saturation can both push a channel negative, which becomes
     // NaN once the sRGB encode takes a root of it.
-    return max(out, vec3<f32>(0.0));
+    out = max(out, vec3<f32>(0.0));
+
+    // Posterise: each channel snapped to the nearest of `levels` steps between
+    // black and white, after the grade so the steps land on the graded
+    // picture. Anything brighter than white is left where it is.
+    if (layer.posterise >= 2.0) {
+        let steps = layer.posterise - 1.0;
+        let held = clamp(out, vec3<f32>(0.0), vec3<f32>(1.0));
+        out = mix(round(held * steps) / steps, out, step(vec3<f32>(1.0), out));
+    }
+    return out;
+}
+
+// Hue (a turn, 0 red), saturation and value of a linear colour. Value may run
+// past one for a bright pixel; that is kept, so a secondary never dims what it
+// only meant to tint.
+fn rgb_to_hsv(rgb: vec3<f32>) -> vec3<f32> {
+    let high = max(rgb.r, max(rgb.g, rgb.b));
+    let low = min(rgb.r, min(rgb.g, rgb.b));
+    let spread = high - low;
+    var hue = 0.0;
+    if (spread > 1e-6) {
+        if (high == rgb.r) {
+            hue = (rgb.g - rgb.b) / spread;
+        } else if (high == rgb.g) {
+            hue = 2.0 + (rgb.b - rgb.r) / spread;
+        } else {
+            hue = 4.0 + (rgb.r - rgb.g) / spread;
+        }
+        hue = fract(hue / 6.0 + 1.0);
+    }
+    let sat = select(0.0, spread / high, high > 1e-6);
+    return vec3<f32>(hue, sat, high);
+}
+
+// The way back from `rgb_to_hsv`.
+fn hsv_to_rgb(hsv: vec3<f32>) -> vec3<f32> {
+    let h = hsv.x * 6.0;
+    let c = hsv.z * hsv.y;
+    let x = c * (1.0 - abs(h % 2.0 - 1.0));
+    let m = hsv.z - c;
+    var rgb = vec3<f32>(0.0);
+    if (h < 1.0) {
+        rgb = vec3<f32>(c, x, 0.0);
+    } else if (h < 2.0) {
+        rgb = vec3<f32>(x, c, 0.0);
+    } else if (h < 3.0) {
+        rgb = vec3<f32>(0.0, c, x);
+    } else if (h < 4.0) {
+        rgb = vec3<f32>(0.0, x, c);
+    } else if (h < 5.0) {
+        rgb = vec3<f32>(x, 0.0, c);
+    } else {
+        rgb = vec3<f32>(c, 0.0, x);
+    }
+    return rgb + vec3<f32>(m);
 }
 
 // Where a colour sits on the chromaticity plane: its proportions, with its
@@ -331,6 +447,16 @@ fn key_alpha(rgb: vec3<f32>, layer: Layer) -> f32 {
     // edge at the tolerance.
     let edge = layer.tolerance + max(layer.softness, 0.0001);
     return smoothstep(layer.tolerance, edge, distance);
+}
+
+// How much of a pixel survives the luma key: what is brighter than the
+// threshold (mode 1) or darker (mode 2), fading over the softness. Judged on
+// perceptual brightness, so the threshold means what the eye sees.
+fn luma_key_alpha(rgb: vec3<f32>, layer: Layer) -> f32 {
+    let level = sqrt(clamp(dot(rgb, LUMA), 0.0, 1.0));
+    let soft = max(layer.luma_softness, 0.0001);
+    let bright = smoothstep(layer.luma_threshold - soft, layer.luma_threshold + soft, level);
+    return select(1.0 - bright, bright, layer.luma_mode < 1.5);
 }
 
 // Take the screen's colour back out of what was kept.
@@ -489,7 +615,24 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The corner weight divided back out: for every layer but a pinned one it
     // is 1 and this is the position the vertex shader already had.
-    let local = in.uvw.xy / max(in.uvw.z, 0.000001);
+    var local = in.uvw.xy / max(in.uvw.z, 0.000001);
+    // The lens: where this pixel reads from is pushed out or pulled in by
+    // how far it is from the middle, squared — the shape a real lens bows
+    // straight lines into. Measured in square units of the picture's own
+    // height so the bowing is round rather than stretched with the frame.
+    // Past the picture's edge the read lands outside, and the edge test
+    // below on the same `local` makes it see-through rather than smeared.
+    var uncovered = false;
+    if (layer.lens != 0.0) {
+        let stretch = vec2<f32>(layer.picture_aspect, 1.0);
+        let away = (local - vec2<f32>(0.5)) * stretch;
+        let bowed = away * (1.0 + layer.lens * dot(away, away));
+        local = vec2<f32>(0.5) + bowed / stretch;
+        // Reading past the picture is reading nothing: the sampler would
+        // otherwise smear the last pixel outwards, which is a stretch, not a
+        // correction.
+        uncovered = any(local < vec2<f32>(0.0)) || any(local > vec2<f32>(1.0));
+    }
     // §22's crop: the quad is unchanged and the window it reads through is not.
     let uv = layer.crop_origin + local * layer.crop_size;
     let texel = textureSample(source, samp, uv);
@@ -507,6 +650,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     var rgb = texel.rgb;
     var alpha = texel.a * layer.opacity;
+    if (uncovered) {
+        alpha = 0.0;
+    }
 
     // Keyed before grading, because the key is about what the *camera* saw. A
     // grade that shifted the screen's colour would otherwise have to be undone
@@ -515,6 +661,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let kept = key_alpha(rgb, layer);
         rgb = suppress_spill(rgb, layer, kept);
         alpha = alpha * kept;
+    }
+    // And by brightness, for the same reason, on the same camera picture.
+    if layer.luma_mode > 0.5 {
+        alpha = alpha * luma_key_alpha(rgb, layer);
     }
 
 

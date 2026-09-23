@@ -64,7 +64,7 @@ pub fn generate_proxy(
     progress: ProgressFn<'_>,
 ) -> Result<(), MediaError> {
     let spec = ProxySpec::V1;
-    let input = InputContext::open(&asset.path)?;
+    let input = InputContext::open_asset(asset)?;
 
     // The container is allocated *first*, because whether it wants global
     // headers decides how the encoders must be configured — and that has to be
@@ -773,6 +773,68 @@ impl Muxer {
     }
 
     /// Open the file and write the header. Streams must already be added.
+    /// Put `chapters` on the output context, to be written with the header.
+    ///
+    /// Each is an `AVChapter` the context owns from here on —
+    /// `avformat_free_context` frees the array, every chapter and its
+    /// metadata — in a millisecond time base, which every container that
+    /// carries chapters can represent exactly.
+    pub(super) fn set_chapters(
+        &mut self,
+        chapters: &[super::export::ChapterMark],
+    ) -> Result<(), MediaError> {
+        if chapters.is_empty() {
+            return Ok(());
+        }
+        let count = chapters.len();
+        // SAFETY: `context` is allocated and no header has been written; the
+        // array and each chapter are allocated with FFmpeg's own allocator,
+        // which is what `avformat_free_context` frees them with.
+        unsafe {
+            let array = ffi::av_mallocz(std::mem::size_of::<*mut ffi::AVChapter>() * count)
+                .cast::<*mut ffi::AVChapter>();
+            if array.is_null() {
+                return Err(MediaError::DecodeFailed(
+                    "could not allocate chapters".to_owned(),
+                ));
+            }
+            for (index, mark) in chapters.iter().enumerate() {
+                let chapter =
+                    ffi::av_mallocz(std::mem::size_of::<ffi::AVChapter>()).cast::<ffi::AVChapter>();
+                if chapter.is_null() {
+                    return Err(MediaError::DecodeFailed(
+                        "could not allocate a chapter".to_owned(),
+                    ));
+                }
+                (*chapter).id = index as i64 + 1;
+                (*chapter).time_base = ffi::AVRational { num: 1, den: 1000 };
+                (*chapter).start =
+                    mark.start.ticks() * 1000 / bettercut_foundation::TICKS_PER_SECOND;
+                (*chapter).end = mark.end.ticks() * 1000 / bettercut_foundation::TICKS_PER_SECOND;
+                let title =
+                    std::ffi::CString::new(mark.title.replace('\0', " ")).map_err(|_| {
+                        MediaError::DecodeFailed("a chapter title held a NUL".to_owned())
+                    })?;
+                let code = ffi::av_dict_set(
+                    &mut (*chapter).metadata,
+                    c"title".as_ptr(),
+                    title.as_ptr(),
+                    0,
+                );
+                if code < 0 {
+                    return Err(MediaError::DecodeFailed(format!(
+                        "could not name a chapter: {}",
+                        error_string(code)
+                    )));
+                }
+                *array.add(index) = chapter;
+            }
+            (*self.context).chapters = array;
+            (*self.context).nb_chapters = count as u32;
+        }
+        Ok(())
+    }
+
     pub(super) fn begin(&mut self, path: &Path) -> Result<(), MediaError> {
         let c_path = super::path_to_cstring(path)?;
 

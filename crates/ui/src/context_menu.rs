@@ -49,7 +49,7 @@ fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
     let clicked = ui
         .add(
             egui::Button::new(label)
-                .shortcut_text(egui::RichText::new(shortcut).color(crate::theme::DISABLED)),
+                .shortcut_text(egui::RichText::new(shortcut).color(crate::theme::disabled())),
         )
         .clicked();
     if clicked {
@@ -60,6 +60,94 @@ fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 
 fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: ClipId) {
     let count = state.selected_clips.len();
+
+    // A name of the clip's own, typed right here: Enter keeps it, an empty
+    // name gives the file's back.
+    match state.clip_name_draft.as_mut() {
+        Some((for_clip, draft)) if *for_clip == clip => {
+            let field = ui.add(
+                egui::TextEdit::singleline(draft)
+                    .hint_text("Clip name")
+                    .desired_width(180.0),
+            );
+            field.request_focus();
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let typed = draft.clone();
+                state.clip_name_draft = None;
+                match editor.set_clip_name(clip, Some(&typed)) {
+                    Ok(_) => state.needs_repaint = true,
+                    Err(err) => state.error(err.to_string()),
+                }
+                ui.close();
+            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                state.clip_name_draft = None;
+                ui.close();
+            }
+        }
+        _ => {
+            if item(ui, "Rename…", "") {
+                let current = editor.clip_name(clip).unwrap_or_default();
+                state.clip_name_draft = Some((clip, current));
+            }
+        }
+    }
+
+    // A mark on the footage rather than on the edit: it travels with the
+    // clip (`Sequence::clip_marks`).
+    let marks = editor.clip_marks(clip).len();
+    if item(ui, "Mark This Frame", "Shift+M") {
+        match editor.toggle_clip_mark(clip) {
+            Ok(true) => {
+                state.needs_repaint = true;
+                state.info("Marked — the mark travels with the clip");
+            }
+            Ok(false) => {
+                state.needs_repaint = true;
+                state.info("Mark removed");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if marks > 0 && item(ui, "Clear Clip Marks", "") {
+        match editor.clear_clip_marks(clip) {
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Took off {n} mark(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    // Solo: only this (and what is soloed with it) on screen or in the mix,
+    // without muting a lane at a time. Its sound comes along (§12).
+    let soloed = editor.clip_soloed(clip);
+    if item(ui, if soloed { "Unsolo" } else { "Solo" }, "") {
+        let onto = selection_or(state, clip);
+        match editor.set_clip_solo(&onto, !soloed) {
+            Ok(_) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if editor.any_clip_soloed() && item(ui, "Clear Solos", "") {
+        match editor.clear_clip_solos() {
+            Ok(_) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    // Every clip painted this colour, wherever it is: the way a colour
+    // label earns its keep on a long timeline.
+    if let Some(label) = editor
+        .color_label(clip)
+        .filter(|l| *l != bettercut_editor_core::timeline::ColorLabel::None)
+        && item(ui, &format!("Select All {}", label.name()), "")
+    {
+        let same = editor.clips_with_colour(label);
+        state.clear_selection();
+        state.selected_clips.extend(same);
+        state.needs_repaint = true;
+    }
+
     // A title read aloud, by a voice built into the computer, as a voiceover
     // starting where the title does.
     if let Some(title) = editor.text_clip(clip) {
@@ -75,7 +163,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                     ui.label(
                         egui::RichText::new("Finding voices…")
                             .small()
-                            .color(crate::theme::DISABLED),
+                            .color(crate::theme::disabled()),
                     );
                 }
                 Some(voices) => {
@@ -262,6 +350,18 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             ui.close();
         }
 
+        // The clip filling the timeline: for trimming its ends by a frame.
+        if ui
+            .button("Zoom to Clip")
+            .on_hover_text("Zoom the timeline in on this clip (Shift + Z zooms to the selection)")
+            .clicked()
+        {
+            let lanes =
+                (ui.ctx().content_rect().width() - crate::theme::TRACK_HEADER_WIDTH).max(200.0);
+            state.zoom_to_clip(editor, clip, lanes);
+            ui.close();
+        }
+
         // The same, but at the frame being looked at and with the stretch this
         // clip plays marked on the file (`editor_core::match_frame`).
         if ui
@@ -315,7 +415,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                     format!("Its sound stops {:.2} s early", -seconds_of(offset))
                 })
                 .small()
-                .color(crate::theme::DISABLED),
+                .color(crate::theme::disabled()),
             );
             let mut rolled = None;
             for (label, sign) in [
@@ -436,7 +536,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             "Clip".to_owned()
         })
         .small()
-        .color(crate::theme::DISABLED),
+        .color(crate::theme::disabled()),
     );
     ui.separator();
 
@@ -497,6 +597,52 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     // A look is minutes of work, and the next twenty clips want the same
     // one. Beside Copy, because it is the same idea applied to the settings
     // rather than to the clip.
+    // The copied look, in parts: the grade from the wide shot without its
+    // framing (`editor_core::attributes`).
+    if let Some(look) = state.copied_look.clone() {
+        use bettercut_editor_core::attributes::{AttributeGroup, groups_in, only};
+        let available = groups_in(&look);
+        ui.menu_button("Paste Attributes", |ui| {
+            ui.label(
+                egui::RichText::new("Tick what to paste, then Paste.")
+                    .small()
+                    .color(crate::theme::disabled()),
+            );
+            for group in AttributeGroup::ALL {
+                if !available.contains(&group) {
+                    continue;
+                }
+                let (label, hint) = group.label();
+                let mut on = state.paste_groups.contains(&group);
+                if ui.checkbox(&mut on, label).on_hover_text(hint).changed() {
+                    if on {
+                        state.paste_groups.push(group);
+                    } else {
+                        state.paste_groups.retain(|g| *g != group);
+                    }
+                }
+            }
+            ui.separator();
+            let wanted = only(&look, &state.paste_groups);
+            if ui
+                .add_enabled(!wanted.is_empty(), egui::Button::new("Paste"))
+                .on_disabled_hover_text("Tick at least one")
+                .clicked()
+            {
+                ui.close();
+                let onto = selection_or(state, clip);
+                match editor.paste_look(&wanted, onto) {
+                    Ok(0) => state.error("Nothing to paste onto"),
+                    Ok(n) => {
+                        state.needs_repaint = true;
+                        state.info(format!("Pasted onto {n} clip(s)"));
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        });
+    }
+
     if editor.video_clip(clip).is_some() && item(ui, "Copy Look", "Ctrl+Alt+C") {
         state.copied_look = editor.clip_look(clip);
         state.info("Look copied — paste it onto other clips");
@@ -562,7 +708,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     if ui
         .add(
             egui::Button::new("Ripple Delete")
-                .shortcut_text(egui::RichText::new("Shift+Del").color(crate::theme::DISABLED)),
+                .shortcut_text(egui::RichText::new("Shift+Del").color(crate::theme::disabled())),
         )
         .on_hover_text("Delete and close the gap, pulling later clips left")
         .clicked()
@@ -700,6 +846,18 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         {
             ui.close();
             state.colour_match_request = Some((clip, editor.playhead()));
+        }
+        // And the same solver aimed at a neutral frame: exposure and balance
+        // put right without a reference shot.
+        if ui
+            .button("Auto Level")
+            .on_hover_text(
+                "Bring this clip to a neutral exposure and white balance, keeping its own colourfulness. Replaces the clip's colour settings; can be undone.",
+            )
+            .clicked()
+        {
+            ui.close();
+            state.auto_level_request = Some(clip);
         }
 
         // A held frame, with room made for it so the sound keeps its place (§10).
@@ -1085,6 +1243,20 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         ui.close();
         cut_on_beats(editor, state, clip, sound);
     }
+    // The other way round from removing silences: what is loud is what is
+    // kept (`playback::highlights`).
+    if let Some(sound) = sound_of(editor, clip)
+        && ui
+            .button("Find the Good Bits…")
+            .on_hover_text("Find the loudest moments of this clip and offer to keep only them")
+            .clicked()
+    {
+        ui.close();
+        match crate::highlight_dialog::HighlightDialog::open(editor, &mut state.waveforms, sound) {
+            Some(dialog) => state.highlights = Some(dialog),
+            None => state.info("This clip's sound is still being analysed — try again in a moment"),
+        }
+    }
     if let Some(sound) = sound_of(editor, clip)
         && ui
             .button("Remove Silences…")
@@ -1241,7 +1413,7 @@ fn color_label_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState,
     let current = editor.color_label(clip).unwrap_or_default();
     ui.menu_button("Colour Label", |ui| {
         for label in ColorLabel::ALL {
-            let swatch = label.rgb().map_or(crate::theme::DISABLED, |[r, g, b]| {
+            let swatch = label.rgb().map_or(crate::theme::disabled(), |[r, g, b]| {
                 egui::Color32::from_rgb(r, g, b)
             });
             let text = egui::RichText::new(label.name()).color(swatch).strong();
@@ -1648,11 +1820,50 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
         state.error(err.to_string());
     }
 
+    // Every join on a sound lane softened at once: music and room tone cut
+    // together sound like a mistake until they are crossfaded.
+    if is_sound {
+        ui.menu_button("Crossfade Every Cut", |ui| {
+            for ms in [100_i64, 250, 500, 1_000] {
+                if ui.button(format!("{ms} ms")).clicked() {
+                    ui.close();
+                    let length = bettercut_editor_core::foundation::TimelineTime::from_millis(ms);
+                    match editor.crossfade_every_cut(track, length) {
+                        Ok((0, 0)) => state.info("There are no joins on this lane to soften"),
+                        Ok((done, 0)) => state.info(format!("Crossfaded {done} cut(s)")),
+                        Ok((done, skipped)) => {
+                            state.info(format!("Crossfaded {done} cut(s); {skipped} had no room"))
+                        }
+                        Err(err) => state.error(err.to_string()),
+                    }
+                    state.needs_repaint = true;
+                }
+            }
+        })
+        .response
+        .on_hover_text("Soften every join between the clips on this lane");
+    }
+
     let lock_label = if locked { "Unlock Track" } else { "Lock Track" };
     if item(ui, lock_label, "")
         && let Err(err) = editor.set_track_flag(track, TrackFlag::Locked, !locked)
     {
         state.error(err.to_string());
+    }
+    // Every lane at once: locked while the picture is signed off, or all
+    // opened again to move on.
+    for (label, value) in [("Lock All Lanes", true), ("Unlock All Lanes", false)] {
+        if item(ui, label, "") {
+            match editor.set_all_tracks_flag(TrackFlag::Locked, value) {
+                Ok(0) => state.info(if value {
+                    "Every lane is already locked"
+                } else {
+                    "No lane is locked"
+                }),
+                Ok(_) => state.needs_repaint = true,
+                Err(err) => state.error(err.to_string()),
+            }
+        }
     }
 
     // Mixing the lane down to one clip: fewer decoders, and thirty small
@@ -1665,7 +1876,7 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
         ui.label(
             egui::RichText::new("Replaces the clips on it with the mix; one undo puts them back")
                 .small()
-                .color(crate::theme::DISABLED),
+                .color(crate::theme::disabled()),
         );
     }
 
@@ -1706,7 +1917,7 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
             ui.label(
                 egui::RichText::new("Drag the line to ride the lane; double-click it for a point")
                     .small()
-                    .color(crate::theme::DISABLED),
+                    .color(crate::theme::disabled()),
             );
         }
     }
@@ -1741,6 +1952,106 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
         if (volume.changed() || balance.changed())
             && let Err(err) =
                 editor.set_track_mix(track, gain, pan, volume.dragged() || balance.dragged())
+        {
+            state.error(err.to_string());
+        }
+    }
+
+    // This lane's height alone: a tall waveform to cut dialogue on while
+    // the picture lanes stay out of the way. The S/M/L buttons set the rest.
+    let own_height = state.lane_heights.get(&track).copied();
+    ui.menu_button("Lane Height", |ui| {
+        if ui
+            .selectable_label(own_height.is_none(), "Same as the others")
+            .clicked()
+        {
+            ui.close();
+            state.set_lane_height(track, None);
+        }
+        for height in crate::state::LaneHeight::ALL {
+            let (_, meaning) = height.label();
+            if ui
+                .selectable_label(own_height == Some(height), meaning)
+                .clicked()
+            {
+                ui.close();
+                state.set_lane_height(track, Some(height));
+            }
+        }
+    });
+
+    // The lane's colour: its head and its unlabelled clips, so a tall
+    // timeline reads at a glance.
+    let lane_colour = editor.track_colour(track);
+    ui.menu_button("Lane Colour", |ui| {
+        use bettercut_editor_core::timeline::ColorLabel;
+        for label in ColorLabel::ALL {
+            let swatch = label.rgb().map_or(crate::theme::disabled(), |[r, g, b]| {
+                egui::Color32::from_rgb(r, g, b)
+            });
+            let text = egui::RichText::new(label.name()).color(swatch).strong();
+            if ui.selectable_label(lane_colour == label, text).clicked() {
+                ui.close();
+                match editor.set_track_colour(track, label) {
+                    Ok(()) => state.needs_repaint = true,
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        }
+    })
+    .response
+    .on_hover_text("Tint this lane's head, and its clips that have no colour of their own");
+
+    // The lane's own tone: the clip's three controls, over everything on it.
+    // For the room a whole lane was recorded in, rather than each clip.
+    if mix.is_some() {
+        use bettercut_editor_core::timeline::{EQ_HIGH_CUT_MIN, EQ_LOW_CUT_MAX, EQ_PRESENCE_MAX};
+        let mut eq = editor.track_eq(track);
+        ui.label(
+            egui::RichText::new("Lane EQ")
+                .small()
+                .color(crate::theme::disabled()),
+        );
+        let low = ui
+            .add(
+                egui::Slider::new(&mut eq.low_cut, 0.0..=EQ_LOW_CUT_MAX)
+                    .custom_formatter(|v, _| {
+                        if v < 1.0 {
+                            "off".to_owned()
+                        } else {
+                            format!("{v:.0} Hz")
+                        }
+                    })
+                    .text("low cut"),
+            )
+            .on_hover_text("Take out rumble below here, on every clip of the lane");
+        let high = ui
+            .add(
+                egui::Slider::new(&mut eq.high_cut, 0.0..=20_000.0)
+                    .logarithmic(true)
+                    .custom_formatter(|v, _| {
+                        if v < f64::from(EQ_HIGH_CUT_MIN) {
+                            "off".to_owned()
+                        } else {
+                            format!("{:.1} kHz", v / 1000.0)
+                        }
+                    })
+                    .text("high cut"),
+            )
+            .on_hover_text("Soften hiss and harshness above here, on every clip of the lane");
+        let presence = ui
+            .add(
+                egui::Slider::new(&mut eq.presence, -EQ_PRESENCE_MAX..=EQ_PRESENCE_MAX)
+                    .custom_formatter(|v, _| format!("{v:+.1} dB"))
+                    .text("presence"),
+            )
+            .on_hover_text("Bring the lane forward, or set it back");
+        if (low.changed() || high.changed() || presence.changed())
+            && let Err(err) = editor.set_track_eq(
+                track,
+                eq,
+                low.dragged() || high.dragged() || presence.dragged(),
+            )
         {
             state.error(err.to_string());
         }
@@ -1824,7 +2135,7 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
     // entry here, so it is coloured and sits alone at the bottom.
     if ui
         .add(egui::Button::new(
-            egui::RichText::new("Remove Track").color(crate::theme::ERROR_TEXT),
+            egui::RichText::new("Remove Track").color(crate::theme::error_text()),
         ))
         .on_hover_text("Removes the track and every clip on it. Undoable.")
         .clicked()
@@ -1969,6 +2280,12 @@ fn empty_menu(
         && item(ui, "Select All After Here on This Track", "")
     {
         shortcuts::select_from(editor, state, at, Some(track));
+    }
+    if item(ui, "Select Under Playhead", "") {
+        let under = editor.clips_under_playhead();
+        state.clear_selection();
+        state.selected_clips.extend(under);
+        state.needs_repaint = true;
     }
     if item(ui, "Deselect All", "") {
         state.clear_selection();

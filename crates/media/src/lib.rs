@@ -14,6 +14,7 @@ pub mod error;
 pub mod ffmpeg;
 pub mod generated;
 pub mod generated_sound;
+pub mod image_sequence;
 pub mod proxy;
 
 pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, fit_within};
@@ -24,9 +25,14 @@ pub use decoder::{
 };
 pub use error::MediaError;
 pub use ffmpeg::{
-    EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, ExportFormat, FfmpegDecoder,
-    FfmpegProber, RateControl, VideoCodec, VideoWriter, generate_proxy, probe_all,
+    AUDIO_BITRATES_KBPS, ChapterMark, DEFAULT_AUDIO_BITRATE, EncodeTarget, EncoderChoice,
+    EncoderKind, EncoderProbe, ExportFormat, FfmpegDecoder, FfmpegProber, MAX_AUDIO_BITRATE,
+    MIN_AUDIO_BITRATE, RateControl, VideoCodec, VideoWriter, generate_proxy, probe_all,
+    probe_chapters,
 };
 pub use generated::Generated;
 pub use generated_sound::{GeneratedSound, LINE_UP_DB, LINE_UP_HZ};
+pub use image_sequence::{
+    ImageSequence, MAX_SEQUENCE_FRAMES, Numbered, numbered, pattern_for, sequence_at,
+};
 pub use proxy::{ProxyAsset, ProxyResolution, ProxySpec, ProxyStatus};

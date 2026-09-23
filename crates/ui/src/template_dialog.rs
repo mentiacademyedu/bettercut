@@ -331,7 +331,7 @@ fn list(ui: &mut egui::Ui, state: &mut UiState, dialog: &mut TemplateDialog) {
                 dialog.rejected.len()
             ))
             .small()
-            .color(theme::ERROR_TEXT),
+            .color(theme::error_text()),
         )
         .on_hover_text(details.join("\n"));
     }
@@ -368,7 +368,7 @@ fn list(ui: &mut egui::Ui, state: &mut UiState, dialog: &mut TemplateDialog) {
 
 fn slots(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, dialog: &mut TemplateDialog) {
     let Some(template) = dialog.selected().cloned() else {
-        ui.label(egui::RichText::new("No templates available.").color(theme::DISABLED));
+        ui.label(egui::RichText::new("No templates available.").color(theme::disabled()));
         return;
     };
 
@@ -423,7 +423,7 @@ fn slots(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, dialog: &m
         ui.label(
             egui::RichText::new("Import some clips first — the slots list your project's media.")
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
     }
 

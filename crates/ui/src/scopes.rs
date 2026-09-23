@@ -269,7 +269,7 @@ pub fn show(ctx: &egui::Context, editor: &Editor, state: &mut UiState) {
                 ui.label(
                     egui::RichText::new("Reading the frame under the playhead…")
                         .small()
-                        .color(theme::DISABLED),
+                        .color(theme::disabled()),
                 );
                 return;
             };
@@ -281,7 +281,7 @@ pub fn show(ctx: &egui::Context, editor: &Editor, state: &mut UiState) {
                     if stale { " · updating" } else { "" }
                 ))
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
             );
 
             ui.label(egui::RichText::new("Histogram").small().strong());
@@ -334,7 +334,7 @@ pub fn show(ctx: &egui::Context, editor: &Editor, state: &mut UiState) {
                         blown * 100.0
                     ))
                     .small()
-                    .color(theme::ERROR_TEXT),
+                    .color(theme::error_text()),
                 );
             }
 
@@ -401,7 +401,7 @@ pub fn show(ctx: &egui::Context, editor: &Editor, state: &mut UiState) {
                 ui.label(
                     egui::RichText::new(format!("reach {:.0}%", scopes.saturation_reach() * 100.0))
                         .small()
-                        .color(crate::theme::DISABLED),
+                        .color(crate::theme::disabled()),
                 )
                 .on_hover_text(
                     "How far the strongest colour sits from grey. Near nothing is a flat, \

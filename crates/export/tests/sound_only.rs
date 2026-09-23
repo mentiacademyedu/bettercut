@@ -89,6 +89,8 @@ fn sound_settings(path: &Path, start_ms: i64, end_ms: i64) -> ExportSettings {
         picture_only: false,
         gif: false,
         image_sequence: false,
+        loudness_target: None,
+        audio_bitrate: None,
     }
 }
 
@@ -535,6 +537,125 @@ fn a_levelled_clip_sounds_the_same_in_any_block_size() {
         mix(&plain_project, 4_800),
         "the leveller changed nothing"
     );
+}
+
+/// A sound export brought to a target measures at that target, within the
+/// standard's own tolerance; left alone, it is the mix as mixed.
+#[test]
+fn a_normalised_export_measures_at_its_target() {
+    use bettercut_audio::loudness::LoudnessMeter;
+
+    let plain = Scratch::new("as-mixed.wav");
+    let aimed = Scratch::new("aimed.wav");
+    let project = project_with_sound();
+    run(&project, &sound_settings(&plain.0, 0, 3_000)).unwrap();
+    let mut settings = sound_settings(&aimed.0, 0, 3_000);
+    settings.loudness_target = Some(-20.0);
+    run(&project, &settings).unwrap();
+
+    let measure = |path: &Path| {
+        let samples: Vec<f32> = samples(&std::fs::read(path).unwrap())
+            .into_iter()
+            .map(|s| f32::from(s) / 32_767.0)
+            .collect();
+        let mut meter = LoudnessMeter::new(2);
+        meter.push_interleaved(&samples, 2);
+        meter.integrated().expect("a measurable mix")
+    };
+    let as_mixed = measure(&plain.0);
+    let normalised = measure(&aimed.0);
+    assert!(
+        (normalised + 20.0).abs() < 1.5,
+        "aimed at -20 LUFS, measured {normalised}"
+    );
+    if (as_mixed + 20.0).abs() > 1.5 {
+        assert!(
+            (normalised - as_mixed).abs() > 1.0,
+            "the target changed nothing"
+        );
+    }
+}
+
+/// The lane's equaliser runs in the mixer like a clip's: the same samples in
+/// any block size, and a sound that differs from the recording.
+#[test]
+fn a_lane_equaliser_sounds_the_same_in_any_block_size() {
+    use bettercut_foundation::TICKS_PER_AUDIO_SAMPLE;
+    use bettercut_playback::{AudioMixer, AudioPlan};
+
+    let mut project = project_with_sound();
+    let plain_project = project.clone();
+    project.active_mut().unwrap().audio_tracks[0].eq.low_cut = 400.0;
+    let mix = |project: &Project, block: usize| {
+        let sequence = project.active().unwrap();
+        let plan = AudioPlan::of(project, sequence);
+        let mut mixer = AudioMixer::new(1);
+        let total = 24_000;
+        let mut out = Vec::new();
+        let mut done = 0;
+        while done < total {
+            let frames = block.min(total - done);
+            let mut buffer = vec![0.0_f32; frames * 2];
+            let at = TimelineTime::from_ticks(done as i64 * TICKS_PER_AUDIO_SAMPLE);
+            mixer.mix_block(&plan, at, frames, 2, &mut buffer);
+            out.extend_from_slice(&buffer);
+            done += frames;
+        }
+        out
+    };
+    let big = mix(&project, 4_800);
+    assert_eq!(
+        big,
+        mix(&project, 441),
+        "the lane EQ depends on the block size"
+    );
+    assert_ne!(
+        big,
+        mix(&plain_project, 4_800),
+        "the lane EQ changed nothing"
+    );
+}
+
+/// The gate runs in the mixer like the other sound stages: the same samples
+/// in any block size, and a sound that differs from the recording — the
+/// fixture's tone sits well above any threshold, so what differs is its
+/// first moments, while the gate is still opening.
+#[test]
+fn a_gated_clip_sounds_the_same_in_any_block_size() {
+    use bettercut_foundation::TICKS_PER_AUDIO_SAMPLE;
+    use bettercut_playback::{AudioMixer, AudioPlan};
+
+    let mut project = project_with_sound();
+    let plain_project = project.clone();
+    {
+        let sequence = project.active_mut().unwrap();
+        let clip = sequence.audio_tracks[0].clips()[0].id;
+        sequence.audio_tracks[0].get_mut(clip).unwrap().gate = 100.0;
+    }
+    let mix = |project: &Project, block: usize| {
+        let sequence = project.active().unwrap();
+        let plan = AudioPlan::of(project, sequence);
+        let mut mixer = AudioMixer::new(1);
+        let total = 24_000;
+        let mut out = Vec::new();
+        let mut done = 0;
+        while done < total {
+            let frames = block.min(total - done);
+            let mut buffer = vec![0.0_f32; frames * 2];
+            let at = TimelineTime::from_ticks(done as i64 * TICKS_PER_AUDIO_SAMPLE);
+            mixer.mix_block(&plan, at, frames, 2, &mut buffer);
+            out.extend_from_slice(&buffer);
+            done += frames;
+        }
+        out
+    };
+    let big = mix(&project, 4_800);
+    assert_eq!(
+        big,
+        mix(&project, 441),
+        "the gate depends on the block size"
+    );
+    assert_ne!(big, mix(&plain_project, 4_800), "the gate changed nothing");
 }
 
 /// The de-esser runs in the mixer like the other sound stages: the same

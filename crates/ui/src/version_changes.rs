@@ -52,10 +52,10 @@ impl ChangesView {
 /// for the same ideas, so nothing new has to be learnt to read this.
 fn colour(kind: ChangeKind) -> egui::Color32 {
     match kind {
-        ChangeKind::Added => theme::OK_TEXT,
-        ChangeKind::Removed => theme::ERROR_TEXT,
-        ChangeKind::Moved | ChangeKind::Trimmed | ChangeKind::Retimed => theme::CAUTION,
-        ChangeKind::Changed => theme::CLIP_TEXT,
+        ChangeKind::Added => theme::ok_text(),
+        ChangeKind::Removed => theme::error_text(),
+        ChangeKind::Moved | ChangeKind::Trimmed | ChangeKind::Retimed => theme::caution(),
+        ChangeKind::Changed => theme::clip_text(),
     }
 }
 
@@ -80,7 +80,7 @@ fn body(ui: &mut egui::Ui, state: &mut UiState) {
     ui.label(
         egui::RichText::new(format!("This edit, against the save of {}", view.label))
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
     );
     ui.label(egui::RichText::new(bettercut_editor_core::compare::summary(&view.changes)).strong());
     if view.changes.is_empty() {
@@ -91,7 +91,7 @@ fn body(ui: &mut egui::Ui, state: &mut UiState) {
     // came to find out is what was *removed*.
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Show").small().color(theme::DISABLED));
+        ui.label(egui::RichText::new("Show").small().color(theme::disabled()));
         for kind in [
             ChangeKind::Added,
             ChangeKind::Removed,

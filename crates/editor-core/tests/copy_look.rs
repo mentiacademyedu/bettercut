@@ -280,6 +280,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         // Timing, not look, so not part of what is being compared here.
         reversed: false,
         color_label: bettercut_timeline::ColorLabel::None,
+        name: None,
         lut: Some(bettercut_timeline::ClipLut {
             lut: bettercut_foundation::LutId::new(),
             strength: 0.6,
@@ -294,6 +295,8 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
             temperature: 0.4,
             tint: -0.25,
             vibrance: 0.0,
+            wheels: Default::default(),
+            secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
         },
         blur: 12.0,
         blend: BlendMode::Screen,
@@ -302,6 +305,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
             ..Mask::default()
         }),
         chroma_key: Some(ChromaKey::default()),
+        luma_key: None,
         motion: ClipMotion {
             intro: Some(Motion::new(MotionKind::Spin, TimelineTime::from_seconds(1))),
             outro: None,
@@ -320,6 +324,10 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         speed: plain.speed,
         link: plain.link,
         transition_out: plain.transition_out,
+        lens: plain.lens,
+        tilt_band: plain.tilt_band,
+        tilt_centre: plain.tilt_centre,
+        posterise: plain.posterise,
         frozen: plain.frozen,
         enabled: plain.enabled,
     };
@@ -345,6 +353,10 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         speed: pasted.speed,
         link: pasted.link,
         transition_out: pasted.transition_out,
+        lens: pasted.lens,
+        tilt_band: pasted.tilt_band,
+        tilt_centre: pasted.tilt_centre,
+        posterise: pasted.posterise,
         frozen: pasted.frozen,
         enabled: pasted.enabled,
         ..source

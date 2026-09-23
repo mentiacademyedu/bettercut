@@ -56,7 +56,13 @@ pub struct Chapters {
 ///
 /// Markers at or past the end are left out: a chapter that starts when the
 /// video has finished is not one.
-pub fn chapter_list(markers: &[Marker], duration: TimelineTime) -> Chapters {
+/// Where each chapter starts and what it is called, earliest first: every
+/// marker inside the video, one a second at most, an "Intro" put in front
+/// when the first is not at the head, and "Chapter n" for any left unnamed.
+///
+/// The one place the rule lives, so the report, the ranges and anything
+/// else that thinks in chapters agree on where they are.
+pub fn chapter_starts(markers: &[Marker], duration: TimelineTime) -> Vec<(TimelineTime, String)> {
     let mut sorted: Vec<&Marker> = markers
         .iter()
         .filter(|m| m.time >= TimelineTime::ZERO && m.time < duration)
@@ -92,6 +98,35 @@ pub fn chapter_list(markers: &[Marker], duration: TimelineTime) -> Chapters {
         })
         .collect();
 
+    starts
+}
+
+/// Each chapter as the stretch it covers, earliest first: from its start to
+/// the next chapter's, the last running to the end. Empty for an empty
+/// video, which has nowhere to put an intro.
+pub fn chapter_ranges(
+    markers: &[Marker],
+    duration: TimelineTime,
+) -> Vec<(String, crate::TimelineRange)> {
+    if duration <= TimelineTime::ZERO {
+        return Vec::new();
+    }
+    let starts = chapter_starts(markers, duration);
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (at, title))| {
+            let end = starts.get(index + 1).map_or(duration, |(next, _)| *next);
+            crate::TimelineRange::new(*at, end)
+                .ok()
+                .filter(|range| range.duration() > TimelineTime::ZERO)
+                .map(|range| (title.clone(), range))
+        })
+        .collect()
+}
+
+pub fn chapter_list(markers: &[Marker], duration: TimelineTime) -> Chapters {
+    let starts = chapter_starts(markers, duration);
     let long_form = duration >= TimelineTime::from_seconds(3_600);
     let mut problems = Vec::new();
     let mut text = String::new();
@@ -130,6 +165,27 @@ fn timestamp(at: TimelineTime, long_form: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ranges are the report's chapters as stretches: an intro put in
+    /// front, each running to the next, the last to the end.
+    #[test]
+    fn chapters_are_stretches_from_each_start_to_the_next() {
+        let markers = [marker(5, "Middle"), marker(12, "")];
+        let ranges = chapter_ranges(&markers, TimelineTime::from_seconds(20));
+        let names: Vec<&str> = ranges.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Intro", "Middle", "Chapter 3"]);
+        let seconds: Vec<(i64, i64)> = ranges
+            .iter()
+            .map(|(_, r)| {
+                (
+                    r.start.ticks() / TICKS_PER_SECOND,
+                    r.end.ticks() / TICKS_PER_SECOND,
+                )
+            })
+            .collect();
+        assert_eq!(seconds, vec![(0, 5), (5, 12), (12, 20)]);
+        assert!(chapter_ranges(&markers, TimelineTime::ZERO).is_empty());
+    }
 
     fn marker(seconds: i64, label: &str) -> Marker {
         Marker {

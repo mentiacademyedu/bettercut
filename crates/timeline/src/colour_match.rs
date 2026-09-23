@@ -192,6 +192,37 @@ pub fn graded(rgb: [f32; 3], grade: &ColorAdjust) -> [f32; 3] {
 /// Solved by repeated small corrections against [`graded`], each control held
 /// to its slider's range. A reference with no colour to speak of (a black or
 /// grey frame) leaves the clip's colourfulness alone rather than draining it.
+/// What a well-exposed, neutrally balanced frame measures: the mid-grey
+/// convention (18% reflectance) for the average, a spread that fills the
+/// range without crushing either end, and no cast either way. Colourfulness
+/// is not here — it is the shot's own, and "auto" must not drain a sunset.
+pub const NEUTRAL_LUMA: f32 = 0.18;
+pub const NEUTRAL_SPREAD: f32 = 0.16;
+
+/// The grade that brings `clip` to a neutral exposure and balance
+/// ([`NEUTRAL_LUMA`], [`NEUTRAL_SPREAD`], no warmth, no green), keeping its
+/// own colourfulness: what an "auto" button does. The same solver as a
+/// match, aimed at a frame nobody shot.
+pub fn auto_grade(clip: &FrameSample) -> ColorAdjust {
+    let own = clip.stats();
+    let neutral = FrameStats {
+        luma: NEUTRAL_LUMA,
+        spread: NEUTRAL_SPREAD,
+        warmth: 0.0,
+        greenness: 0.0,
+        colourfulness: own.colourfulness,
+    };
+    // Held back from the extremes: an "auto" that slams a control to its
+    // end has not judged the shot, it has given up on it. Halfway is as far
+    // as it goes; the rest is a person's call.
+    let mut grade = match_grade(clip, &neutral);
+    grade.brightness = grade.brightness.clamp(0.5, 2.0);
+    grade.contrast = grade.contrast.clamp(0.6, 1.6);
+    grade.temperature = grade.temperature.clamp(-0.5, 0.5);
+    grade.tint = grade.tint.clamp(-0.5, 0.5);
+    grade
+}
+
 pub fn match_grade(clip: &FrameSample, reference: &FrameStats) -> ColorAdjust {
     let mut grade = ColorAdjust::default();
     let clip_stats = clip.stats();
@@ -276,6 +307,55 @@ mod tests {
             && (a.colourfulness - b.colourfulness).abs() <= tolerance * b.colourfulness.max(0.01)
     }
 
+    /// A dark, warm frame comes up and cools; a frame already neutral is
+    /// left nearly alone; either keeps its own colourfulness.
+    #[test]
+    fn auto_grade_brings_a_frame_to_neutral_without_draining_it() {
+        let scene = scene();
+        let dim_warm = FrameSample::from_linear(
+            scene
+                .pixels()
+                .iter()
+                .map(|p| [p[0] * 0.5, p[1] * 0.45, p[2] * 0.36])
+                .collect(),
+        )
+        .unwrap();
+        let grade = auto_grade(&dim_warm);
+        assert!(grade.brightness > 1.0, "not brightened: {grade:?}");
+        assert!(grade.temperature < 0.0, "not cooled: {grade:?}");
+        let before = dim_warm.stats();
+        let after = dim_warm.stats_graded(&grade);
+        assert!((after.luma - NEUTRAL_LUMA).abs() < 0.05, "{after:?}");
+        assert!(
+            after.warmth.abs() < before.warmth.abs(),
+            "the cast was not reduced: before {before:?}, after {after:?}"
+        );
+        assert!(
+            (after.colourfulness - before.colourfulness).abs()
+                < 0.3 * before.colourfulness.max(0.01),
+            "colourfulness changed: before {before:?}, after {after:?}"
+        );
+
+        // A neutral frame is already there: the solver barely moves it.
+        let neutral = FrameSample::from_linear(
+            scene
+                .pixels()
+                .iter()
+                .map(|p| {
+                    let g = luma(*p);
+                    [g, g, g]
+                })
+                .collect(),
+        )
+        .unwrap();
+        let stats = neutral.stats();
+        let grade = auto_grade(&neutral);
+        assert!(
+            grade.temperature.abs() < 0.05 && grade.tint.abs() < 0.05,
+            "a grey frame was given a cast: {grade:?} from {stats:?}"
+        );
+    }
+
     #[test]
     fn a_frame_matched_to_itself_needs_no_grade() {
         let clip = scene();
@@ -312,6 +392,8 @@ mod tests {
             temperature: 0.4,
             tint: -0.2,
             vibrance: 0.0,
+            wheels: Default::default(),
+            secondary: crate::clip::HslSecondary::IDENTITY,
         };
         let reference = clip.stats_graded(&known);
         let grade = match_grade(&clip, &reference);

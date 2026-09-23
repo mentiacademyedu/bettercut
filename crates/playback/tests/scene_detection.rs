@@ -76,6 +76,7 @@ fn three_shots(path: &Path, shots: &[u8], seconds: i64) {
             bitrate: Some(3_000_000),
             rate_control: RateControl::Variable,
             channels: 0,
+            audio_bitrate: None,
             threads: 2,
         },
     )

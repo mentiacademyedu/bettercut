@@ -182,7 +182,7 @@ fn the_window_follows_the_search() {
     let mut state = UiState::default();
     state.shortcut_search = "marker".to_owned();
     let words = window_text(&mut state);
-    assert!(words.contains("Add / remove a marker at the playhead"));
+    assert!(words.contains("Add / remove a marker (Shift: on the clip)"));
     assert!(
         !words.contains("Duplicate"),
         "an unmatched row is still shown"
@@ -277,6 +277,59 @@ fn comma_and_period_nudge_the_selection() {
     );
 }
 
+/// Alt with , or . moves the selected sound a millisecond — and only the
+/// sound: the picture it is linked to stays on its frame.
+#[test]
+fn alt_comma_and_period_nudge_sound_a_millisecond() {
+    let (mut editor, _events) = Editor::new_project("Sync");
+    let mut asset = MediaAsset::new(
+        MediaKind::Video,
+        "C:/media/talk.mp4",
+        MediaTime::from_seconds(4),
+    );
+    asset.audio_codec = Some("aac".to_owned());
+    asset.audio_sample_rate = Some(48_000);
+    asset.audio_channels = Some(2);
+    let media = editor.import_media(asset);
+    editor.place_media(media).unwrap();
+    let (picture, sound) = {
+        let sequence = editor.active_sequence().unwrap();
+        (
+            sequence.video_tracks[0].clips()[0].id,
+            sequence.audio_tracks[0].clips()[0].id,
+        )
+    };
+    let mut state = UiState::default();
+    state.selected_clips.insert(sound);
+    let start = |editor: &Editor, clip| editor.clip_payload(clip).unwrap().start();
+
+    press_with(&mut editor, &mut state, Key::Period, Modifiers::ALT);
+    assert_eq!(start(&editor, sound), TimelineTime::from_millis(1));
+    assert_eq!(
+        start(&editor, picture),
+        TimelineTime::ZERO,
+        "the picture moved"
+    );
+
+    press_with(&mut editor, &mut state, Key::Comma, Modifiers::ALT);
+    assert_eq!(start(&editor, sound), TimelineTime::ZERO);
+    // And not before the start.
+    press_with(&mut editor, &mut state, Key::Comma, Modifiers::ALT);
+    assert_eq!(start(&editor, sound), TimelineTime::ZERO);
+
+    // A picture clip alone: nothing moves, and it says why.
+    state.clear_selection();
+    state.selected_clips.insert(picture);
+    press_with(&mut editor, &mut state, Key::Period, Modifiers::ALT);
+    assert_eq!(start(&editor, picture), TimelineTime::ZERO);
+    assert!(
+        state
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text.contains("sound"))
+    );
+}
+
 #[test]
 fn brackets_trim_the_selection_to_the_playhead() {
     let mut editor = two_clips();
@@ -350,6 +403,35 @@ fn press_with(editor: &mut Editor, state: &mut UiState, key: Key, modifiers: Mod
         bettercut_ui::shortcuts::handle(ui.ctx(), editor, state, None);
     });
     output.textures_delta.clear();
+}
+
+/// Shift+Z zooms in on the selection — the view scrolls to it and tightens —
+/// and with nothing selected zooms out to the whole edit from the start.
+#[test]
+fn shift_z_zooms_to_the_selection_or_the_whole_edit() {
+    let mut editor = two_clips();
+    let mut state = UiState::default();
+    let second = editor
+        .active_sequence()
+        .map(|s| s.video_tracks[0].clips()[1].id)
+        .unwrap();
+    state.selected_clips.insert(second);
+    let before = state.ticks_per_pixel();
+
+    press_with(&mut editor, &mut state, Key::Z, Modifiers::SHIFT);
+    assert!(
+        state.scroll_ticks > 0,
+        "the view did not scroll to the clip"
+    );
+    assert!(
+        state.ticks_per_pixel() < before,
+        "a six-second clip in an 800 px window should zoom in from {before} ticks/px, got {}",
+        state.ticks_per_pixel()
+    );
+
+    state.clear_selection();
+    press_with(&mut editor, &mut state, Key::Z, Modifiers::SHIFT);
+    assert_eq!(state.scroll_ticks, 0, "the whole edit starts at the start");
 }
 
 /// Ctrl+A selects every clip, titles included; with Shift, only the clips that

@@ -152,6 +152,24 @@ pub fn snap(
     }
 }
 
+/// Snap a scrubbed playhead to the cuts and marks near it.
+///
+/// The same targets a dragged clip snaps to, less the playhead itself: the
+/// playhead is what is moving, and a target where it just was would hold it
+/// in place. Parking the playhead exactly on a cut is how a split, a mark or
+/// a trim-to-playhead lands where the eye put it rather than a frame off.
+pub fn snap_playhead(
+    value: TimelineTime,
+    sequence: &Sequence,
+    tolerance: TimelineTime,
+) -> (TimelineTime, Option<SnapTarget>) {
+    let targets: Vec<SnapTarget> = collect_targets(sequence, value, &[])
+        .into_iter()
+        .filter(|target| target.kind != SnapKind::Playhead)
+        .collect();
+    snap(value, &targets, tolerance)
+}
+
 /// Snap the *span* of a clip being moved: its leading edge and its trailing
 /// edge are both candidates, and whichever snaps closer wins.
 ///
@@ -193,6 +211,34 @@ pub fn snap_move(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scrubbed playhead lands on a cut within reach and never on where it
+    /// already was.
+    #[test]
+    fn a_scrubbed_playhead_snaps_to_a_cut_but_not_to_itself() {
+        use crate::clip::{SourceRange, VideoClip};
+        use bettercut_foundation::{MediaId, MediaTime};
+
+        let mut sequence = Sequence::default_hd();
+        let clip = VideoClip::new(
+            MediaId::new(),
+            TimelineTime::from_seconds(4),
+            SourceRange::new(MediaTime::ZERO, MediaTime::from_seconds(2)).unwrap(),
+        )
+        .unwrap();
+        sequence.video_tracks[0].insert(clip).unwrap();
+        let tolerance = TimelineTime::from_millis(100);
+
+        // Near the clip's start: onto it.
+        let near = TimelineTime::from_seconds(4) - TimelineTime::from_millis(40);
+        let (at, hit) = snap_playhead(near, &sequence, tolerance);
+        assert_eq!(at, TimelineTime::from_seconds(4));
+        assert!(matches!(hit.map(|t| t.kind), Some(SnapKind::ClipStart(_))));
+
+        // Far from anything: left alone, not held where it was.
+        let far = TimelineTime::from_seconds(10);
+        assert_eq!(snap_playhead(far, &sequence, tolerance).0, far);
+    }
     use crate::clip::{SourceRange, VideoClip};
     use crate::sequence::Sequence;
     use bettercut_foundation::{MediaId, MediaTime};

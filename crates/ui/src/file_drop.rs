@@ -85,7 +85,7 @@ fn overlay(ctx: &egui::Context, timeline: egui::Rect, over_timeline: bool) {
 
     // The timeline lights up as the other place to let go, brighter when the
     // pointer is over it.
-    let accent = crate::theme::SELECTION;
+    let accent = crate::theme::selection();
     painter.rect_stroke(
         timeline.shrink(4.0),
         6,

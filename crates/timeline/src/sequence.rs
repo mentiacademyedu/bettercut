@@ -55,6 +55,25 @@ pub struct ClipSpan {
     pub link: Option<bettercut_foundation::LinkId>,
 }
 
+/// A mark on a clip rather than on the sequence: kept at an offset into
+/// the clip's *source*, so it travels when the clip is moved and stays on
+/// the same frame of the footage when the clip is trimmed or slipped.
+///
+/// The sequence's own markers mark the edit — a beat of the music, a place
+/// to cut. These mark the footage — the moment the door opens, the take
+/// that was good — and the difference shows the instant a clip moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipMark {
+    pub clip: ClipId,
+    /// Where in the file it falls, not where on the timeline.
+    pub source: bettercut_foundation::MediaTime,
+    /// What it marks. Empty is a plain mark, as on the ruler.
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub color: crate::clip::ColorLabel,
+}
+
 /// A note left on a clip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipNote {
@@ -160,6 +179,11 @@ pub struct Sequence {
     #[serde(default)]
     pub notes: Vec<ClipNote>,
 
+    /// Marks that belong to clips rather than to the edit (`ClipMark`).
+    /// Defaulted: older projects have none.
+    #[serde(default)]
+    pub clip_marks: Vec<ClipMark>,
+
     /// The in and out marks: a stretch of the sequence picked out to export on
     /// its own. Either may be unset; the range exists when both are, in order.
     /// Stretches of this sequence already rendered to a file
@@ -171,6 +195,23 @@ pub struct Sequence {
     pub mark_in: Option<TimelineTime>,
     #[serde(default)]
     pub mark_out: Option<TimelineTime>,
+
+    /// What the first frame is called: the timecode the ruler, the readouts
+    /// and a burn-in count from. Zero for most edits; an hour for a
+    /// programme delivered the broadcast way. Positions stay from zero
+    /// inside (§9) — this is only what they are *called*. Defaulted: older
+    /// projects start at zero.
+    #[serde(default)]
+    pub start_timecode: TimelineTime,
+
+    /// Clips soloed on their own: while any picture clip is here, only the
+    /// picture clips here are seen; while any sound clip is here, only those
+    /// are heard. §20a.4's lane solo, for one clip — "let me see just this
+    /// one" without muting a lane at a time. The id of a clip since deleted
+    /// is ignored rather than tidied, so a solo survives an undo of the
+    /// delete. Defaulted: older projects have nothing soloed.
+    #[serde(default)]
+    pub soloed_clips: Vec<ClipId>,
 }
 
 fn unity() -> f32 {
@@ -214,9 +255,12 @@ impl Sequence {
             cover_frame: None,
             groups: Vec::new(),
             notes: Vec::new(),
+            clip_marks: Vec::new(),
             renders: Vec::new(),
             mark_in: None,
             mark_out: None,
+            start_timecode: TimelineTime::ZERO,
+            soloed_clips: Vec::new(),
         })
     }
 
@@ -544,6 +588,95 @@ impl Sequence {
     /// Where a clip is and what it spans, whichever lane it is on.
     pub fn clip_span(&self, clip: ClipId) -> Option<ClipSpan> {
         self.clip_spans().find(|span| span.clip == clip)
+    }
+
+    // ---- clip marks ----
+
+    /// Where a clip's marks fall on the timeline *now*: its source offsets
+    /// mapped through where the clip sits and how fast it plays. A mark
+    /// outside what the clip currently shows is left out — trimming past a
+    /// mark hides it rather than losing it, and trimming back brings it
+    /// back.
+    pub fn clip_marks_on_timeline(&self, clip: ClipId) -> Vec<(TimelineTime, &ClipMark)> {
+        let Some(span) = self.clip_span(clip) else {
+            return Vec::new();
+        };
+        let source = self.clip_source(clip);
+        let Some(source) = source else {
+            return Vec::new();
+        };
+        self.clip_marks
+            .iter()
+            .filter(|mark| mark.clip == clip)
+            .filter_map(|mark| {
+                if mark.source < source.start || mark.source >= source.end {
+                    return None;
+                }
+                // Linear within the clip: the source span maps onto the
+                // timeline span, whatever speed that works out to.
+                let into = (mark.source - source.start).ticks();
+                let source_len = source.duration().ticks().max(1);
+                let timeline_len = span.timeline.duration().ticks();
+                let at = span.timeline.start.ticks() + into * timeline_len / source_len;
+                Some((TimelineTime::from_ticks(at), mark))
+            })
+            .collect()
+    }
+
+    /// A clip's source range, whatever kind of lane it is on.
+    fn clip_source(&self, clip: ClipId) -> Option<crate::clip::SourceRange> {
+        use crate::clip::Clip;
+        self.video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).map(Clip::source))
+            .or_else(|| {
+                self.audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).map(Clip::source))
+            })
+    }
+
+    // ---- clip solo ----
+
+    /// Whether `clip` is soloed.
+    pub fn clip_soloed(&self, clip: ClipId) -> bool {
+        self.soloed_clips.contains(&clip)
+    }
+
+    /// Solo or unsolo `clip`. Returns whether it was soloed before.
+    pub fn set_clip_solo(&mut self, clip: ClipId, solo: bool) -> bool {
+        let was = self.clip_soloed(clip);
+        if solo && !was {
+            self.soloed_clips.push(clip);
+        } else if !solo && was {
+            self.soloed_clips.retain(|id| *id != clip);
+        }
+        was
+    }
+
+    /// The soloed clips that are still on the timeline, by lane kind.
+    fn soloed_kinds(&self) -> impl Iterator<Item = TrackKind> + '_ {
+        self.soloed_clips
+            .iter()
+            .filter_map(|id| self.clip_span(*id).map(|span| span.kind))
+    }
+
+    /// Whether any picture clip — video, title or adjustment — is soloed.
+    pub fn picture_clip_soloed(&self) -> bool {
+        self.soloed_kinds().any(|kind| kind != TrackKind::Audio)
+    }
+
+    /// Whether any sound clip is soloed.
+    pub fn sound_clip_soloed(&self) -> bool {
+        self.soloed_kinds().any(|kind| kind == TrackKind::Audio)
+    }
+
+    /// Whether `clip`, `enabled` or not, is seen or heard given the solos
+    /// in its kind of lane (`any_soloed` from [`Self::picture_clip_soloed`]
+    /// or [`Self::sound_clip_soloed`]). The same rule as a lane's
+    /// (`track_plays`): solo wins over mute, both ways round.
+    pub fn clip_plays(&self, clip: ClipId, enabled: bool, any_soloed: bool) -> bool {
+        crate::track::track_plays(enabled, self.clip_soloed(clip), any_soloed)
     }
 
     pub fn track_count(&self) -> usize {

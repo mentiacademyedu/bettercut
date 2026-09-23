@@ -5,6 +5,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod animation_copy;
+pub mod attributes;
 pub mod beat_photos;
 pub mod boomerang;
 pub mod bounce;
@@ -14,6 +15,7 @@ pub mod colour_clips;
 pub mod command;
 pub mod compare;
 pub mod compound;
+pub mod count_in;
 pub mod cover;
 pub mod crop_shape;
 pub mod editor;
@@ -29,17 +31,23 @@ pub mod freeze_punch;
 pub mod gaps;
 pub mod hardware;
 pub mod history;
+pub mod image_sequence;
 pub mod insert_drag;
 pub mod journal;
+pub mod keep_only;
 pub mod keyframe_edit;
+pub mod lanes;
 pub mod lift;
 pub mod loop_clip;
 pub mod lower_third;
 pub mod magnetic;
+pub mod many_clips;
+pub mod marker_file;
 pub mod match_frame;
 pub mod multicam;
 pub mod ops;
 pub mod pip;
+pub mod pivot;
 pub mod rate_stretch;
 pub mod recovery;
 pub mod render_in_place;
@@ -72,6 +80,7 @@ pub mod track_motion;
 pub mod trim_window;
 pub mod versions;
 pub mod voiceover;
+pub mod where_used;
 
 pub use bettercut_timeline::{Movement, ZOOM_AMOUNT};
 pub use command::{

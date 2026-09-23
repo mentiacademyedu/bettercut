@@ -159,6 +159,8 @@ pub enum SettingChange {
     PhotoLength(bettercut_foundation::MediaTime),
     /// Whether the main picture lane closes up by itself.
     MagneticTimeline(bool),
+    /// How long a transition is when one is added.
+    TransitionLength(bettercut_foundation::TimelineTime),
 }
 
 impl SettingChange {
@@ -169,6 +171,7 @@ impl SettingChange {
             Self::PerformanceMode(_) => "Performance Mode",
             Self::CacheLimitBytes(_) => "Cache Limit",
             Self::PhotoLength(_) => "Photo Length",
+            Self::TransitionLength(_) => "Transition Length",
             Self::MagneticTimeline(_) => "Magnetic Timeline",
         }
     }
@@ -235,9 +238,13 @@ impl TextProperty {
             | ClipProperty::Temperature(_)
             | ClipProperty::Tint(_)
             | ClipProperty::Vibrance(_)
+            | ClipProperty::Anchor { .. }
+            | ClipProperty::Wheels(_)
+            | ClipProperty::Secondary(_)
             | ClipProperty::Blur(_)
             | ClipProperty::Backdrop(_)
             | ClipProperty::ChromaKey(_)
+            | ClipProperty::LumaKey(_)
             | ClipProperty::Mask(_)
             | ClipProperty::Blend(_)
             | ClipProperty::MotionBlur(_)
@@ -262,6 +269,9 @@ impl TextProperty {
             | ClipProperty::Glitch(_)
             | ClipProperty::Pixelate(_)
             | ClipProperty::ZoomBlur(_)
+            | ClipProperty::Lens(_)
+            | ClipProperty::Posterise(_)
+            | ClipProperty::TiltShift { .. }
             | ClipProperty::Glow(_)
             | ClipProperty::OldFilm(_)
             | ClipProperty::Tone(_)
@@ -270,15 +280,18 @@ impl TextProperty {
             | ClipProperty::BeatPulse(_)
             | ClipProperty::Reflection(_)
             | ClipProperty::Denoise(_)
+            | ClipProperty::Gate(_)
             | ClipProperty::Eq(_)
             | ClipProperty::Space(_)
             | ClipProperty::Channels(_)
             | ClipProperty::Pitch(_)
             | ClipProperty::Leveller(_)
             | ClipProperty::DeEss(_)
+            | ClipProperty::StereoWidth(_)
             | ClipProperty::FadeShape(_)
             | ClipProperty::Mute(_)
             | ClipProperty::Crossfade(_)
+            | ClipProperty::Pan(_)
             | ClipProperty::Gain(_) => None,
         }
     }
@@ -308,6 +321,10 @@ impl TextProperty {
 pub enum Command {
     RenameProject {
         name: String,
+    },
+    /// Replace the project's notes (`Project::notes`).
+    SetProjectNotes {
+        notes: String,
     },
     ChangeSetting {
         change: SettingChange,
@@ -339,6 +356,15 @@ pub enum Command {
     /// drag has to collapse into a single undo step the way every other
     /// gesture does (§11).
     SetGainEnvelope {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        keys: Vec<Keyframe>,
+    },
+    /// Replace a sound clip's whole pan envelope: the volume's twin, one
+    /// stage over — where the sound sits between the speakers rather than
+    /// how loud it is. One command for the whole shape, for the same reason.
+    SetPanEnvelope {
         sequence: SequenceId,
         track: TrackId,
         clip: ClipId,
@@ -428,6 +454,12 @@ pub enum Command {
         sequence: SequenceId,
         markers: Vec<bettercut_timeline::Marker>,
     },
+    /// Replace a sequence's clip marks — the whole list, so adding one and
+    /// clearing a clip's are each one undo step (`ClipMark`).
+    SetClipMarks {
+        sequence: SequenceId,
+        marks: Vec<bettercut_timeline::ClipMark>,
+    },
     /// Leave a note on a clip, or take it off with an empty `text`.
     SetClipNote {
         sequence: SequenceId,
@@ -464,16 +496,37 @@ pub enum Command {
         gain: f32,
         pan: f32,
     },
+    /// An audio track's equaliser: the clip's three controls and hum filter,
+    /// over the whole lane.
+    SetTrackEq {
+        sequence: SequenceId,
+        track: TrackId,
+        eq: bettercut_timeline::ClipEq,
+    },
     /// Set how a sound clip fades in and out. Audio clips only.
     ///
     /// Both ends in one command, because the panel shows them side by side and
     /// a change to either is one thing the user did.
+    /// Give a clip a name of its own, or `None` for the file's. Any lane.
+    SetClipName {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        name: Option<String>,
+    },
     /// Tag a clip with a colour (`ColorLabel`). Any lane.
     SetColorLabel {
         sequence: SequenceId,
         track: TrackId,
         clip: ClipId,
         label: bettercut_timeline::ColorLabel,
+    },
+    /// Solo one clip: while any clip in its kind of lane is soloed, only the
+    /// soloed ones are seen or heard (`Sequence::soloed_clips`).
+    SetClipSolo {
+        sequence: SequenceId,
+        clip: ClipId,
+        solo: bool,
     },
     SetClipFades {
         sequence: SequenceId,
@@ -521,6 +574,12 @@ pub enum Command {
     /// commands after a crash: a command that stats the filesystem would
     /// produce a different result on replay than it did when the user ran it.
     /// Validation belongs to whoever builds the command, not to replaying it.
+    /// Decode a file's fields woven into whole frames, or as it comes
+    /// (`MediaAsset::deinterlace`).
+    SetMediaDeinterlace {
+        media: MediaId,
+        deinterlace: bool,
+    },
     RelinkMedia {
         media: bettercut_foundation::MediaId,
         path: std::path::PathBuf,
@@ -550,6 +609,11 @@ pub enum Command {
         sequence: SequenceId,
         resolution: ResolutionRepr,
         frame_rate: FrameRate,
+    },
+    /// What a sequence's first frame is called (`Sequence::start_timecode`).
+    SetStartTimecode {
+        sequence: SequenceId,
+        start: TimelineTime,
     },
     /// Put a whole prepared sequence into the project at `index`. What adding
     /// and duplicating a sequence dispatch; the ids inside are fixed in the
@@ -624,6 +688,12 @@ pub enum Command {
         flag: TrackFlag,
         value: bool,
     },
+    /// A lane's colour label (`Track::color_label`), any kind of lane.
+    SetTrackColour {
+        sequence: SequenceId,
+        track: TrackId,
+        label: bettercut_timeline::ColorLabel,
+    },
     AddClip {
         sequence: SequenceId,
         track: TrackId,
@@ -646,6 +716,15 @@ pub enum Command {
         sequence: SequenceId,
         from_track: TrackId,
         to_track: TrackId,
+        clip: ClipId,
+        new_start: TimelineTime,
+    },
+    /// Move a *sound* clip to an exact tick, off the frame grid: a
+    /// millisecond of sync. `MoveClip` snaps to frames, which is right for
+    /// picture and wrong for this.
+    NudgeSound {
+        sequence: SequenceId,
+        track: TrackId,
         clip: ClipId,
         new_start: TimelineTime,
     },
@@ -741,9 +820,23 @@ pub enum ClipProperty {
     /// White balance, -1..1, zero for no change (§45).
     Temperature(f32),
     Tint(f32),
+    /// The pivot: where in its own frame a picture turns and scales about,
+    /// 0..1 each way, the middle by default. Video only, not animated: a
+    /// pivot that moved would make the same rotation land somewhere else
+    /// every frame.
+    Anchor {
+        x: f32,
+        y: f32,
+    },
     /// Vibrance, -1..1, zero for no change: saturation weighted towards the
     /// colours that have least of it (§45).
     Vibrance(f32),
+    /// The colour wheels — lift, gamma and gain — as one setting, because a
+    /// grade is one shape: a wheel dragged is the whole set changing.
+    Wheels(bettercut_timeline::ColorWheels),
+    /// One range of hue moved on its own, as one setting: the pick and its
+    /// shifts are one thought.
+    Secondary(bettercut_timeline::HslSecondary),
     /// §45's blur, 0–100. Video only. A fraction of frame height rather than a
     /// pixel radius, so preview and export agree (§46).
     Blur(f32),
@@ -753,6 +846,8 @@ pub enum ClipProperty {
     /// The chroma key, or `None` to take it off. Video only, and not
     /// animatable — it is a fact about the footage.
     ChromaKey(Option<bettercut_timeline::ChromaKey>),
+    /// A key by brightness, or none. Video only.
+    LumaKey(Option<bettercut_timeline::LumaKey>),
     /// The mask, or `None` to take it off. Video only.
     Mask(Option<bettercut_timeline::Mask>),
     /// §22: how a clip combines with what is beneath it. Video only.
@@ -821,6 +916,17 @@ pub enum ClipProperty {
     Pixelate(f32),
     /// Zoom blur, 0–100. Picture only.
     ZoomBlur(f32),
+    /// Lens correction, -1..1: negative bows the edges in, positive pushes
+    /// them out; zero is the lens as it was. Video only.
+    Lens(f32),
+    /// Posterise levels, 2–16; below 2 is off. Video only.
+    Posterise(f32),
+    /// Tilt-shift: the sharp band's height (0–1, 0 for none) and centre
+    /// (0–1), with the blur growing away from it. Video only.
+    TiltShift {
+        band: f32,
+        centre: f32,
+    },
     /// Glow, 0–100. Video only, not animated.
     Glow(f32),
     /// Old film, 0–100. Video only, not animated.
@@ -837,6 +943,8 @@ pub enum ClipProperty {
     Reflection(bettercut_timeline::Reflection),
     /// Voice clean-up on a sound clip, 0–100. Sound only, not animated.
     Denoise(f32),
+    /// The noise gate on a sound clip, 0–100. Sound only, not animated.
+    Gate(f32),
     /// A sound clip's low cut, high cut and presence. Sound only.
     Eq(bettercut_timeline::ClipEq),
     /// A sound clip's echo or reverb. Sound only.
@@ -850,6 +958,12 @@ pub enum ClipProperty {
     Leveller(f32),
     /// A sound clip's de-esser, 0–100. Sound only.
     DeEss(f32),
+    /// How wide a sound clip's stereo image is, 0–2, one for as recorded.
+    /// Sound only.
+    StereoWidth(f32),
+    /// Where a sound clip sits between the speakers, -1 to +1, on top of its
+    /// lane's pan. Sound only. Its keyed form is the pan envelope.
+    Pan(f32),
     /// The shape of a sound clip's fades. Sound only.
     FadeShape(bettercut_timeline::FadeShape),
     /// A sound clip silenced in place. Sound only.
@@ -883,10 +997,16 @@ impl ClipProperty {
             Self::Temperature(v) => [Some((P::Temperature, v)), None],
             Self::Tint(v) => [Some((P::Tint, v)), None],
             // No animated parameter behind it: vibrance is set, not keyed.
-            Self::Vibrance(_) | Self::CornerPin(_) | Self::KeepPitch(_) => [None, None],
+            Self::Vibrance(_)
+            | Self::Wheels(_)
+            | Self::Anchor { .. }
+            | Self::Secondary(_)
+            | Self::CornerPin(_)
+            | Self::KeepPitch(_) => [None, None],
             Self::Blur(v) => [Some((P::Blur, v)), None],
             Self::Backdrop(_)
             | Self::ChromaKey(_)
+            | Self::LumaKey(_)
             | Self::Mask(_)
             | Self::Blend(_)
             | Self::Motion(_)
@@ -909,6 +1029,9 @@ impl ClipProperty {
             | Self::Glitch(_)
             | Self::Pixelate(_)
             | Self::ZoomBlur(_)
+            | Self::Lens(_)
+            | Self::Posterise(_)
+            | Self::TiltShift { .. }
             | Self::Glow(_)
             | Self::OldFilm(_)
             | Self::Tone(_)
@@ -917,15 +1040,18 @@ impl ClipProperty {
             | Self::BeatPulse(_)
             | Self::Reflection(_)
             | Self::Denoise(_)
+            | Self::Gate(_)
             | Self::Eq(_)
             | Self::Space(_)
             | Self::Channels(_)
             | Self::Pitch(_)
             | Self::Leveller(_)
             | Self::DeEss(_)
+            | Self::StereoWidth(_)
             | Self::FadeShape(_)
             | Self::Mute(_)
             | Self::Crossfade(_)
+            | Self::Pan(_)
             | Self::Gain(_) => [None, None],
         }
     }
@@ -941,6 +1067,9 @@ impl ClipProperty {
         // has no entry to compare against — and `all` over nothing is true.
         // Asked here directly, or every volume reset button is permanently
         // greyed out whatever the volume is.
+        if let Self::Pan(pan) = self {
+            return pan == 0.0;
+        }
         if let Self::Gain(value) = self {
             return (value - 1.0).abs() < 1e-6;
         }
@@ -958,6 +1087,12 @@ impl ClipProperty {
         }
         if let Self::Border(border) = self {
             return border.is_none();
+        }
+        if let Self::TiltShift { band, .. } = self {
+            return band <= 0.0;
+        }
+        if let Self::LumaKey(key) = self {
+            return key.is_none();
         }
         if let Self::Shadow(shadow) = self {
             return !shadow.is_visible();
@@ -992,6 +1127,15 @@ impl ClipProperty {
         if let Self::Vibrance(amount) = self {
             return amount == 0.0;
         }
+        if let Self::Wheels(wheels) = self {
+            return wheels.is_identity();
+        }
+        if let Self::Secondary(secondary) = self {
+            return secondary.is_identity();
+        }
+        if let Self::Anchor { x, y } = self {
+            return (x - 0.5).abs() < 1e-6 && (y - 0.5).abs() < 1e-6;
+        }
         if let Self::Curves(curves) = self {
             return curves.is_identity();
         }
@@ -1010,6 +1154,9 @@ impl ClipProperty {
         if let Self::DeEss(amount) = self {
             return amount == 0.0;
         }
+        if let Self::StereoWidth(width) = self {
+            return width == 1.0;
+        }
         if let Self::FadeShape(shape) = self {
             return shape == bettercut_timeline::FadeShape::Smooth;
         }
@@ -1023,11 +1170,14 @@ impl ClipProperty {
         | Self::Glitch(amount)
         | Self::Pixelate(amount)
         | Self::ZoomBlur(amount)
+        | Self::Lens(amount)
+        | Self::Posterise(amount)
         | Self::Glow(amount)
         | Self::OldFilm(amount)
         | Self::LightLeak(amount)
         | Self::BeatPulse(amount)
-        | Self::Denoise(amount) = self
+        | Self::Denoise(amount)
+        | Self::Gate(amount) = self
         {
             return amount == 0.0;
         }
@@ -1069,6 +1219,7 @@ impl ClipProperty {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Opacity(_) => "Opacity",
+            Self::Pan(_) => "Pan",
             Self::Gain(_) => "Volume",
             Self::Position { .. } => "Position",
             Self::Scale { .. } => "Scale",
@@ -1079,9 +1230,13 @@ impl ClipProperty {
             Self::Temperature(_) => "Temperature",
             Self::Tint(_) => "Tint",
             Self::Vibrance(_) => "Vibrance",
+            Self::Wheels(_) => "Colour Wheels",
+            Self::Anchor { .. } => "Pivot",
+            Self::Secondary(_) => "Secondary Colour",
             Self::Blur(_) => "Blur",
             Self::Backdrop(_) => "Backdrop",
             Self::ChromaKey(_) => "Chroma Key",
+            Self::LumaKey(_) => "Luma Key",
             Self::Mask(_) => "Mask",
             Self::Blend(_) => "Blend",
             Self::Motion(_) => "Animation",
@@ -1105,6 +1260,9 @@ impl ClipProperty {
             Self::Glitch(_) => "Glitch",
             Self::Pixelate(_) => "Pixelate",
             Self::ZoomBlur(_) => "Zoom blur",
+            Self::Lens(_) => "Lens",
+            Self::Posterise(_) => "Posterise",
+            Self::TiltShift { .. } => "Tilt-shift",
             Self::Glow(_) => "Glow",
             Self::OldFilm(_) => "Old film",
             Self::Tone(_) => "Tone",
@@ -1113,12 +1271,14 @@ impl ClipProperty {
             Self::BeatPulse(_) => "Beat pulse",
             Self::Reflection(_) => "Mirror",
             Self::Denoise(_) => "Voice clean-up",
+            Self::Gate(_) => "Noise gate",
             Self::Eq(_) => "EQ",
             Self::Space(_) => "Echo & reverb",
             Self::Channels(_) => "Channels",
             Self::Pitch(_) => "Voice pitch",
             Self::Leveller(_) => "Leveller",
             Self::DeEss(_) => "De-esser",
+            Self::StereoWidth(_) => "Stereo Width",
             Self::FadeShape(_) => "Fade shape",
             Self::Mute(_) => "Mute",
             Self::Crossfade(_) => "Crossfade",
@@ -1309,6 +1469,49 @@ mod tests {
         let variants = vec![
             Command::RenameProject {
                 name: "x".to_owned(),
+            },
+            Command::SetProjectNotes {
+                notes: "fix the colour on shot 3".to_owned(),
+            },
+            Command::SetPanEnvelope {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                keys: vec![],
+            },
+            Command::SetStartTimecode {
+                sequence: seq,
+                start: TimelineTime::from_seconds(3_600),
+            },
+            Command::SetClipSolo {
+                sequence: seq,
+                clip: ClipId::new(),
+                solo: true,
+            },
+            Command::NudgeSound {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                new_start: TimelineTime::from_ticks(960),
+            },
+            Command::SetMediaDeinterlace {
+                media: MediaId::new(),
+                deinterlace: true,
+            },
+            Command::SetClipName {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                name: Some("interview wide".to_owned()),
+            },
+            Command::SetClipMarks {
+                sequence: seq,
+                marks: vec![bettercut_timeline::ClipMark {
+                    clip: ClipId::new(),
+                    source: bettercut_foundation::MediaTime::from_seconds(2),
+                    label: "door opens".to_owned(),
+                    color: bettercut_timeline::ColorLabel::None,
+                }],
             },
             Command::AddTrack {
                 sequence: seq,

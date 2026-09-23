@@ -140,6 +140,9 @@ fn label_for(sound: GeneratedSound) -> &'static str {
     match sound {
         GeneratedSound::Tone { .. } => "Add Tone",
         GeneratedSound::Silence => "Add Silence",
+        GeneratedSound::Whoosh => "Add Whoosh",
+        GeneratedSound::Click => "Add Click",
+        GeneratedSound::Riser => "Add Riser",
     }
 }
 

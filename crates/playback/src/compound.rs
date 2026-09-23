@@ -78,6 +78,8 @@ fn compose_colour(outer: ColorAdjust, inner: ColorAdjust) -> ColorAdjust {
         temperature: (outer.temperature + inner.temperature).clamp(-1.0, 1.0),
         tint: (outer.tint + inner.tint).clamp(-1.0, 1.0),
         vibrance: (outer.vibrance + inner.vibrance).clamp(-1.0, 1.0),
+        wheels: outer.wheels.combined(inner.wheels),
+        secondary: outer.secondary.combined(inner.secondary),
     }
 }
 

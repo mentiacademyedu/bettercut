@@ -22,6 +22,7 @@ pub mod karaoke;
 pub mod keyframe;
 pub mod lut;
 pub mod marker;
+pub mod marker_file;
 pub mod motion;
 pub mod reflection;
 pub mod render;
@@ -40,15 +41,17 @@ pub use adjustment::{
     DEFAULT_DURATION as DEFAULT_ADJUSTMENT_DURATION,
 };
 pub use burn_in::{BurnIn, MAX_BURN_IN_SIZE, MIN_BURN_IN_SIZE};
-pub use chapters::{ChapterProblem, Chapters, chapter_list};
+pub use chapters::{ChapterProblem, Chapters, chapter_list, chapter_ranges, chapter_starts};
+pub use clip::MAX_CLIP_NAME;
 pub use clip::{
     AudioClip, BACKDROP_BLUR, BACKDROP_OVERSCAN, BAR_PRESETS, Backdrop, BlendMode, Border,
-    ChannelMode, ChromaKey, Clip, ClipEq, ClipLook, ClipSpace, ColorAdjust, ColorLabel, Crop,
-    EQ_HIGH_CUT_MAX, EQ_HIGH_CUT_MIN, EQ_LOW_CUT_MAX, EQ_LOW_CUT_MIN, EQ_PRESENCE_MAX, FadeShape,
-    FlipAxis, MAX_BARS_ASPECT, MAX_BLUR, MAX_BORDER_WIDTH, MAX_DENOISE, MAX_GLITCH, MAX_GRAIN,
-    MAX_PROGRESS_BAR, MAX_SHADOW_DISTANCE, MAX_SHADOW_SOFTNESS, MAX_SHARPEN, MAX_VIGNETTE,
-    MIN_CROP_REMAINING, Mask, MaskShape, MasterLook, ProgressBar, Shadow, SourceRange, SpaceKind,
-    TimelineRange, Transform, Vec2, VideoClip, bar_height,
+    ChannelMode, ChromaKey, Clip, ClipEq, ClipLook, ClipSpace, ColorAdjust, ColorLabel,
+    ColorWheels, Crop, EQ_HIGH_CUT_MAX, EQ_HIGH_CUT_MIN, EQ_LOW_CUT_MAX, EQ_LOW_CUT_MIN,
+    EQ_PRESENCE_MAX, FadeShape, FlipAxis, HslSecondary, LumaKey, MAX_BARS_ASPECT, MAX_BLUR,
+    MAX_BORDER_WIDTH, MAX_DENOISE, MAX_GLITCH, MAX_GRAIN, MAX_PROGRESS_BAR, MAX_SHADOW_DISTANCE,
+    MAX_SHADOW_SOFTNESS, MAX_SHARPEN, MAX_VIGNETTE, MIN_CROP_REMAINING, Mask, MaskShape,
+    MasterLook, ProgressBar, Shadow, SourceRange, SpaceKind, TimelineRange, Transform, Vec2,
+    VideoClip, bar_height,
 };
 pub use clip::{
     MAX_CROSSFADE, MAX_FADE, MAX_SPEED, MIN_SPEED, SPEED_PRESETS, clamped_speed, crop_to_aspect,
@@ -64,13 +67,17 @@ pub use keyframe::{
 };
 pub use lut::{ClipLut, CubeLut, LutError, MAX_LUT_SIZE, load_cube_file, parse_cube};
 pub use marker::{MAX_MARKERS, Marker};
+pub use marker_file::{
+    MarkerFileFormat, frame_timecode, marker_file, markers_csv, markers_edl, parse_csv,
+    parse_timecode,
+};
 pub use motion::{
     ClipMotion, DEFAULT_MOTION, LoopMotion, MAX_MOTION, MIN_MOTION, Motion, MotionKind, Scroll,
     TextAnimation, TextLook,
 };
 pub use reflection::{KALEIDOSCOPE_SEGMENTS, Reflection};
 pub use render::RenderedRange;
-pub use sequence::{ClipNote, ClipSpan, Resolution, Sequence, TrackKind};
+pub use sequence::{ClipMark, ClipNote, ClipSpan, Resolution, Sequence, TrackKind};
 pub use shake::{IMPACT_SETTLE, SHAKE_STEP, ShakeStrength};
 pub use snap::{SnapKind, SnapTarget};
 pub use text::{DEFAULT_DURATION as DEFAULT_TEXT_DURATION, TextClip, TextTrack};

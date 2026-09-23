@@ -42,7 +42,11 @@ pub fn build_for_replay(
 
     Ok(match command {
         Command::RenameProject { name } => Box::new(RenameProject::new(name)),
+        Command::SetProjectNotes { notes } => Box::new(SetProjectNotes::new(notes)),
         Command::ChangeSetting { change } => Box::new(ChangeSetting::new(change)),
+        Command::SetMediaDeinterlace { media, deinterlace } => {
+            Box::new(SetMediaDeinterlace::new(media, deinterlace))
+        }
         Command::RelinkMedia {
             media,
             path,
@@ -83,12 +87,34 @@ pub fn build_for_replay(
             clip,
             label,
         } => Box::new(SetColorLabel::new(sequence, track, clip, label)),
+        Command::SetClipName {
+            sequence,
+            track,
+            clip,
+            name,
+        } => Box::new(SetClipName::new(sequence, track, clip, name)),
+        Command::SetClipMarks { sequence, marks } => Box::new(SetClipMarks::new(sequence, marks)),
+        Command::SetClipSolo {
+            sequence,
+            clip,
+            solo,
+        } => Box::new(SetClipSolo::new(sequence, clip, solo)),
         Command::SetTrackMix {
             sequence,
             track,
             gain,
             pan,
         } => Box::new(SetTrackMix::new(sequence, track, gain, pan)),
+        Command::SetTrackEq {
+            sequence,
+            track,
+            eq,
+        } => Box::new(SetTrackEq::new(sequence, track, eq)),
+        Command::SetTrackColour {
+            sequence,
+            track,
+            label,
+        } => Box::new(SetTrackColour::new(sequence, track, label)),
         Command::SetTrackVolume {
             sequence,
             track,
@@ -145,6 +171,12 @@ pub fn build_for_replay(
             clip,
             keys,
         } => Box::new(SetGainEnvelope::new(sequence, track, clip, keys)),
+        Command::SetPanEnvelope {
+            sequence,
+            track,
+            clip,
+            keys,
+        } => Box::new(SetGainEnvelope::pan(sequence, track, clip, keys)),
         Command::SetKeyframe {
             sequence,
             track,
@@ -176,6 +208,9 @@ pub fn build_for_replay(
             watermark: watermark.map(bettercut_timeline::watermark::Watermark::clamped),
             previous: None,
         }),
+        Command::SetStartTimecode { sequence, start } => {
+            Box::new(SetStartTimecode::new(sequence, start))
+        }
         Command::SetSequenceFormat {
             sequence,
             resolution,
@@ -248,6 +283,12 @@ pub fn build_for_replay(
         } => Box::new(MoveClip::new(
             sequence, from_track, to_track, clip, new_start,
         )),
+        Command::NudgeSound {
+            sequence,
+            track,
+            clip,
+            new_start,
+        } => Box::new(MoveClip::new(sequence, track, track, clip, new_start)),
 
         Command::TrimClip {
             sequence,
@@ -1438,6 +1479,134 @@ impl EditorCommand for SetTrackMix {
 }
 
 /// A glitch amount brought into range on the way in, for the journal's sake.
+/// A lane's colour label, any kind of lane (`Command::SetTrackColour`).
+#[derive(Debug)]
+pub struct SetTrackColour {
+    sequence: SequenceId,
+    track: TrackId,
+    label: bettercut_timeline::ColorLabel,
+    previous: Option<bettercut_timeline::ColorLabel>,
+}
+
+impl SetTrackColour {
+    pub fn new(
+        sequence: SequenceId,
+        track: TrackId,
+        label: bettercut_timeline::ColorLabel,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            label,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        label: bettercut_timeline::ColorLabel,
+    ) -> Result<bettercut_timeline::ColorLabel, EditorError> {
+        fn paint<C>(
+            lane: &mut bettercut_timeline::Track<C>,
+            label: bettercut_timeline::ColorLabel,
+        ) -> bettercut_timeline::ColorLabel {
+            std::mem::replace(&mut lane.color_label, label)
+        }
+        let sequence = sequence_mut(project, sequence)?;
+        let missing = EditorError::TrackNotFound(track);
+        Ok(match sequence.track_kind(track) {
+            Some(TrackKind::Video) => paint(sequence.video_track_mut(track).ok_or(missing)?, label),
+            Some(TrackKind::Audio) => paint(sequence.audio_track_mut(track).ok_or(missing)?, label),
+            Some(TrackKind::Text) => paint(sequence.text_track_mut(track).ok_or(missing)?, label),
+            Some(TrackKind::Adjustment) => {
+                paint(sequence.adjustment_track_mut(track).ok_or(missing)?, label)
+            }
+            None => return Err(missing),
+        })
+    }
+}
+
+impl EditorCommand for SetTrackColour {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.track, self.label)?;
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Colour track".to_owned()
+    }
+}
+
+/// A sound lane's equaliser, replaced whole (`Command::SetTrackEq`).
+#[derive(Debug)]
+pub struct SetTrackEq {
+    sequence: SequenceId,
+    track: TrackId,
+    eq: bettercut_timeline::ClipEq,
+    previous: Option<bettercut_timeline::ClipEq>,
+}
+
+impl SetTrackEq {
+    pub fn new(sequence: SequenceId, track: TrackId, eq: bettercut_timeline::ClipEq) -> Self {
+        Self {
+            sequence,
+            track,
+            eq,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        eq: bettercut_timeline::ClipEq,
+    ) -> Result<bettercut_timeline::ClipEq, EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        // A picture lane has nothing to equalise: refused, as its volume is.
+        let missing = if sequence.track_kind(track).is_some() {
+            EditorError::ClipKindMismatch
+        } else {
+            EditorError::TrackNotFound(track)
+        };
+        let track = sequence.audio_track_mut(track).ok_or(missing)?;
+        let was = track.eq;
+        track.eq = eq.clamped();
+        Ok(was)
+    }
+}
+
+impl EditorCommand for SetTrackEq {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.track, self.eq)?;
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change track EQ".to_owned()
+    }
+}
+
 fn glitch_amount(amount: f32) -> f32 {
     if amount.is_finite() {
         amount.clamp(0.0, bettercut_timeline::MAX_GLITCH)
@@ -1508,6 +1677,175 @@ impl EditorCommand for SetColorLabel {
 
     fn label(&self) -> String {
         "Colour Label".to_owned()
+    }
+}
+
+/// Solo or unsolo one clip (`Command::SetClipSolo`).
+#[derive(Debug)]
+pub struct SetClipSolo {
+    sequence: SequenceId,
+    clip: ClipId,
+    solo: bool,
+    previous: Option<bool>,
+}
+
+impl SetClipSolo {
+    pub fn new(sequence: SequenceId, clip: ClipId, solo: bool) -> Self {
+        Self {
+            sequence,
+            clip,
+            solo,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        clip: ClipId,
+        solo: bool,
+    ) -> Result<bool, EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        if sequence.clip_span(clip).is_none() {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+        Ok(sequence.set_clip_solo(clip, solo))
+    }
+}
+
+impl EditorCommand for SetClipSolo {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = Self::apply(project, self.sequence, self.clip, self.solo)?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.clip, was)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        if self.solo {
+            "Solo Clip"
+        } else {
+            "Unsolo Clip"
+        }
+        .to_owned()
+    }
+}
+
+/// Replace a sequence's clip marks (`Command::SetClipMarks`).
+#[derive(Debug)]
+pub struct SetClipMarks {
+    sequence: SequenceId,
+    marks: Vec<bettercut_timeline::ClipMark>,
+    previous: Option<Vec<bettercut_timeline::ClipMark>>,
+}
+
+impl SetClipMarks {
+    pub fn new(sequence: SequenceId, marks: Vec<bettercut_timeline::ClipMark>) -> Self {
+        Self {
+            sequence,
+            marks,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        marks: Vec<bettercut_timeline::ClipMark>,
+    ) -> Result<Vec<bettercut_timeline::ClipMark>, EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        Ok(std::mem::replace(&mut sequence.clip_marks, marks))
+    }
+}
+
+impl EditorCommand for SetClipMarks {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = Self::apply(project, self.sequence, self.marks.clone())?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = self.previous.take().ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, was)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Clip Marks".to_owned()
+    }
+}
+
+/// Name a clip, or take its name away (`Command::SetClipName`).
+#[derive(Debug)]
+pub struct SetClipName {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    name: Option<String>,
+    previous: Option<Option<String>>,
+}
+
+impl SetClipName {
+    pub fn new(sequence: SequenceId, track: TrackId, clip: ClipId, name: Option<String>) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            name,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track_id: TrackId,
+        clip_id: ClipId,
+        name: Option<String>,
+    ) -> Result<Option<String>, EditorError> {
+        use bettercut_timeline::Clip;
+        on_track!(project, sequence, track_id, |track| {
+            let clip = track
+                .get_mut(clip_id)
+                .ok_or(EditorError::ClipNotFound(clip_id))?;
+            Ok(clip.set_name(name))
+        })
+    }
+}
+
+impl EditorCommand for SetClipName {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = Self::apply(
+            project,
+            self.sequence,
+            self.track,
+            self.clip,
+            self.name.clone(),
+        )?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = self.previous.clone().ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, self.clip, was)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Rename Clip".to_owned()
     }
 }
 
@@ -1734,6 +2072,38 @@ impl EditorCommand for RenameProject {
     }
 }
 
+/// Replace the project's notes (`Command::SetProjectNotes`).
+#[derive(Debug)]
+pub struct SetProjectNotes {
+    pub notes: String,
+    previous: Option<String>,
+}
+
+impl SetProjectNotes {
+    pub fn new(notes: impl Into<String>) -> Self {
+        Self {
+            notes: notes.into(),
+            previous: None,
+        }
+    }
+}
+
+impl EditorCommand for SetProjectNotes {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        self.previous = Some(std::mem::replace(&mut project.notes, self.notes.clone()));
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        project.notes = self.previous.take().ok_or(EditorError::NotExecuted)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Edit Notes".to_owned()
+    }
+}
+
 // --------------------------------------------------------------------------
 
 /// Set one property of one clip (§59).
@@ -1849,6 +2219,28 @@ impl SetClipProperty {
                         clip.color.vibrance = value.clamp(-1.0, 1.0);
                         ClipProperty::Vibrance(was)
                     }
+                    ClipProperty::Anchor { x, y } => {
+                        let was = clip.transform.anchor;
+                        let held = |v: f32| {
+                            if v.is_finite() {
+                                v.clamp(0.0, 1.0)
+                            } else {
+                                0.5
+                            }
+                        };
+                        clip.transform.anchor = Vec2::new(held(x), held(y));
+                        ClipProperty::Anchor { x: was.x, y: was.y }
+                    }
+                    ClipProperty::Wheels(wheels) => {
+                        let was = clip.color.wheels;
+                        clip.color.wheels = wheels.clamped();
+                        ClipProperty::Wheels(was)
+                    }
+                    ClipProperty::Secondary(secondary) => {
+                        let was = clip.color.secondary;
+                        clip.color.secondary = secondary.clamped();
+                        ClipProperty::Secondary(was)
+                    }
                     ClipProperty::Blur(value) => {
                         let was = clip.blur;
                         clip.blur = AnimatedParameter::Blur.clamp(value);
@@ -1883,6 +2275,40 @@ impl SetClipProperty {
                         let was = clip.pixelate;
                         clip.pixelate = glitch_amount(amount);
                         ClipProperty::Pixelate(was)
+                    }
+                    ClipProperty::Lens(amount) => {
+                        let was = clip.lens;
+                        clip.lens = if amount.is_finite() {
+                            amount.clamp(-1.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ClipProperty::Lens(was)
+                    }
+                    ClipProperty::Posterise(levels) => {
+                        let was = clip.posterise;
+                        clip.posterise = if levels.is_finite() && levels >= 2.0 {
+                            levels.clamp(2.0, 16.0).floor()
+                        } else {
+                            0.0
+                        };
+                        ClipProperty::Posterise(was)
+                    }
+                    ClipProperty::TiltShift { band, centre } => {
+                        let was = ClipProperty::TiltShift {
+                            band: clip.tilt_band,
+                            centre: clip.tilt_centre,
+                        };
+                        let sane = |v: f32, fallback: f32| {
+                            if v.is_finite() {
+                                v.clamp(0.0, 1.0)
+                            } else {
+                                fallback
+                            }
+                        };
+                        clip.tilt_band = sane(band, 0.0);
+                        clip.tilt_centre = sane(centre, 0.5);
+                        was
                     }
                     ClipProperty::ZoomBlur(amount) => {
                         let was = clip.zoom_blur;
@@ -1996,12 +2422,18 @@ impl SetClipProperty {
                         clip.chroma_key = key.map(bettercut_timeline::ChromaKey::clamped);
                         ClipProperty::ChromaKey(was)
                     }
+                    ClipProperty::LumaKey(key) => {
+                        let was = clip.luma_key;
+                        clip.luma_key = key.map(bettercut_timeline::LumaKey::clamped);
+                        ClipProperty::LumaKey(was)
+                    }
                     // Gain is an audio property; a video clip has none — and
                     // a background belongs to the sequence, not to a picture.
                     // And a vignette frames the whole frame, not one clip in
                     // it (`MasterLook::vignette`).
                     ClipProperty::Gain(_)
                     | ClipProperty::Denoise(_)
+                    | ClipProperty::Gate(_)
                     | ClipProperty::Eq(_)
                     | ClipProperty::Space(_)
                     | ClipProperty::Channels(_)
@@ -2009,6 +2441,8 @@ impl SetClipProperty {
                     | ClipProperty::KeepPitch(_)
                     | ClipProperty::Leveller(_)
                     | ClipProperty::DeEss(_)
+                    | ClipProperty::StereoWidth(_)
+                    | ClipProperty::Pan(_)
                     | ClipProperty::FadeShape(_)
                     | ClipProperty::Mute(_)
                     | ClipProperty::Crossfade(_)
@@ -2036,6 +2470,7 @@ impl SetClipProperty {
                     // All three are about a picture; sound has none of them.
                     ClipProperty::Backdrop(_)
                     | ClipProperty::ChromaKey(_)
+                    | ClipProperty::LumaKey(_)
                     | ClipProperty::Mask(_)
                     | ClipProperty::Blend(_)
                     | ClipProperty::Motion(_)
@@ -2045,11 +2480,17 @@ impl SetClipProperty {
                     | ClipProperty::Shadow(_)
                     | ClipProperty::Flip { .. }
                     | ClipProperty::Crop(_)
+                    | ClipProperty::Anchor { .. }
                     | ClipProperty::Sharpen(_)
                     | ClipProperty::Lut(_)
                     | ClipProperty::RgbSplit(_)
                     | ClipProperty::Glitch(_)
                     | ClipProperty::Reflection(_)
+                    | ClipProperty::Lens(_)
+                    | ClipProperty::Posterise(_)
+                    | ClipProperty::TiltShift { .. }
+                    | ClipProperty::Wheels(_)
+                    | ClipProperty::Secondary(_)
                     | ClipProperty::Background(_) => Err(EditorError::ClipKindMismatch),
                     ClipProperty::Gain(value) => {
                         let was = clip.gain;
@@ -2060,6 +2501,15 @@ impl SetClipProperty {
                         let was = clip.reversed;
                         clip.reversed = on;
                         Ok(ClipProperty::Reverse(was))
+                    }
+                    ClipProperty::Gate(amount) => {
+                        let was = clip.gate;
+                        clip.gate = if amount.is_finite() {
+                            amount.clamp(0.0, 100.0)
+                        } else {
+                            0.0
+                        };
+                        Ok(ClipProperty::Gate(was))
                     }
                     ClipProperty::Denoise(amount) => {
                         let was = clip.denoise;
@@ -2099,6 +2549,24 @@ impl SetClipProperty {
                         let was = clip.fade_shape;
                         clip.fade_shape = shape;
                         Ok(ClipProperty::FadeShape(was))
+                    }
+                    ClipProperty::Pan(pan) => {
+                        let was = clip.pan;
+                        clip.pan = if pan.is_finite() {
+                            pan.clamp(-1.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        Ok(ClipProperty::Pan(was))
+                    }
+                    ClipProperty::StereoWidth(width) => {
+                        let was = clip.stereo_width;
+                        clip.stereo_width = if width.is_finite() {
+                            width.clamp(0.0, STEREO_WIDTH_LIMIT)
+                        } else {
+                            1.0
+                        };
+                        Ok(ClipProperty::StereoWidth(was))
                     }
                     ClipProperty::DeEss(amount) => {
                         let was = clip.de_ess;
@@ -2151,13 +2619,16 @@ impl SetClipProperty {
 /// and writing them as two types would duplicate the undo logic, which is the
 /// part with the subtlety in it — undoing an *insert* has to delete, while
 /// undoing a *replace* has to put the old key back.
-/// Replace a sound clip's whole volume envelope (§24).
+/// Replace a sound clip's whole volume envelope (§24) — or its pan's, which
+/// is the same shape on the other sound parameter.
 #[derive(Debug)]
 pub struct SetGainEnvelope {
     sequence: SequenceId,
     track: TrackId,
     clip: ClipId,
     keys: Vec<Keyframe>,
+    /// Which of a sound clip's two lines this replaces.
+    parameter: AnimatedParameter,
     /// What was on the parameter before the first execute. The outer `Option`
     /// is "has this run"; the inner is "was there an envelope".
     previous: Option<Option<bettercut_timeline::KeyframeTrack>>,
@@ -2170,7 +2641,16 @@ impl SetGainEnvelope {
             track,
             clip,
             keys,
+            parameter: AnimatedParameter::Gain,
             previous: None,
+        }
+    }
+
+    /// The same command on the clip's pan line.
+    pub fn pan(sequence: SequenceId, track: TrackId, clip: ClipId, keys: Vec<Keyframe>) -> Self {
+        Self {
+            parameter: AnimatedParameter::Pan,
+            ..Self::new(sequence, track, clip, keys)
         }
     }
 
@@ -2198,10 +2678,14 @@ impl SetGainEnvelope {
 
 impl EditorCommand for SetGainEnvelope {
     fn label(&self) -> String {
+        let what = match self.parameter {
+            AnimatedParameter::Pan => "Pan",
+            _ => "Volume",
+        };
         if self.keys.is_empty() {
-            "Clear Volume Envelope".to_owned()
+            format!("Clear {what} Envelope")
         } else {
-            "Volume Envelope".to_owned()
+            format!("{what} Envelope")
         }
     }
 
@@ -2211,13 +2695,12 @@ impl EditorCommand for SetGainEnvelope {
             .iter()
             .map(|key| {
                 let mut key = *key;
-                key.value = AnimatedParameter::Gain.clamp(key.value);
+                key.value = self.parameter.clamp(key.value);
                 key
             })
             .collect();
-        let previous = self.with_clip(project, |clip| {
-            clip.keyframes.replace(AnimatedParameter::Gain, keys)
-        })?;
+        let parameter = self.parameter;
+        let previous = self.with_clip(project, |clip| clip.keyframes.replace(parameter, keys))?;
         // Only the first execute records what was there; a redo must not
         // remember the envelope it just wrote.
         if self.previous.is_none() {
@@ -2228,8 +2711,9 @@ impl EditorCommand for SetGainEnvelope {
 
     fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
         let previous = self.previous.clone().ok_or(EditorError::NotExecuted)?;
+        let parameter = self.parameter;
         self.with_clip(project, |clip| {
-            clip.keyframes.restore(AnimatedParameter::Gain, previous);
+            clip.keyframes.restore(parameter, previous);
         })
     }
 }
@@ -2310,11 +2794,11 @@ impl SetKeyframe {
                     None => clip.keyframes.remove(parameter, time),
                 })
             },
-            // §59's keyframeable clip gain: the one parameter a sound clip
-            // has. The rest describe a picture, and accepting a key nothing
-            // would ever read would be worse than refusing it.
+            // §59's keyframeable clip gain and its pan: the two parameters a
+            // sound clip has. The rest describe a picture, and accepting a key
+            // nothing would ever read would be worse than refusing it.
             |audio| {
-                if parameter != AnimatedParameter::Gain {
+                if !matches!(parameter, AnimatedParameter::Gain | AnimatedParameter::Pan) {
                     return Err(EditorError::ClipKindMismatch);
                 }
                 let clip = audio.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
@@ -2420,6 +2904,62 @@ impl RelinkMedia {
     }
 }
 
+/// Decode a file deinterlaced, or not (`Command::SetMediaDeinterlace`).
+#[derive(Debug)]
+pub struct SetMediaDeinterlace {
+    media: MediaId,
+    deinterlace: bool,
+    previous: Option<bool>,
+}
+
+impl SetMediaDeinterlace {
+    pub fn new(media: MediaId, deinterlace: bool) -> Self {
+        Self {
+            media,
+            deinterlace,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        media: MediaId,
+        deinterlace: bool,
+    ) -> Result<bool, EditorError> {
+        let asset = project
+            .media
+            .iter_mut()
+            .find(|m| m.id == media)
+            .ok_or(EditorError::MediaNotFound(media))?;
+        Ok(std::mem::replace(&mut asset.deinterlace, deinterlace))
+    }
+}
+
+impl EditorCommand for SetMediaDeinterlace {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = Self::apply(project, self.media, self.deinterlace)?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.media, was)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        if self.deinterlace {
+            "Deinterlace"
+        } else {
+            "Stop Deinterlacing"
+        }
+        .to_owned()
+    }
+}
+
 /// Adjust the whole sequence's finished picture (§22).
 #[derive(Debug)]
 pub struct SetSequenceProperty {
@@ -2507,6 +3047,22 @@ impl SetSequenceProperty {
                 master.color.vibrance = value.clamp(-1.0, 1.0);
                 ClipProperty::Vibrance(was)
             }
+            ClipProperty::Anchor { x, y } => {
+                let was = master.transform.anchor;
+                let held = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
+                master.transform.anchor = Vec2::new(held(x), held(y));
+                ClipProperty::Anchor { x: was.x, y: was.y }
+            }
+            ClipProperty::Wheels(wheels) => {
+                let was = master.color.wheels;
+                master.color.wheels = wheels.clamped();
+                ClipProperty::Wheels(was)
+            }
+            ClipProperty::Secondary(secondary) => {
+                let was = master.color.secondary;
+                master.color.secondary = secondary.clamped();
+                ClipProperty::Secondary(was)
+            }
             ClipProperty::Blur(value) => {
                 let was = master.blur;
                 master.blur = A::Blur.clamp(value);
@@ -2516,6 +3072,7 @@ impl SetSequenceProperty {
             // picture, and a key is about the screen it was shot against.
             ClipProperty::Backdrop(_)
             | ClipProperty::ChromaKey(_)
+            | ClipProperty::LumaKey(_)
             | ClipProperty::Mask(_)
             | ClipProperty::Blend(_)
             // And an animation belongs to a clip because it is timed against
@@ -2528,6 +3085,11 @@ impl SetSequenceProperty {
             // A corner pin sets one picture into another; the frame has no
             // corners of its own to move.
             | ClipProperty::CornerPin(_)
+            // A lens is a shot's: the whole frame was not shot through one.
+            | ClipProperty::Lens(_)
+            // Posterise is a clip's finish, as the other effects are.
+            | ClipProperty::Posterise(_)
+            | ClipProperty::TiltShift { .. }
             // Pitch belongs to a sound clip, and the master mixes them all.
             | ClipProperty::KeepPitch(_)
             // A mirror is about a shot — which way the subject faces. Mirroring
@@ -2558,12 +3120,15 @@ impl SetSequenceProperty {
             | ClipProperty::Reflection(_)
             // Cleaning up a voice is about one recording, not the whole mix.
             | ClipProperty::Denoise(_)
+            | ClipProperty::Gate(_)
             | ClipProperty::Eq(_)
             | ClipProperty::Space(_)
             | ClipProperty::Channels(_)
             | ClipProperty::Pitch(_)
             | ClipProperty::Leveller(_)
             | ClipProperty::DeEss(_)
+            | ClipProperty::StereoWidth(_)
+            | ClipProperty::Pan(_)
             | ClipProperty::FadeShape(_)
             | ClipProperty::Mute(_)
             | ClipProperty::Crossfade(_) => return Err(EditorError::ClipKindMismatch),
@@ -2901,6 +3466,57 @@ impl EditorCommand for SetVisualizer {
 /// without being asked, and §9's whole point is that a tick is exact whether or
 /// not it falls on a frame line. Future edits snap to the new grid; existing
 /// ones are left alone.
+/// What a sequence's first frame is called (`Command::SetStartTimecode`).
+#[derive(Debug)]
+pub struct SetStartTimecode {
+    sequence: SequenceId,
+    start: TimelineTime,
+    previous: Option<TimelineTime>,
+}
+
+impl SetStartTimecode {
+    pub fn new(sequence: SequenceId, start: TimelineTime) -> Self {
+        Self {
+            sequence,
+            start,
+            previous: None,
+        }
+    }
+
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        start: TimelineTime,
+    ) -> Result<TimelineTime, EditorError> {
+        let sequence = sequence_mut(project, sequence)?;
+        let was = sequence.start_timecode;
+        // Never before zero: a first frame called minus something is a
+        // countdown, not a timecode.
+        sequence.start_timecode = TimelineTime::from_ticks(start.ticks().max(0));
+        Ok(was)
+    }
+}
+
+impl EditorCommand for SetStartTimecode {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = Self::apply(project, self.sequence, self.start)?;
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Change start timecode".to_owned()
+    }
+}
+
 #[derive(Debug)]
 pub struct SetSequenceFormat {
     sequence: SequenceId,
@@ -3004,6 +3620,15 @@ impl ChangeSetting {
             SettingChange::MagneticTimeline(value) => SettingChange::MagneticTimeline(
                 std::mem::replace(&mut settings.magnetic_timeline, value),
             ),
+            SettingChange::TransitionLength(value) => {
+                SettingChange::TransitionLength(std::mem::replace(
+                    &mut settings.transition_length,
+                    value.clamp(
+                        bettercut_project_format::MIN_TRANSITION_LENGTH,
+                        bettercut_project_format::MAX_TRANSITION_LENGTH,
+                    ),
+                ))
+            }
             SettingChange::PhotoLength(value) => SettingChange::PhotoLength(std::mem::replace(
                 &mut settings.photo_length,
                 value.clamp(
@@ -4621,3 +5246,8 @@ impl EditorCommand for PasteClip {
         "Paste Clip".to_owned()
     }
 }
+
+/// The widest a stereo image goes: `bettercut_audio::MAX_STEREO_WIDTH`, stated
+/// here because this crate does not see the audio crate, and pinned to it by
+/// `tests/stereo_width.rs`.
+const STEREO_WIDTH_LIMIT: f32 = 2.0;

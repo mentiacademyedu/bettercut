@@ -38,6 +38,14 @@ use crate::decoder::{
 };
 use crate::error::MediaError;
 
+/// The deinterlacer: the top field alone, line-doubled back to full height
+/// (a "bob"). Not yadif — that holds every frame back until it has seen the
+/// next, which breaks the one-in-one-out chain below and never hands out a
+/// lone still. Half the vertical detail, no combing, and every frame the
+/// instant it is asked for; applied to every frame, because the flag is the
+/// user's word that the file is interlaced, whatever its headers claim.
+const DEINTERLACE: &str = "separatefields,select=eq(mod(n\\,2)\\,0),scale=iw:ih*2:flags=bicubic";
+
 /// One decoded stream's plumbing.
 struct StreamDecoder {
     /// The container's own stream index, as it appears on every packet.
@@ -284,7 +292,7 @@ fn frame_duration(rate: ffi::AVRational) -> MediaTime {
 
 impl MediaDecoder for FfmpegDecoder {
     fn open(&mut self, asset: &MediaAsset) -> Result<(), MediaError> {
-        let input = InputContext::open(&asset.path)?;
+        let input = InputContext::open_asset(asset)?;
 
         let mut video = None;
         let mut audio = None;
@@ -360,6 +368,22 @@ impl MediaDecoder for FfmpegDecoder {
         // A decoder can be reopened on another file; nothing from the last one
         // may carry over, least of all a tone-mapper built for an HDR source.
         self.tonemap = None;
+        // An interlaced original is woven into whole frames first, before any
+        // scaling: what the scaler then sees is progressive, the way every
+        // other stage expects. The HDR chain below takes the same filter in
+        // front of its own.
+        if asset.deinterlace && hdr_spec.is_none() && video.is_some() && width > 0 && height > 0 {
+            let (format, timebase) = hdr_input;
+            self.tonemap = Some(super::filter::FilterGraph::new(
+                DEINTERLACE,
+                width as i32,
+                height as i32,
+                format,
+                timebase,
+                ffi::AVRational { num: 1, den: 1 },
+            )?);
+            tracing::info!(file = %asset.file_name, "deinterlacing");
+        }
         self.scaler = None;
 
         // A large still comes out scaled to fit `MAX_STILL_EDGE` (see there).
@@ -381,6 +405,11 @@ impl MediaDecoder for FfmpegDecoder {
                 // that to RGBA the ordinary way.
                 Some(spec) => {
                     let (format, timebase) = hdr_input;
+                    let spec = if asset.deinterlace {
+                        format!("{DEINTERLACE},{spec}")
+                    } else {
+                        spec
+                    };
                     self.tonemap = Some(super::filter::FilterGraph::new(
                         &spec,
                         width as i32,

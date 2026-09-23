@@ -128,6 +128,16 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     // A change to the lane's word highlight: `Some(None)` turns it off.
     let mut highlight: Option<Option<bettercut_editor_core::text::Rgba>> = None;
     let current_highlight = editor.caption_highlight();
+    // The whole lane moved for sync, in milliseconds.
+    let mut shift: Option<i64> = None;
+    // A style saved from a title, put on every caption.
+    let mut wear: Option<bettercut_editor_core::text::TextStyle> = None;
+    let saved: Vec<String> = state
+        .title_styles
+        .all()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
 
     egui::Window::new("Captions")
         .open(&mut open)
@@ -143,7 +153,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                          Time Captions to put an empty caption on every phrase.",
                     )
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
                 );
                 return;
             }
@@ -151,14 +161,14 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             ui.label(
                 egui::RichText::new(format!("{} captions · Enter moves to the next", rows.len()))
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
             );
             ui.add_space(4.0);
 
             // The look belongs to the lane: subtitles that changed style
             // halfway through read as a mistake.
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("look").small().color(theme::DISABLED));
+                ui.label(egui::RichText::new("look").small().color(theme::disabled()));
                 for option in bettercut_editor_core::text::CaptionLook::ALL {
                     if ui
                         .selectable_label(current_look == Some(option), option.label())
@@ -168,6 +178,27 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     }
                 }
             });
+            // And the styles saved from titles, which is where a person's own
+            // look lives once they have made one.
+            if !saved.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("saved")
+                            .small()
+                            .color(theme::disabled()),
+                    );
+                    for name in &saved {
+                        if ui
+                            .small_button(name)
+                            .on_hover_text("Put this saved title style on every caption")
+                            .clicked()
+                        {
+                            wear = state.title_styles.get(name);
+                        }
+                    }
+                });
+            }
+
             // Karaoke-style: the word being said lit in its own colour.
             ui.horizontal(|ui| {
                 let mut on = current_highlight.is_some();
@@ -188,6 +219,31 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     }
                 }
             });
+            // Sync: a subtitle file that runs early or late is moved whole,
+            // by a frame's worth or a second's, without touching a caption.
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("shift all")
+                        .small()
+                        .color(theme::disabled()),
+                );
+                for (label, ms) in [
+                    ("−1 s", -1_000),
+                    ("−100 ms", -100),
+                    ("+100 ms", 100),
+                    ("+1 s", 1_000),
+                ] {
+                    if ui
+                        .small_button(label)
+                        .on_hover_text(
+                            "Move every caption by this much, for a file that runs early or late",
+                        )
+                        .clicked()
+                    {
+                        shift = Some(ms);
+                    }
+                }
+            });
             ui.add_space(6.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -195,9 +251,9 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     ui.horizontal(|ui| {
                         let label = egui::RichText::new(row.start.format_timecode()).monospace();
                         let label = if current == Some(index) {
-                            label.color(theme::PLAYHEAD)
+                            label.color(theme::playhead())
                         } else {
-                            label.color(theme::DISABLED)
+                            label.color(theme::disabled())
                         };
                         if ui
                             .add(egui::Button::new(label).frame(false))
@@ -283,6 +339,26 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             Err(err) => state.error(err.to_string()),
         }
         state.needs_repaint = true;
+    }
+    if let Some(style) = wear {
+        match editor.set_caption_style(style) {
+            Ok(0) => state.info("The captions already wear that style"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Dressed {n} captions"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(ms) = shift {
+        match editor.shift_captions(TimelineTime::from_millis(ms)) {
+            Ok(0) => state.info("Nothing to shift"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Moved {n} captions"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
     if let Some(look) = look {
         match editor.set_caption_look(look) {

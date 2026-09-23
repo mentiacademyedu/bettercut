@@ -52,6 +52,8 @@ fn elaborate_project(path: &std::path::Path) {
                 temperature: 0.35,
                 tint: -0.2,
                 vibrance: 0.0,
+                wheels: Default::default(),
+                secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
             },
         )
         .unwrap();
@@ -320,6 +322,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         reflection: bettercut_timeline::Reflection::Kaleidoscope,
         reversed: true,
         color_label: bettercut_timeline::ColorLabel::Purple,
+        name: None,
         lut: Some(bettercut_timeline::ClipLut {
             lut: bettercut_foundation::LutId::new(),
             strength: 0.6,
@@ -334,6 +337,8 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
             temperature: -0.4,
             tint: 0.25,
             vibrance: 0.0,
+            wheels: Default::default(),
+            secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
         },
         blur: 22.0,
         blend: BlendMode::Multiply,
@@ -345,6 +350,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
             rotation_degrees: 24.0,
             invert: true,
         }),
+        luma_key: None,
         chroma_key: Some(ChromaKey {
             color: [0.05, 0.7, 0.25],
             tolerance: 0.18,
@@ -378,6 +384,10 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
             flip_v: true,
         },
         speed: Rational::new(3, 2).unwrap(),
+        lens: 0.3,
+        tilt_band: 0.0,
+        tilt_centre: 0.5,
+        posterise: 0.3,
         frozen: false,
         enabled: true,
 
@@ -489,6 +499,7 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
         opacity: 0.9,
         enabled: true,
         color_label: bettercut_timeline::ColorLabel::Green,
+        name: None,
         highlight: Some(bettercut_text::Rgba::opaque(255, 214, 10)),
         counter: Some(bettercut_timeline::Counter {
             direction: bettercut_timeline::CountDirection::Up,
@@ -538,11 +549,14 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
         keep_pitch: true,
         fade_shape: Default::default(),
         gain: 0.45,
+        pan: -0.4,
         denoise: 65.0,
+        gate: 30.0,
         channels: bettercut_timeline::ChannelMode::LeftToBoth,
         pitch: -3.5,
         leveller: 40.0,
         de_ess: 55.0,
+        stereo_width: 1.4,
         muted: true,
         space: bettercut_timeline::ClipSpace {
             kind: bettercut_timeline::SpaceKind::Hall,
@@ -560,6 +574,7 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
         speed: Rational::new(4, 5).unwrap(),
         reversed: true,
         color_label: bettercut_timeline::ColorLabel::Purple,
+        name: None,
         enabled: true,
 
         id: plain_sound.id,

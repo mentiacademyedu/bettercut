@@ -21,11 +21,12 @@ struct BlurParams {
     stride: f32,
     // Taps either side of the centre. The kernel is 2 * half_taps + 1 wide.
     half_taps: i32,
-    // Explicit, because the Rust writer has to agree with this layout byte for
-    // byte and trailing padding is easier to get wrong when it is implicit.
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
+    // The tilt-shift band, in texture v: its centre, its half height (zero
+    // for no band) and how far past it the blur fades in. In what was the
+    // struct's padding; the Rust writer agrees byte for byte.
+    band_centre: f32,
+    band_half: f32,
+    band_soft: f32,
 }
 
 @group(0) @binding(0) var samp: sampler;
@@ -62,6 +63,14 @@ fn vs_fullscreen(@builtin(vertex_index) index: u32) -> VsOut {
 @fragment
 fn fs_blur(in: VsOut) -> @location(0) vec4<f32> {
     let inv_two_sigma_squared = 1.0 / (2.0 * params.sigma * params.sigma);
+    // Tilt-shift: inside the band every tap lands on the pixel itself, so it
+    // is sharp; past the soft edge the taps reach their full distance. Both
+    // passes scale the same way, so the blur stays round.
+    var reach = 1.0;
+    if params.band_half > 0.0 {
+        let away = abs(in.uv.y - params.band_centre);
+        reach = smoothstep(params.band_half, params.band_half + max(params.band_soft, 0.0001), away);
+    }
 
     var sum = vec4<f32>(0.0);
     var weight_total = 0.0;
@@ -74,7 +83,7 @@ fn fs_blur(in: VsOut) -> @location(0) vec4<f32> {
         // control flow requirement that a loop bound read from a uniform
         // satisfies only by analysis. There are no mipmaps here anyway, so
         // asking for level 0 explicitly costs nothing and removes the question.
-        sum += textureSampleLevel(source, samp, in.uv + params.step * distance, 0.0) * weight;
+        sum += textureSampleLevel(source, samp, in.uv + params.step * distance * reach, 0.0) * weight;
         weight_total += weight;
     }
 

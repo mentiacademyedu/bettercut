@@ -297,6 +297,12 @@ pub struct TextStyle {
     /// and the caller is responsible for the text fitting.
     #[serde(default)]
     pub wrap_width: Option<f32>,
+    /// Shrink rather than wrap: a line longer than [`Self::wrap_width`]
+    /// comes down in size until it fits, instead of breaking or running off.
+    /// For a name or a number that has to stay on one line whatever it says.
+    /// Nothing without a wrap width. Defaulted off.
+    #[serde(default)]
+    pub shrink_to_fit: bool,
     /// A second fill colour: the letters shade from [`Self::color`] at the
     /// top of the text to this at the bottom. `None` is a flat fill.
     #[serde(default)]
@@ -328,6 +334,7 @@ impl Default for TextStyle {
             shadow: None,
             background: None,
             wrap_width: None,
+            shrink_to_fit: false,
             gradient: None,
             curve: 0.0,
         }
@@ -357,6 +364,7 @@ impl TextStyle {
             // a 1080-wide canvas, which is about the longest line that stays
             // comfortable to read on a phone.
             wrap_width: Some(720.0),
+            shrink_to_fit: false,
             ..Self::default()
         }
     }
@@ -430,6 +438,7 @@ impl TextStyle {
                 background: None,
                 shadow: None,
                 wrap_width: Some(1_400.0),
+                shrink_to_fit: false,
                 ..Self::default()
             },
             TitleLook::LowerThird => Self {
@@ -444,6 +453,7 @@ impl TextStyle {
                 }),
                 shadow: None,
                 wrap_width: Some(900.0),
+                shrink_to_fit: false,
                 ..Self::default()
             },
             TitleLook::Quote => Self {
@@ -462,6 +472,7 @@ impl TextStyle {
                     color: Rgba::new(0, 0, 0, 210),
                 }),
                 wrap_width: Some(1_100.0),
+                shrink_to_fit: false,
                 ..Self::default()
             },
             TitleLook::Typewriter => Self {
@@ -479,6 +490,7 @@ impl TextStyle {
                     color: Rgba::new(0, 0, 0, 220),
                 }),
                 wrap_width: Some(1_000.0),
+                shrink_to_fit: false,
                 ..Self::default()
             },
         }

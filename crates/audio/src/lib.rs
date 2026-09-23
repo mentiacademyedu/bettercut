@@ -20,6 +20,7 @@ pub mod clock;
 pub mod deesser;
 pub mod eq;
 pub mod error;
+pub mod gate;
 pub mod leveller;
 pub mod loudness;
 pub mod mixer;
@@ -34,8 +35,11 @@ pub use clock::AudioClock;
 pub use deesser::{DeEsser, ESS_HZ, MAX_REDUCTION_DB};
 pub use eq::{Equalizer, PRESENCE_HZ};
 pub use error::AudioError;
+pub use gate::{Gate, MAX_CLOSED_DB};
 pub use leveller::Leveller;
-pub use mixer::{FadeCurve, Fades, GainRamp, MixParams, finish, mix_into, peaks};
+pub use mixer::{
+    FadeCurve, Fades, GainRamp, MAX_STEREO_WIDTH, MixParams, finish, mix_into, peaks, widen,
+};
 pub use output::{AudioOutput, AudioSink};
 pub use pitch::{MAX_SEMITONES, PitchShifter};
 pub use recorder::{Recorder, Recording};

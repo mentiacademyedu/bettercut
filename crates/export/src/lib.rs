@@ -65,7 +65,7 @@ mod still;
 mod wav;
 
 pub use bounce::{BounceJob, only_this_lane, track_span};
-pub use colour_match::{ColourMatchJob, MatchedGrade, colour_match};
+pub use colour_match::{ColourMatchJob, MatchedGrade, auto_level, colour_match};
 pub use contact_sheet::{ContactSheetJob, MAX_TILES, SheetSettings, contact_sheet, shrink};
 pub use error::ExportError;
 pub use frames::{FRAMES_ENCODER, export_frames, frame_file, frames_folder};
@@ -101,6 +101,14 @@ pub struct ExportSettings {
     /// Write every frame as a numbered PNG in a folder named after `path`
     /// (`frames.rs`): the picture at `resolution` and `frame_rate`, no sound.
     pub image_sequence: bool,
+    /// Bring the mix to this loudness, in LUFS, before writing it: measured
+    /// over the whole range first, then gained by the difference
+    /// (`bettercut_audio::loudness::gain_for`), then limited as always. `None`
+    /// writes the mix at the level it was mixed.
+    pub loudness_target: Option<f32>,
+    /// The sound's bits per second in the file, or `None` for the default
+    /// (`bettercut_media::DEFAULT_AUDIO_BITRATE`).
+    pub audio_bitrate: Option<i64>,
     /// Write the picture with no sound stream at all.
     ///
     /// What render in place bakes (`bettercut_timeline::render`): a bake
@@ -134,6 +142,8 @@ impl ExportSettings {
             picture_only: false,
             gif: false,
             image_sequence: false,
+            loudness_target: None,
+            audio_bitrate: None,
             transparent: false,
         }
     }
@@ -302,7 +312,12 @@ pub fn export(
         compositor.load_lut(id, lut);
     });
 
-    let mut writer = VideoWriter::create(
+    // The sequence's chapters, cut to the exported stretch and re-based to
+    // its start, so a player's list matches the file it is playing. Only
+    // when there is a mark to make chapters of: an unmarked sequence would
+    // otherwise carry one chapter called "Intro", which is noise.
+    let chapters = chapter_marks(sequence, settings.range);
+    let mut writer = VideoWriter::create_with_chapters(
         &settings.path,
         ExportFormat {
             transparent: settings.transparent,
@@ -313,8 +328,10 @@ pub fn export(
             bitrate: settings.bitrate,
             rate_control: settings.rate_control,
             channels,
+            audio_bitrate: settings.audio_bitrate,
             threads: settings.threads,
         },
+        &chapters,
     )?;
     let encoder = writer.encoder();
     tracing::info!(
@@ -332,6 +349,12 @@ pub fn export(
     // same parameters, same bitmap.
     let mut titles = TextFrames::new();
     let mut audio = AudioMixdown::new(project, sequence, channels);
+    if let Some(target) = settings.loudness_target
+        && channels > 0
+        && let Some(measured) = audio.normalise_to(settings.range, target, cancel)
+    {
+        tracing::info!(measured, target, "export loudness normalised");
+    }
 
     let mut samples_written: i64 = 0;
 
@@ -543,6 +566,8 @@ struct AudioMixdown {
     /// and the plan is that snapshot's audio half.
     plan: AudioPlan,
     channels: usize,
+    /// The normalising gain, one unless `normalise_to` set it.
+    gain: f32,
 }
 
 impl AudioMixdown {
@@ -553,7 +578,67 @@ impl AudioMixdown {
             mixer: AudioMixer::new(1),
             plan: AudioPlan::of(project, sequence),
             channels,
+            gain: 1.0,
         }
+    }
+
+    /// Bring the mix to `target` LUFS: the range is mixed once to measure it
+    /// (the mix is deterministic, §46, so measuring it is playing it), and the
+    /// difference becomes a gain on every block written after. Returns what
+    /// was measured, or `None` for a range too quiet to measure, which is
+    /// left as it is.
+    fn normalise_to(
+        &mut self,
+        range: TimelineRange,
+        target: f32,
+        cancel: &dyn CancellationToken,
+    ) -> Option<f32> {
+        const BLOCK: usize = 4_800;
+        let mut meter = bettercut_audio::loudness::LoudnessMeter::new(self.channels);
+        let total = (range.duration().ticks() / TICKS_PER_AUDIO_SAMPLE).max(0) as usize;
+        let mut done = 0;
+        while done < total {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let frames = BLOCK.min(total - done);
+            let position = TimelineTime::from_ticks(
+                range.start.ticks() + done as i64 * TICKS_PER_AUDIO_SAMPLE,
+            );
+            let block = self.read_interleaved(position, frames);
+            meter.push_interleaved(&block, self.channels);
+            done += frames;
+        }
+        let measured = meter.integrated()?;
+        self.gain = bettercut_audio::loudness::gain_for(measured, target);
+        // A fresh mixer for the real pass: the measuring pass ran every
+        // stateful stage forward, and the export must start from the top.
+        self.mixer = AudioMixer::new(1);
+        Some(measured)
+    }
+
+    fn read_interleaved(&mut self, position: TimelineTime, frames: usize) -> Vec<f32> {
+        let mut interleaved = vec![0.0_f32; frames * self.channels];
+        self.mixer.mix_block(
+            &self.plan,
+            position,
+            frames,
+            self.channels,
+            &mut interleaved,
+        );
+
+        // The normalising gain sits before the master and the limiter, so a
+        // mix brought up to its target is still held under full scale.
+        if (self.gain - 1.0).abs() > 1e-6 {
+            for sample in &mut interleaved {
+                *sample *= self.gain;
+            }
+        }
+
+        // §20a.4's final stage, exactly as playback applies it — the same
+        // master volume, from the same plan (§46).
+        bettercut_audio::finish(&mut interleaved, self.plan.master_volume);
+        interleaved
     }
 
     /// The `frames` samples covering the video frame that starts at
@@ -564,19 +649,7 @@ impl AudioMixdown {
     /// one — which is what keeps the audio locked to §9's ticks rather than to
     /// a count that could drift from them.
     fn read(&mut self, position: TimelineTime, frames: usize) -> Vec<Vec<f32>> {
-        let mut interleaved = vec![0.0_f32; frames * self.channels];
-        self.mixer.mix_block(
-            &self.plan,
-            position,
-            frames,
-            self.channels,
-            &mut interleaved,
-        );
-
-        // §20a.4's final stage, exactly as playback applies it — the same
-        // master volume, from the same plan (§46).
-        bettercut_audio::finish(&mut interleaved, self.plan.master_volume);
-
+        let interleaved = self.read_interleaved(position, frames);
         deinterleave(&interleaved, self.channels)
     }
 }
@@ -655,6 +728,38 @@ pub fn unpremultiply(rgba: &mut [u8]) {
             *channel = to_srgb(to_linear[usize::from(*channel)] / a);
         }
     }
+}
+
+/// The chapters to write into a file of `range`: the sequence's chapters
+/// (`bettercut_timeline::chapter_ranges`) that fall inside the stretch, each
+/// cut to it and moved so the file's first frame is time zero. None unless
+/// the sequence has at least one mark inside the stretch, so an unmarked
+/// export carries no chapter list at all.
+pub fn chapter_marks(
+    sequence: &bettercut_timeline::Sequence,
+    range: TimelineRange,
+) -> Vec<bettercut_media::ChapterMark> {
+    let marked_inside = sequence
+        .markers
+        .iter()
+        .any(|marker| marker.time > range.start && marker.time < range.end);
+    if !marked_inside {
+        return Vec::new();
+    }
+    bettercut_timeline::chapter_ranges(&sequence.markers, sequence.duration())
+        .into_iter()
+        .filter_map(|(title, chapter)| {
+            let start = chapter.start.max(range.start);
+            let end = chapter.end.min(range.end);
+            (end > start).then(|| bettercut_media::ChapterMark {
+                title,
+                start: bettercut_foundation::MediaTime::from_ticks(
+                    start.ticks() - range.start.ticks(),
+                ),
+                end: bettercut_foundation::MediaTime::from_ticks(end.ticks() - range.start.ticks()),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -576,6 +576,9 @@ pub struct UiState {
     pub preview_pan: egui::Vec2,
     /// How tall the timeline's lanes are drawn.
     pub lane_height: LaneHeight,
+    /// Lanes drawn at a height of their own — one tall for its waveform
+    /// while the rest stay short. Anything not here follows `lane_height`.
+    pub lane_heights: HashMap<TrackId, LaneHeight>,
     /// Timeline tick at the left edge of the canvas.
     pub scroll_ticks: i64,
 
@@ -610,6 +613,12 @@ pub struct UiState {
     /// these on screen. They are counted either way; showing them costs a few
     /// lines and turns an adjective into evidence.
     pub playback: Option<PlaybackStats>,
+    /// What the interface remembers about itself (`crate::prefs`): the theme,
+    /// the recent colours.
+    pub prefs: crate::prefs::UserPrefs,
+    /// Which colour button last changed, and when: a drag through the picker
+    /// is one pick (`crate::swatches`).
+    pub swatch_last: Option<(egui::Id, f64)>,
     /// What the meters in the sound track heads show, per lane, per side.
     ///
     /// Not the live reading but a falling one: a peak meter that followed the
@@ -729,6 +738,13 @@ pub struct UiState {
     /// A marker name being typed, and which marker it is for — applied when
     /// the field is left, so a rename is one undo step.
     pub marker_draft: Option<(bettercut_editor_core::foundation::TimelineTime, String)>,
+    /// A timecode being typed into the readout (`crate::timecode_entry`).
+    pub timecode_draft: Option<String>,
+    /// A clip's name being typed in its menu, and which clip it is for.
+    pub clip_name_draft: Option<(ClipId, String)>,
+    /// Where the typed timecode asks the playhead to go: taken by the
+    /// transport, which is what has the preview to seek.
+    pub jump_to: Option<TimelineTime>,
 
     /// A frame to save as a PNG, and the instant it was asked for at. Taken by
     /// the shell, which owns the job scheduler the still renders on (§74).
@@ -800,6 +816,12 @@ pub struct UiState {
     /// A clip to colour match to the frame at the given time, asked for by
     /// "Match Colour to Playhead".
     pub colour_match_request: Option<(bettercut_editor_core::foundation::ClipId, TimelineTime)>,
+    /// A clip to grade to a neutral exposure and balance, in the background
+    /// like a colour match (`bettercut_export::auto_level`).
+    pub auto_level_request: Option<bettercut_editor_core::foundation::ClipId>,
+    /// Files whose decoders must be reopened — the way they are read
+    /// changed (deinterlacing) — taken by the shell, which has the preview.
+    pub media_reopen: Vec<bettercut_editor_core::foundation::MediaId>,
 
     /// Projects opened or saved lately, for the Open menu. In memory only
     /// until the shell points it at the user's stored list.
@@ -833,9 +855,15 @@ pub struct UiState {
 
     /// The History window (Ctrl+H): every step, and a click to return to one.
     pub history_open: bool,
+    /// The Notes window (`crate::notes_panel`), and the text being typed in
+    /// it — applied as one step when the window is left.
+    pub notes_open: bool,
+    pub notes_draft: Option<String>,
     /// The undo depth the History window last drew, so it scrolls to the
     /// current step only when that moves.
     pub history_seen_depth: Option<usize>,
+    /// Words typed into the History window's search box.
+    pub history_search: String,
 
     /// Which caption is being typed into, so the keystrokes after the first
     /// join the same undo step and a different caption starts its own.
@@ -869,6 +897,8 @@ pub struct UiState {
     /// prefers hard cuts and five seconds a photo sets that once.
     pub slideshow: bettercut_editor_core::slideshow::Slideshow,
 
+    /// The groups the next Paste Attributes will take, ticked in its menu.
+    pub paste_groups: Vec<bettercut_editor_core::attributes::AttributeGroup>,
     /// A look taken off a clip, waiting to be put onto others (§45).
     ///
     /// The values rather than the clip it came from, so deleting that clip
@@ -880,6 +910,8 @@ pub struct UiState {
 
     /// The Remove Silences window (§78), with its suggestion.
     pub silence: Option<crate::silence_dialog::SilenceDialog>,
+    /// The "find the good bits" window (`crate::highlight_dialog`).
+    pub highlights: Option<crate::highlight_dialog::HighlightDialog>,
 
     /// The Find Cuts window (§45), once detection has been started.
     pub scenes: Option<crate::scene_dialog::SceneDialog>,
@@ -941,6 +973,7 @@ impl Default for UiState {
         Self {
             zoom_index: DEFAULT_ZOOM_INDEX,
             lane_height: LaneHeight::Normal,
+            lane_heights: HashMap::new(),
             movement_strength: bettercut_editor_core::timeline::MovementStrength::default(),
             movement_alternates: true,
             preview_guide: PreviewGuide::Off,
@@ -955,6 +988,8 @@ impl Default for UiState {
             font_imported: None,
             font_filter: String::new(),
             playback: None,
+            prefs: crate::prefs::UserPrefs::default(),
+            swatch_last: None,
             lane_levels: Vec::new(),
             snapping: true,
             drag: None,
@@ -989,6 +1024,9 @@ impl Default for UiState {
             media_bin: None,
             new_bin_draft: String::new(),
             marker_draft: None,
+            timecode_draft: None,
+            clip_name_draft: None,
+            jump_to: None,
             still_request: None,
             contact_sheet_request: None,
             waveform_view: crate::waveform_view::WaveformView::default(),
@@ -1021,6 +1059,8 @@ impl Default for UiState {
             media_name_draft: None,
             scopes: crate::scopes::ScopesState::default(),
             colour_match_request: None,
+            auto_level_request: None,
+            media_reopen: Vec::new(),
             recent: crate::recent::RecentProjects::default(),
             keymap: crate::keymap::Keymap::default(),
             speed_curve: bettercut_editor_core::SpeedCurve::default(),
@@ -1035,15 +1075,20 @@ impl Default for UiState {
             rebinding: None,
             editing_keys: false,
             history_open: false,
+            notes_open: false,
+            notes_draft: None,
             history_seen_depth: None,
+            history_search: String::new(),
             caption_typing: None,
             effects_for: None,
             picking_key: None,
             cropping: None,
             slideshow: bettercut_editor_core::slideshow::Slideshow::default(),
             copied_look: None,
+            paste_groups: bettercut_editor_core::attributes::AttributeGroup::ALL.to_vec(),
             copied_animation: None,
             silence: None,
+            highlights: None,
             scenes: None,
             scene_request: None,
             scene_cancel: None,
@@ -1062,6 +1107,28 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// How tall `track`'s lane is drawn: its own height, or the timeline's.
+    pub fn lane_height_for(&self, track: TrackId) -> f32 {
+        self.lane_heights
+            .get(&track)
+            .copied()
+            .unwrap_or(self.lane_height)
+            .pixels()
+    }
+
+    /// Give `track` a height of its own, or `None` to follow the others.
+    pub fn set_lane_height(&mut self, track: TrackId, height: Option<LaneHeight>) {
+        match height {
+            Some(height) => {
+                self.lane_heights.insert(track, height);
+            }
+            None => {
+                self.lane_heights.remove(&track);
+            }
+        }
+        self.needs_repaint = true;
+    }
+
     pub fn ticks_per_pixel(&self) -> i64 {
         ZOOM_LEVELS[self.zoom_index.min(ZOOM_LEVELS.len() - 1)]
     }
@@ -1124,6 +1191,36 @@ impl UiState {
             .unwrap_or(ZOOM_LEVELS.len() - 1);
         self.scroll_ticks = (range.start.ticks() - margin).max(0);
         self.needs_repaint = true;
+    }
+
+    /// Zoom in on one clip, with a little room either side.
+    pub fn zoom_to_clip(
+        &mut self,
+        editor: &bettercut_editor_core::Editor,
+        clip: ClipId,
+        width: f32,
+    ) {
+        if let Some(range) = editor
+            .active_sequence()
+            .and_then(|sequence| sequence.clip_span(clip))
+            .map(|span| span.timeline)
+        {
+            self.zoom_to_range(range, width);
+        }
+    }
+
+    /// Zoom in on the selected clips — or, with nothing selected, out to the
+    /// whole edit. One key for "show me what I am working on".
+    pub fn zoom_to_selection_or_fit(&mut self, editor: &bettercut_editor_core::Editor, width: f32) {
+        match self.selection_range(editor) {
+            Some(range) => self.zoom_to_range(range, width),
+            None => {
+                let duration = editor
+                    .active_sequence()
+                    .map_or(TimelineTime::ZERO, |s| s.duration());
+                self.zoom_to_fit(duration, width);
+            }
+        }
     }
 
     /// The span the selected clips cover, first start to last end.

@@ -15,7 +15,7 @@ use egui::{Modifiers, Pos2, RawInput, Rect, vec2};
 
 /// Mirrors the default zoom, for moving a handle a known distance in time.
 const PX_PER_SECOND: f32 = 30.0;
-/// `theme::FADE_HANDLE`, which is how the handles are found in the frame.
+/// `theme::fade_handle()`, which is how the handles are found in the frame.
 const HANDLE: egui::Color32 = egui::Color32::from_rgb(240, 240, 240);
 
 struct Harness {

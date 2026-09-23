@@ -98,6 +98,16 @@ impl App {
         ui.title_styles = bettercut_ui::title_styles::UserTitleStyles::stored_in(
             bettercut_ui::title_styles::UserTitleStyles::default_file(),
         );
+        // What the interface remembers about itself: the theme, before the
+        // first frame is drawn in the wrong one.
+        ui.prefs = bettercut_ui::prefs::UserPrefs::stored_in(
+            bettercut_ui::prefs::UserPrefs::default_file(),
+        );
+        bettercut_ui::theme::set_light(ui.prefs.light_theme);
+        bettercut_ui::theme::apply(&cc.egui_ctx);
+        cc.egui_ctx
+            .set_zoom_factor(bettercut_ui::prefs::sane_scale(ui.prefs.interface_scale));
+        let autosave_seconds = ui.prefs.autosave_seconds;
         ui.export_presets = bettercut_ui::export_presets::UserExports::stored_in(
             bettercut_ui::export_presets::UserExports::default_file(),
         );
@@ -122,6 +132,10 @@ impl App {
             },
             None => Editor::new_project("Untitled"),
         };
+
+        // How often the recovery journal snapshots: the machine's setting.
+        let mut editor = editor;
+        editor.set_autosave_seconds(autosave_seconds);
 
         // §44: the decoder thread cap and cache budget come from the detected
         // hardware, not from a constant.
@@ -325,6 +339,14 @@ impl eframe::App for App {
                 preview.proxy_ready(*media);
             }
         }
+        // A file now read differently (deinterlaced, or no longer): its
+        // decoders and thumbnails start again.
+        for media in std::mem::take(&mut self.ui.media_reopen) {
+            if let Some(preview) = self.preview.as_mut() {
+                preview.proxy_ready(media);
+            }
+            self.ui.thumbnails.invalidate(media);
+        }
         for media in &update.thumbnails {
             // Drop the remembered "no thumbnail yet" so it loads next frame.
             self.ui.thumbnails.invalidate(*media);
@@ -360,9 +382,13 @@ impl eframe::App for App {
                     .error(format!("Could not read the render back: {err}")),
             }
         }
-        if let Some((clip, grade)) = update.colour_match {
-            match self.editor.set_clip_grade(clip, grade, "Match Colour") {
-                Ok(()) => self.ui.info("Colour matched"),
+        if let Some((clip, grade, label)) = update.colour_match {
+            match self.editor.set_clip_grade(clip, grade, label) {
+                Ok(()) => self.ui.info(if label == "Auto Level" {
+                    "Levels set"
+                } else {
+                    "Colour matched"
+                }),
                 Err(err) => self.ui.error(err.to_string()),
             }
         }
@@ -407,6 +433,9 @@ impl eframe::App for App {
         // The queue window's requests, then what it should show next.
         if let Some(index) = self.ui.export_queue.remove.take() {
             self.proxies.remove_waiting_export(index);
+        }
+        if let Some((from, to)) = self.ui.export_queue.move_to.take() {
+            self.proxies.move_waiting_export(from, to);
         }
         if std::mem::take(&mut self.ui.export_queue.clear) {
             let removed = self.proxies.clear_waiting_exports();
@@ -593,6 +622,18 @@ impl eframe::App for App {
 
         // A colour match: worked out in the background, applied when it
         // arrives (below), as one undo step.
+        if let Some(clip) = self.ui.auto_level_request.take() {
+            match self.editor.export_copy(None) {
+                Ok((project, sequence)) => {
+                    self.ui.info("Setting levels from the clip's own frame");
+                    self.proxies
+                        .submit_colour_match(bettercut_export::ColourMatchJob::auto_level(
+                            project, sequence, clip,
+                        ));
+                }
+                Err(err) => self.ui.error(err.to_string()),
+            }
+        }
         if let Some((clip, at)) = self.ui.colour_match_request.take() {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {

@@ -97,6 +97,21 @@ pub struct ProjectSettings {
     /// chosen.
     #[serde(default)]
     pub magnetic_timeline: bool,
+
+    /// How long a transition is when one is added: the project's own
+    /// house style, half a second by default. Defaulted for older projects.
+    #[serde(default = "default_transition_length")]
+    pub transition_length: bettercut_foundation::TimelineTime,
+}
+
+/// The shortest and longest a default transition may be set to.
+pub const MIN_TRANSITION_LENGTH: bettercut_foundation::TimelineTime =
+    bettercut_foundation::TimelineTime::from_millis(100);
+pub const MAX_TRANSITION_LENGTH: bettercut_foundation::TimelineTime =
+    bettercut_foundation::TimelineTime::from_seconds(5);
+
+fn default_transition_length() -> bettercut_foundation::TimelineTime {
+    bettercut_foundation::TimelineTime::from_millis(500)
 }
 
 /// The shortest and longest a photo may be set to run when placed: shorter
@@ -133,6 +148,8 @@ impl Default for ProjectSettings {
             snapping_enabled: true,
             photo_length: default_photo_length(),
             magnetic_timeline: false,
+
+            transition_length: default_transition_length(),
         }
     }
 }

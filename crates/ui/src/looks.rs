@@ -179,12 +179,32 @@ impl UserLooks {
 fn render(looks: &[(String, SavedLook)]) -> String {
     let mut text = String::from(
         "# bettercut looks: name, brightness, contrast, saturation, temperature, tint, vibrance, \
-         blur, sharpen, glow, old film, vignette\n",
+         blur, sharpen, glow, old film, vignette, lift rgb, gamma rgb, gain rgb, \
+         secondary hue, width, hue shift, saturation, luminance\n",
     );
     for (name, look) in looks {
         let colour = look.colour;
+        let wheels = colour.wheels;
+        let pick = colour.secondary;
+        let wheel_columns: Vec<String> = wheels
+            .lift
+            .iter()
+            .chain(wheels.gamma.iter())
+            .chain(wheels.gain.iter())
+            .chain(
+                [
+                    pick.hue,
+                    pick.width,
+                    pick.hue_shift,
+                    pick.saturation,
+                    pick.luminance,
+                ]
+                .iter(),
+            )
+            .map(|v| v.to_string())
+            .collect();
         text.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             name.replace('\t', " "),
             colour.brightness,
             colour.contrast,
@@ -196,7 +216,8 @@ fn render(looks: &[(String, SavedLook)]) -> String {
             look.sharpen,
             look.glow,
             look.old_film,
-            look.vignette
+            look.vignette,
+            wheel_columns.join("\t")
         ));
     }
     text
@@ -235,6 +256,24 @@ fn parse(text: &str) -> Vec<(String, SavedLook)> {
                     temperature: numbers[3],
                     tint: numbers[4],
                     vibrance: at(5),
+                    // Nine columns after the vignette, a file written before
+                    // the wheels existed having none — which is at rest.
+                    wheels: bettercut_editor_core::timeline::ColorWheels {
+                        lift: [at(11), at(12), at(13)],
+                        gamma: [at(14), at(15), at(16)],
+                        gain: [at(17), at(18), at(19)],
+                    },
+                    // Five columns after the wheels; a file from before them
+                    // has none, and a width of nothing reads as the default.
+                    secondary: bettercut_editor_core::timeline::HslSecondary {
+                        hue: at(20),
+                        width: numbers.get(21).copied().unwrap_or(
+                            bettercut_editor_core::timeline::HslSecondary::DEFAULT_WIDTH,
+                        ),
+                        hue_shift: at(22),
+                        saturation: at(23),
+                        luminance: at(24),
+                    },
                 },
                 blur: at(6),
                 sharpen: at(7),
@@ -262,6 +301,8 @@ mod tests {
             temperature: 0.3,
             tint: -0.05,
             vibrance: 0.25,
+            wheels: Default::default(),
+            secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
         }
     }
 
@@ -332,6 +373,24 @@ mod tests {
 
         let back = parse(&render(looks.all()));
         assert_eq!(back, looks.all().to_vec());
+    }
+
+    /// The wheels ride in nine columns after the finish, and come back
+    /// exactly: a look is the whole grade or it is not the look.
+    #[test]
+    fn a_look_keeps_its_wheels_through_the_file() {
+        let mut graded = dreamy();
+        graded.colour.wheels = bettercut_editor_core::timeline::ColorWheels {
+            lift: [0.1, -0.2, 0.3],
+            gamma: [0.0, 0.25, -0.5],
+            gain: [0.75, 0.0, -1.0],
+        };
+        let mut looks = UserLooks::default();
+        looks.save("Wheeled", graded).expect("saved");
+
+        let back = parse(&render(looks.all()));
+        assert_eq!(back, looks.all().to_vec());
+        assert_eq!(back[0].1.colour.wheels, graded.colour.wheels);
     }
 
     /// A file from before vibrance existed still reads, with none of it.

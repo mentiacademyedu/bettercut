@@ -192,7 +192,7 @@ fn the_animated_parameters_offer_picture_only() {
             | AnimatedParameter::Temperature
             | AnimatedParameter::Tint
             | AnimatedParameter::Blur => true,
-            AnimatedParameter::Gain => false,
+            AnimatedParameter::Gain | AnimatedParameter::Pan => false,
         }
     }
 
@@ -201,6 +201,10 @@ fn the_animated_parameters_offer_picture_only() {
     assert!(
         !AnimatedParameter::ALL.contains(&AnimatedParameter::Gain),
         "volume is sound, and belongs to the audio controls"
+    );
+    assert!(
+        !AnimatedParameter::ALL.contains(&AnimatedParameter::Pan),
+        "pan is sound too, and belongs beside the volume"
     );
 }
 

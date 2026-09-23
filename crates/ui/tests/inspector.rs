@@ -685,6 +685,8 @@ mod look_strength {
             temperature: 0.0,
             tint: 0.0,
             vibrance: 0.0,
+            wheels: bettercut_editor_core::timeline::ColorWheels::IDENTITY,
+            secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
         };
         assert_eq!(bettercut_ui::panels::look_of(hand_made), None);
     }

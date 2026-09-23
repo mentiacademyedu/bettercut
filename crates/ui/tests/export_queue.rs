@@ -82,6 +82,45 @@ fn the_queue_lists_exports_and_takes_requests() {
     assert!(state.export_stop_requested);
 }
 
+/// The arrows ask for a move by one place; the first cannot go up nor the
+/// last down.
+#[test]
+fn the_arrows_ask_to_move_a_waiting_export() {
+    let ctx = egui::Context::default();
+    let mut state = UiState::default();
+    state.export_queue.open = true;
+    state.export_queue.waiting = vec![
+        "Exporting a.mp4".to_owned(),
+        "Exporting b.mp4".to_owned(),
+        "Exporting c.mp4".to_owned(),
+    ];
+    let _ = frame(&ctx, &mut state, Vec::new());
+    let words = frame(&ctx, &mut state, Vec::new());
+    let arrows = |glyph: &str| -> Vec<Rect> {
+        words
+            .iter()
+            .filter(|(w, _)| w == glyph)
+            .map(|(_, r)| *r)
+            .collect()
+    };
+    let ups = arrows("Up");
+    let downs = arrows("Down");
+    assert_eq!((ups.len(), downs.len()), (3, 3));
+
+    // The last one's up arrow: it moves to second.
+    let _ = frame(&ctx, &mut state, click(ups[2].center()));
+    assert_eq!(state.export_queue.move_to, Some((2, 1)));
+
+    // The first one's up arrow is disabled and asks nothing.
+    state.export_queue.move_to = None;
+    let _ = frame(&ctx, &mut state, click(ups[0].center()));
+    assert_eq!(state.export_queue.move_to, None);
+
+    // The first one's down arrow: it moves to second.
+    let _ = frame(&ctx, &mut state, click(downs[0].center()));
+    assert_eq!(state.export_queue.move_to, Some((0, 1)));
+}
+
 #[test]
 fn a_closed_queue_draws_nothing() {
     let ctx = egui::Context::default();

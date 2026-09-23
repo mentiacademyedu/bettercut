@@ -43,6 +43,10 @@ pub const SNAPSHOT_EVERY_COMMANDS: u32 = 200;
 
 /// Seconds before a snapshot is forced, if any commands are pending.
 pub const SNAPSHOT_EVERY_SECONDS: u64 = 60;
+/// The least and most a person may set that to: under ten seconds the disk
+/// never rests, over ten minutes a crash costs real work.
+pub const MIN_SNAPSHOT_SECONDS: u64 = 10;
+pub const MAX_SNAPSHOT_SECONDS: u64 = 600;
 
 pub const RECOVERY_DIR: &str = "recovery";
 pub const SNAPSHOT_FILE: &str = "snapshot.vproj";
@@ -90,6 +94,9 @@ pub struct Journal {
     file: Option<File>,
     since_snapshot: u32,
     last_snapshot: std::time::Instant,
+    /// Seconds before a snapshot is forced: [`SNAPSHOT_EVERY_SECONDS`]
+    /// unless the interface asked otherwise.
+    snapshot_every_seconds: u64,
     /// Appends that failed. Non-zero means recovery would be incomplete, and
     /// the user deserves to know rather than find out after a crash.
     write_failures: u32,
@@ -102,6 +109,7 @@ impl Journal {
             file: None,
             since_snapshot: 0,
             last_snapshot: std::time::Instant::now(),
+            snapshot_every_seconds: SNAPSHOT_EVERY_SECONDS,
             write_failures: 0,
         }
     }
@@ -173,12 +181,22 @@ impl Journal {
 
     /// Should a full snapshot be taken now? (§38.2's "every N commands or T
     /// seconds".)
+    /// How often a snapshot is forced, in seconds, held to
+    /// [`MIN_SNAPSHOT_SECONDS`]..=[`MAX_SNAPSHOT_SECONDS`].
+    pub fn set_snapshot_every_seconds(&mut self, seconds: u64) {
+        self.snapshot_every_seconds = seconds.clamp(MIN_SNAPSHOT_SECONDS, MAX_SNAPSHOT_SECONDS);
+    }
+
+    pub fn snapshot_every_seconds(&self) -> u64 {
+        self.snapshot_every_seconds
+    }
+
     pub fn snapshot_is_due(&self) -> bool {
         if self.since_snapshot == 0 {
             return false;
         }
         self.since_snapshot >= SNAPSHOT_EVERY_COMMANDS
-            || self.last_snapshot.elapsed().as_secs() >= SNAPSHOT_EVERY_SECONDS
+            || self.last_snapshot.elapsed().as_secs() >= self.snapshot_every_seconds
     }
 
     /// Write a full snapshot and truncate the journal.

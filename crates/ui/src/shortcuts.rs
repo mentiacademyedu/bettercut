@@ -68,10 +68,10 @@ pub const SECTIONS: &[Section] = &[
             ),
             Shortcut::new(
                 ", and .",
-                "Nudge the selection a frame (Shift: ten)",
+                "Nudge the selection a frame (Shift: ten; Alt: sound only, a millisecond, for sync)",
                 &[Key::Comma, Key::Period],
             ),
-            Shortcut::new("M", "Add / remove a marker at the playhead", &[Key::M]),
+            Shortcut::new("M", "Add / remove a marker (Shift: on the clip)", &[Key::M]),
             Shortcut::new(
                 "I / O",
                 "Mark in / out at the playhead (Alt: clear both)",
@@ -137,7 +137,11 @@ pub const SECTIONS: &[Section] = &[
         title: "Mouse",
         shortcuts: &[
             Shortcut::new("Wheel", "Scroll the timeline", &[]),
-            Shortcut::new("Ctrl + wheel", "Zoom the timeline", &[]),
+            Shortcut::new(
+                "Ctrl + wheel",
+                "Zoom the timeline (Shift + Z: in on the selection, or out to the whole edit)",
+                &[],
+            ),
             Shortcut::new("Ctrl + click", "Add a clip to the selection", &[]),
             Shortcut::new("Drag on empty space", "Select every clip in a box", &[]),
             Shortcut::new("Alt + drag", "Move without snapping", &[]),
@@ -370,6 +374,12 @@ pub fn handle(
                 Ok(()) => state.needs_repaint = true,
                 Err(err) => state.info(err.to_string()),
             },
+            egui::Key::Z if modifiers.shift => {
+                // The lanes, not the whole window: the track names take the left.
+                let lanes =
+                    (ctx.content_rect().width() - crate::theme::TRACK_HEADER_WIDTH).max(200.0);
+                state.zoom_to_selection_or_fit(editor, lanes);
+            }
 
             egui::Key::H if modifiers.command => {
                 state.history_open = !state.history_open;
@@ -380,6 +390,19 @@ pub fn handle(
                 panels::save_project_as(editor, state);
             }
             egui::Key::S if modifiers.command => panels::save_project(editor, state),
+            egui::Key::S if modifiers.shift => {
+                // Every lane, whatever is selected: the cut through the
+                // whole edit at one instant.
+                let under = editor.clips_under_playhead();
+                match editor.split_at_playhead(&under) {
+                    Ok(0) => state.info("Nothing under the playhead to split"),
+                    Ok(n) => {
+                        state.clear_selection();
+                        state.info(format!("Split {n} clip(s) on every lane"));
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
             egui::Key::S => split_at_playhead(editor, state),
 
             egui::Key::X if modifiers.command => cut_selection(editor, state),
@@ -531,6 +554,33 @@ pub fn handle(
                 }
             }
 
+            // Shift: a mark on the clip under the playhead, which moves with
+            // it, rather than one on the edit.
+            egui::Key::M if modifiers.shift => {
+                let selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+                let under: Vec<ClipId> = if selected.is_empty() {
+                    editor
+                        .active_sequence()
+                        .map(|s| {
+                            s.clip_spans()
+                                .filter(|span| span.timeline.contains(editor.playhead()))
+                                .map(|span| span.clip)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    selected
+                };
+                if under.is_empty() {
+                    state.info("Put the playhead over a clip to mark it");
+                }
+                for clip in under {
+                    match editor.toggle_clip_mark(clip) {
+                        Ok(_) => state.needs_repaint = true,
+                        Err(err) => state.info(err.to_string()),
+                    }
+                }
+            }
             egui::Key::M if !modifiers.command => match editor.toggle_marker(editor.playhead()) {
                 Ok(added) => {
                     state.info(if added {
@@ -545,6 +595,17 @@ pub fn handle(
 
             // Nudging: the keyboard equivalent of dragging, and the only way
             // to move a clip by exactly one frame.
+            egui::Key::Comma | egui::Key::Period if modifiers.alt => {
+                // A millisecond of sound, for lining it up with the picture
+                // by ear: the picture stays on its frames.
+                let ticks = bettercut_editor_core::foundation::TICKS_PER_SECOND / 1000;
+                let ticks = if key == egui::Key::Comma {
+                    -ticks
+                } else {
+                    ticks
+                };
+                nudge_sound_selection(editor, state, ticks);
+            }
             egui::Key::Comma | egui::Key::Period => {
                 let frames = if modifiers.shift { 10 } else { 1 };
                 let frames = if key == egui::Key::Comma {
@@ -585,6 +646,20 @@ pub fn nudge_selection(editor: &mut Editor, state: &mut UiState, frames: i64) {
         Ok(_) => state.needs_repaint = true,
         // A nudge into a neighbour is refused by the track, and saying so
         // beats a key that silently does nothing.
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Move the selected *sound* clips by `ticks`, picture left alone.
+pub fn nudge_sound_selection(editor: &mut Editor, state: &mut UiState, ticks: i64) {
+    if state.selected_clips.is_empty() {
+        state.info("Nothing selected");
+        return;
+    }
+    let selected: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    match editor.nudge_sound_by(&selected, ticks) {
+        Ok(0) => state.info("Select a sound clip: the millisecond nudge moves sound only"),
+        Ok(_) => state.needs_repaint = true,
         Err(err) => state.error(err.to_string()),
     }
 }
@@ -783,7 +858,7 @@ fn section_grid(ui: &mut egui::Ui, state: &mut UiState, title: &str, rows: &[Sho
                             let text = if waiting { "…" } else { now.name() };
                             let mut label = egui::RichText::new(text).monospace().small();
                             if state.keymap.is_moved(*default) {
-                                label = label.color(crate::theme::PLAYHEAD);
+                                label = label.color(crate::theme::playhead());
                             }
                             if ui
                             .add(egui::Button::new(label).small())
@@ -827,7 +902,7 @@ pub fn help_window(ctx: &egui::Context, state: &mut UiState) {
             let found = matching(&state.shortcut_search);
             if found.is_empty() {
                 ui.label(
-                    egui::RichText::new("No shortcut matches that").color(crate::theme::DISABLED),
+                    egui::RichText::new("No shortcut matches that").color(crate::theme::disabled()),
                 );
             }
             // Three columns on a wide screen, so the whole sheet fits a laptop
@@ -856,7 +931,7 @@ pub fn help_window(ctx: &egui::Context, state: &mut UiState) {
                         "The clip actions are also on the timeline's right-click menu.",
                     )
                     .small()
-                    .color(crate::theme::DISABLED),
+                    .color(crate::theme::disabled()),
                 );
                 ui.checkbox(&mut state.editing_keys, "Change keys")
                     .on_hover_text("Show the key for each shortcut, to click and replace");
@@ -876,7 +951,7 @@ pub fn help_window(ctx: &egui::Context, state: &mut UiState) {
                         "Press the new key for what {} does (Esc to cancel)",
                         default.name()
                     ))
-                    .color(crate::theme::PLAYHEAD),
+                    .color(crate::theme::playhead()),
                 );
             }
         });

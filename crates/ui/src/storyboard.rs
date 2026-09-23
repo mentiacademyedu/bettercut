@@ -46,7 +46,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let cards = editor.storyboard();
     if cards.is_empty() {
         ui.label(
-            egui::RichText::new("Nothing on the first picture lane yet.").color(theme::DISABLED),
+            egui::RichText::new("Nothing on the first picture lane yet.").color(theme::disabled()),
         );
         return;
     }
@@ -54,7 +54,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.label(
         egui::RichText::new("Drag a card to move that shot; click one to go to it")
             .small()
-            .color(theme::DISABLED),
+            .color(theme::disabled()),
     );
     ui.add_space(4.0);
 
@@ -77,9 +77,9 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     .stroke(egui::Stroke::new(
                         1.0,
                         if playing {
-                            theme::PLAYHEAD
+                            theme::playhead()
                         } else {
-                            theme::GRID_LINE
+                            theme::grid_line()
                         },
                     ));
 
@@ -124,7 +124,7 @@ fn draw_card(
     let size = egui::vec2(CARD_WIDTH, CARD_WIDTH * 9.0 / 16.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     ui.painter()
-        .rect_filled(rect, 3, theme::TIMELINE_BACKGROUND);
+        .rect_filled(rect, 3, theme::timeline_background());
 
     // The poster frame, letterboxed rather than stretched: a squashed shot is
     // harder to recognise than a small one.
@@ -147,13 +147,13 @@ fn draw_card(
         egui::Align2::LEFT_TOP,
         format!("{}", index + 1),
         egui::FontId::proportional(12.0),
-        theme::CLIP_TEXT,
+        theme::clip_text(),
     );
 
     ui.label(
         egui::RichText::new(&card.name)
             .small()
-            .color(theme::CLIP_TEXT),
+            .color(theme::clip_text()),
     );
     ui.label(
         egui::RichText::new(format!(
@@ -161,6 +161,6 @@ fn draw_card(
             card.duration.ticks() as f64 / TICKS_PER_SECOND as f64
         ))
         .small()
-        .color(theme::DISABLED),
+        .color(theme::disabled()),
     );
 }

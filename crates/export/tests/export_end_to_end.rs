@@ -50,6 +50,7 @@ fn moving_source(path: &Path) {
             bitrate: Some(2_000_000),
             rate_control: bettercut_export::RateControl::Variable,
             channels: 0,
+            audio_bitrate: None,
             threads: 2,
         },
     )
@@ -136,6 +137,8 @@ fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
         picture_only: false,
         gif: false,
         image_sequence: false,
+        loudness_target: None,
+        audio_bitrate: None,
     }
 }
 
@@ -209,6 +212,80 @@ fn run(project: &Project, settings: &ExportSettings) -> bettercut_export::Export
 }
 
 /// §60 criterion 10, in one test.
+/// The sequence's marks become the file's chapters, cut to the exported
+/// stretch and counted from its first frame. Chapters are whole seconds, as
+/// the report's are, so the marks sit on whole seconds.
+#[test]
+fn marks_become_the_files_chapters() {
+    let _guard = encoder_guard();
+    if !gpu_available() {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+    let mut project = project_with_fixture();
+    {
+        let sequence = project.active_mut().unwrap();
+        let mut middle = bettercut_timeline::Marker::at(TimelineTime::from_seconds(1));
+        middle.label = "Middle".to_owned();
+        sequence.markers.push(middle);
+    }
+    let scratch = Scratch::new("chapters");
+    let two_seconds =
+        TimelineRange::new(TimelineTime::ZERO, TimelineTime::from_seconds(2)).unwrap();
+    let settings = settings(scratch.path(), two_seconds);
+    let _summary = run(&project, &settings);
+
+    let chapters = bettercut_media::probe_chapters(scratch.path()).expect("probe");
+    let titles: Vec<&str> = chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["Intro", "Middle"], "{chapters:?}");
+    assert_eq!(chapters[0].start, bettercut_foundation::MediaTime::ZERO);
+    assert_eq!(
+        chapters[0].end,
+        bettercut_foundation::MediaTime::from_seconds(1)
+    );
+    assert_eq!(
+        chapters[1].start,
+        bettercut_foundation::MediaTime::from_seconds(1)
+    );
+    assert!(chapters[1].end > chapters[1].start, "{chapters:?}");
+}
+
+/// The chapter list itself: cut to the stretch, re-based to its start, and
+/// empty without a mark inside it.
+#[test]
+fn chapter_marks_are_cut_to_the_stretch_and_rebased() {
+    let mut project = project_with_fixture();
+    let sequence = project.active_mut().unwrap();
+    assert!(bettercut_export::chapter_marks(sequence, one_second()).is_empty());
+
+    sequence
+        .markers
+        .push(bettercut_timeline::Marker::at(TimelineTime::from_seconds(
+            1,
+        )));
+    let around = TimelineRange::new(
+        TimelineTime::from_millis(500),
+        TimelineTime::from_millis(1_500),
+    )
+    .unwrap();
+    let marks = bettercut_export::chapter_marks(sequence, around);
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    assert_eq!(marks[0].title, "Intro");
+    assert_eq!(marks[0].start, bettercut_foundation::MediaTime::ZERO);
+    assert_eq!(
+        marks[0].end,
+        bettercut_foundation::MediaTime::from_millis(500)
+    );
+    assert_eq!(
+        marks[1].start,
+        bettercut_foundation::MediaTime::from_millis(500)
+    );
+    assert_eq!(
+        marks[1].end,
+        bettercut_foundation::MediaTime::from_millis(1_000)
+    );
+}
+
 #[test]
 fn a_project_exports_to_a_playable_file() {
     let _encoder = encoder_guard();

@@ -117,6 +117,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
 
     let mut open = true;
     let mut apply = false;
+    let mut mark = false;
     let mut cancelled = false;
 
     egui::Window::new("Find cuts")
@@ -134,7 +135,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 ui.label(
                     egui::RichText::new("This reads the whole clip, so it takes a moment.")
                         .small()
-                        .color(theme::DISABLED),
+                        .color(theme::disabled()),
                 );
             } else {
                 let found = dialog.cuts().len();
@@ -153,7 +154,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                         "Marked on the timeline. Nothing is cut until you say so."
                     })
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
                 );
             }
 
@@ -169,11 +170,34 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 {
                     apply = true;
                 }
+                // Or just a mark at each cut: chapters, or cuts to make later.
+                if ui
+                    .add_enabled(count > 0, egui::Button::new("Mark Cuts"))
+                    .on_hover_text("Put a marker at every cut found and leave the clip whole")
+                    .clicked()
+                {
+                    mark = true;
+                }
                 if ui.button("Cancel").clicked() {
                     cancelled = true;
                 }
             });
         });
+
+    if mark {
+        let cuts: Vec<TimelineTime> = dialog.cuts().to_vec();
+        match editor.add_markers(&cuts) {
+            Ok(n) => state.info(format!("Marked {n} cuts")),
+            Err(err) => state.error(err.to_string()),
+        }
+        // The dialog was taken out of the state above; not putting it back
+        // is what closes it — and a decode still running is stopped.
+        if dialog.working() {
+            state.scene_cancel = Some(dialog.job());
+        }
+        state.needs_repaint = true;
+        return;
+    }
 
     if apply {
         let cuts: Vec<TimelineTime> = dialog.cuts().to_vec();

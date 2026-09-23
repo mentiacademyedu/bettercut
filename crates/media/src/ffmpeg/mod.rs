@@ -36,7 +36,51 @@ pub use encode::generate_proxy;
 pub use encoders::{
     EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, RateControl, VideoCodec, probe_all,
 };
-pub use export::{ExportFormat, VideoWriter};
+pub use export::{
+    AUDIO_BITRATES_KBPS, ChapterMark, DEFAULT_AUDIO_BITRATE, ExportFormat, MAX_AUDIO_BITRATE,
+    MIN_AUDIO_BITRATE, VideoWriter,
+};
+
+/// The chapters a file carries, in order, as a writer would have given them
+/// (`VideoWriter::create_with_chapters`): what a player lists. Empty for a
+/// file with none, an error for one that cannot be opened.
+pub fn probe_chapters(path: &Path) -> Result<Vec<ChapterMark>, MediaError> {
+    let input = InputContext::open(path)?;
+    let mut chapters = Vec::new();
+    // SAFETY: the context is open and stays so until `input` drops; every
+    // chapter pointer FFmpeg lists is valid for that long.
+    unsafe {
+        let ctx = input.inner;
+        for index in 0..(*ctx).nb_chapters as usize {
+            let chapter = *(*ctx).chapters.add(index);
+            if chapter.is_null() {
+                continue;
+            }
+            let base = (*chapter).time_base;
+            let to_ticks = |t: i64| {
+                bettercut_foundation::MediaTime::from_ticks(
+                    t * bettercut_foundation::TICKS_PER_SECOND * i64::from(base.num)
+                        / i64::from(base.den.max(1)),
+                )
+            };
+            let entry =
+                ffi::av_dict_get((*chapter).metadata, c"title".as_ptr(), std::ptr::null(), 0);
+            let title = if entry.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr((*entry).value)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            chapters.push(ChapterMark {
+                title,
+                start: to_ticks((*chapter).start),
+                end: to_ticks((*chapter).end),
+            });
+        }
+    }
+    Ok(chapters)
+}
 pub use probe::FfmpegProber;
 
 /// The one internal audio format (§20a.3).
@@ -119,19 +163,65 @@ impl InputContext {
         if !path.exists() {
             return Err(MediaError::FileNotFound(path.to_path_buf()));
         }
+        Self::open_with(path, &[])
+    }
+
+    /// Open `asset`'s file — or, for an image sequence, its `image2` pattern
+    /// with the start number and rate the demuxer needs to count the frames
+    /// as the asset does.
+    pub(crate) fn open_asset(asset: &crate::MediaAsset) -> Result<Self, MediaError> {
+        match (asset.sequence, asset.sequence_pattern()) {
+            (Some(sequence), Some(pattern)) => {
+                if !asset.path.exists() {
+                    return Err(MediaError::FileNotFound(asset.path.clone()));
+                }
+                let rate = asset
+                    .frame_rate
+                    .unwrap_or(bettercut_foundation::FrameRate::PAL_25)
+                    .as_rational();
+                Self::open_with(
+                    &pattern,
+                    &[
+                        ("start_number", sequence.start.to_string()),
+                        ("framerate", format!("{}/{}", rate.num(), rate.den())),
+                    ],
+                )
+            }
+            _ => Self::open(&asset.path),
+        }
+    }
+
+    /// Open `path` with demuxer `options`, which is how a pattern path is
+    /// told where its numbers start. No existence check: a pattern is not a
+    /// file, and FFmpeg's own error covers a run that is not there.
+    fn open_with(path: &Path, options: &[(&str, String)]) -> Result<Self, MediaError> {
         let c_path = path_to_cstring(path)?;
         let mut ctx: *mut ffi::AVFormatContext = std::ptr::null_mut();
 
+        let mut dict: *mut ffi::AVDictionary = std::ptr::null_mut();
+        for (key, value) in options {
+            let key = CString::new(*key)
+                .map_err(|_| MediaError::UnsupportedFormat(path.to_path_buf()))?;
+            let value = CString::new(value.as_str())
+                .map_err(|_| MediaError::UnsupportedFormat(path.to_path_buf()))?;
+            // SAFETY: `dict` is a valid in/out pointer (null allocates); the
+            // strings outlive the call, and av_dict_set copies them.
+            unsafe { ffi::av_dict_set(&mut dict, key.as_ptr(), value.as_ptr(), 0) };
+        }
+
         // SAFETY: `ctx` is a valid out-pointer initialised to null, which is
         // what avformat_open_input requires (it allocates the context itself).
-        // `c_path` outlives the call.
+        // `c_path` outlives the call; `dict` is ours to free afterwards
+        // (FFmpeg leaves the options it did not take in it).
         let code = unsafe {
-            ffi::avformat_open_input(
+            let code = ffi::avformat_open_input(
                 &mut ctx,
                 c_path.as_ptr(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
+                &mut dict,
+            );
+            ffi::av_dict_free(&mut dict);
+            code
         };
 
         if code < 0 {

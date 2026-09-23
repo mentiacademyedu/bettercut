@@ -153,7 +153,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let Some(clip) = subject(editor, state) else {
         ui.label(
             egui::RichText::new("Select a sound clip, or put the playhead over one.")
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
         return;
     };
@@ -164,7 +164,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         ui.label(
             egui::RichText::new("Reading the sound…")
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
@@ -214,7 +214,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             let y = centre - side * amplitude * half;
             painter.line_segment(
                 [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-                Stroke::new(1.0, theme::GRID_LINE),
+                Stroke::new(1.0, theme::grid_line()),
             );
         }
         painter.text(
@@ -222,7 +222,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             egui::Align2::LEFT_BOTTOM,
             label,
             egui::FontId::proportional(10.0),
-            theme::DISABLED,
+            theme::disabled(),
         );
     }
 
@@ -232,7 +232,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         let bottom = centre + min.abs().max(0.004) * half;
         painter.line_segment(
             [Pos2::new(x, top), Pos2::new(x, bottom)],
-            Stroke::new(1.0, theme::AUDIO_CLIP_TOP),
+            Stroke::new(1.0, theme::audio_clip_top()),
         );
     }
 
@@ -254,7 +254,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     if level_line.len() > 1 {
         painter.add(egui::Shape::line(
             level_line,
-            Stroke::new(1.5, theme::AUTOMATION),
+            Stroke::new(1.5, theme::automation()),
         ));
     }
 
@@ -266,7 +266,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             let x = rect.left() + along * rect.width();
             painter.line_segment(
                 [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-                Stroke::new(1.5, theme::PLAYHEAD),
+                Stroke::new(1.5, theme::playhead()),
             );
         }
     }
@@ -289,7 +289,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         ui.label(
             egui::RichText::new(format!("{shown:.2} s shown"))
                 .small()
-                .color(theme::DISABLED),
+                .color(theme::disabled()),
         );
         match peak_dbfs(&columns) {
             Some(peak) => {
@@ -297,7 +297,11 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 ui.label(
                     egui::RichText::new(format!("peak {peak:.1} dBFS"))
                         .small()
-                        .color(if hot { theme::CAUTION } else { theme::DISABLED }),
+                        .color(if hot {
+                            theme::caution()
+                        } else {
+                            theme::disabled()
+                        }),
                 )
                 .on_hover_text(if hot {
                     "This close to zero, the loudest moments may already be clipped in the file"
@@ -309,7 +313,7 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 ui.label(
                     egui::RichText::new("silence here")
                         .small()
-                        .color(theme::DISABLED),
+                        .color(theme::disabled()),
                 );
             }
         }

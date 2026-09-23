@@ -142,6 +142,8 @@ pub(crate) fn plan(
     // §20a.4: while any picture track is soloed, only those are on screen.
     // Asked once rather than per track — it is a fact about the lane.
     let soloed = sequence.video_tracks.iter().any(|track| track.solo);
+    // And while any picture *clip* is soloed, only those clips are on screen.
+    let picture_soloed = sequence.picture_clip_soloed();
 
     for track in &sequence.video_tracks {
         if !bettercut_timeline::track_plays(track.enabled, track.solo, soloed) {
@@ -152,6 +154,9 @@ pub(crate) fn plan(
         let Some(clip) = clips.get(index).filter(|c| c.timeline().contains(position)) else {
             continue;
         };
+        if !sequence.clip_plays(clip.id, true, picture_soloed) {
+            continue; // another clip is soloed, and this is not it
+        }
 
         match transition_at(clips, index, position) {
             // §25: two clips on screen at once. The outgoing one keeps reading
@@ -315,7 +320,7 @@ pub(crate) fn plan(
         };
         // Nothing typed yet: a title is added before it says anything, and an
         // empty one is not a failure to report — there is simply no picture.
-        if clip.is_blank() || !clip.enabled {
+        if clip.is_blank() || !sequence.clip_plays(clip.id, clip.enabled, picture_soloed) {
             continue;
         }
 
@@ -359,6 +364,10 @@ pub(crate) fn plan(
                     glitch: 0.0,
                     pixelate: 0.0,
                     zoom_blur: 0.0,
+                    lens: 0.0,
+                    tilt_band: 0.0,
+                    tilt_centre: 0.5,
+                    posterise: 0.0,
                     vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     // A title is generated at exactly the size it is drawn at;
@@ -371,6 +380,7 @@ pub(crate) fn plan(
                     // A title is drawn, not filmed: there is no screen behind it,
                     // and nothing was drawn on it to mask.
                     chroma_key: None,
+                    luma_key: None,
                     mask: None,
                     // §26: a title covers what is beneath it.
                     blend: bettercut_timeline::BlendMode::Normal,
@@ -412,6 +422,10 @@ fn baked_layer(render: &bettercut_timeline::RenderedRange, position: TimelineTim
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -420,6 +434,7 @@ fn baked_layer(render: &bettercut_timeline::RenderedRange, position: TimelineTim
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: bettercut_timeline::BlendMode::Normal,
         },
@@ -456,6 +471,10 @@ fn push_burn_in(requests: &mut Vec<LayerRequest>, sequence: &Sequence, position:
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -468,6 +487,7 @@ fn push_burn_in(requests: &mut Vec<LayerRequest>, sequence: &Sequence, position:
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: bettercut_timeline::BlendMode::Normal,
         },
@@ -491,7 +511,7 @@ pub fn burn_in_clip(
     }
     let mut parts: Vec<String> = Vec::new();
     if burn.timecode {
-        parts.push(position.format_timecode());
+        parts.push((sequence.start_timecode + position).format_timecode());
     }
     if burn.file_name {
         // The file the topmost picture at this instant came from — the one the
@@ -562,6 +582,10 @@ fn push_progress_bar(
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -577,6 +601,7 @@ fn push_progress_bar(
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: bettercut_timeline::BlendMode::Normal,
         },
@@ -623,6 +648,10 @@ fn push_watermark(requests: &mut Vec<LayerRequest>, project: &Project, sequence:
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -636,6 +665,7 @@ fn push_watermark(requests: &mut Vec<LayerRequest>, project: &Project, sequence:
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: bettercut_timeline::BlendMode::Normal,
         },
@@ -679,6 +709,10 @@ fn push_visualizer(requests: &mut Vec<LayerRequest>, sequence: &Sequence, positi
                 glitch: 0.0,
                 pixelate: 0.0,
                 zoom_blur: 0.0,
+                lens: 0.0,
+                tilt_band: 0.0,
+                tilt_centre: 0.5,
+                posterise: 0.0,
                 vignette: 0.0,
                 reflection: bettercut_timeline::Reflection::None,
                 crop: bettercut_timeline::Crop::NONE,
@@ -695,6 +729,7 @@ fn push_visualizer(requests: &mut Vec<LayerRequest>, sequence: &Sequence, positi
                 color: bettercut_timeline::ColorAdjust::IDENTITY,
                 blur: 0.0,
                 chroma_key: None,
+                luma_key: None,
                 mask: None,
                 blend: bettercut_timeline::BlendMode::Normal,
             },
@@ -745,6 +780,7 @@ pub fn add_shadows(requests: &mut Vec<LayerRequest>, sequence: &Sequence) {
                     shadow,
                     mask: None,
                     chroma_key: None,
+                    luma_key: None,
                     blend: bettercut_timeline::BlendMode::Normal,
                     ..request.look.ungraded()
                 },
@@ -773,11 +809,13 @@ pub fn adjustments_at(
     position: TimelineTime,
 ) -> Vec<bettercut_timeline::AdjustmentLook> {
     let soloed = sequence.adjustment_tracks.iter().any(|track| track.solo);
+    let picture_soloed = sequence.picture_clip_soloed();
     sequence
         .adjustment_tracks
         .iter()
         .filter(|track| bettercut_timeline::track_plays(track.enabled, track.solo, soloed))
         .filter_map(|track| track.clip_at(position))
+        .filter(|clip| sequence.clip_plays(clip.id, true, picture_soloed))
         .map(|clip| clip.look.clamped())
         // One that changes nothing is not worth a pass.
         .filter(|look| !look.is_identity())
@@ -972,6 +1010,19 @@ pub fn resolve_audio_tracks(
                 }
             });
 
+            // The clip's pan line, read at both ends exactly as its volume is.
+            let pan_automation = clip
+                .keyframes
+                .is_animated(bettercut_timeline::AnimatedParameter::Pan)
+                .then(|| {
+                    let until = end.min(clip.timeline.end);
+                    bettercut_audio::GainRamp {
+                        from: clip.pan_at(from),
+                        to: clip.pan_at(until),
+                        frames: frames(until.ticks() - from.ticks()),
+                    }
+                });
+
             audible.push(AudibleClip {
                 clip: clip.id,
                 lane,
@@ -980,9 +1031,11 @@ pub fn resolve_audio_tracks(
                 speed: clip.speed,
                 reversed: clip.reversed,
                 denoise: clip.denoise,
+                gate: clip.gate,
                 eq: clip.eq.clamped(),
                 space: clip.space.clamped(),
                 channels: clip.channels,
+                stereo_width: clip.stereo_width,
                 pitch: clip.pitch,
                 keep_pitch: clip.keep_pitch,
                 leveller: clip.leveller,
@@ -998,6 +1051,13 @@ pub fn resolve_audio_tracks(
                 },
                 track_automation,
                 track_pan: track.pan,
+                track_eq: track.eq.clamped(),
+                pan: if pan_automation.is_some() {
+                    0.0
+                } else {
+                    clip.pan
+                },
+                pan_automation,
             });
         }
     }
@@ -1713,6 +1773,10 @@ fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, al
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -1721,6 +1785,7 @@ fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, al
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: bettercut_timeline::BlendMode::Normal,
         },
@@ -1816,6 +1881,10 @@ fn push_light_leak(
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -1824,6 +1893,7 @@ fn push_light_leak(
             color: bettercut_timeline::ColorAdjust::IDENTITY,
             blur: 0.0,
             chroma_key: None,
+            luma_key: None,
             mask: Some(bettercut_timeline::Mask {
                 shape: bettercut_timeline::MaskShape::Ellipse,
                 center: centre,
@@ -1934,6 +2004,8 @@ pub struct AudibleClip {
     /// Voice clean-up, 0–100. Carried from block to block by the mixer, so a
     /// clip's clean-up is one continuous process however the audio is cut up.
     pub denoise: f32,
+    /// The noise gate, 0–100. Carried from block to block by the mixer.
+    pub gate: f32,
     /// The clip's equaliser, already held to its ranges. Carried from block to
     /// block by the mixer, as the clean-up is.
     pub eq: bettercut_timeline::ClipEq,
@@ -1942,6 +2014,8 @@ pub struct AudibleClip {
     pub space: bettercut_timeline::ClipSpace,
     /// Which channels play where, applied as soon as the sound is read.
     pub channels: bettercut_timeline::ChannelMode,
+    /// How wide the stereo image is, 0–2, applied right after the channels.
+    pub stereo_width: f32,
     /// The voice changer's shift in semitones; zero is none. Carried from
     /// block to block by the mixer.
     pub pitch: f32,
@@ -1971,6 +2045,14 @@ pub struct AudibleClip {
     /// The track's volume line across this block, where the lane has one.
     pub track_automation: Option<bettercut_audio::GainRamp>,
     pub track_pan: f32,
+    /// The lane's equaliser, already held to its ranges, run after the clip's
+    /// own. Carried from block to block by the mixer, per clip.
+    pub track_eq: bettercut_timeline::ClipEq,
+    /// The clip's own static pan, -1 to +1; `0.0` while a pan line is riding.
+    pub pan: f32,
+    /// The clip's keyframed pan across this block, where it has one, read at
+    /// both ends as the volume is.
+    pub pan_automation: Option<bettercut_audio::GainRamp>,
 }
 
 /// Where preview frames are read from (§14).
@@ -2108,6 +2190,7 @@ impl PlaybackEngine {
         // The same rule the composite uses, so the ring reads ahead on the
         // tracks that are actually going to be drawn.
         let soloed = sequence.video_tracks.iter().any(|track| track.solo);
+        let picture_soloed = sequence.picture_clip_soloed();
         let mut tick = from.ticks();
         let end = from.ticks().saturating_add(span.ticks());
         while tick < end {
@@ -2119,6 +2202,9 @@ impl PlaybackEngine {
                 let Some(clip) = track.clip_at(at) else {
                     continue;
                 };
+                if !sequence.clip_plays(clip.id, true, picture_soloed) {
+                    continue;
+                }
                 let Some(asset) = project.media_asset(clip.media_id) else {
                     continue;
                 };

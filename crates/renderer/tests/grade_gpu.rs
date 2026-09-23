@@ -89,6 +89,10 @@ fn look(transform: Transform, blur: f32) -> ClipLook {
         glitch: 0.0,
         pixelate: 0.0,
         zoom_blur: 0.0,
+        lens: 0.0,
+        tilt_band: 0.0,
+        tilt_centre: 0.5,
+        posterise: 0.0,
         vignette: 0.0,
         reflection: bettercut_timeline::Reflection::None,
         crop: Crop::NONE,
@@ -97,6 +101,7 @@ fn look(transform: Transform, blur: f32) -> ClipLook {
         color: ColorAdjust::default(),
         blur,
         chroma_key: None,
+        luma_key: None,
         mask: None,
         blend: bettercut_timeline::BlendMode::Normal,
     }

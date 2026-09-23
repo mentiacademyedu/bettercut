@@ -109,7 +109,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             ui.label(
                 egui::RichText::new("Shaded on the timeline. Nothing is cut until you say so.")
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
             );
             ui.add_space(8.0);
 

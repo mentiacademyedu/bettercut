@@ -23,6 +23,8 @@
 
 use std::path::Path;
 
+use bettercut_foundation::MediaTime;
+
 use rusty_ffmpeg::ffi;
 
 use crate::error::MediaError;
@@ -37,6 +39,27 @@ use super::encoders::{
 use super::raii::{CodecContext, Frame, Scaler};
 
 /// How the output is to be written.
+/// A chapter to write into the file: what players list, and what a viewer
+/// jumps between. Times are in the file's own timeline, from its first
+/// frame; a mark past the end of the file is dropped by the muxer, not by us.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChapterMark {
+    pub title: String,
+    pub start: MediaTime,
+    pub end: MediaTime,
+}
+
+/// The sound's bitrate when none is asked for: 192 kb/s is the deliverable,
+/// not a proxy — the difference from 128 is audible on music and costs half
+/// a megabyte a minute.
+pub const DEFAULT_AUDIO_BITRATE: i64 = 192_000;
+/// What AAC is worth encoding at: below 64 kb/s it is a phone line, above
+/// 320 it is bits the format cannot use.
+pub const MIN_AUDIO_BITRATE: i64 = 64_000;
+pub const MAX_AUDIO_BITRATE: i64 = 320_000;
+/// The choices the export dialog offers, in kb/s.
+pub const AUDIO_BITRATES_KBPS: [i64; 5] = [96, 128, 192, 256, 320];
+
 #[derive(Debug, Clone, Copy)]
 pub struct ExportFormat {
     pub width: u32,
@@ -50,6 +73,8 @@ pub struct ExportFormat {
     pub rate_control: RateControl,
     /// Channels of audio, or zero for a silent file.
     pub channels: usize,
+    /// The sound's bits per second, or `None` for [`DEFAULT_AUDIO_BITRATE`].
+    pub audio_bitrate: Option<i64>,
     /// §15.1: FFmpeg never gets every core, not even for the last job running.
     pub threads: u32,
     /// A see-through background: VP9 with an alpha plane (write to a `.webm`
@@ -96,6 +121,17 @@ impl VideoWriter {
     /// Fails before anything is written if no encoder will open, so a doomed
     /// export is refused up front rather than after the user has waited for it.
     pub fn create(path: &Path, format: ExportFormat) -> Result<Self, MediaError> {
+        Self::create_with_chapters(path, format, &[])
+    }
+
+    /// The same, with `chapters` written into the file's header so players
+    /// list them. Only the containers that carry chapters keep them (MP4 and
+    /// MOV do; a bare stream cannot), which is the muxer's decision, not ours.
+    pub fn create_with_chapters(
+        path: &Path,
+        format: ExportFormat,
+        chapters: &[ChapterMark],
+    ) -> Result<Self, MediaError> {
         if format.width == 0 || format.height == 0 {
             return Err(MediaError::DecodeFailed(
                 "export resolution must not be zero".to_owned(),
@@ -141,6 +177,7 @@ impl VideoWriter {
         let audio = if format.channels > 0 && !format.transparent {
             Some(AudioTrack::open(
                 format.channels,
+                format.audio_bitrate.unwrap_or(DEFAULT_AUDIO_BITRATE),
                 format.threads,
                 global_header,
             )?)
@@ -155,6 +192,8 @@ impl VideoWriter {
         if let Some(track) = &audio {
             muxer.add_audio(track.encoder.as_ptr())?;
         }
+        // Before the header is written: chapters live in it.
+        muxer.set_chapters(chapters)?;
         muxer.begin(path)?;
 
         let width = format.width as i32;
@@ -311,7 +350,12 @@ impl VideoWriter {
 }
 
 impl AudioTrack {
-    fn open(channels: usize, threads: u32, global_header: bool) -> Result<Self, MediaError> {
+    fn open(
+        channels: usize,
+        bitrate: i64,
+        threads: u32,
+        global_header: bool,
+    ) -> Result<Self, MediaError> {
         let encoder = CodecContext::encoder("aac", threads)?;
 
         // SAFETY: allocated and not yet opened.
@@ -320,9 +364,8 @@ impl AudioTrack {
             ctx.sample_fmt = ffi::AV_SAMPLE_FMT_FLTP;
             ctx.sample_rate = INTERNAL_SAMPLE_RATE;
             ctx.time_base = audio_timebase();
-            // 192 kb/s: this is the deliverable, not a proxy. The difference
-            // from 128 is audible on music and costs 0.5 MB a minute.
-            ctx.bit_rate = 192_000;
+            // What was asked for, held to what AAC is worth encoding at.
+            ctx.bit_rate = bitrate.clamp(MIN_AUDIO_BITRATE, MAX_AUDIO_BITRATE);
             ffi::av_channel_layout_default(&mut ctx.ch_layout, channels as i32);
             if global_header {
                 ctx.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;

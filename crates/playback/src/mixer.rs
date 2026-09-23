@@ -85,6 +85,21 @@ impl AudioPlan {
         // mixer never learns what a compound is: it is handed ordinary tracks
         // of ordinary clips (`crate::compound`).
         tracks.extend(crate::compound::audio_tracks(project, sequence, 0));
+        // A soloed sound clip: the plan is a snapshot, so the clips that are
+        // not heard are simply not in it — the mixer never learns of solo.
+        if sequence.sound_clip_soloed() {
+            for track in &mut tracks {
+                let silenced: Vec<_> = track
+                    .clips()
+                    .iter()
+                    .filter(|clip| !sequence.clip_soloed(clip.id))
+                    .map(|clip| clip.id)
+                    .collect();
+                for id in silenced {
+                    let _ = track.remove(id);
+                }
+            }
+        }
         let assets = tracks
             .iter()
             .flat_map(|t| t.clips())
@@ -124,8 +139,15 @@ pub struct AudioMixer {
     pitchers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::PitchShifter, u32, i64)>,
     /// Each levelled clip's compressor, the same way.
     levellers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::Leveller, u32, i64)>,
+    /// Each gated clip's gate, the same way.
+    gates: HashMap<bettercut_foundation::ClipId, (bettercut_audio::Gate, u32, i64)>,
     /// Each de-essed clip's band-pass and detector, the same way again.
     de_essers: HashMap<bettercut_foundation::ClipId, (bettercut_audio::DeEsser, u32, i64)>,
+    /// The lane's equaliser, per clip on it: the filters are linear, so
+    /// running them on each clip before the sum is the same sound as once
+    /// after it, and each clip keeps its own filter state across its cuts.
+    lane_equalizers:
+        HashMap<bettercut_foundation::ClipId, (bettercut_audio::Equalizer, [u32; 4], i64)>,
     spaces: HashMap<
         bettercut_foundation::ClipId,
         (bettercut_audio::Space, bettercut_timeline::ClipSpace, i64),
@@ -150,6 +172,8 @@ impl AudioMixer {
             pitchers: HashMap::new(),
             levellers: HashMap::new(),
             de_essers: HashMap::new(),
+            gates: HashMap::new(),
+            lane_equalizers: HashMap::new(),
             lane_peaks: Vec::new(),
         }
     }
@@ -254,6 +278,10 @@ impl AudioMixer {
                     // The channels first: every stage after this should hear
                     // the voice in both ears, not an empty side.
                     audible.channels.apply(&mut planes);
+                    // Then the width: what the two sides share stays put,
+                    // what differs is pushed out or pulled in. Stateless, so
+                    // there is nothing to carry between blocks.
+                    bettercut_audio::widen(&mut planes, audible.stereo_width);
                     // The voice changed next, so the tone controls shape the
                     // voice as it will be heard.
                     // The voice changer, plus — when the clip asks for its
@@ -314,6 +342,39 @@ impl AudioMixer {
                             *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
                         }
                     }
+                    // The lane's equaliser, over what the clip's own left.
+                    if !audible.track_eq.is_flat() {
+                        let eq = audible.track_eq;
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let key = [
+                            eq.low_cut.to_bits(),
+                            eq.high_cut.to_bits(),
+                            eq.presence.to_bits(),
+                            eq.hum.to_bits(),
+                        ];
+                        let fresh = match self.lane_equalizers.get(&audible.clip) {
+                            Some((_, settings, next)) => *settings != key || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh
+                            && let Some(equalizer) = bettercut_audio::Equalizer::with_hum(
+                                eq.low_cut,
+                                eq.high_cut,
+                                eq.presence,
+                                eq.hum,
+                            )
+                        {
+                            self.lane_equalizers
+                                .insert(audible.clip, (equalizer, key, starts_at));
+                        }
+                        if let Some((equalizer, _, next)) =
+                            self.lane_equalizers.get_mut(&audible.clip)
+                        {
+                            equalizer.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
                     if audible.denoise > 0.0 {
                         let starts_at = position.ticks() + audible.offset.ticks();
                         let bits = audible.denoise.to_bits();
@@ -330,6 +391,25 @@ impl AudioMixer {
                         }
                         if let Some((cleaner, _, next)) = self.cleaners.get_mut(&audible.clip) {
                             cleaner.process(&mut planes);
+                            let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+                            *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
+                        }
+                    }
+                    // Gated after the clean-up and before the leveller: what
+                    // the gate closes on is the room the clean-up left, and a
+                    // leveller lifting a closed pause would open it again.
+                    if audible.gate > 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        let bits = audible.gate.to_bits();
+                        let fresh = match self.gates.get(&audible.clip) {
+                            Some((_, setting, next)) => *setting != bits || *next != starts_at,
+                            None => true,
+                        };
+                        if fresh && let Some(gate) = bettercut_audio::Gate::new(audible.gate) {
+                            self.gates.insert(audible.clip, (gate, bits, starts_at));
+                        }
+                        if let Some((gate, _, next)) = self.gates.get_mut(&audible.clip) {
+                            gate.process(&mut planes);
                             let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
                             *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
                         }
@@ -423,6 +503,8 @@ impl AudioMixer {
                             track_gain: audible.track_gain,
                             track_automation: audible.track_automation,
                             track_pan: audible.track_pan,
+                            clip_pan: audible.pan,
+                            pan_automation: audible.pan_automation,
                         },
                     );
                     if self.lane_peaks.len() <= audible.lane {

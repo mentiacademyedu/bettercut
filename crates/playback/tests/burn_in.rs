@@ -85,6 +85,29 @@ fn the_timecode_and_the_file_name_are_drawn_over_the_picture() {
     );
 }
 
+/// A programme that starts at an hour says so in its burn-in: the timecode
+/// counts from the sequence's start, as the ruler does.
+#[test]
+fn the_burn_in_counts_from_the_start_timecode() {
+    let mut project = project();
+    set_burn(
+        &mut project,
+        BurnIn {
+            timecode: true,
+            ..BurnIn::default()
+        },
+    );
+    project.active_mut().unwrap().start_timecode = TimelineTime::from_seconds(3_600);
+    let sequence = project.active().unwrap();
+    let clip = burn_in_clip(&project, sequence, TimelineTime::from_seconds(3)).unwrap();
+    assert!(
+        clip.text
+            .contains(&TimelineTime::from_seconds(3_603).format_timecode()),
+        "{}",
+        clip.text
+    );
+}
+
 #[test]
 fn the_timecode_alone_says_nothing_about_the_file() {
     let mut project = project();

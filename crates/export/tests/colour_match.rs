@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bettercut_export::{VideoCodec, colour_match, render_still};
+use bettercut_export::{VideoCodec, auto_level, colour_match, render_still};
 use bettercut_foundation::{ClipId, FrameRate, MediaTime, TimelineTime};
 use bettercut_media::{FfmpegProber, MediaProber, NeverCancelled};
 use bettercut_project_format::Project;
@@ -73,6 +73,7 @@ fn scene(path: &Path, gain: [f32; 3]) {
             bitrate: Some(4_000_000),
             rate_control: bettercut_export::RateControl::Variable,
             channels: 0,
+            audio_bitrate: None,
             threads: 2,
         },
     )
@@ -180,6 +181,32 @@ fn a_dim_cool_shot_is_matched_to_a_bright_warm_one() {
     assert!(
         (after.warmth - reference.warmth).abs() < 0.25 * (before.warmth - reference.warmth).abs(),
         "the cast did not come close: before {before:?}, after {after:?}, reference {reference:?}"
+    );
+}
+
+/// Auto level needs no reference and no GPU: the dim, cool shot comes up
+/// and warms towards neutral from its own frame.
+#[test]
+fn auto_level_brings_a_dim_cool_shot_up_from_its_own_frame() {
+    let (dim, bright) = (Scratch::new("dim3.mp4"), Scratch::new("bright3.mp4"));
+    scene(&dim.0, [0.85, 0.88, 0.95]);
+    scene(&bright.0, [1.0, 0.95, 0.9]);
+    let (project, clip) = project_with(&dim.0, &bright.0);
+    let sequence = project.active().unwrap().id;
+    let grade = auto_level(&project, sequence, clip, &NeverCancelled).unwrap();
+    assert!(
+        grade.brightness > 1.0,
+        "a dim shot was not brightened: {grade:?}"
+    );
+    // Aimed at neutral, and never at an extreme: the scene is warm by
+    // design, so its balance moves but stays within the auto's reach.
+    assert!(
+        grade.temperature.abs() <= 0.5 && grade.tint.abs() <= 0.5 && grade.contrast <= 1.6,
+        "the auto grade went to an extreme: {grade:?}"
+    );
+    assert!(
+        auto_level(&project, sequence, ClipId::new(), &NeverCancelled).is_err(),
+        "a clip that is not there was graded"
     );
 }
 

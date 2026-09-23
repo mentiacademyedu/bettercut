@@ -120,7 +120,9 @@ impl Editor {
         let gap = self.gap_at(track, at).ok_or(EditorError::NoGapThere)?;
         let moves = self.gap_moves(track, gap)?;
         self.staged("Close Gap", |editor, stage| {
-            editor.stage_moves(stage, sequence, moves)
+            let moved = editor.stage_moves(stage, sequence, moves)?;
+            editor.stage_markers_closed(stage, sequence, gap)?;
+            Ok(moved)
         })
     }
 
@@ -142,6 +144,7 @@ impl Editor {
             for gap in gaps {
                 if let Ok(moves) = editor.gap_moves(track, gap) {
                     editor.stage_moves(stage, sequence, moves)?;
+                    editor.stage_markers_closed(stage, sequence, gap)?;
                     closed += 1;
                 }
             }

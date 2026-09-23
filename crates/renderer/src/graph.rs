@@ -97,6 +97,10 @@ pub struct EffectParams {
     pub pixelate: f32,
     /// Zoom blur, 0–100 (`crate::glitch`): streaks out from the middle.
     pub zoom_blur: f32,
+    /// Tilt-shift (`crate::blur`): a sharp band this tall, 0 for none, at
+    /// this centre, with the blur growing away from it.
+    pub tilt_band: f32,
+    pub tilt_centre: f32,
     /// Glow, 0–100 (`crate::glitch`): bright parts bleed light.
     pub glow: f32,
     /// Old film, 0–100 (`crate::glitch`): scratches, dust, flicker.

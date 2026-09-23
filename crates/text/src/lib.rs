@@ -25,7 +25,8 @@ pub mod style;
 pub use error::TextError;
 pub use preset::TextPreset;
 pub use raster::{
-    Mark, TextBitmap, TextRenderer, font_families_in, import_font_into, user_fonts_dir,
+    MIN_FIT_SIZE, Mark, TextBitmap, TextRenderer, font_families_in, import_font_into,
+    user_fonts_dir,
 };
 pub use shape::{MAX_SHAPE_SIDE, Shape, ShapeKind};
 pub use style::{

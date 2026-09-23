@@ -64,6 +64,53 @@ fn an_audible_clip_knows_its_lane() {
     assert_eq!(lanes, vec![0, 2]);
 }
 
+/// A pan line is handed to the mixer the way the volume's is: read at both
+/// ends of the block, with the static pan set aside while the line rides.
+#[test]
+fn a_pan_line_is_read_at_both_ends_of_the_block() {
+    let tracks = track_with_clip(|clip| {
+        clip.pan = 0.7;
+        clip.keyframes.set(AnimatedParameter::Pan, key(0, -1.0));
+        clip.keyframes.set(AnimatedParameter::Pan, key(2, 1.0));
+    });
+    let audible = resolve_audio_tracks(&tracks, TimelineTime::ZERO, TimelineTime::from_seconds(1));
+    let ramp = audible[0]
+        .pan_automation
+        .expect("the pan line was not handed over");
+    assert_eq!(ramp.from, -1.0);
+    assert!(
+        (ramp.to - 0.0).abs() < 1e-5,
+        "a second in is the middle: {}",
+        ramp.to
+    );
+    assert_eq!(audible[0].pan, 0.0, "the static pan was not set aside");
+}
+
+/// And with no line, the static pan travels as it is.
+#[test]
+fn a_static_pan_travels_as_it_is() {
+    let tracks = track_with_clip(|clip| clip.pan = -0.4);
+    let audible = resolve_audio_tracks(&tracks, TimelineTime::ZERO, TimelineTime::from_millis(10));
+    assert_eq!(audible[0].pan, -0.4);
+    assert!(audible[0].pan_automation.is_none());
+}
+
+/// The lane's equaliser travels with every clip on it, already held to its
+/// ranges, so the mixer has nothing to check.
+#[test]
+fn a_lanes_equaliser_travels_with_its_clips() {
+    let mut tracks = track_with_clip(|_| {});
+    tracks[0].eq.low_cut = 120.0;
+    tracks[0].eq.presence = 99.0;
+    let audible = resolve_audio_tracks(&tracks, TimelineTime::ZERO, TimelineTime::from_millis(10));
+    assert_eq!(audible[0].track_eq.low_cut, 120.0);
+    assert!(
+        audible[0].track_eq.presence < 99.0,
+        "the presence was not held to its range: {}",
+        audible[0].track_eq.presence
+    );
+}
+
 #[test]
 fn a_clip_with_no_keyframes_has_no_envelope() {
     let tracks = track_with_clip(|clip| clip.gain = 0.5);

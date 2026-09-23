@@ -14,8 +14,7 @@ use bettercut_foundation::{ClipId, FrameRate, MediaTime, SequenceId, TimelineTim
 use bettercut_media::{FfmpegProber, MediaAsset, MediaProber};
 use bettercut_project_format::{PROJECT_EXTENSION, Project};
 use bettercut_timeline::{
-    DEFAULT_TRANSITION, Interpolation, Keyframe, Movement, Resolution, Sequence, TrackKind,
-    Transition, TransitionKind,
+    Interpolation, Keyframe, Movement, Resolution, Sequence, TrackKind, Transition, TransitionKind,
 };
 
 use crate::command::{ClipPayload, Command, CommandGroup, EditorCommand, TrackFlag, TrimEdge};
@@ -845,6 +844,7 @@ impl Editor {
             P::Rotation(_) => P::Rotation(A::Rotation.default_value()),
             P::Backdrop(_) => P::Backdrop(bettercut_timeline::Backdrop::None),
             P::ChromaKey(_) => P::ChromaKey(None),
+            P::LumaKey(_) => P::LumaKey(None),
             P::Mask(_) => P::Mask(None),
             P::Blend(_) => P::Blend(bettercut_timeline::BlendMode::Normal),
             P::Motion(_) => P::Motion(bettercut_timeline::ClipMotion::default()),
@@ -857,6 +857,9 @@ impl Editor {
             P::Grain(_) => P::Grain(0.0),
             P::Sharpen(_) => P::Sharpen(0.0),
             P::Vibrance(_) => P::Vibrance(0.0),
+            P::Anchor { .. } => P::Anchor { x: 0.5, y: 0.5 },
+            P::Wheels(_) => P::Wheels(bettercut_timeline::ColorWheels::IDENTITY),
+            P::Secondary(_) => P::Secondary(bettercut_timeline::HslSecondary::IDENTITY),
             P::SmoothMotion(_) => P::SmoothMotion(false),
             P::Border(_) => P::Border(bettercut_timeline::Border::NONE),
             P::Shadow(_) => P::Shadow(bettercut_timeline::Shadow::default()),
@@ -867,6 +870,12 @@ impl Editor {
             P::BurnIn(_) => P::BurnIn(bettercut_timeline::BurnIn::default()),
             P::Pixelate(_) => P::Pixelate(0.0),
             P::ZoomBlur(_) => P::ZoomBlur(0.0),
+            P::Lens(_) => P::Lens(0.0),
+            P::Posterise(_) => P::Posterise(0.0),
+            P::TiltShift { .. } => P::TiltShift {
+                band: 0.0,
+                centre: 0.5,
+            },
             P::Glow(_) => P::Glow(0.0),
             P::OldFilm(_) => P::OldFilm(0.0),
             P::Tone(_) => P::Tone(bettercut_timeline::curves::Tone::default()),
@@ -879,6 +888,8 @@ impl Editor {
             P::Pitch(_) => P::Pitch(0.0),
             P::Leveller(_) => P::Leveller(0.0),
             P::DeEss(_) => P::DeEss(0.0),
+            P::StereoWidth(_) => P::StereoWidth(1.0),
+            P::Pan(_) => P::Pan(0.0),
             P::FadeShape(_) => P::FadeShape(bettercut_timeline::FadeShape::Smooth),
             P::Mute(_) => P::Mute(false),
             P::Crossfade(_) => P::Crossfade(TimelineTime::ZERO),
@@ -888,6 +899,7 @@ impl Editor {
             P::Glitch(_) => P::Glitch(0.0),
             P::Reflection(_) => P::Reflection(bettercut_timeline::Reflection::None),
             P::Denoise(_) => P::Denoise(0.0),
+            P::Gate(_) => P::Gate(0.0),
             P::Brightness(_) => P::Brightness(A::Brightness.default_value()),
             P::Contrast(_) => P::Contrast(A::Contrast.default_value()),
             P::Saturation(_) => P::Saturation(A::Saturation.default_value()),
@@ -2368,13 +2380,44 @@ impl Editor {
         points: &[(TimelineTime, f32)],
         continuing: bool,
     ) -> Result<usize, EditorError> {
+        self.set_sound_envelope(
+            bettercut_timeline::AnimatedParameter::Gain,
+            clip,
+            points,
+            continuing,
+        )
+    }
+
+    /// The pan's line, the same way: where the sound sits between the
+    /// speakers at each point, -1 to +1, in timeline time. An empty list
+    /// clears it and the clip's static pan takes over again.
+    pub fn set_pan_envelope(
+        &mut self,
+        clip: ClipId,
+        points: &[(TimelineTime, f32)],
+        continuing: bool,
+    ) -> Result<usize, EditorError> {
+        self.set_sound_envelope(
+            bettercut_timeline::AnimatedParameter::Pan,
+            clip,
+            points,
+            continuing,
+        )
+    }
+
+    /// One of a sound clip's two lines — volume or pan — replaced whole.
+    fn set_sound_envelope(
+        &mut self,
+        parameter: bettercut_timeline::AnimatedParameter,
+        clip: ClipId,
+        points: &[(TimelineTime, f32)],
+        continuing: bool,
+    ) -> Result<usize, EditorError> {
         let sequence = self.active_sequence_id()?;
         let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
         let audio = self.audio_clip(clip).ok_or(EditorError::ClipKindMismatch)?;
 
-        let already_empty = !audio
-            .keyframes
-            .is_animated(bettercut_timeline::AnimatedParameter::Gain);
+        let already_empty = !audio.keyframes.is_animated(parameter);
         let keys: Vec<bettercut_timeline::Keyframe> = points
             .iter()
             .map(|(at, value)| {
@@ -2391,22 +2434,121 @@ impl Editor {
         }
 
         let count = keys.len();
-        let label = if count == 0 {
-            "Clear Volume Envelope".to_owned()
-        } else {
-            "Volume Envelope".to_owned()
+        let what = match parameter {
+            bettercut_timeline::AnimatedParameter::Pan => "Pan",
+            _ => "Volume",
         };
-        self.dispatch_gesture(
-            label,
-            vec![Command::SetGainEnvelope {
+        let label = if count == 0 {
+            format!("Clear {what} Envelope")
+        } else {
+            format!("{what} Envelope")
+        };
+        let command = match parameter {
+            bettercut_timeline::AnimatedParameter::Pan => Command::SetPanEnvelope {
                 sequence,
                 track,
                 clip,
                 keys,
+            },
+            _ => Command::SetGainEnvelope {
+                sequence,
+                track,
+                clip,
+                keys,
+            },
+        };
+        self.dispatch_gesture(label, vec![command], continuing)?;
+        Ok(count)
+    }
+
+    /// Move a picture's position key at `time` (source time) to `position`,
+    /// on both axes, as one step: what dragging a handle on the motion path
+    /// does. A key an axis does not have there is made, so a path with a key
+    /// on x alone gains its y as soon as that point is picked up. Each key's
+    /// easing is kept; only where it goes changes.
+    ///
+    /// `continuing` folds a drag into one step, as every gesture does (§11).
+    pub fn move_position_key(
+        &mut self,
+        clip: ClipId,
+        time: MediaTime,
+        position: bettercut_timeline::Vec2,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        use bettercut_timeline::AnimatedParameter as A;
+
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let video = self.video_clip(clip).ok_or(EditorError::ClipKindMismatch)?;
+        if !video.keyframes.is_animated(A::PositionX) && !video.keyframes.is_animated(A::PositionY)
+        {
+            return Err(EditorError::NotAnimated);
+        }
+        let commands = [(A::PositionX, position.x), (A::PositionY, position.y)]
+            .into_iter()
+            .map(|(parameter, value)| {
+                let interpolation = video
+                    .keyframes
+                    .get(parameter, time)
+                    .map_or_else(Interpolation::default, |key| key.interpolation);
+                Command::SetKeyframe {
+                    sequence,
+                    track,
+                    clip,
+                    parameter,
+                    key: Keyframe::new(time, parameter.clamp(value), interpolation),
+                }
+            })
+            .collect();
+        self.dispatch_gesture("Move Key".to_owned(), commands, continuing)
+    }
+
+    /// Put a pan key at the playhead on a sound clip — the way a pan line is
+    /// begun and grown from the Inspector, one key at a time. The value is
+    /// held to -1..1; a key already there is replaced. Refused off the clip,
+    /// where there is no frame to key.
+    ///
+    /// `continuing` folds a slider's drag into one key rather than a hundred.
+    pub fn key_pan_at_playhead(
+        &mut self,
+        clip: ClipId,
+        pan: f32,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let audio = self.audio_clip(clip).ok_or(EditorError::ClipKindMismatch)?;
+        // The sound clip's own place under the playhead: the shared helper
+        // answers for pictures, and a sound clip is not one.
+        let playhead = self.playhead();
+        let at = audio
+            .timeline
+            .contains(playhead)
+            .then(|| audio.source_time_at(playhead))
+            .ok_or(EditorError::PlayheadOffClip)?;
+        // Keep the curve a key already had; the value is what is changing.
+        let interpolation = audio
+            .keyframes
+            .get(bettercut_timeline::AnimatedParameter::Pan, at)
+            .map_or_else(bettercut_timeline::Interpolation::default, |key| {
+                key.interpolation
+            });
+        let key = bettercut_timeline::Keyframe::new(
+            at,
+            bettercut_timeline::AnimatedParameter::Pan.clamp(pan),
+            interpolation,
+        );
+        self.dispatch_gesture(
+            "Key Pan".to_owned(),
+            vec![Command::SetKeyframe {
+                sequence,
+                track,
+                clip,
+                parameter: bettercut_timeline::AnimatedParameter::Pan,
+                key,
             }],
             continuing,
-        )?;
-        Ok(count)
+        )
     }
 
     /// Dress one title, and put it where the look belongs (§26).
@@ -2463,6 +2605,21 @@ impl Editor {
         &mut self,
         look: bettercut_text::CaptionLook,
     ) -> Result<usize, EditorError> {
+        self.dress_captions(bettercut_text::TextStyle::look(look))
+    }
+
+    /// Put `style` on every caption, whatever it came from — one of the
+    /// canned looks above, or a style the user saved from a title of their
+    /// own. Returns how many changed; captions already wearing it are left
+    /// alone, so this is no undo step when it would change nothing.
+    pub fn set_caption_style(
+        &mut self,
+        style: bettercut_text::TextStyle,
+    ) -> Result<usize, EditorError> {
+        self.dress_captions(style)
+    }
+
+    fn dress_captions(&mut self, style: bettercut_text::TextStyle) -> Result<usize, EditorError> {
         let sequence = self.active_sequence_id()?;
         let Some(track) = self.active_sequence().and_then(|s| {
             s.text_tracks
@@ -2473,7 +2630,6 @@ impl Editor {
             return Ok(0); // no lane yet: nothing to dress
         };
 
-        let style = bettercut_text::TextStyle::look(look);
         let clips: Vec<ClipId> = self
             .active_sequence()
             .and_then(|s| s.text_track(track))
@@ -2499,7 +2655,7 @@ impl Editor {
                 property: crate::command::TextProperty::Style(Box::new(style.clone())),
             })
             .collect();
-        self.dispatch_group(format!("{} Captions", look.label()), commands)?;
+        self.dispatch_group("Dress Captions", commands)?;
         Ok(count)
     }
 
@@ -2516,6 +2672,58 @@ impl Editor {
         let format = bettercut_captions::Format::of(path);
         bettercut_captions::write(path, &segments, format)?;
         Ok(segments.len())
+    }
+
+    /// Move every caption by `delta` — the whole lane, for a subtitle file
+    /// that runs early or late against the picture. One undo step; nothing
+    /// before the start. Returns how many moved.
+    pub fn shift_captions(&mut self, delta: TimelineTime) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let Some((track, mut starts)) = self.active_sequence().and_then(|s| {
+            s.text_tracks
+                .iter()
+                .find(|t| t.name == Self::CAPTION_TRACK)
+                .map(|t| {
+                    (
+                        t.id,
+                        t.clips()
+                            .iter()
+                            .map(|c| (c.id, c.timeline.start))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+        }) else {
+            return Ok(0);
+        };
+        if delta.is_zero() || starts.is_empty() {
+            return Ok(0);
+        }
+        // Never before the start: the shift is held so the first still lands
+        // at zero, and the rest keep their spacing.
+        let earliest = starts.iter().map(|(_, s)| s.ticks()).min().unwrap_or(0);
+        let delta = TimelineTime::from_ticks(delta.ticks().max(-earliest));
+        if delta.is_zero() {
+            return Ok(0);
+        }
+        // Moving later goes last-first, earlier goes first-first, so no
+        // caption is moved into one that has not yet made room.
+        starts.sort_by_key(|(_, s)| s.ticks());
+        if delta.ticks() > 0 {
+            starts.reverse();
+        }
+        let count = starts.len();
+        let commands: Vec<Command> = starts
+            .into_iter()
+            .map(|(clip, start)| Command::MoveClip {
+                sequence,
+                from_track: track,
+                to_track: track,
+                clip,
+                new_start: start + delta,
+            })
+            .collect();
+        self.dispatch_group("Shift Captions", commands)?;
+        Ok(count)
     }
 
     /// The caption lane as segments, in order.
@@ -3104,6 +3312,7 @@ impl Editor {
             ClipProperty::Blend(clip.blend),
             ClipProperty::Mask(clip.mask),
             ClipProperty::ChromaKey(clip.chroma_key),
+            ClipProperty::LumaKey(clip.luma_key),
             ClipProperty::Motion(clip.motion),
             ClipProperty::MotionBlur(clip.motion_blur),
             ClipProperty::Backdrop(clip.backdrop),
@@ -3113,6 +3322,11 @@ impl Editor {
             ClipProperty::CornerPin(clip.corner_pin),
             ClipProperty::Pixelate(clip.pixelate),
             ClipProperty::ZoomBlur(clip.zoom_blur),
+            ClipProperty::Posterise(clip.posterise),
+            ClipProperty::TiltShift {
+                band: clip.tilt_band,
+                centre: clip.tilt_centre,
+            },
             ClipProperty::Glow(clip.glow),
             ClipProperty::OldFilm(clip.old_film),
             ClipProperty::Vignette(clip.vignette),
@@ -3149,6 +3363,7 @@ impl Editor {
             ClipProperty::Blend(bettercut_timeline::BlendMode::Normal),
             ClipProperty::Mask(None),
             ClipProperty::ChromaKey(None),
+            ClipProperty::LumaKey(None),
             ClipProperty::Motion(bettercut_timeline::ClipMotion::default()),
             ClipProperty::MotionBlur(false),
             ClipProperty::Backdrop(bettercut_timeline::Backdrop::None),
@@ -3158,6 +3373,11 @@ impl Editor {
             ClipProperty::CornerPin(bettercut_timeline::CornerPin::NONE),
             ClipProperty::Pixelate(0.0),
             ClipProperty::ZoomBlur(0.0),
+            ClipProperty::Posterise(0.0),
+            ClipProperty::TiltShift {
+                band: 0.0,
+                centre: 0.5,
+            },
             ClipProperty::Glow(0.0),
             ClipProperty::OldFilm(0.0),
             ClipProperty::Vignette(0.0),
@@ -3206,6 +3426,263 @@ impl Editor {
         }
         self.dispatch_group("Paste Look", commands)?;
         Ok(taken)
+    }
+
+    // ---- recovery ----
+
+    /// How often the recovery journal forces a snapshot, in seconds.
+    pub fn autosave_seconds(&self) -> u64 {
+        self.journal.snapshot_every_seconds()
+    }
+
+    /// Set how often the recovery journal forces a snapshot; held to the
+    /// journal's own limits. Not a project setting: how much work a crash
+    /// may cost is the person's call, on their machine.
+    pub fn set_autosave_seconds(&mut self, seconds: u64) {
+        self.journal.set_snapshot_every_seconds(seconds);
+    }
+
+    // ---- project notes ----
+
+    /// The project's notes, as typed.
+    pub fn project_notes(&self) -> &str {
+        &self.project.notes
+    }
+
+    /// Replace the notes, as one undo step. Unchanged text is no step at
+    /// all, so leaving the pane without typing costs nothing to undo.
+    pub fn set_project_notes(&mut self, notes: &str) -> Result<(), EditorError> {
+        if self.project.notes == notes {
+            return Ok(());
+        }
+        self.dispatch(Command::SetProjectNotes {
+            notes: notes.to_owned(),
+        })
+    }
+
+    // ---- clip marks ----
+
+    /// The most marks one clip keeps: past this they are a transcript, not
+    /// marks, and the timeline could not draw them apart.
+    pub const MAX_CLIP_MARKS: usize = 200;
+
+    /// Mark the playhead on `clip`, at the frame of the footage it is over.
+    /// A second mark on the same frame takes it off again, as M does on the
+    /// ruler. Returns whether one was added.
+    pub fn toggle_clip_mark(&mut self, clip: ClipId) -> Result<bool, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let at = self
+            .source_time_at_playhead(clip)
+            .or_else(|| self.sound_source_time_at_playhead(clip))
+            .ok_or(EditorError::PlayheadOffClip)?;
+        // A frame's worth of tolerance: two marks a tick apart are one mark
+        // as far as anyone watching can tell.
+        let tolerance = self
+            .active_sequence()
+            .and_then(|s| s.ticks_per_frame().checked_div(2))
+            .unwrap_or(480);
+        let mut marks = self
+            .active_sequence()
+            .map(|s| s.clip_marks.clone())
+            .unwrap_or_default();
+        let existing = marks.iter().position(|mark| {
+            mark.clip == clip && (mark.source.ticks() - at.ticks()).abs() <= tolerance
+        });
+        let added = match existing {
+            Some(index) => {
+                marks.remove(index);
+                false
+            }
+            None => {
+                if marks.iter().filter(|m| m.clip == clip).count() >= Self::MAX_CLIP_MARKS {
+                    return Err(EditorError::PlayheadOffClip);
+                }
+                marks.push(bettercut_timeline::ClipMark {
+                    clip,
+                    source: at,
+                    label: String::new(),
+                    color: bettercut_timeline::ColorLabel::None,
+                });
+                true
+            }
+        };
+        self.dispatch(Command::SetClipMarks { sequence, marks })?;
+        Ok(added)
+    }
+
+    /// A clip's own marks, where they fall on the timeline now.
+    pub fn clip_marks(&self, clip: ClipId) -> Vec<TimelineTime> {
+        self.project
+            .active()
+            .map(|s| {
+                s.clip_marks_on_timeline(clip)
+                    .into_iter()
+                    .map(|(at, _)| at)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Take every mark off `clip`, as one step. Returns how many went.
+    pub fn clear_clip_marks(&mut self, clip: ClipId) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut marks = self
+            .active_sequence()
+            .map(|s| s.clip_marks.clone())
+            .unwrap_or_default();
+        let before = marks.len();
+        marks.retain(|mark| mark.clip != clip);
+        let gone = before - marks.len();
+        if gone == 0 {
+            return Ok(0);
+        }
+        self.dispatch(Command::SetClipMarks { sequence, marks })?;
+        Ok(gone)
+    }
+
+    /// Where the playhead falls in a *sound* clip's source, for marking one.
+    fn sound_source_time_at_playhead(&self, clip: ClipId) -> Option<MediaTime> {
+        use bettercut_timeline::Clip;
+        let sequence = self.project.active()?;
+        let audio = sequence
+            .audio_tracks
+            .iter()
+            .find_map(|track| track.get(clip))?;
+        let playhead = self.playhead();
+        if !audio.timeline.contains(playhead) {
+            return None;
+        }
+        let into = playhead - audio.timeline.start;
+        Some(audio.source().start + MediaTime::from_ticks(into.ticks()))
+    }
+
+    // ---- clip names ----
+
+    /// The clip's own name, if it has one.
+    pub fn clip_name(&self, clip: ClipId) -> Option<String> {
+        use bettercut_timeline::Clip;
+        let sequence = self.project.active()?;
+        sequence
+            .video_tracks
+            .iter()
+            .find_map(|t| t.get(clip).and_then(|c| c.name().map(str::to_owned)))
+            .or_else(|| {
+                sequence
+                    .audio_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).and_then(|c| c.name().map(str::to_owned)))
+            })
+            .or_else(|| {
+                sequence
+                    .text_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).and_then(|c| c.name().map(str::to_owned)))
+            })
+            .or_else(|| {
+                sequence
+                    .adjustment_tracks
+                    .iter()
+                    .find_map(|t| t.get(clip).and_then(|c| c.name().map(str::to_owned)))
+            })
+    }
+
+    /// Name a clip, or give it back the file's name with `None` or an empty
+    /// name. One undo step; the same name again is no step.
+    pub fn set_clip_name(&mut self, clip: ClipId, name: Option<&str>) -> Result<bool, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let wanted = name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned);
+        if self.clip_name(clip) == wanted {
+            return Ok(false);
+        }
+        self.dispatch(Command::SetClipName {
+            sequence,
+            track,
+            clip,
+            name: wanted,
+        })?;
+        Ok(true)
+    }
+
+    // ---- clip solo ----
+
+    /// Whether `clip` is soloed.
+    pub fn clip_soloed(&self, clip: ClipId) -> bool {
+        self.project
+            .active()
+            .is_some_and(|sequence| sequence.clip_soloed(clip))
+    }
+
+    /// Whether any clip is soloed, for a menu that offers to clear them.
+    pub fn any_clip_soloed(&self) -> bool {
+        self.project
+            .active()
+            .is_some_and(|sequence| sequence.picture_clip_soloed() || sequence.sound_clip_soloed())
+    }
+
+    /// Solo (or unsolo) `clips` and whatever is linked to them (§12): a shot
+    /// soloed on its own is heard as well as seen. One undo step. Returns
+    /// how many clips changed.
+    pub fn set_clip_solo(&mut self, clips: &[ClipId], solo: bool) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut targets: Vec<ClipId> = Vec::new();
+        for clip in clips {
+            for linked in self.linked_with(*clip) {
+                if !targets.contains(&linked) {
+                    targets.push(linked);
+                }
+            }
+        }
+        let commands: Vec<Command> = targets
+            .iter()
+            .filter(|clip| self.clip_soloed(**clip) != solo)
+            .map(|clip| Command::SetClipSolo {
+                sequence,
+                clip: *clip,
+                solo,
+            })
+            .collect();
+        if commands.is_empty() {
+            return Ok(0);
+        }
+        let count = commands.len();
+        self.dispatch_group(if solo { "Solo Clips" } else { "Unsolo Clips" }, commands)?;
+        Ok(count)
+    }
+
+    /// Unsolo every clip, as one step. Returns how many were soloed.
+    pub fn clear_clip_solos(&mut self) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let soloed: Vec<ClipId> = self
+            .project
+            .active()
+            .map(|s| s.soloed_clips.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|clip| {
+                self.project
+                    .active()
+                    .and_then(|s| s.clip_span(*clip))
+                    .is_some()
+            })
+            .collect();
+        if soloed.is_empty() {
+            return Ok(0);
+        }
+        let commands: Vec<Command> = soloed
+            .iter()
+            .map(|clip| Command::SetClipSolo {
+                sequence,
+                clip: *clip,
+                solo: false,
+            })
+            .collect();
+        let count = commands.len();
+        self.dispatch_group("Clear Solos", commands)?;
+        Ok(count)
     }
 
     // ---- markers (§10) ----
@@ -3390,12 +3867,47 @@ impl Editor {
         self.replace_markers(Vec::new())
     }
 
-    fn replace_markers(
+    pub(crate) fn replace_markers(
         &mut self,
         markers: Vec<bettercut_timeline::Marker>,
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
         self.dispatch(Command::SetMarkers { sequence, markers })
+    }
+
+    /// The markers after a stretch of the timeline is closed up — a ripple
+    /// delete, a closed gap: those inside `range` go with it, those after it
+    /// move back by its length, so a beat grid still sits on the beats. Part
+    /// of the same undo step; nothing staged when no marker is touched.
+    pub(crate) fn stage_markers_closed(
+        &mut self,
+        stage: &mut Stage,
+        sequence: SequenceId,
+        range: bettercut_timeline::TimelineRange,
+    ) -> Result<(), EditorError> {
+        let markers = self.markers();
+        if !markers.iter().any(|m| m.time >= range.start) {
+            return Ok(());
+        }
+        let length = range.duration();
+        let kept: Vec<_> = markers
+            .iter()
+            .filter(|m| !(m.time >= range.start && m.time < range.end))
+            .map(|m| {
+                let mut m = m.clone();
+                if m.time >= range.end {
+                    m.time -= length;
+                }
+                m
+            })
+            .collect();
+        self.stage(
+            stage,
+            Command::SetMarkers {
+                sequence,
+                markers: kept,
+            },
+        )
     }
 
     /// Mark the in point at `at` (snapped to a frame). An out mark at or
@@ -3469,6 +3981,66 @@ impl Editor {
             }],
             continuing,
         )
+    }
+
+    /// Set a sound lane's equaliser, over every clip on it, as one step
+    /// (`Command::SetTrackEq`). `continuing` collapses a drag into one undo
+    /// step (§11).
+    pub fn set_track_eq(
+        &mut self,
+        track: TrackId,
+        eq: bettercut_timeline::ClipEq,
+        continuing: bool,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch_gesture(
+            "Change track EQ".to_owned(),
+            vec![Command::SetTrackEq {
+                sequence,
+                track,
+                eq,
+            }],
+            continuing,
+        )
+    }
+
+    /// Colour a lane (`Track::color_label`), any kind, as one step.
+    pub fn set_track_colour(
+        &mut self,
+        track: TrackId,
+        label: bettercut_timeline::ColorLabel,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch(Command::SetTrackColour {
+            sequence,
+            track,
+            label,
+        })
+    }
+
+    /// A lane's colour label; none for a lane that is not there.
+    pub fn track_colour(&self, track: TrackId) -> bettercut_timeline::ColorLabel {
+        let Some(sequence) = self.active_sequence() else {
+            return bettercut_timeline::ColorLabel::None;
+        };
+        sequence
+            .video_track(track)
+            .map(|lane| lane.color_label)
+            .or_else(|| sequence.audio_track(track).map(|lane| lane.color_label))
+            .or_else(|| sequence.text_track(track).map(|lane| lane.color_label))
+            .or_else(|| {
+                sequence
+                    .adjustment_track(track)
+                    .map(|lane| lane.color_label)
+            })
+            .unwrap_or_default()
+    }
+
+    /// A sound lane's equaliser; flat for a lane that is not a sound lane.
+    pub fn track_eq(&self, track: TrackId) -> bettercut_timeline::ClipEq {
+        self.active_sequence()
+            .and_then(|sequence| sequence.audio_track(track))
+            .map_or_else(bettercut_timeline::ClipEq::default, |lane| lane.eq)
     }
 
     /// The volume line on `track`, empty for a lane that has none
@@ -3650,7 +4222,7 @@ impl Editor {
             .video_clip(clip)
             .and_then(|c| c.transition_out)
             .map(|t| t.duration)
-            .unwrap_or(DEFAULT_TRANSITION);
+            .unwrap_or(self.project.settings.transition_length);
         self.dispatch(Command::SetTransition {
             sequence,
             track,
@@ -3975,6 +4547,25 @@ impl Editor {
         })
     }
 
+    /// Decode `media` with its fields woven into whole frames, or as it
+    /// comes. One undo step; nothing when it is already so. The caller
+    /// reopens the decoders (the preview's `proxy_ready`), as after a relink.
+    pub fn set_media_deinterlace(
+        &mut self,
+        media: bettercut_foundation::MediaId,
+        deinterlace: bool,
+    ) -> Result<bool, EditorError> {
+        let asset = self
+            .project
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?;
+        if asset.deinterlace == deinterlace {
+            return Ok(false);
+        }
+        self.dispatch(Command::SetMediaDeinterlace { media, deinterlace })?;
+        Ok(true)
+    }
+
     /// "Locate folder" (§66): relink every missing asset found in `folder`.
     ///
     /// Matching is by file name, confirmed by size where one was recorded. That
@@ -4053,6 +4644,26 @@ impl Editor {
             resolution: resolution.into(),
             frame_rate,
         })
+    }
+
+    /// Call the sequence's first frame `start` (`Sequence::start_timecode`),
+    /// as one step. Nothing on the timeline moves: positions count from
+    /// zero inside, and only what they are called changes.
+    pub fn set_start_timecode(&mut self, start: TimelineTime) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        self.dispatch(Command::SetStartTimecode { sequence, start })
+    }
+
+    /// What the active sequence's first frame is called.
+    pub fn start_timecode(&self) -> TimelineTime {
+        self.active_sequence()
+            .map_or(TimelineTime::ZERO, |sequence| sequence.start_timecode)
+    }
+
+    /// A position as it is *shown*: counted from the start timecode. Every
+    /// readout goes through here, so they cannot disagree.
+    pub fn display_time(&self, position: TimelineTime) -> TimelineTime {
+        position + self.start_timecode()
     }
 
     // ---- persistence (§55 project.save) ----
@@ -4327,6 +4938,11 @@ impl Editor {
     fn build(&self, command: Command) -> Result<Box<dyn EditorCommand>, EditorError> {
         match command {
             Command::RenameProject { name } => Ok(Box::new(ops::RenameProject::new(name))),
+            Command::SetMediaDeinterlace { media, deinterlace } => {
+                self.require_media(media)?;
+                Ok(Box::new(ops::SetMediaDeinterlace::new(media, deinterlace)))
+            }
+            Command::SetProjectNotes { notes } => Ok(Box::new(ops::SetProjectNotes::new(notes))),
 
             Command::ChangeSetting { change } => Ok(Box::new(ops::ChangeSetting::new(change))),
 
@@ -4567,6 +5183,24 @@ impl Editor {
                 Ok(Box::new(ops::SetTrackMix::new(sequence, track, gain, pan)))
             }
 
+            Command::SetTrackColour {
+                sequence,
+                track,
+                label,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::SetTrackColour::new(sequence, track, label)))
+            }
+
+            Command::SetTrackEq {
+                sequence,
+                track,
+                eq,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::SetTrackEq::new(sequence, track, eq)))
+            }
+
             Command::SetTrackVolume {
                 sequence,
                 track,
@@ -4586,6 +5220,30 @@ impl Editor {
                 Ok(Box::new(ops::SetColorLabel::new(
                     sequence, track, clip, label,
                 )))
+            }
+
+            Command::SetClipName {
+                sequence,
+                track,
+                clip,
+                name,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::SetClipName::new(sequence, track, clip, name)))
+            }
+
+            Command::SetClipMarks { sequence, marks } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetClipMarks::new(sequence, marks)))
+            }
+
+            Command::SetClipSolo {
+                sequence,
+                clip,
+                solo,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetClipSolo::new(sequence, clip, solo)))
             }
 
             Command::SetClipFades {
@@ -4622,6 +5280,15 @@ impl Editor {
                 sequence, track, clip, keys,
             ))),
 
+            Command::SetPanEnvelope {
+                sequence,
+                track,
+                clip,
+                keys,
+            } => Ok(Box::new(ops::SetGainEnvelope::pan(
+                sequence, track, clip, keys,
+            ))),
+
             Command::SetKeyframe {
                 sequence,
                 track,
@@ -4641,6 +5308,10 @@ impl Editor {
             } => Ok(Box::new(ops::SetKeyframe::remove(
                 sequence, track, clip, parameter, time,
             ))),
+
+            Command::SetStartTimecode { sequence, start } => {
+                Ok(Box::new(ops::SetStartTimecode::new(sequence, start)))
+            }
 
             Command::SetSequenceFormat {
                 sequence,
@@ -4760,6 +5431,27 @@ impl Editor {
                     to_track,
                     clip,
                     self.snap_to_frame(sequence, new_start),
+                )))
+            }
+
+            Command::NudgeSound {
+                sequence,
+                track,
+                clip,
+                new_start,
+            } => {
+                self.require_track(sequence, track)?;
+                // Sound only: a picture clip off its frame grid would be
+                // drawn a frame early or late somewhere.
+                if self.audio_clip(clip).is_none() {
+                    return Err(EditorError::ClipKindMismatch);
+                }
+                Ok(Box::new(ops::MoveClip::new(
+                    sequence,
+                    track,
+                    track,
+                    clip,
+                    new_start.max(TimelineTime::ZERO),
                 )))
             }
 
@@ -5268,6 +5960,53 @@ impl Editor {
             .collect();
 
         self.dispatch_group("Nudge".to_owned(), commands)?;
+        Ok(count)
+    }
+
+    /// Move the *sound* clips among `clips` by `ticks` — a millisecond, for
+    /// lining sound up with picture by ear — and only them: the picture
+    /// stays on its frame grid, and a linked partner is left where it is,
+    /// because putting the two out of step is the point. Returns how many
+    /// moved; nothing but sound in the selection is nothing moved.
+    pub fn nudge_sound_by(&mut self, clips: &[ClipId], ticks: i64) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        if ticks == 0 {
+            return Ok(0);
+        }
+        let mut targets: Vec<(ClipId, TrackId, TimelineTime)> = clips
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|clip| self.audio_clip(*clip).is_some())
+            .filter_map(|clip| Some((clip, self.track_of(clip)?, self.clip_start(clip)?)))
+            .collect();
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        let earliest = targets.iter().map(|(_, _, start)| start.ticks()).min();
+        let delta = match earliest {
+            Some(earliest) if earliest + ticks < 0 => -earliest,
+            _ => ticks,
+        };
+        if delta == 0 {
+            return Ok(0);
+        }
+        targets.sort_by_key(|(_, _, start)| start.ticks());
+        if delta > 0 {
+            targets.reverse();
+        }
+        let count = targets.len();
+        let commands: Vec<Command> = targets
+            .into_iter()
+            .map(|(clip, track, start)| Command::NudgeSound {
+                sequence,
+                track,
+                clip,
+                new_start: TimelineTime::from_ticks(start.ticks() + delta),
+            })
+            .collect();
+        self.dispatch_group("Nudge sound".to_owned(), commands)?;
         Ok(count)
     }
 
@@ -6371,14 +7110,17 @@ impl Editor {
         // The lanes with sync lock on close the same stretch, so what sat
         // under the clip still sits where it was (§10). With none on — the
         // usual case — this is the one command it always was.
-        let span = self.span_and_link(clip).map(|(span, _)| span);
-        let Some(span) = span.filter(|_| !self.sync_riders(&[track]).is_empty()) else {
+        let Some(span) = self.span_and_link(clip).map(|(span, _)| span) else {
             return self.dispatch(command);
         };
+        let riders = !self.sync_riders(&[track]).is_empty();
         self.staged("Ripple Delete", |editor, stage| {
             editor.stage(stage, command)?;
-            editor.stage_sync_remove(stage, sequence, &[track], span)?;
-            Ok(())
+            if riders {
+                editor.stage_sync_remove(stage, sequence, &[track], span)?;
+            }
+            // And the markers, which mark the edit rather than any one lane.
+            editor.stage_markers_closed(stage, sequence, span)
         })
     }
 

@@ -30,6 +30,13 @@ pub struct Project {
     /// Which sequence the UI is editing. `None` only for an empty project.
     #[serde(default)]
     pub active_sequence: Option<SequenceId>,
+
+    /// Notes about the edit — what is left to do, what the client said —
+    /// kept in the project file so they travel with it. Free text: a list
+    /// with its own rules would be one more thing to learn. Defaulted: older
+    /// projects have none.
+    #[serde(default)]
+    pub notes: String,
 }
 
 /// An imported `.cube` file (`bettercut_timeline::lut`).
@@ -55,6 +62,7 @@ impl Project {
             luts: Vec::new(),
             settings: ProjectSettings::default(),
             active_sequence: Some(active),
+            notes: String::new(),
         }
     }
 
@@ -95,8 +103,22 @@ impl Project {
     ///
     /// Re-importing the same file must not duplicate it, or its proxies and
     /// thumbnails get generated twice (§19).
+    ///
+    /// A *made* entry — a colour clip, a tone — has no file, so it cannot be
+    /// the same file as anything: two of them are one entry only when they
+    /// are the same made thing. Matching them by their (empty) path would
+    /// hand a beep the black picture's id, which is what once happened.
     pub fn add_media(&mut self, asset: MediaAsset) -> MediaId {
-        if let Some(existing) = self.media.iter().find(|m| m.path == asset.path) {
+        let same = |m: &MediaAsset| {
+            if asset.path.as_os_str().is_empty() {
+                m.path.as_os_str().is_empty()
+                    && m.generated == asset.generated
+                    && m.generated_sound == asset.generated_sound
+            } else {
+                m.path == asset.path
+            }
+        };
+        if let Some(existing) = self.media.iter().find(|m| same(m)) {
             return existing.id;
         }
         let id = asset.id;
@@ -153,6 +175,37 @@ mod tests {
     use bettercut_foundation::{MediaTime, TimelineTime};
     use bettercut_media::MediaKind;
     use bettercut_timeline::{SourceRange, VideoClip};
+
+    /// A made picture and a made sound have no file, and so are never the
+    /// same file: each keeps its own entry. The same made thing twice is one.
+    #[test]
+    fn made_entries_are_told_apart_by_what_they_are() {
+        let mut project = Project::new("Made");
+        let black = project.add_media(MediaAsset::generated(
+            bettercut_media::Generated::solid([0, 0, 0]),
+            16,
+            9,
+        ));
+        let beep = project.add_media(MediaAsset::generated_sound(
+            bettercut_media::GeneratedSound::LINE_UP,
+            bettercut_foundation::MediaTime::from_seconds(1),
+        ));
+        let black_again = project.add_media(MediaAsset::generated(
+            bettercut_media::Generated::solid([0, 0, 0]),
+            16,
+            9,
+        ));
+        let red = project.add_media(MediaAsset::generated(
+            bettercut_media::Generated::solid([255, 0, 0]),
+            16,
+            9,
+        ));
+
+        assert_ne!(black, beep, "a beep was handed the black picture's entry");
+        assert_eq!(black, black_again, "the same black twice made two entries");
+        assert_ne!(black, red);
+        assert_eq!(project.media.len(), 3);
+    }
 
     fn asset(path: &str) -> MediaAsset {
         MediaAsset::new(MediaKind::Video, path, MediaTime::from_seconds(10))

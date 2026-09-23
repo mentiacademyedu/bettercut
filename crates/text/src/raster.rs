@@ -8,6 +8,10 @@ use crate::style::{Alignment, FontFamily, Rgba, TextStyle};
 
 /// A rasterized piece of text: sRGB-encoded RGBA with straight alpha, tightly
 /// packed, ready to upload as a texture (§21a).
+/// The smallest a shrunk title goes, in pixels: below this it is not a title
+/// but a smudge, and running off the edge at least says what it said.
+pub const MIN_FIT_SIZE: f32 = 8.0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextBitmap {
     pub width: u32,
@@ -162,6 +166,22 @@ impl TextRenderer {
     /// Only the fill changes. The layout, the outline and the shadow are the
     /// whole text's, so the highlight moving from word to word never nudges a
     /// letter.
+    /// How wide `text` is at `style`'s size with no wrapping: its longest
+    /// line, in pixels.
+    fn natural_width(&mut self, text: &str, style: &TextStyle) -> Result<f32, TextError> {
+        let metrics = Metrics::new(style.size, style.size * style.line_height);
+        let mut buffer = Buffer::new(&mut self.fonts, metrics);
+        let attrs = attributes(style);
+        buffer.set_size(None, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.fonts, false);
+        let (width, _) = measure(&buffer);
+        if width < 1.0 {
+            return Err(TextError::Empty);
+        }
+        Ok(width)
+    }
+
     pub fn rasterize_marked(
         &mut self,
         text: &str,
@@ -173,6 +193,31 @@ impl TextRenderer {
         if text.trim().is_empty() {
             return Err(TextError::Empty);
         }
+        // Shrink to fit: the longest line measured at the size asked for, and
+        // the size brought down by exactly the ratio it overshoots, so the
+        // line lands on the width. Measured again after each step: glyphs
+        // are hinted to whole pixels, so one ratio lands a few pixels over,
+        // and a second or third settles it.
+        let style = if style.shrink_to_fit
+            && let Some(limit) = style.wrap_width
+        {
+            let mut fitted = style.clone();
+            fitted.wrap_width = None;
+            for _ in 0..3 {
+                let natural = self.natural_width(text, &fitted)?;
+                if natural <= limit || limit <= 0.0 || fitted.size <= MIN_FIT_SIZE {
+                    break;
+                }
+                fitted.size = (fitted.size * limit / natural).max(MIN_FIT_SIZE);
+            }
+            if fitted.size < style.size {
+                fitted
+            } else {
+                style
+            }
+        } else {
+            style
+        };
 
         let metrics = Metrics::new(style.size, style.size * style.line_height);
         let mut buffer = Buffer::new(&mut self.fonts, metrics);

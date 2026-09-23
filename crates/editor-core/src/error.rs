@@ -41,6 +41,11 @@ pub enum EditorError {
     #[error("this sequence has no track that can hold that media")]
     NoTrackForMedia,
 
+    /// A key moved on a clip whose position is not keyed: there is no path
+    /// for it to be a point of.
+    #[error("that clip's position is not keyed, so there is no path to move")]
+    NotAnimated,
+
     /// §12: an unlink with nothing to unlink.
     #[error("that clip is not linked to anything")]
     NothingLinked,
@@ -257,8 +262,8 @@ pub enum EditorError {
     #[error("project has never been saved — use Save As")]
     NoProjectPath,
 
-    /// Split at Markers with no markers.
-    #[error("there are no markers to split at; press M to add one")]
+    /// Split at Markers, or writing the markers out, with no markers.
+    #[error("there are no markers; press M to add one")]
     NoMarkers,
 
     /// A colour change asked of a file rather than a colour clip.

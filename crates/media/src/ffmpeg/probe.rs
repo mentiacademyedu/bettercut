@@ -114,6 +114,35 @@ impl MediaProber for FfmpegProber {
     }
 }
 
+impl FfmpegProber {
+    /// The numbered run `path` is one frame of, as one video asset at `rate`:
+    /// the first frame probed for its size and codec, the count for its
+    /// length. Refused for a file that is not part of a run, or not a still.
+    pub fn probe_image_sequence(
+        &self,
+        path: &Path,
+        rate: FrameRate,
+    ) -> Result<MediaAsset, MediaError> {
+        let sequence = crate::image_sequence::sequence_at(path)
+            .ok_or_else(|| MediaError::UnsupportedFormat(path.to_path_buf()))?;
+        let first = path.with_file_name(
+            crate::image_sequence::numbered(path)
+                .map(|parts| parts.name_of(sequence.start))
+                .unwrap_or_default(),
+        );
+        let mut asset = self.probe(&first)?;
+        if !asset.is_still() {
+            return Err(MediaError::UnsupportedFormat(path.to_path_buf()));
+        }
+        asset.kind = MediaKind::Video;
+        asset.frame_rate = Some(rate);
+        asset.duration =
+            MediaTime::from_frames(i64::from(sequence.count), rate).unwrap_or(MediaTime::ZERO);
+        asset.sequence = Some(sequence);
+        Ok(asset)
+    }
+}
+
 /// Demuxers FFmpeg uses for still images.
 ///
 /// `image2` covers numbered sequences and single files; the `*_pipe` demuxers

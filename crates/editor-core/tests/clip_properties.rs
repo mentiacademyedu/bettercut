@@ -518,6 +518,8 @@ fn a_look_applies_to_a_clip_as_one_undo_step() {
         temperature: 0.4,
         tint: -0.15,
         vibrance: 0.0,
+        wheels: Default::default(),
+        secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
     };
 
     editor.set_color_adjust(Some(clip), look).unwrap();
@@ -545,6 +547,8 @@ fn a_look_applies_to_the_whole_video_when_no_clip_is_given() {
         temperature: -0.3,
         tint: 0.2,
         vibrance: 0.0,
+        wheels: Default::default(),
+        secondary: bettercut_editor_core::timeline::HslSecondary::IDENTITY,
     };
 
     editor.set_color_adjust(None, look).unwrap();

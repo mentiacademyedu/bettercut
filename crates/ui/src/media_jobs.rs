@@ -78,10 +78,12 @@ pub struct MediaUpdate {
     )>,
     /// The trim window's frames: which side of the cut, its size and its rows.
     pub trim_frames: Vec<(bool, u32, u32, Vec<u8>)>,
-    /// A finished colour match: the clip and the grade that matches it.
+    /// A finished colour match or auto level: the clip, the grade, and what
+    /// to call the step.
     pub colour_match: Option<(
         bettercut_editor_core::foundation::ClipId,
         bettercut_editor_core::timeline::ColorAdjust,
+        &'static str,
     )>,
 }
 
@@ -482,6 +484,18 @@ impl MediaJobs {
     /// was there.
     pub fn remove_waiting_export(&mut self, index: usize) -> bool {
         self.waiting_exports.remove(index).is_some()
+    }
+
+    /// Move the waiting export at `from` so that it sits at `to`, the others
+    /// closing up around it. Returns whether both places were on the queue.
+    pub fn move_waiting_export(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.waiting_exports.len() || to >= self.waiting_exports.len() {
+            return false;
+        }
+        if let Some(job) = self.waiting_exports.remove(from) {
+            self.waiting_exports.insert(to, job);
+        }
+        true
     }
 
     /// Take every waiting export off the queue. Returns how many.

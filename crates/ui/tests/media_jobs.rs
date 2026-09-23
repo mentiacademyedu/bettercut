@@ -372,6 +372,46 @@ fn exports_asked_for_together_run_one_after_another() {
     );
 }
 
+/// A waiting export moved up runs before the ones it passed; moving off the
+/// queue's ends is refused.
+#[test]
+fn a_waiting_export_can_be_moved_up_the_queue() {
+    use bettercut_export::{ExportJob, ExportSettings};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = MediaJobs::new(store(&dir), PerformanceMode::Balanced, 4, 1);
+    let (editor, _events) = Editor::new_project("Queue");
+    let sequence = editor.active_sequence().unwrap();
+    for name in ["main", "second", "third", "fourth"] {
+        let settings =
+            ExportSettings::for_sequence(dir.path().join(format!("{name}.mp4")), sequence);
+        manager.submit_export(ExportJob::new(editor.project(), sequence.id, settings));
+    }
+    let before = manager.waiting_export_labels();
+    assert_eq!(before.len(), 3);
+
+    assert!(manager.move_waiting_export(2, 0));
+    let after = manager.waiting_export_labels();
+    assert_eq!(
+        after[0], before[2],
+        "the moved export is not first: {after:?}"
+    );
+    assert_eq!(
+        &after[1..],
+        &before[..2],
+        "the others did not close up: {after:?}"
+    );
+
+    assert!(
+        !manager.move_waiting_export(3, 0),
+        "moved from past the end"
+    );
+    assert!(!manager.move_waiting_export(0, 3), "moved to past the end");
+    assert_eq!(manager.waiting_export_labels(), after);
+
+    manager.clear_waiting_exports();
+}
+
 /// A frame grab for a sequence that is not there fails, and says it was the
 /// copy that failed.
 #[test]

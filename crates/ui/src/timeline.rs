@@ -186,7 +186,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let (whole, response) = ui.allocate_exact_size(full.size(), Sense::click_and_drag());
 
     let painter = ui.painter_at(whole);
-    painter.rect_filled(whole, 0, theme::TIMELINE_BACKGROUND);
+    painter.rect_filled(whole, 0, theme::timeline_background());
 
     // The overview strip takes a band off the bottom; everything below works
     // in what is left, so the ruler, the lanes and every hit test are unaware
@@ -206,9 +206,28 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             Align2::CENTER_CENTER,
             "No sequence",
             FontId::proportional(14.0),
-            theme::DISABLED,
+            theme::disabled(),
         );
         return;
+    }
+
+    // An empty edit: the timeline is the biggest thing on screen and has
+    // nothing to draw, so it says what would fill it.
+    if editor
+        .active_sequence()
+        .is_some_and(|s| s.clip_spans().next().is_none())
+        && state.drag.is_none()
+    {
+        painter.text(
+            Pos2::new(
+                rect.center().x,
+                rect.top() + theme::RULER_HEIGHT + rect.height() / 3.0,
+            ),
+            Align2::CENTER_CENTER,
+            "Drop a file here, or import one and press + beside it",
+            FontId::proportional(14.0),
+            theme::disabled(),
+        );
     }
 
     select_whole_groups(editor, state);
@@ -298,6 +317,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     };
 
     // The draw pass borrows the project immutably.
+    let pointer = response.hover_pos();
     let lanes = {
         let project = editor.project();
         let Some(sequence) = project.active() else {
@@ -305,7 +325,15 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         };
         let playhead = editor.playhead();
 
-        draw_ruler(&painter, rect, viewport, state, lane_width);
+        draw_ruler(
+            &painter,
+            rect,
+            viewport,
+            state,
+            lane_width,
+            editor.start_timecode(),
+            pointer,
+        );
         let lanes = draw_lanes(
             &painter,
             rect,
@@ -327,8 +355,12 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         );
         draw_render_bar(&painter, rect, viewport, project, sequence);
         draw_markers(&painter, rect, viewport, &sequence.markers);
+        draw_clip_marks(&painter, viewport, sequence, &lanes);
         if let Some(dialog) = &state.silence {
             draw_suggested_cuts(&painter, rect, viewport, dialog.ranges());
+        }
+        if let Some(dialog) = &state.highlights {
+            draw_suggested_keeps(&painter, rect, viewport, dialog.ranges());
         }
         if let Some(dialog) = &state.scenes {
             draw_suggested_splits(&painter, rect, viewport, dialog.cuts());
@@ -346,7 +378,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 Align2::CENTER_CENTER,
                 "Drag files here, press “Add to timeline” in Media, or start from Templates",
                 FontId::proportional(13.0),
-                theme::DISABLED,
+                theme::disabled(),
             );
         }
 
@@ -396,13 +428,13 @@ fn draw_overview(
     state: &UiState,
     lane_width: f32,
 ) {
-    painter.rect_filled(rect, 0, theme::TRACK_HEADER);
+    painter.rect_filled(rect, 0, theme::track_header());
     painter.line_segment(
         [
             Pos2::new(rect.left(), rect.top()),
             Pos2::new(rect.right(), rect.top()),
         ],
-        Stroke::new(1.0, theme::GRID_LINE),
+        Stroke::new(1.0, theme::grid_line()),
     );
 
     let Some(sequence) = editor.project().active() else {
@@ -429,10 +461,10 @@ fn draw_overview(
     for span in sequence.clip_spans() {
         use bettercut_editor_core::timeline::TrackKind;
         let (y, colour) = match span.kind {
-            TrackKind::Video => (top, theme::VIDEO_CLIP),
-            TrackKind::Audio => (top + row, theme::AUDIO_CLIP),
-            TrackKind::Text => (top, theme::TEXT_CLIP),
-            TrackKind::Adjustment => (top, theme::ADJUSTMENT_CLIP),
+            TrackKind::Video => (top, theme::video_clip()),
+            TrackKind::Audio => (top + row, theme::audio_clip()),
+            TrackKind::Text => (top, theme::text_clip()),
+            TrackKind::Adjustment => (top, theme::adjustment_clip()),
         };
         let x0 = x_of(span.timeline.start.ticks());
         let x1 = x_of(span.timeline.end.ticks()).max(x0 + 1.0);
@@ -450,7 +482,7 @@ fn draw_overview(
             Pos2::new(playhead, rect.top() + 2.0),
             Pos2::new(playhead, rect.bottom() - 2.0),
         ],
-        Stroke::new(1.0, theme::PLAYHEAD),
+        Stroke::new(1.0, theme::playhead()),
     );
     let view = Rect::from_min_max(
         Pos2::new(x_of(state.scroll_ticks), rect.top() + 2.0),
@@ -459,11 +491,11 @@ fn draw_overview(
             rect.bottom() - 2.0,
         ),
     );
-    painter.rect_filled(view, 2, theme::SELECTION.gamma_multiply(0.15));
+    painter.rect_filled(view, 2, theme::selection().gamma_multiply(0.15));
     painter.rect_stroke(
         view,
         2,
-        Stroke::new(1.0, theme::SELECTION),
+        Stroke::new(1.0, theme::selection()),
         StrokeKind::Inside,
     );
 }
@@ -601,6 +633,20 @@ fn apply_interaction(
         if let Some((track, _)) = interaction.track_envelope_line {
             state.track_envelope_drag = None;
             add_track_volume_point(track, pos, viewport, editor, state);
+            return;
+        }
+        // On the clip itself: select it and open the inspector where its
+        // settings are — the grade for a picture, the sound for a sound.
+        if let Some(hit) = interaction.hit {
+            state.clear_selection();
+            state.selected_clips.insert(hit.clip);
+            if editor.audio_clip(hit.clip).is_some() {
+                state.inspector_tab = crate::panels::InspectorTab::Audio;
+            } else if editor.video_clip(hit.clip).is_some() {
+                state.inspector_tab = crate::panels::InspectorTab::Colours;
+            }
+            state.drag = None;
+            state.needs_repaint = true;
             return;
         }
     }
@@ -1174,11 +1220,11 @@ fn draw_track_volume(
     if points.len() >= 2 {
         clipped.add(egui::Shape::line(
             points,
-            Stroke::new(1.5, theme::TRACK_AUTOMATION),
+            Stroke::new(1.5, theme::track_automation()),
         ));
     }
     for (_, at) in track_volume_dots(&track.volume, band, viewport) {
-        clipped.circle_filled(at, 3.5, theme::TRACK_AUTOMATION);
+        clipped.circle_filled(at, 3.5, theme::track_automation());
     }
 
     // What is under the pointer, for the press handler.
@@ -1780,9 +1826,41 @@ fn draw_ruler(
     viewport: Viewport,
     state: &UiState,
     lane_width: f32,
+    start: TimelineTime,
+    pointer: Option<Pos2>,
 ) {
     let ruler = Rect::from_min_size(rect.min, vec2(rect.width(), theme::RULER_HEIGHT));
-    painter.rect_filled(ruler, 0, theme::TRACK_HEADER);
+    painter.rect_filled(ruler, 0, theme::track_header());
+
+    // The time under the pointer, as the ruler's own readout: scrubbing is
+    // one thing, knowing where a cut would land before clicking is another.
+    if let Some(pointer) =
+        pointer.filter(|p| p.x >= viewport.origin_x && p.x <= rect.right() && rect.contains(*p))
+    {
+        let at = viewport.tick_of(pointer.x).max(TimelineTime::ZERO);
+        let text = (start + at).format_timecode();
+        let anchor_at = Pos2::new(pointer.x.min(rect.right() - 4.0), ruler.bottom() - 3.0);
+        let align = if pointer.x > rect.right() - 90.0 {
+            Align2::RIGHT_BOTTOM
+        } else {
+            Align2::LEFT_BOTTOM
+        };
+        // Measured first, so the label sits on its own patch rather than on
+        // top of the ticks it is meant to explain.
+        let galley = painter.layout_no_wrap(text, FontId::monospace(11.0), theme::ruler_text());
+        let nudge = vec2(
+            if align == Align2::LEFT_BOTTOM {
+                4.0
+            } else {
+                -4.0
+            },
+            0.0,
+        );
+        let at = anchor_at + nudge;
+        let box_at = align.anchor_size(at, galley.size());
+        painter.rect_filled(box_at.expand(2.0), 2, theme::track_header());
+        painter.galley(box_at.min, galley, theme::ruler_text());
+    }
 
     // Pick the finest label interval that still leaves ~70 px between labels.
     // Without this the ruler becomes an unreadable smear when zoomed out.
@@ -1808,18 +1886,18 @@ fn draw_ruler(
                     Pos2::new(x, ruler.bottom() - 6.0),
                     Pos2::new(x, ruler.bottom()),
                 ],
-                Stroke::new(1.0, theme::RULER_TEXT),
+                Stroke::new(1.0, theme::ruler_text()),
             );
             painter.text(
                 Pos2::new(x + 4.0, ruler.top() + 4.0),
                 Align2::LEFT_TOP,
-                t.format_timecode(),
+                (t + start).format_timecode(),
                 FontId::monospace(11.0),
-                theme::RULER_TEXT,
+                theme::ruler_text(),
             );
             painter.line_segment(
                 [Pos2::new(x, ruler.bottom()), Pos2::new(x, rect.bottom())],
-                Stroke::new(1.0, theme::GRID_LINE),
+                Stroke::new(1.0, theme::grid_line()),
             );
         }
         match ticks.checked_add(step_ticks) {
@@ -1834,7 +1912,7 @@ fn draw_ruler(
         Align2::LEFT_CENTER,
         format!("{px_per_second:.0} px/s"),
         FontId::monospace(11.0),
-        theme::DISABLED,
+        theme::disabled(),
     );
 }
 
@@ -1888,6 +1966,9 @@ fn draw_lanes(
         if grouped.contains(&id) {
             badges.push("group");
         }
+        if sequence.clip_soloed(id) {
+            badges.push("solo");
+        }
         if noted.contains(&id) {
             badges.push("note");
         }
@@ -1896,12 +1977,16 @@ fn draw_lanes(
     let partner = |link: Option<bettercut_editor_core::foundation::LinkId>, id: ClipId| {
         !state.selected_clips.contains(&id) && link.is_some_and(|l| selected_links.contains(&l))
     };
-    let lane_height = state.lane_height.pixels();
+    // Solo, per clip: what another clip's solo silences draws dimmed, as a
+    // clip on a hidden lane does, so the timeline says why it is not playing.
+    let picture_soloed = sequence.picture_clip_soloed();
+    let sound_soloed = sequence.sound_clip_soloed();
     let mut y = rect.top() + theme::RULER_HEIGHT + theme::TRACK_GAP;
 
     // §26's titles first, because they composite over every video track and the
     // lane order on screen is the compositing order upside down.
     for track in &sequence.text_tracks {
+        let lane_height = state.lane_height_for(track.id);
         let lane = Rect::from_min_size(Pos2::new(rect.left(), y), vec2(rect.width(), lane_height));
         draw_lane_background(painter, lane, viewport, 0);
         draw_track_header(painter, lane, track, None, None);
@@ -1921,10 +2006,11 @@ fn draw_lanes(
                         &clip.text
                     },
                     selected: state.selected_clips.contains(&clip.id),
-                    track_enabled: track.enabled,
+                    track_enabled: track.enabled
+                        && sequence.clip_plays(clip.id, true, picture_soloed),
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
-                    body: theme::TEXT_CLIP,
-                    top: theme::TEXT_CLIP_TOP,
+                    body: theme::text_clip(),
+                    top: theme::text_clip_top(),
                     waveform: None,
                     volume: None,
                     filmstrip: None,
@@ -1942,7 +2028,8 @@ fn draw_lanes(
                     // A title's ramps are its entrance and exit, set in the
                     // Inspector with a preset; there is no fade to drag.
                     fade_handles: false,
-                    label_color: label_color(clip.color_label),
+                    label_color: label_color(clip.color_label)
+                        .or_else(|| label_color(track.color_label)),
                 },
                 clip.id,
                 track.id,
@@ -1962,6 +2049,7 @@ fn draw_lanes(
     // titles, and the lanes on screen are the compositing order upside down.
     // Topmost lane first, because a later lane grades what an earlier one left.
     for track in sequence.adjustment_tracks.iter().rev() {
+        let lane_height = state.lane_height_for(track.id);
         let lane = Rect::from_min_size(Pos2::new(rect.left(), y), vec2(rect.width(), lane_height));
         draw_lane_background(painter, lane, viewport, 0);
         draw_track_header(painter, lane, track, None, None);
@@ -1982,10 +2070,11 @@ fn draw_lanes(
                         "Adjustment"
                     },
                     selected: state.selected_clips.contains(&clip.id),
-                    track_enabled: track.enabled,
+                    track_enabled: track.enabled
+                        && sequence.clip_plays(clip.id, true, picture_soloed),
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
-                    body: theme::ADJUSTMENT_CLIP,
-                    top: theme::ADJUSTMENT_CLIP_TOP,
+                    body: theme::adjustment_clip(),
+                    top: theme::adjustment_clip_top(),
                     waveform: None,
                     volume: None,
                     filmstrip: None,
@@ -1998,7 +2087,8 @@ fn draw_lanes(
                     linked_to_selection: false,
                     ramps: (0, 0),
                     fade_handles: false,
-                    label_color: label_color(clip.color_label),
+                    label_color: label_color(clip.color_label)
+                        .or_else(|| label_color(track.color_label)),
                 },
                 clip.id,
                 track.id,
@@ -2018,14 +2108,17 @@ fn draw_lanes(
     // compositing layer (§22), and editors conventionally show that layer
     // nearest the audio tracks.
     for (row, track) in sequence.video_tracks.iter().enumerate().rev() {
+        let lane_height = state.lane_height_for(track.id);
         let lane = Rect::from_min_size(Pos2::new(rect.left(), y), vec2(rect.width(), lane_height));
         draw_lane_background(painter, lane, viewport, row);
         draw_track_header(painter, lane, track, None, None);
 
         for clip in track.clips_in_range(visible) {
-            let label = project
-                .media_asset(clip.media_id)
-                .map_or("(missing media)", |m| m.display_name());
+            let label = clip.name.as_deref().unwrap_or_else(|| {
+                project
+                    .media_asset(clip.media_id)
+                    .map_or("(missing media)", |m| m.display_name())
+            });
             draw_clip(
                 painter,
                 lane,
@@ -2034,10 +2127,11 @@ fn draw_lanes(
                     range: clip.timeline,
                     label,
                     selected: state.selected_clips.contains(&clip.id),
-                    track_enabled: track.enabled,
+                    track_enabled: track.enabled
+                        && sequence.clip_plays(clip.id, true, picture_soloed),
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
-                    body: theme::VIDEO_CLIP,
-                    top: theme::VIDEO_CLIP_TOP,
+                    body: theme::video_clip(),
+                    top: theme::video_clip_top(),
                     waveform: None,
                     volume: None,
                     effects: badges_with_group(crate::effects::badges(clip), clip.id),
@@ -2063,7 +2157,8 @@ fn draw_lanes(
                     // A picture fades by its entrance and exit: the same
                     // handles a sound's fades have set how long they take.
                     fade_handles: true,
-                    label_color: label_color(clip.color_label),
+                    label_color: label_color(clip.color_label)
+                        .or_else(|| label_color(track.color_label)),
                 },
                 clip.id,
                 track.id,
@@ -2080,6 +2175,7 @@ fn draw_lanes(
     }
 
     for (row, track) in sequence.audio_tracks.iter().enumerate() {
+        let lane_height = state.lane_height_for(track.id);
         let lane = Rect::from_min_size(Pos2::new(rect.left(), y), vec2(rect.width(), lane_height));
         draw_lane_background(painter, lane, viewport, row + 1);
         draw_track_header(
@@ -2091,9 +2187,11 @@ fn draw_lanes(
         );
 
         for clip in track.clips_in_range(visible) {
-            let label = project
-                .media_asset(clip.media_id)
-                .map_or("(missing media)", |m| m.display_name());
+            let label = clip.name.as_deref().unwrap_or_else(|| {
+                project
+                    .media_asset(clip.media_id)
+                    .map_or("(missing media)", |m| m.display_name())
+            });
             draw_clip(
                 painter,
                 lane,
@@ -2102,10 +2200,11 @@ fn draw_lanes(
                     range: clip.timeline,
                     label,
                     selected: state.selected_clips.contains(&clip.id),
-                    track_enabled: track.enabled,
+                    track_enabled: track.enabled
+                        && sequence.clip_plays(clip.id, true, sound_soloed),
                     dragging: state.drag.as_ref().is_some_and(|d| d.clip == clip.id),
-                    body: theme::AUDIO_CLIP,
-                    top: theme::AUDIO_CLIP_TOP,
+                    body: theme::audio_clip(),
+                    top: theme::audio_clip_top(),
                     effects: {
                         let mut badges = badges_with_group(Vec::new(), clip.id);
                         if clip.crossfade_out > TimelineTime::ZERO {
@@ -2134,7 +2233,8 @@ fn draw_lanes(
                     linked_to_selection: partner(clip.link, clip.id),
                     ramps: clip.fitted_fades(),
                     fade_handles: true,
-                    label_color: label_color(clip.color_label),
+                    label_color: label_color(clip.color_label)
+                        .or_else(|| label_color(track.color_label)),
                 },
                 clip.id,
                 track.id,
@@ -2184,7 +2284,7 @@ fn draw_header_meter(painter: &egui::Painter, header: Rect, (left, right): (f32,
     for (index, level) in [left, right].into_iter().enumerate() {
         let x = strip.left() + index as f32 * (bar_width + 1.0);
         let bar = Rect::from_min_size(Pos2::new(x, strip.top()), vec2(bar_width, strip.height()));
-        painter.rect_filled(bar, 1.0, theme::TIMELINE_BACKGROUND);
+        painter.rect_filled(bar, 1.0, theme::timeline_background());
 
         let filled = strip.height() * crate::panels::meter_fraction(level);
         if filled <= 0.5 {
@@ -2198,11 +2298,11 @@ fn draw_header_meter(painter: &egui::Painter, header: Rect, (left, right): (f32,
             ),
             1.0,
             if level >= 1.0 {
-                theme::PLAYHEAD
+                theme::playhead()
             } else if level > 0.7 {
-                theme::SELECTION
+                theme::selection()
             } else {
-                theme::AUDIO_CLIP_TOP
+                theme::audio_clip_top()
             },
         );
     }
@@ -2240,9 +2340,9 @@ fn draw_lane_background(painter: &egui::Painter, lane: Rect, viewport: Viewport,
         lanes,
         0,
         if row.is_multiple_of(2) {
-            theme::TRACK_LANE
+            theme::track_lane()
         } else {
-            theme::TRACK_LANE_ALT
+            theme::track_lane_alt()
         },
     );
 }
@@ -2259,10 +2359,20 @@ fn draw_track_header<C>(
     let locked = track.locked;
     let solo = track.solo;
     let header = Rect::from_min_size(lane.min, vec2(theme::TRACK_HEADER_WIDTH, lane.height()));
-    painter.rect_filled(header, 0, theme::TRACK_HEADER);
+    painter.rect_filled(header, 0, theme::track_header());
+    // The lane's colour, as a strip down the head's left edge and a wash over
+    // it: enough to find the lane at a glance, not enough to fight the name.
+    if let Some(colour) = label_color(track.color_label) {
+        painter.rect_filled(header, 0, colour.gamma_multiply(0.12));
+        painter.rect_filled(
+            Rect::from_min_size(header.min, vec2(4.0, header.height())),
+            0,
+            colour,
+        );
+    }
     painter.line_segment(
         [header.right_top(), header.right_bottom()],
-        Stroke::new(1.0, theme::GRID_LINE),
+        Stroke::new(1.0, theme::grid_line()),
     );
 
     painter.text(
@@ -2271,9 +2381,9 @@ fn draw_track_header<C>(
         name,
         FontId::proportional(13.0),
         if enabled {
-            theme::CLIP_TEXT
+            theme::clip_text()
         } else {
-            theme::DISABLED
+            theme::disabled()
         },
     );
 
@@ -2295,9 +2405,9 @@ fn draw_track_header<C>(
             rect,
             3,
             if on {
-                theme::SELECTION
+                theme::selection()
             } else {
-                theme::TIMELINE_BACKGROUND
+                theme::timeline_background()
             },
         );
         painter.text(
@@ -2306,9 +2416,9 @@ fn draw_track_header<C>(
             glyph,
             FontId::proportional(10.0),
             if on {
-                theme::BACKGROUND
+                theme::background()
             } else {
-                theme::DISABLED
+                theme::disabled()
             },
         );
     }
@@ -2349,7 +2459,7 @@ fn draw_track_header<C>(
             Align2::LEFT_CENTER,
             badges.join(" · "),
             FontId::proportional(10.0),
-            theme::DISABLED,
+            theme::disabled(),
         );
     }
 }
@@ -2380,7 +2490,7 @@ fn draw_transition(
     painter.rect_filled(
         rect,
         theme::CLIP_CORNER_RADIUS,
-        theme::TRANSITION.gamma_multiply(0.30),
+        theme::transition().gamma_multiply(0.30),
     );
 
     // Too narrow for the symbol to be anything but a smudge; the panel alone
@@ -2389,7 +2499,7 @@ fn draw_transition(
         return;
     }
 
-    let stroke = Stroke::new(1.5, theme::TRANSITION);
+    let stroke = Stroke::new(1.5, theme::transition());
     let inner = rect.shrink(3.0);
     match transition.kind {
         // Two crossing diagonals: the shape every editor uses for a dissolve,
@@ -2484,7 +2594,7 @@ fn draw_transition(
             painter.rect_filled(
                 egui::Rect::from_min_max(inner.left_top(), Pos2::new(x, inner.bottom())),
                 0.0,
-                theme::TRANSITION.gamma_multiply(0.4),
+                theme::transition().gamma_multiply(0.4),
             );
             painter.line_segment(
                 [Pos2::new(x, inner.top()), Pos2::new(x, inner.bottom())],
@@ -2591,11 +2701,11 @@ fn draw_marquee(painter: &egui::Painter, state: &UiState) {
     }
 
     let rect = marquee.rect();
-    painter.rect_filled(rect, 2, theme::SELECTION.gamma_multiply(0.18));
+    painter.rect_filled(rect, 2, theme::selection().gamma_multiply(0.18));
     painter.rect_stroke(
         rect,
         2,
-        Stroke::new(1.0, theme::SELECTION),
+        Stroke::new(1.0, theme::selection()),
         StrokeKind::Inside,
     );
 }
@@ -2780,13 +2890,13 @@ fn draw_volume_envelope(
 
     painter.add(egui::Shape::line(
         points,
-        Stroke::new(1.5, theme::AUTOMATION),
+        Stroke::new(1.5, theme::automation()),
     ));
 
     // A dot at each key, so it is clear the shape is made of points that can be
     // moved rather than being a picture of the sound.
     for (_, at) in envelope_dots(clip, clip_rect, viewport) {
-        painter.circle_filled(at, 3.0, theme::AUTOMATION);
+        painter.circle_filled(at, 3.0, theme::automation());
     }
 }
 
@@ -2838,7 +2948,7 @@ fn draw_waveform(
         x = next;
     }
 
-    let colour = theme::CLIP_TEXT.gamma_multiply(0.55);
+    let colour = theme::clip_text().gamma_multiply(0.55);
     for [from, to] in segments {
         painter.line_segment([from, to], Stroke::new(1.0, colour));
     }
@@ -2975,7 +3085,7 @@ fn draw_clip(
     let (body, top) = if visual.track_enabled {
         (visual.body, top)
     } else {
-        (theme::DISABLED, theme::DISABLED)
+        (theme::disabled(), theme::disabled())
     };
 
     // The clip being dragged is dimmed in place; the preview shows where it
@@ -3045,7 +3155,7 @@ fn draw_clip(
         for centre in handles {
             let square =
                 Rect::from_center_size(centre, egui::vec2(FADE_HANDLE_SIZE, FADE_HANDLE_SIZE));
-            painter.rect_filled(square, 1.0, theme::FADE_HANDLE);
+            painter.rect_filled(square, 1.0, theme::fade_handle());
             painter.rect_stroke(
                 square,
                 1.0,
@@ -3059,7 +3169,7 @@ fn draw_clip(
         painter.rect_stroke(
             clip_rect,
             theme::CLIP_CORNER_RADIUS,
-            Stroke::new(2.0, theme::SELECTION),
+            Stroke::new(2.0, theme::selection()),
             StrokeKind::Inside,
         );
         draw_trim_handles(painter, clip_rect);
@@ -3070,7 +3180,7 @@ fn draw_clip(
         painter.rect_stroke(
             clip_rect,
             theme::CLIP_CORNER_RADIUS,
-            Stroke::new(1.0, theme::SELECTION.gamma_multiply(0.6)),
+            Stroke::new(1.0, theme::selection().gamma_multiply(0.6)),
             StrokeKind::Inside,
         );
     }
@@ -3102,7 +3212,7 @@ fn draw_clip(
             Align2::LEFT_CENTER,
             visual.label,
             FontId::proportional(12.0),
-            theme::CLIP_TEXT,
+            theme::clip_text(),
         );
     }
 }
@@ -3123,19 +3233,19 @@ fn draw_clip_badges(painter: &egui::Painter, clip_rect: Rect, visual: &ClipVisua
 
     let mut badges: Vec<(String, Color32)> = Vec::new();
     if visual.frozen {
-        badges.push(("hold".to_owned(), theme::MARKER));
+        badges.push(("hold".to_owned(), theme::marker()));
     }
     if !visual.speed.is_one() {
-        badges.push((format!("{:.2}×", visual.speed.as_f64()), theme::SELECTION));
+        badges.push((format!("{:.2}×", visual.speed.as_f64()), theme::selection()));
     }
     for effect in &visual.effects {
-        badges.push(((*effect).to_owned(), theme::TRANSITION));
+        badges.push(((*effect).to_owned(), theme::transition()));
     }
 
     let font = FontId::proportional(10.0);
     let mut right = clip_rect.right() - 5.0;
     for (label, colour) in badges {
-        let galley = painter.layout_no_wrap(label, font.clone(), theme::BACKGROUND);
+        let galley = painter.layout_no_wrap(label, font.clone(), theme::background());
         let box_rect = Rect::from_min_size(
             Pos2::new(right - galley.size().x - 4.0, clip_rect.top() + 5.0),
             galley.size() + vec2(8.0, 3.0),
@@ -3149,7 +3259,7 @@ fn draw_clip_badges(painter: &egui::Painter, clip_rect: Rect, visual: &ClipVisua
         painter.galley(
             Pos2::new(box_rect.left() + 4.0, box_rect.top() + 1.0),
             galley,
-            theme::BACKGROUND,
+            theme::background(),
         );
         right = box_rect.left() - 4.0;
     }
@@ -3191,7 +3301,7 @@ fn draw_keyframes(
         // §24: the curve, in the shape of the mark. A row of identical
         // diamonds cannot say which keys were eased, and easing a move is the
         // difference between it looking deliberate and looking mechanical.
-        let outline = Stroke::new(1.0, theme::TIMELINE_BACKGROUND);
+        let outline = Stroke::new(1.0, theme::timeline_background());
         let at = Pos2::new(x, y);
         match keyframes.interpolation_at(time) {
             // A corner: the value is held and then jumps, which is what a
@@ -3200,7 +3310,7 @@ fn draw_keyframes(
                 painter.rect(
                     Rect::from_center_size(at, vec2(RADIUS * 1.7, RADIUS * 1.7)),
                     0.0,
-                    theme::KEYFRAME,
+                    theme::keyframe(),
                     outline,
                     StrokeKind::Middle,
                 );
@@ -3214,12 +3324,12 @@ fn draw_keyframes(
                         Pos2::new(x, y + RADIUS),
                         Pos2::new(x - RADIUS, y),
                     ],
-                    theme::KEYFRAME,
+                    theme::keyframe(),
                     outline,
                 ));
             }
             Some(_) => {
-                painter.circle(at, RADIUS, theme::KEYFRAME, outline);
+                painter.circle(at, RADIUS, theme::keyframe(), outline);
             }
         }
     }
@@ -3236,7 +3346,7 @@ fn draw_trim_handles(painter: &egui::Painter, clip_rect: Rect) {
             Pos2::new(x, clip_rect.top()),
             vec2(TRIM_HANDLE_PIXELS, clip_rect.height()),
         );
-        painter.rect_filled(handle, theme::CLIP_CORNER_RADIUS, theme::SELECTION);
+        painter.rect_filled(handle, theme::CLIP_CORNER_RADIUS, theme::selection());
     }
 }
 
@@ -3270,7 +3380,7 @@ fn draw_drag_preview(
                     Pos2::new(x, lane.rect.top() - 6.0),
                     Pos2::new(x, lane.rect.bottom() + 6.0),
                 ],
-                Stroke::new(3.0, theme::SELECTION),
+                Stroke::new(3.0, theme::selection()),
             );
             let seconds = (roll.to.ticks() - roll.cut.ticks()) as f64
                 / bettercut_editor_core::foundation::TICKS_PER_SECOND as f64;
@@ -3300,7 +3410,7 @@ fn draw_drag_preview(
             painter.rect_stroke(
                 ghost,
                 theme::CLIP_CORNER_RADIUS,
-                Stroke::new(2.0, theme::SELECTION),
+                Stroke::new(2.0, theme::selection()),
                 StrokeKind::Inside,
             );
             painter.text(
@@ -3318,9 +3428,9 @@ fn draw_drag_preview(
         // Red when the drop would be refused — a video clip over an audio
         // track. Better to show it before the release than to error after.
         let tint = if drag.target_invalid {
-            theme::ERROR_TEXT
+            theme::error_text()
         } else {
-            theme::SELECTION
+            theme::selection()
         };
         painter.rect_filled(ghost, theme::CLIP_CORNER_RADIUS, tint.gamma_multiply(0.25));
         painter.rect_stroke(
@@ -3344,7 +3454,7 @@ fn draw_drag_preview(
             if x0 >= viewport.origin_x {
                 painter.line_segment(
                     [Pos2::new(x0, top), Pos2::new(x0, bottom)],
-                    Stroke::new(3.0, theme::SELECTION),
+                    Stroke::new(3.0, theme::selection()),
                 );
             }
             painter.text(
@@ -3379,12 +3489,12 @@ fn draw_drag_preview(
             painter.rect_filled(
                 ghost,
                 theme::CLIP_CORNER_RADIUS,
-                theme::SELECTION.gamma_multiply(0.12),
+                theme::selection().gamma_multiply(0.12),
             );
             painter.rect_stroke(
                 ghost,
                 theme::CLIP_CORNER_RADIUS,
-                Stroke::new(1.0, theme::SELECTION.gamma_multiply(0.7)),
+                Stroke::new(1.0, theme::selection().gamma_multiply(0.7)),
                 StrokeKind::Inside,
             );
         }
@@ -3399,7 +3509,7 @@ fn draw_drag_preview(
                     Pos2::new(x, lane.rect.top() - 40.0),
                     Pos2::new(x, lane.rect.bottom() + 40.0),
                 ],
-                Stroke::new(1.0, theme::SELECTION),
+                Stroke::new(1.0, theme::selection()),
             );
         }
     }
@@ -3410,6 +3520,34 @@ fn draw_drag_preview(
 /// Over the lanes rather than on one clip: the cut takes the picture and its
 /// sound together, and showing it on both is what makes that obvious before
 /// the button is pressed.
+/// The moments a highlight search found: shaded like a suggested cut, but
+/// in the marker's colour, because these are what *stays*.
+fn draw_suggested_keeps(
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    ranges: &[TimelineRange],
+) {
+    for range in ranges {
+        let x0 = viewport.x_of(range.start).max(viewport.origin_x);
+        let x1 = viewport.x_of(range.end).min(rect.right());
+        if x1 <= x0 {
+            continue;
+        }
+        let band = Rect::from_min_max(
+            Pos2::new(x0, rect.top() + theme::RULER_HEIGHT),
+            Pos2::new(x1, rect.bottom()),
+        );
+        painter.rect_filled(band, 0, theme::marker().gamma_multiply(0.22));
+        painter.rect_stroke(
+            band,
+            0,
+            Stroke::new(1.0, theme::marker().gamma_multiply(0.8)),
+            StrokeKind::Inside,
+        );
+    }
+}
+
 fn draw_suggested_cuts(
     painter: &egui::Painter,
     rect: Rect,
@@ -3426,11 +3564,11 @@ fn draw_suggested_cuts(
             Pos2::new(x0, rect.top() + theme::RULER_HEIGHT),
             Pos2::new(x1, rect.bottom()),
         );
-        painter.rect_filled(band, 0, theme::PLAYHEAD.gamma_multiply(0.28));
+        painter.rect_filled(band, 0, theme::playhead().gamma_multiply(0.28));
         painter.rect_stroke(
             band,
             0,
-            Stroke::new(1.0, theme::PLAYHEAD.gamma_multiply(0.8)),
+            Stroke::new(1.0, theme::playhead().gamma_multiply(0.8)),
             StrokeKind::Inside,
         );
     }
@@ -3460,7 +3598,7 @@ fn draw_suggested_splits(
             let to = (y + 5.0).min(rect.bottom());
             painter.line_segment(
                 [Pos2::new(x, y), Pos2::new(x, to)],
-                Stroke::new(1.5, theme::PLAYHEAD.gamma_multiply(0.9)),
+                Stroke::new(1.5, theme::playhead().gamma_multiply(0.9)),
             );
             y = to + 4.0;
         }
@@ -3490,12 +3628,12 @@ fn draw_in_out(
             painter.rect_filled(
                 Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x1, rect.bottom())),
                 0.0,
-                theme::IN_OUT_SPAN,
+                theme::in_out_span(),
             );
             painter.rect_filled(
                 Rect::from_min_max(Pos2::new(x0, top - 4.0), Pos2::new(x1, top)),
                 0.0,
-                theme::IN_OUT_MARK,
+                theme::in_out_mark(),
             );
         }
     }
@@ -3505,7 +3643,7 @@ fn draw_in_out(
             return;
         }
         let arm = if opening { 6.0 } else { -6.0 };
-        let stroke = Stroke::new(2.0, theme::IN_OUT_MARK);
+        let stroke = Stroke::new(2.0, theme::in_out_mark());
         painter.line_segment([Pos2::new(x, rect.top() + 2.0), Pos2::new(x, top)], stroke);
         painter.line_segment(
             [
@@ -3550,9 +3688,9 @@ fn draw_render_bar(
             Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x1, top + 3.0)),
             0.0,
             if current {
-                theme::RENDERED
+                theme::rendered()
             } else {
-                theme::RENDERED_STALE
+                theme::rendered_stale()
             },
         );
     }
@@ -3623,7 +3761,54 @@ fn draw_markers(
 pub fn marker_colour(label: bettercut_editor_core::timeline::ColorLabel) -> Color32 {
     label
         .rgb()
-        .map_or(theme::MARKER, |[r, g, b]| Color32::from_rgb(r, g, b))
+        .map_or(theme::marker(), |[r, g, b]| Color32::from_rgb(r, g, b))
+}
+
+/// A clip's own marks (`Sequence::clip_marks`), as short ticks hanging from
+/// the top of the clip: on the clip rather than through the whole timeline,
+/// because that is the difference between them and the ruler's markers.
+fn draw_clip_marks(
+    painter: &egui::Painter,
+    viewport: Viewport,
+    sequence: &Sequence,
+    lanes: &[LaneLayout],
+) {
+    if sequence.clip_marks.is_empty() {
+        return;
+    }
+    // One pass over the marked clips: each mark is drawn on the lane its
+    // clip sits on, at the height that lane happens to be.
+    let mut marked: Vec<ClipId> = sequence.clip_marks.iter().map(|m| m.clip).collect();
+    marked.sort_unstable();
+    marked.dedup();
+    for clip in marked {
+        let Some(span) = sequence.clip_span(clip) else {
+            continue;
+        };
+        let Some(lane) = lanes.iter().find(|lane| lane.track == span.track) else {
+            continue;
+        };
+        for (at, mark) in sequence.clip_marks_on_timeline(clip) {
+            let x = viewport.x_of(at);
+            if x < viewport.origin_x || x > lane.rect.right() + 1.0 {
+                continue;
+            }
+            let colour = match mark.color.rgb() {
+                Some([r, g, b]) => Color32::from_rgb(r, g, b),
+                None => theme::marker(),
+            };
+            let top = lane.rect.top();
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(x - 4.0, top),
+                    Pos2::new(x + 4.0, top),
+                    Pos2::new(x, top + 7.0),
+                ],
+                colour,
+                Stroke::new(1.0, theme::timeline_background()),
+            ));
+        }
+    }
 }
 
 fn draw_playhead(painter: &egui::Painter, rect: Rect, viewport: Viewport, playhead: TimelineTime) {
@@ -3634,7 +3819,7 @@ fn draw_playhead(painter: &egui::Painter, rect: Rect, viewport: Viewport, playhe
 
     painter.line_segment(
         [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-        Stroke::new(1.5, theme::PLAYHEAD),
+        Stroke::new(1.5, theme::playhead()),
     );
 
     // Grab handle at the top, so the playhead reads as draggable.
@@ -3642,5 +3827,5 @@ fn draw_playhead(painter: &egui::Painter, rect: Rect, viewport: Viewport, playhe
         Pos2::new(x, rect.top() + theme::RULER_HEIGHT / 2.0),
         vec2(11.0, 11.0),
     );
-    painter.rect_filled(handle, 2, theme::PLAYHEAD);
+    painter.rect_filled(handle, 2, theme::playhead());
 }

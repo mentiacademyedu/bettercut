@@ -106,9 +106,11 @@ fn the_clip_and_the_lane_multiply() {
             clip_gain: 1.0,
             track_gain: 1.0,
             track_pan: 0.0,
+            clip_pan: 0.0,
             fades: bettercut_audio::Fades::default(),
             automation: Some(bettercut_audio::GainRamp::steady(0.5)),
             track_automation: Some(bettercut_audio::GainRamp::steady(0.5)),
+            pan_automation: None,
         },
     );
     // Constant-power panning puts a centred source at 1/sqrt(2) a side.

@@ -17,12 +17,12 @@ use bettercut_media::{CancellationToken, FrameStorage, SeekMode};
 use bettercut_playback::FrameSource;
 use bettercut_project_format::Project;
 use bettercut_timeline::ColorAdjust;
-use bettercut_timeline::colour_match::{FrameSample, match_grade};
+use bettercut_timeline::colour_match::{FrameSample, auto_grade, match_grade};
 
 use crate::render_still;
 
 /// A finished match waiting to be collected: the clip and its new grade.
-pub type MatchedGrade = Arc<Mutex<Option<(ClipId, ColorAdjust)>>>;
+pub type MatchedGrade = Arc<Mutex<Option<(ClipId, ColorAdjust, &'static str)>>>;
 
 /// Less than this average luma is a reference with nothing in it — an empty
 /// stretch of timeline renders black — and matching to black would only
@@ -34,7 +34,8 @@ pub struct ColourMatchJob {
     project: Project,
     sequence: SequenceId,
     clip: ClipId,
-    reference_at: TimelineTime,
+    /// The frame to match, or `None` for a neutral target — auto level.
+    reference_at: Option<TimelineTime>,
     slot: MatchedGrade,
 }
 
@@ -49,8 +50,29 @@ impl ColourMatchJob {
             project,
             sequence,
             clip,
-            reference_at,
+            reference_at: Some(reference_at),
             slot: MatchedGrade::default(),
+        }
+    }
+
+    /// Grade `clip` to a neutral exposure and balance instead of to a frame
+    /// (`bettercut_timeline::colour_match::auto_grade`).
+    pub fn auto_level(project: Project, sequence: SequenceId, clip: ClipId) -> Self {
+        Self {
+            project,
+            sequence,
+            clip,
+            reference_at: None,
+            slot: MatchedGrade::default(),
+        }
+    }
+
+    /// What the grade is for, as the undo step and the status line say it.
+    pub fn label_for_grade(&self) -> &'static str {
+        if self.reference_at.is_some() {
+            "Match Colour"
+        } else {
+            "Auto Level"
         }
     }
 
@@ -101,15 +123,13 @@ pub fn colour_match(
     let Some(original) = project.sequence(sequence) else {
         return Err("that sequence is no longer in the project".to_owned());
     };
-    let Some((track, video)) = original
+    let Some(track) = original
         .video_tracks
         .iter()
-        .find_map(|t| t.get(clip).map(|c| (t.id, c.clone())))
+        .find(|t| t.get(clip).is_some())
+        .map(|t| t.id)
     else {
         return Err("only a picture clip can be colour matched".to_owned());
-    };
-    let Some(asset) = project.media_asset(video.media_id) else {
-        return Err("the clip's file is not in the project".to_owned());
     };
 
     // The reference, without the clip being matched.
@@ -126,7 +146,38 @@ pub fn colour_match(
         return Err("there is no picture under the playhead to match to".to_owned());
     }
 
-    // The clip's own frame, from its middle, ungraded.
+    let sample = clip_sample(project, sequence, clip, cancel)?;
+    Ok(match_grade(&sample, &reference))
+}
+
+/// The grade that brings `clip` to a neutral exposure and balance, from its
+/// own middle frame — no reference, no render, so no GPU either.
+pub fn auto_level(
+    project: &Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    cancel: &dyn CancellationToken,
+) -> Result<ColorAdjust, String> {
+    let sample = clip_sample(project, sequence, clip, cancel)?;
+    Ok(auto_grade(&sample))
+}
+
+/// The clip's own frame, from its middle, ungraded, sampled.
+fn clip_sample(
+    project: &Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    cancel: &dyn CancellationToken,
+) -> Result<FrameSample, String> {
+    let Some(original) = project.sequence(sequence) else {
+        return Err("that sequence is no longer in the project".to_owned());
+    };
+    let Some(video) = original.video_tracks.iter().find_map(|t| t.get(clip)) else {
+        return Err("only a picture clip can be graded this way".to_owned());
+    };
+    let Some(asset) = project.media_asset(video.media_id) else {
+        return Err("the clip's file is not in the project".to_owned());
+    };
     let middle =
         TimelineTime::from_ticks((video.timeline.start.ticks() + video.timeline.end.ticks()) / 2);
     let mut frames = FrameSource::new(2);
@@ -142,14 +193,17 @@ pub fn colour_match(
         return Err("the clip's frame is not in system memory".to_owned());
     };
     let rows = packed_rows(data, *stride as usize, frame.width, frame.height);
-    let sample = FrameSample::from_rgba(&rows, frame.width, frame.height)
-        .ok_or("the clip's frame could not be read")?;
-    Ok(match_grade(&sample, &reference))
+    FrameSample::from_rgba(&rows, frame.width, frame.height)
+        .ok_or_else(|| "the clip's frame could not be read".to_owned())
 }
 
 impl Task for ColourMatchJob {
     fn label(&self) -> String {
-        "Matching colour".to_owned()
+        if self.reference_at.is_some() {
+            "Matching colour".to_owned()
+        } else {
+            "Setting levels".to_owned()
+        }
     }
 
     fn priority(&self) -> Priority {
@@ -158,15 +212,12 @@ impl Task for ColourMatchJob {
 
     fn run(&mut self, ctx: &JobContext) -> Result<(), String> {
         let cancel = JobCancel(ctx);
-        let grade = colour_match(
-            &self.project,
-            self.sequence,
-            self.clip,
-            self.reference_at,
-            &cancel,
-        )?;
+        let grade = match self.reference_at {
+            Some(at) => colour_match(&self.project, self.sequence, self.clip, at, &cancel)?,
+            None => auto_level(&self.project, self.sequence, self.clip, &cancel)?,
+        };
         if let Ok(mut slot) = self.slot.lock() {
-            *slot = Some((self.clip, grade));
+            *slot = Some((self.clip, grade, self.label_for_grade()));
         }
         Ok(())
     }

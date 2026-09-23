@@ -69,6 +69,10 @@ pub struct MixParams {
     pub track_gain: f32,
     /// -1.0 hard left, 0.0 centre, +1.0 hard right.
     pub track_pan: f32,
+    /// The clip's own pan, -1 to +1, on top of the track's. The two add and
+    /// are held to the range: a clip panned left on a lane panned right sits
+    /// in the middle, as it would on a desk with both knobs turned.
+    pub clip_pan: f32,
     /// The clip's fade in and out, part of the clip-gain stage.
     pub fades: Fades,
     /// The clip's keyframed volume across this block, where it has one.
@@ -88,6 +92,11 @@ pub struct MixParams {
     /// multiplies with the clip's — the clip says how loud that piece is, the
     /// lane says how loud the lane is under it, as a desk works.
     pub track_automation: Option<GainRamp>,
+
+    /// The clip's keyframed pan across this block, where it has one. The same
+    /// rule as the volume: when it is here it *is* the clip's pan, so the
+    /// caller passes `clip_pan: 0.0` beside it.
+    pub pan_automation: Option<GainRamp>,
 }
 
 impl Default for MixParams {
@@ -96,9 +105,11 @@ impl Default for MixParams {
             clip_gain: 1.0,
             track_gain: 1.0,
             track_pan: 0.0,
+            clip_pan: 0.0,
             fades: Fades::default(),
             automation: None,
             track_automation: None,
+            pan_automation: None,
         }
     }
 }
@@ -207,7 +218,13 @@ impl MixParams {
     /// perceived loudness. Linear panning instead makes the centre sound
     /// noticeably quieter than the edges.
     fn stereo_gains(self) -> (f32, f32) {
-        let pan = self.track_pan.clamp(-1.0, 1.0);
+        self.stereo_gains_at(self.clip_pan)
+    }
+
+    /// The same, with the clip's pan given: for a block whose pan is moving,
+    /// asked once a frame.
+    fn stereo_gains_at(self, clip_pan: f32) -> (f32, f32) {
+        let pan = (self.track_pan.clamp(-1.0, 1.0) + clip_pan.clamp(-1.0, 1.0)).clamp(-1.0, 1.0);
         let angle = (pan + 1.0) * (std::f32::consts::FRAC_PI_4); // 0..pi/2
         let base = self.clip_gain * self.track_gain;
         (base * angle.cos(), base * angle.sin())
@@ -271,6 +288,12 @@ pub fn mix_into(
 
         if channels == 2 {
             // The common case: stereo out. A mono source feeds both sides.
+            // A moving pan is worked out per frame; a still one was worked
+            // out once, above.
+            let (left_gain, right_gain) = match params.pan_automation {
+                Some(ramp) => params.stereo_gains_at(ramp.at(frame)),
+                None => (left_gain, right_gain),
+            };
             let left = planes[0][frame];
             let right = planes.get(1).map_or(left, |p| p[frame]);
             let (left, right) = (left * left_gain * envelope, right * right_gain * envelope);
@@ -306,6 +329,36 @@ pub fn mix_into(
     }
     let keep = |peak: f32| if peak.is_finite() { peak } else { 0.0 };
     (keep(peak_left), keep(peak_right))
+}
+
+/// The widest a stereo image is pushed: the sides doubled. Past this the
+/// two channels start to cancel in mono, which is what half of every phone
+/// speaker plays.
+pub const MAX_STEREO_WIDTH: f32 = 2.0;
+
+/// Widen or narrow a stereo pair in place: `width` 0 folds it to mono, 1
+/// leaves it as recorded, up to [`MAX_STEREO_WIDTH`] pushes the sides out.
+///
+/// Mid/side, the way a desk does it: what the two channels share is left
+/// alone and only what differs between them is scaled, so the voice in the
+/// middle keeps its level whatever the width. Fewer than two planes have no
+/// width to change and are left as they are.
+pub fn widen(planes: &mut [Vec<f32>], width: f32) {
+    let width = if width.is_finite() {
+        width.clamp(0.0, MAX_STEREO_WIDTH)
+    } else {
+        1.0
+    };
+    if planes.len() < 2 || (width - 1.0).abs() < 1e-6 {
+        return;
+    }
+    let (left, rest) = planes.split_at_mut(1);
+    for (l, r) in left[0].iter_mut().zip(rest[0].iter_mut()) {
+        let mid = (*l + *r) * 0.5;
+        let side = (*l - *r) * 0.5 * width;
+        *l = mid + side;
+        *r = mid - side;
+    }
 }
 
 /// The loudest sample in each of a stereo block, for a level meter (§20a).
@@ -522,6 +575,126 @@ mod tests {
             mix_into(&mut out, 0, &mono(&[1.0; 4]), 0, MixParams::default()),
             (0.0, 0.0)
         );
+    }
+
+    /// A pan that moves across the block moves the sound with it: hard left
+    /// at the first frame, hard right at the last, and the same power all the
+    /// way — a sound crossing the picture must not dip in the middle.
+    #[test]
+    fn a_moving_pan_crosses_the_image_at_a_steady_power() {
+        let frames = 9;
+        let mut out = vec![0.0_f32; frames * 2];
+        mix_into(
+            &mut out,
+            2,
+            &mono(&[1.0; 9]),
+            0,
+            MixParams {
+                pan_automation: Some(GainRamp {
+                    from: -1.0,
+                    to: 1.0,
+                    frames: (frames - 1) as i64,
+                }),
+                ..MixParams::default()
+            },
+        );
+        assert!(out[1].abs() < 1e-6, "hard left had sound on the right");
+        assert!(
+            out[(frames - 1) * 2].abs() < 1e-6,
+            "hard right had sound on the left"
+        );
+        assert!(out[8] > 0.0 && out[9] > 0.0, "the middle is not both sides");
+        for frame in 0..frames {
+            let (l, r) = (out[frame * 2], out[frame * 2 + 1]);
+            let power = l * l + r * r;
+            assert!((power - 1.0).abs() < 0.01, "frame {frame}: power {power}");
+        }
+    }
+
+    /// The clip's own pan sits on top of its lane's: left on a lane panned
+    /// right is the middle, and a line of keys replaces the static value.
+    #[test]
+    fn clip_pan_and_track_pan_add_and_a_line_replaces_the_static() {
+        let mut out = vec![0.0_f32; 2];
+        mix_into(
+            &mut out,
+            2,
+            &mono(&[1.0]),
+            0,
+            MixParams {
+                track_pan: 1.0,
+                clip_pan: -1.0,
+                ..MixParams::default()
+            },
+        );
+        assert!((out[0] - out[1]).abs() < 1e-6, "{out:?} is not centred");
+
+        let mut out = vec![0.0_f32; 2];
+        mix_into(
+            &mut out,
+            2,
+            &mono(&[1.0]),
+            0,
+            MixParams {
+                clip_pan: 1.0,
+                pan_automation: Some(GainRamp::steady(0.0)),
+                ..MixParams::default()
+            },
+        );
+        assert!(
+            (out[0] - out[1]).abs() < 1e-6,
+            "{out:?}: the line did not replace the static pan"
+        );
+    }
+
+    /// Nothing is folded to mono, as recorded is as recorded, and wider
+    /// keeps the middle where it was while the sides move.
+    #[test]
+    fn widening_moves_the_sides_and_keeps_the_middle() {
+        let recorded = vec![vec![0.8, 0.2, 0.5], vec![0.2, 0.6, 0.5]];
+
+        let mut same = recorded.clone();
+        widen(&mut same, 1.0);
+        assert_eq!(same, recorded);
+
+        let mut mono = recorded.clone();
+        widen(&mut mono, 0.0);
+        assert_eq!(mono[0], mono[1], "mono is not the same on both sides");
+        assert!(
+            (mono[0][0] - 0.5).abs() < 1e-6,
+            "the middle moved: {}",
+            mono[0][0]
+        );
+
+        let mut wide = recorded.clone();
+        widen(&mut wide, 2.0);
+        // Left 0.8 / right 0.2: mid 0.5, side 0.3 → doubled, 1.1 and -0.1.
+        assert!(
+            (wide[0][0] - 1.1).abs() < 1e-6 && (wide[1][0] + 0.1).abs() < 1e-6,
+            "{wide:?}"
+        );
+        // A sample the same on both sides is the middle, and never moves.
+        assert!((wide[0][2] - 0.5).abs() < 1e-6 && (wide[1][2] - 0.5).abs() < 1e-6);
+    }
+
+    /// Nonsense is as recorded, past the limit is the limit, and a mono
+    /// source has no width to change.
+    #[test]
+    fn widening_is_held_to_its_range_and_leaves_mono_alone() {
+        let recorded = vec![vec![0.8, 0.2], vec![0.2, 0.6]];
+        let mut nan = recorded.clone();
+        widen(&mut nan, f32::NAN);
+        assert_eq!(nan, recorded);
+
+        let mut past = recorded.clone();
+        widen(&mut past, 9.0);
+        let mut limit = recorded.clone();
+        widen(&mut limit, MAX_STEREO_WIDTH);
+        assert_eq!(past, limit);
+
+        let mut mono = vec![vec![0.3, 0.4]];
+        widen(&mut mono, 2.0);
+        assert_eq!(mono, vec![vec![0.3, 0.4]]);
     }
 
     #[test]

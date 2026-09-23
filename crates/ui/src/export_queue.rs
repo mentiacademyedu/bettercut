@@ -22,6 +22,9 @@ pub struct ExportQueueState {
     pub remove: Option<usize>,
     /// Take every waiting export off the queue.
     pub clear: bool,
+    /// Move the waiting export at `.0` so it sits at `.1`, the others
+    /// closing up around it.
+    pub move_to: Option<(usize, usize)>,
 }
 
 /// Draw the window, if it is open.
@@ -53,7 +56,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                     ui.label(
                         egui::RichText::new("Nothing is exporting")
                             .small()
-                            .color(theme::DISABLED),
+                            .color(theme::disabled()),
                     );
                 }
             }
@@ -64,10 +67,28 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
             ui.label(
                 egui::RichText::new(format!("{} waiting", queue.waiting.len()))
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
             );
+            let last = queue.waiting.len() - 1;
+            let mut move_to = None;
             for (index, label) in queue.waiting.iter().enumerate() {
                 ui.horizontal(|ui| {
+                    // Up and down, one place at a time, so the order is
+                    // always visible while it changes; the top one is next.
+                    if ui
+                        .add_enabled(index > 0, egui::Button::new("Up").small())
+                        .on_hover_text("Run this export sooner")
+                        .clicked()
+                    {
+                        move_to = Some((index, index - 1));
+                    }
+                    if ui
+                        .add_enabled(index < last, egui::Button::new("Down").small())
+                        .on_hover_text("Run this export later")
+                        .clicked()
+                    {
+                        move_to = Some((index, index + 1));
+                    }
                     ui.label(label);
                     if ui
                         .small_button("Remove")
@@ -77,6 +98,9 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                         queue.remove = Some(index);
                     }
                 });
+            }
+            if move_to.is_some() {
+                queue.move_to = move_to;
             }
             if queue.waiting.len() > 1 && ui.button("Remove all waiting").clicked() {
                 queue.clear = true;

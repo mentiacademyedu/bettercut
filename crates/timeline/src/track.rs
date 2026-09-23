@@ -85,6 +85,18 @@ pub struct Track<C> {
     /// of the kind takes them, which is where they always went.
     #[serde(default)]
     pub targeted: bool,
+    /// The lane's own equaliser (`crate::clip::ClipEq`): low cut, high cut,
+    /// presence and hum, over every clip on it, after each clip's own. Flat
+    /// by default. Mixed only on sound lanes; a picture lane has nothing to
+    /// hear.
+    #[serde(default)]
+    pub eq: crate::clip::ClipEq,
+    /// A colour for the lane ([`crate::clip::ColorLabel`]): its head is tinted
+    /// and its clips take the colour unless they carry one of their own. For
+    /// finding the way round a tall timeline — every interview lane green,
+    /// every music lane blue. Defaulted: older lanes have none.
+    #[serde(default)]
+    pub color_label: crate::clip::ColorLabel,
 }
 
 fn unity() -> f32 {
@@ -121,6 +133,8 @@ impl<C: Clip> Track<C> {
             volume: crate::track_volume::TrackVolume::default(),
             sync_lock: false,
             targeted: false,
+            eq: crate::clip::ClipEq::default(),
+            color_label: crate::clip::ColorLabel::None,
         }
     }
 

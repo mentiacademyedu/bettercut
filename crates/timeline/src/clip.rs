@@ -216,6 +216,183 @@ fn clamped_pair(low: f32, high: f32) -> (f32, f32) {
     ((low - over / 2.0).max(0.0), (high - over / 2.0).max(0.0))
 }
 
+/// The colour wheels: lift, gamma and gain, each a red–green–blue offset of
+/// -1..1 per channel, zero for no change.
+///
+/// The three controls every grading desk has, and the reason a desk has them
+/// rather than one "colour" knob: a cast is rarely the same colour all the way
+/// up. A blue shadow and a yellow highlight are two casts, and the tools that
+/// fix them must not reach into each other's end of the picture. Lift moves
+/// the darks and fades out towards white; gain scales the brights; gamma bends
+/// the middle with a power. On the wheel a person turns, the direction is the
+/// colour and the distance is how much of it — see `crate::ui::wheels`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ColorWheels {
+    #[serde(default)]
+    pub lift: [f32; 3],
+    #[serde(default)]
+    pub gamma: [f32; 3],
+    #[serde(default)]
+    pub gain: [f32; 3],
+}
+
+impl ColorWheels {
+    pub const IDENTITY: Self = Self {
+        lift: [0.0; 3],
+        gamma: [0.0; 3],
+        gain: [0.0; 3],
+    };
+
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    /// Every channel finite and within -1..1; nonsense reads as no change.
+    pub fn clamped(self) -> Self {
+        let held = |wheel: [f32; 3]| {
+            wheel.map(|v| {
+                if v.is_finite() {
+                    v.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                }
+            })
+        };
+        Self {
+            lift: held(self.lift),
+            gamma: held(self.gamma),
+            gain: held(self.gain),
+        }
+    }
+
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let mix = |from: [f32; 3], to: [f32; 3]| [0, 1, 2].map(|i| from[i] + (to[i] - from[i]) * t);
+        Self {
+            lift: mix(self.lift, other.lift),
+            gamma: mix(self.gamma, other.gamma),
+            gain: mix(self.gain, other.gain),
+        }
+    }
+
+    /// Both sets of wheels, one after the other: offsets add, held to the
+    /// range — what applying one grade to an already-graded picture does.
+    pub fn combined(self, other: Self) -> Self {
+        let add = |a: [f32; 3], b: [f32; 3]| [0, 1, 2].map(|i| (a[i] + b[i]).clamp(-1.0, 1.0));
+        Self {
+            lift: add(self.lift, other.lift),
+            gamma: add(self.gamma, other.gamma),
+            gain: add(self.gain, other.gain),
+        }
+    }
+}
+
+/// A secondary: one range of hue picked out and moved, everything else left
+/// alone.
+///
+/// The wheels and the sliders above them move the whole picture. This is the
+/// other half of grading — the sky a little bluer, the grass a little less
+/// yellow, a shirt a different colour — without the faces in the same frame
+/// moving with them. `hue` and `width` say *which* colours, as a turn of the
+/// hue circle (0 red, 1/3 green, 2/3 blue) and how far either side of it the
+/// pick reaches; the three shifts say what happens to them. Grey has no hue
+/// and is never qualified, whatever the pick.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HslSecondary {
+    /// The middle of the picked range, in turns of the hue circle, 0..1.
+    #[serde(default)]
+    pub hue: f32,
+    /// How far either side of `hue` the pick reaches, in turns: 0.08 is a
+    /// little under a thirtieth of the circle each way, about one named
+    /// colour.
+    #[serde(default = "default_secondary_width")]
+    pub width: f32,
+    /// Where the picked colours go, -1..1: a whole half turn either way.
+    #[serde(default)]
+    pub hue_shift: f32,
+    /// More or less of the colour, -1..1, zero for as it was.
+    #[serde(default)]
+    pub saturation: f32,
+    /// Brighter or darker, -1..1, zero for as it was.
+    #[serde(default)]
+    pub luminance: f32,
+}
+
+fn default_secondary_width() -> f32 {
+    HslSecondary::DEFAULT_WIDTH
+}
+
+impl Default for HslSecondary {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl HslSecondary {
+    pub const DEFAULT_WIDTH: f32 = 0.08;
+    /// The widest a pick reaches either side: a quarter turn each way is
+    /// half the circle, past which it is not a secondary but a grade.
+    pub const MAX_WIDTH: f32 = 0.25;
+
+    pub const IDENTITY: Self = Self {
+        hue: 0.0,
+        width: Self::DEFAULT_WIDTH,
+        hue_shift: 0.0,
+        saturation: 0.0,
+        luminance: 0.0,
+    };
+
+    /// Nothing moves: the pick is a choice, not a change, so where it sits
+    /// makes no difference to whether the picture is touched.
+    pub fn is_identity(&self) -> bool {
+        self.hue_shift == 0.0 && self.saturation == 0.0 && self.luminance == 0.0
+    }
+
+    /// Every field finite and within its range; nonsense reads as rest.
+    pub fn clamped(self) -> Self {
+        let held = |v: f32, lo: f32, hi: f32, fallback: f32| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                fallback
+            }
+        };
+        Self {
+            hue: if self.hue.is_finite() {
+                self.hue.rem_euclid(1.0)
+            } else {
+                0.0
+            },
+            width: held(self.width, 0.01, Self::MAX_WIDTH, Self::DEFAULT_WIDTH),
+            hue_shift: held(self.hue_shift, -1.0, 1.0, 0.0),
+            saturation: held(self.saturation, -1.0, 1.0, 0.0),
+            luminance: held(self.luminance, -1.0, 1.0, 0.0),
+        }
+    }
+
+    /// Halfway between two: the shifts blend; the pick goes with whichever
+    /// side is doing anything, because half of one pick and half of another
+    /// is a colour nobody chose.
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let mix = |from: f32, to: f32| from + (to - from) * t;
+        let pick = if self.is_identity() { other } else { self };
+        Self {
+            hue: pick.hue,
+            width: pick.width,
+            hue_shift: mix(self.hue_shift, other.hue_shift),
+            saturation: mix(self.saturation, other.saturation),
+            luminance: mix(self.luminance, other.luminance),
+        }
+    }
+
+    /// One secondary over another. Two picks cannot be one pick, so the
+    /// outer wins where it does anything and the inner stands otherwise.
+    pub fn combined(self, other: Self) -> Self {
+        if self.is_identity() { other } else { self }
+    }
+}
+
 /// Basic colour adjustment (§45 "Colour adjustment → Cheap", Milestone 8).
 ///
 /// Three numbers, each `1.0` when it does nothing, so the default is the
@@ -249,6 +426,15 @@ pub struct ColorAdjust {
     /// grade wants.
     #[serde(default)]
     pub vibrance: f32,
+    /// Lift, gamma and gain ([`ColorWheels`]), applied after everything
+    /// above: the wheels are a grade, and the rest is the correction it is
+    /// built on. Defaulted, so older projects have them at rest.
+    #[serde(default)]
+    pub wheels: ColorWheels,
+    /// One range of hue moved on its own ([`HslSecondary`]), applied after
+    /// the wheels. Defaulted, so older projects have it at rest.
+    #[serde(default)]
+    pub secondary: HslSecondary,
 }
 
 impl Default for ColorAdjust {
@@ -260,6 +446,8 @@ impl Default for ColorAdjust {
             temperature: 0.0,
             tint: 0.0,
             vibrance: 0.0,
+            wheels: ColorWheels::IDENTITY,
+            secondary: HslSecondary::IDENTITY,
         }
     }
 }
@@ -273,6 +461,8 @@ impl ColorAdjust {
         temperature: 0.0,
         tint: 0.0,
         vibrance: 0.0,
+        wheels: ColorWheels::IDENTITY,
+        secondary: HslSecondary::IDENTITY,
     };
 
     /// Part of the way from this adjustment to another.
@@ -291,6 +481,8 @@ impl ColorAdjust {
             temperature: mix(self.temperature, other.temperature),
             tint: mix(self.tint, other.tint),
             vibrance: mix(self.vibrance, other.vibrance),
+            wheels: self.wheels.lerp(other.wheels, t),
+            secondary: self.secondary.lerp(other.secondary, t),
         }
     }
 
@@ -363,6 +555,8 @@ impl ColorAdjust {
             && self.temperature == 0.0
             && self.tint == 0.0
             && self.vibrance == 0.0
+            && self.wheels.is_identity()
+            && self.secondary.is_identity()
     }
 }
 
@@ -534,6 +728,55 @@ pub struct ChromaKey {
     /// A green screen throws green onto everything in front of it, and the
     /// rim of a subject keyed against one is green even where it is opaque.
     pub spill: f32,
+}
+
+/// A key by brightness (§45's other key): everything darker than the
+/// threshold goes, or everything brighter — a logo on black, a title on
+/// white, smoke on a dark stage. Measured on perceptual brightness, so the
+/// threshold reads like the picture does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LumaKey {
+    /// Where the cut falls, 0 black to 1 white.
+    pub threshold: f32,
+    /// How wide the fade around it is, 0 to [`Self::MAX_SOFTNESS`].
+    pub softness: f32,
+    /// Keep what is brighter than the threshold (drop the dark), or keep
+    /// what is darker (drop the bright).
+    pub keep_bright: bool,
+}
+
+impl Default for LumaKey {
+    fn default() -> Self {
+        // Black backgrounds are the common case: a logo, a light leak, smoke.
+        Self {
+            threshold: 0.12,
+            softness: 0.06,
+            keep_bright: true,
+        }
+    }
+}
+
+impl LumaKey {
+    pub const MAX_SOFTNESS: f32 = 0.5;
+
+    pub fn clamped(self) -> Self {
+        let sane = |value: f32, low: f32, high: f32| {
+            if value.is_nan() {
+                low
+            } else {
+                value.clamp(low, high)
+            }
+        };
+        Self {
+            threshold: sane(self.threshold, 0.0, 1.0),
+            softness: sane(self.softness, 0.0, Self::MAX_SOFTNESS),
+            keep_bright: self.keep_bright,
+        }
+    }
+}
+
+fn tilt_centre_default() -> f32 {
+    0.5
 }
 
 impl Default for ChromaKey {
@@ -745,6 +988,28 @@ pub struct VideoClip {
     /// rush forward. Not animated.
     #[serde(default)]
     pub zoom_blur: f32,
+    /// Lens correction, -1..1: a negative value pulls the edges in (barrel),
+    /// a positive one pushes them out (pincushion). Zero is the lens as it
+    /// was. For action-camera footage, whose wide lens bows every straight
+    /// line, a little positive straightens it; the corners it uncovers are
+    /// left see-through, so the fix is honest and a small scale-up finishes
+    /// it. Defaulted: older projects have none.
+    #[serde(default)]
+    pub lens: f32,
+    /// Posterise: how many levels each channel is held to, 2–16, for a
+    /// poster or a print look; anything below 2 is off. Defaulted: older
+    /// projects have none.
+    #[serde(default)]
+    pub posterise: f32,
+    /// Tilt-shift: how tall the sharp band across the picture is, as a
+    /// fraction of its height, 0 for no band (the blur is everywhere); the
+    /// blur grows away from it. A miniature, or a face held sharp in a
+    /// blurred street. Only with a blur set. Defaulted: none.
+    #[serde(default)]
+    pub tilt_band: f32,
+    /// Where the band's middle sits, 0 top to 1 bottom. Defaulted: halfway.
+    #[serde(default = "tilt_centre_default")]
+    pub tilt_centre: f32,
 
     /// Glow, 0–100: the bright parts of the picture bleed soft light around
     /// themselves, a dreamy bloom. Not animated.
@@ -822,6 +1087,10 @@ pub struct VideoClip {
     /// everything — and on every project written before this existed.
     #[serde(default)]
     pub chroma_key: Option<ChromaKey>,
+    /// A key by brightness (`LumaKey`), beside the colour one; either,
+    /// both or neither. Defaulted: older projects have none.
+    #[serde(default)]
+    pub luma_key: Option<LumaKey>,
 
     /// What fills the frame around a clip that does not cover it.
     ///
@@ -889,6 +1158,11 @@ pub struct VideoClip {
     /// A colour tag for organising the edit ([`ColorLabel`]).
     #[serde(default)]
     pub color_label: ColorLabel,
+    /// A name of the clip's own, shown on the timeline instead of the
+    /// file's: "interview wide", not "C0042.MP4". `None` is the file's name.
+    /// Defaulted: older projects have none.
+    #[serde(default)]
+    pub name: Option<String>,
 
     /// A transition at this clip's *end*, if any (§25).
     ///
@@ -1081,14 +1355,19 @@ pub enum ChannelMode {
     RightToBoth,
     /// Both channels mixed into one, in both ears.
     Mono,
+    /// Left and right the other way round: for a recording whose mic was
+    /// wired backwards, or a shot that was flipped and whose sound now comes
+    /// from the wrong side.
+    Swapped,
 }
 
 impl ChannelMode {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Stereo,
         Self::LeftToBoth,
         Self::RightToBoth,
         Self::Mono,
+        Self::Swapped,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1097,6 +1376,7 @@ impl ChannelMode {
             Self::LeftToBoth => "Left only",
             Self::RightToBoth => "Right only",
             Self::Mono => "Mono",
+            Self::Swapped => "Swapped",
         }
     }
 
@@ -1110,6 +1390,9 @@ impl ChannelMode {
                 "Use the right channel in both ears: for a mic recorded on the right side only"
             }
             Self::Mono => "Mix both channels into one, heard in both ears",
+            Self::Swapped => {
+                "Left and right the other way round: for a mic wired backwards, or a flipped shot"
+            }
         }
     }
 
@@ -1121,6 +1404,7 @@ impl ChannelMode {
         }
         match self {
             Self::Stereo => {}
+            Self::Swapped => planes.swap(0, 1),
             Self::LeftToBoth => {
                 let (left, rest) = planes.split_at_mut(1);
                 rest[0].clone_from(&left[0]);
@@ -1480,6 +1764,13 @@ pub struct ClipLook {
     pub glitch: f32,
     pub pixelate: f32,
     pub zoom_blur: f32,
+    /// Lens correction, -1..1 (`VideoClip::lens`).
+    pub lens: f32,
+    /// Posterise levels, 2–16 or off below 2 (`VideoClip::posterise`).
+    pub posterise: f32,
+    /// Tilt-shift band height and centre (`VideoClip::tilt_band`).
+    pub tilt_band: f32,
+    pub tilt_centre: f32,
     /// Glow, 0–100: the effect graph's last node, with the glitches.
     pub glow: f32,
     /// Old film, 0–100, with the glitches too.
@@ -1499,6 +1790,8 @@ pub struct ClipLook {
     /// The chroma key. Not animated — it is a choice about the footage, not
     /// a dial that moves through a shot.
     pub chroma_key: Option<ChromaKey>,
+    /// The luma key, or none (`VideoClip::luma_key`).
+    pub luma_key: Option<LumaKey>,
     /// The mask, in the clip's own frame.
     pub mask: Option<Mask>,
     /// §22's blend mode.
@@ -1520,6 +1813,10 @@ impl ClipLook {
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             glow: 0.0,
             old_film: 0.0,
             vignette: 0.0,
@@ -1587,15 +1884,30 @@ pub struct AudioClip {
     /// A colour tag for organising the edit ([`ColorLabel`]).
     #[serde(default)]
     pub color_label: ColorLabel,
+    /// A name of the clip's own, shown on the timeline instead of the
+    /// file's: "interview wide", not "C0042.MP4". `None` is the file's name.
+    /// Defaulted: older projects have none.
+    #[serde(default)]
+    pub name: Option<String>,
 
     /// Linear gain, not decibels. Applied first in the §20a.4 mix graph.
     #[serde(default = "one")]
     pub gain: f32,
+    /// Where the clip sits between the speakers: -1 hard left, 0 centre, +1
+    /// hard right, on top of its lane's own pan. Keyframeable the way the
+    /// gain is ([`Self::pan_at`]). Defaulted: older projects sit centred.
+    #[serde(default)]
+    pub pan: f32,
 
     /// Voice clean-up, 0–100 (`bettercut_audio::voice`): rumble removed and
     /// the background pulled down between words. Not animated.
     #[serde(default)]
     pub denoise: f32,
+    /// The noise gate, 0–100 (`bettercut_audio::gate`): between the words,
+    /// the room turned down. Zero is off. The plain tool beside the clean-up,
+    /// for a room that is quiet enough to simply close on.
+    #[serde(default)]
+    pub gate: f32,
 
     /// Low cut, high cut and presence ([`ClipEq`]). Flat by default.
     #[serde(default)]
@@ -1606,6 +1918,11 @@ pub struct AudioClip {
     /// Which channels play where. As recorded by default.
     #[serde(default)]
     pub channels: ChannelMode,
+    /// How wide the stereo image is, 0–2: 0 folds it to mono, 1 is as
+    /// recorded, 2 pushes the sides out as far as they go
+    /// (`bettercut_audio::widen`). Applied after the channel mode.
+    #[serde(default = "one")]
+    pub stereo_width: f32,
     /// Hold the pitch where it was when this clip's speed changes.
     ///
     /// Re-timing sound means resampling it, which moves the pitch with the
@@ -1891,6 +2208,11 @@ pub trait Clip {
     /// edit that sets it is written once for whichever lane holds the clip.
     fn color_label(&self) -> ColorLabel;
     fn set_color_label(&mut self, label: ColorLabel);
+    /// The clip's own name, if it was given one (`VideoClip::name`).
+    fn name(&self) -> Option<&str>;
+    /// Give the clip a name, or `None` to go back to the file's. Trimmed;
+    /// empty is `None`. Returns what it was.
+    fn set_name(&mut self, name: Option<String>) -> Option<String>;
 
     /// Which multicam angle this clip shows, and a way to change it.
     ///
@@ -1997,6 +2319,15 @@ impl ColorLabel {
         Self::Pink,
     ];
 
+    /// The label called `name`, however it is capitalised; `None` for a
+    /// word that is not one of them.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim();
+        Self::ALL
+            .into_iter()
+            .find(|label| label.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::None => "None",
@@ -2054,9 +2385,22 @@ macro_rules! impl_clip {
             fn set_color_label(&mut self, label: $crate::clip::ColorLabel) {
                 self.color_label = label;
             }
+            fn name(&self) -> Option<&str> {
+                self.name.as_deref()
+            }
+            fn set_name(&mut self, name: Option<String>) -> Option<String> {
+                let name = name
+                    .map(|n| n.trim().chars().take($crate::clip::MAX_CLIP_NAME).collect::<String>())
+                    .filter(|n| !n.is_empty());
+                std::mem::replace(&mut self.name, name)
+            }
         }
     };
 }
+
+/// The longest a clip's own name is kept: past this the timeline could not
+/// show it anyway.
+pub const MAX_CLIP_NAME: usize = 60;
 
 // Used by `text.rs` too, so the generated-source clip cannot drift from the
 // media-backed ones in how it reports its own ranges.
@@ -2141,6 +2485,10 @@ impl VideoClip {
             glitch: 0.0,
             pixelate: 0.0,
             zoom_blur: 0.0,
+            lens: 0.0,
+            tilt_band: 0.0,
+            tilt_centre: 0.5,
+            posterise: 0.0,
             curves: crate::curves::ColourCurves::default(),
             light_leak: 0.0,
             beat_pulse: 0.0,
@@ -2162,6 +2510,7 @@ impl VideoClip {
             motion: crate::motion::ClipMotion::default(),
             motion_blur: false,
             chroma_key: None,
+            luma_key: None,
             mask: None,
             blend: BlendMode::default(),
             keyframes: Keyframes::default(),
@@ -2169,6 +2518,7 @@ impl VideoClip {
             speed: Rational::ONE,
             reversed: false,
             color_label: ColorLabel::None,
+            name: None,
             transition_out: None,
             enabled: true,
             frozen: false,
@@ -2214,6 +2564,10 @@ impl VideoClip {
             glitch: self.glitch,
             pixelate: self.pixelate,
             zoom_blur: self.zoom_blur,
+            lens: self.lens,
+            tilt_band: self.tilt_band,
+            tilt_centre: self.tilt_centre,
+            posterise: self.posterise,
             glow: self.glow,
             old_film: self.old_film,
             vignette: self.vignette,
@@ -2222,6 +2576,7 @@ impl VideoClip {
             shadow: self.shadow,
             reflection: self.reflection,
             chroma_key: self.chroma_key,
+            luma_key: self.luma_key,
             mask: self.mask,
             blend: self.blend,
         };
@@ -2265,6 +2620,7 @@ impl VideoClip {
             // Sound, not picture: a video clip has no volume of its own, and
             // its linked audio carries the envelope (§12).
             AnimatedParameter::Gain => AnimatedParameter::Gain.default_value(),
+            AnimatedParameter::Pan => AnimatedParameter::Pan.default_value(),
             AnimatedParameter::Brightness => self.color.brightness,
             AnimatedParameter::Contrast => self.color.contrast,
             AnimatedParameter::Saturation => self.color.saturation,
@@ -2403,10 +2759,13 @@ impl AudioClip {
             timeline: TimelineRange::new(start, end)?,
             source,
             gain: 1.0,
+            pan: 0.0,
             denoise: 0.0,
+            gate: 0.0,
             eq: ClipEq::default(),
             space: ClipSpace::default(),
             channels: ChannelMode::default(),
+            stereo_width: 1.0,
             pitch: 0.0,
             keep_pitch: false,
             leveller: 0.0,
@@ -2417,6 +2776,7 @@ impl AudioClip {
             speed: Rational::ONE,
             reversed: false,
             color_label: ColorLabel::None,
+            name: None,
             enabled: true,
             fade_in: TimelineTime::ZERO,
             fade_out: TimelineTime::ZERO,
@@ -2452,6 +2812,19 @@ impl AudioClip {
         {
             Some(value) => AnimatedParameter::Gain.clamp(value),
             None => self.gain,
+        }
+    }
+
+    /// The clip's pan at `position`: the keyframed value where there is one,
+    /// otherwise the static one — the same shape as [`Self::gain_at`], for
+    /// the same reason: preview and export both come through here (§46).
+    pub fn pan_at(&self, position: TimelineTime) -> f32 {
+        match self
+            .keyframes
+            .value_at(AnimatedParameter::Pan, self.source_time_at(position))
+        {
+            Some(value) => AnimatedParameter::Pan.clamp(value),
+            None => AnimatedParameter::Pan.clamp(self.pan),
         }
     }
 
@@ -3139,6 +3512,8 @@ mod look_strength_tests {
         temperature: 0.0,
         tint: 0.0,
         vibrance: 0.0,
+        wheels: ColorWheels::IDENTITY,
+        secondary: HslSecondary::IDENTITY,
     };
 
     /// A look whose largest move is on the white balance, where "no change" is
@@ -3155,6 +3530,8 @@ mod look_strength_tests {
         temperature: 0.45,
         tint: 0.05,
         vibrance: 0.0,
+        wheels: ColorWheels::IDENTITY,
+        secondary: HslSecondary::IDENTITY,
     };
 
     #[test]
@@ -3203,6 +3580,8 @@ mod look_strength_tests {
             temperature: 0.0,
             tint: 0.0,
             vibrance: 0.0,
+            wheels: ColorWheels::IDENTITY,
+            secondary: HslSecondary::IDENTITY,
         };
         assert_eq!(hand_made.strength_towards(PUNCHY), None);
     }
@@ -3219,6 +3598,8 @@ mod look_strength_tests {
             temperature: 0.0,
             tint: 0.0,
             vibrance: 0.0,
+            wheels: ColorWheels::IDENTITY,
+            secondary: HslSecondary::IDENTITY,
         };
         assert_eq!(coincidence.strength_towards(PUNCHY), None);
     }
@@ -3234,6 +3615,8 @@ mod look_strength_tests {
             temperature: 0.0,
             tint: 0.0,
             vibrance: 0.0,
+            wheels: ColorWheels::IDENTITY,
+            secondary: HslSecondary::IDENTITY,
         };
         let half = ColorAdjust::IDENTITY.lerp(mono, 0.5);
         assert!((half.saturation - 0.5).abs() < 1e-5);

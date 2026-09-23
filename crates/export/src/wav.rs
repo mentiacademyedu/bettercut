@@ -130,6 +130,9 @@ pub fn export_sound(
     let total = span / TICKS_PER_AUDIO_SAMPLE;
     let blocks = (total + BLOCK - 1) / BLOCK;
     let mut mixdown = AudioMixdown::new(project, sequence, usize::from(CHANNELS));
+    if let Some(target) = settings.loudness_target {
+        mixdown.normalise_to(settings.range, target, cancel);
+    }
     let mut writer = WavWriter::create(&settings.path)?;
 
     let result = (|| {

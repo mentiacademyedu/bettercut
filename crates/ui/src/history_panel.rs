@@ -93,20 +93,44 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             ui.label(
                 egui::RichText::new("Click a step to go back to it. Greyed steps can be redone.")
                     .small()
-                    .color(theme::DISABLED),
+                    .color(theme::disabled()),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut state.history_search)
+                    .hint_text("Search steps: colour, split, title…")
+                    .desired_width(f32::INFINITY),
             );
             ui.separator();
+
+            // The current step is always shown, so a search never hides
+            // where the project is now.
+            let query = state.history_search.trim().to_lowercase();
+            let shown: Vec<&HistoryRow> = rows
+                .iter()
+                .filter(|row| {
+                    query.is_empty()
+                        || row.state == StepState::Current
+                        || matches(&row.label, &query)
+                })
+                .collect();
+            if !query.is_empty() && shown.len() <= 1 {
+                ui.label(
+                    egui::RichText::new("No step matches that")
+                        .small()
+                        .color(theme::disabled()),
+                );
+            }
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for row in &rows {
+                    for row in shown {
                         let text = match row.state {
                             StepState::Current => egui::RichText::new(&row.label).strong(),
                             StepState::Done => egui::RichText::new(&row.label),
                             StepState::Undone => egui::RichText::new(&row.label)
                                 .italics()
-                                .color(theme::DISABLED),
+                                .color(theme::disabled()),
                         };
                         let response = ui
                             .add(
@@ -141,6 +165,16 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         }
         state.needs_repaint = true;
     }
+}
+
+/// Whether a step's label answers a search: every word typed appears in
+/// it, in any order, ignoring case — "colour clip" finds "Change Colour on
+/// 3 Clips".
+pub fn matches(label: &str, query: &str) -> bool {
+    let label = label.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| label.contains(&word.to_lowercase()))
 }
 
 #[cfg(test)]

@@ -100,6 +100,8 @@ impl AdjustmentLook {
                 temperature: A::Temperature.clamp(finite(self.color.temperature, 0.0)),
                 tint: A::Tint.clamp(finite(self.color.tint, 0.0)),
                 vibrance: finite(self.color.vibrance, 0.0).clamp(-1.0, 1.0),
+                wheels: self.color.wheels.clamped(),
+                secondary: self.color.secondary.clamped(),
             },
             blur: A::Blur.clamp(finite(self.blur, 0.0)),
             strength: finite(self.strength, 1.0).clamp(0.0, 1.0),
@@ -120,6 +122,11 @@ pub struct AdjustmentClip {
     /// A colour tag for organising the edit.
     #[serde(default)]
     pub color_label: crate::clip::ColorLabel,
+    /// A name of the clip's own, shown on the timeline instead of the
+    /// file's: "interview wide", not "C0042.MP4". `None` is the file's name.
+    /// Defaulted: older projects have none.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl AdjustmentClip {
@@ -138,6 +145,7 @@ impl AdjustmentClip {
             source: SourceRange::new(MediaTime::ZERO, MediaTime::from_ticks(duration.ticks()))?,
             look: AdjustmentLook::default(),
             color_label: crate::clip::ColorLabel::None,
+            name: None,
         })
     }
 }

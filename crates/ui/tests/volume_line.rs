@@ -12,7 +12,7 @@ use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_ui::UiState;
 use egui::{Color32, Pos2, RawInput, Rect, vec2};
 
-/// Mirrors `theme::AUTOMATION`.
+/// Mirrors `theme::automation()`.
 const AUTOMATION: Color32 = Color32::from_rgb(250, 226, 138);
 
 /// Thirty seconds of sound on A1 from timeline zero.
