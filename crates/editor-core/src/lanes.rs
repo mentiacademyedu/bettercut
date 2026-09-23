@@ -7,6 +7,46 @@ use crate::editor::Editor;
 use crate::error::EditorError;
 
 impl Editor {
+    /// Delete the sound linked to picture clip `clip` — the camera's scratch
+    /// audio under a shot that has music — keeping the picture. One undo
+    /// step. Returns how many sound clips went.
+    pub fn remove_linked_sound(&mut self, clip: ClipId) -> Result<usize, EditorError> {
+        if self.video_clip(clip).is_none() {
+            return Err(EditorError::ClipNotFound(clip));
+        }
+        self.remove_sound_of(&[clip])
+    }
+
+    /// Delete the sound linked to every picture clip in `clips` — a montage
+    /// cut to music losing its camera audio — keeping the pictures. One undo
+    /// step. Returns how many sound clips went.
+    pub fn remove_sound_of(&mut self, clips: &[ClipId]) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut sounds: Vec<ClipId> = Vec::new();
+        for clip in clips.iter().filter(|c| self.video_clip(**c).is_some()) {
+            for member in self.linked_with(*clip) {
+                if self.audio_clip(member).is_some() && !sounds.contains(&member) {
+                    sounds.push(member);
+                }
+            }
+        }
+        let commands: Vec<Command> = sounds
+            .into_iter()
+            .filter_map(|c| {
+                Some(Command::RemoveClip {
+                    sequence,
+                    track: self.track_of(c)?,
+                    clip: c,
+                })
+            })
+            .collect();
+        let count = commands.len();
+        if count > 0 {
+            self.dispatch_group("Remove Sound", commands)?;
+        }
+        Ok(count)
+    }
+
     /// Set `flag` on every lane of every kind, as one undo step. Returns how
     /// many lanes changed; none already so is no step at all.
     pub fn set_all_tracks_flag(
@@ -46,6 +86,7 @@ impl Editor {
             (TrackFlag::Locked, false) => "Unlock All Lanes",
             (TrackFlag::Enabled, true) => "Show All Lanes",
             (TrackFlag::Enabled, false) => "Hide All Lanes",
+            (TrackFlag::Solo, false) => "Clear Solos",
             _ => "Every Lane",
         };
         self.dispatch_group(label, commands)?;

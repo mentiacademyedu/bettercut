@@ -380,6 +380,17 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 FontId::proportional(13.0),
                 theme::disabled(),
             );
+            // Where everything else is, for someone who has not found it yet.
+            painter.text(
+                Pos2::new(
+                    viewport.origin_x + lane_width / 2.0,
+                    rect.top() + theme::RULER_HEIGHT + 56.0,
+                ),
+                Align2::CENTER_CENTER,
+                "Ctrl+K finds any action by name",
+                FontId::proportional(12.0),
+                theme::disabled(),
+            );
         }
 
         lanes

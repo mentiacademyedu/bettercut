@@ -94,6 +94,15 @@ pub enum EditorError {
     #[error("select the picture or sound clips to fold into a compound clip")]
     NothingToCompound,
 
+    /// Break Apart on a clip that is not a compound.
+    #[error("that clip is not a compound clip")]
+    NotACompound,
+
+    /// Break Apart on a compound that was trimmed or re-timed: its inside
+    /// would have to be cut to fit, which nobody asked for.
+    #[error("this compound was trimmed or re-timed; open it instead, or undo the trim first")]
+    CompoundTrimmed,
+
     /// Lining two recordings up would put one of them before the start of the
     /// timeline. Moving the other one is what fixes it.
     #[error("these line up before the start of the timeline — move the other clip later first")]
@@ -300,6 +309,22 @@ pub enum EditorError {
     )]
     CopyOverOriginal,
 
+    /// Extending a clip into the gap after it, with no gap after it.
+    #[error(
+        "nothing to fill: the next clip on this lane starts right where this one ends, or there is none"
+    )]
+    NothingToExtendTo,
+    /// Extending a clip whose footage ends where it does.
+    #[error("the clip has no more footage after its end to fill the gap with")]
+    NoFootageToExtend,
+    /// A marker grid so fine the ruler would be solid markers.
+    #[error(
+        "that would be more than a thousand markers — pick a longer gap or mark a shorter range"
+    )]
+    TooManyMarkers,
+    /// Merging a lane into one whose clips it would land on.
+    #[error("the lane below has clips where this one does, so they cannot share it")]
+    LanesOverlap,
     /// A command was undone without having been executed. A bug in the history,
     /// not in user input.
     #[error("command was undone before it was executed")]

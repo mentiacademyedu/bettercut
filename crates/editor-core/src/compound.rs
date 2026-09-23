@@ -231,6 +231,142 @@ impl Editor {
             None => false,
         }
     }
+
+    /// Put what is inside compound clip `clip` back on this timeline, where
+    /// the compound sat, and take the compound off. One undo step. Returns
+    /// how many clips came out.
+    ///
+    /// Inner picture lane *k* lands on the lane *k* above the compound's
+    /// own; inner sound lane *k* on sound lane *k*. Lanes that are not there
+    /// are added. A compound that was trimmed plays part of its inside, and
+    /// breaking that apart would mean cutting clips the person never asked
+    /// to cut — so it is refused with a word about why. The inner sequence
+    /// stays in the project: another compound may play it too, and an undo
+    /// needs it anyway.
+    pub fn break_apart(&mut self, clip: ClipId) -> Result<usize, EditorError> {
+        use crate::command::TrackKindRepr;
+
+        let inner_id = self.compound_of(clip).ok_or(EditorError::NotACompound)?;
+        let parent_id = self.active_sequence_id()?;
+        let parent = self
+            .project()
+            .sequence(parent_id)
+            .ok_or(EditorError::SequenceNotFound(parent_id))?;
+        let span = parent
+            .clip_span(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let compound = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let inner = self
+            .project()
+            .sequence(inner_id)
+            .ok_or(EditorError::SequenceNotFound(inner_id))?;
+        if compound.source.start != MediaTime::ZERO
+            || compound.source.duration().ticks() != inner.duration().ticks()
+            || !compound.speed.is_one()
+        {
+            return Err(EditorError::CompoundTrimmed);
+        }
+
+        let home = parent
+            .video_tracks
+            .iter()
+            .position(|t| t.id == span.track)
+            .ok_or(EditorError::TrackNotFound(span.track))?;
+        let start = span.timeline.start.ticks();
+
+        // What comes out, lane by lane, already moved to where it goes.
+        let mut pictures: Vec<(usize, ClipPayload)> = Vec::new();
+        for (lane, track) in inner.video_tracks.iter().enumerate() {
+            for inside in track.clips() {
+                let mut payload = ClipPayload::Video(Box::new(inside.clone()));
+                shift_payload(&mut payload, start);
+                pictures.push((home + lane, payload));
+            }
+        }
+        let mut sounds: Vec<(usize, ClipPayload)> = Vec::new();
+        for (lane, track) in inner.audio_tracks.iter().enumerate() {
+            for inside in track.clips() {
+                let mut payload = ClipPayload::Audio(Box::new(inside.clone()));
+                shift_payload(&mut payload, start);
+                sounds.push((lane, payload));
+            }
+        }
+        let count = pictures.len() + sounds.len();
+
+        // Lanes the parent does not have yet, minted now so the commands
+        // carry their ids (§38.2's journal replays them exactly).
+        let picture_lanes = parent.video_tracks.len();
+        let sound_lanes = parent.audio_tracks.len();
+        let picture_needed = pictures.iter().map(|(lane, _)| lane + 1).max().unwrap_or(0);
+        let sound_needed = sounds.iter().map(|(lane, _)| lane + 1).max().unwrap_or(0);
+        let mut picture_ids: Vec<TrackId> = parent.video_tracks.iter().map(|t| t.id).collect();
+        let mut sound_ids: Vec<TrackId> = parent.audio_tracks.iter().map(|t| t.id).collect();
+        let new_pictures: Vec<(TrackId, String)> = (picture_lanes..picture_needed)
+            .map(|lane| (TrackId::new(), format!("V{}", lane + 1)))
+            .collect();
+        let new_sounds: Vec<(TrackId, String)> = (sound_lanes..sound_needed)
+            .map(|lane| (TrackId::new(), format!("A{}", lane + 1)))
+            .collect();
+        picture_ids.extend(new_pictures.iter().map(|(id, _)| *id));
+        sound_ids.extend(new_sounds.iter().map(|(id, _)| *id));
+
+        self.staged("Break Apart Compound", |editor, stage| {
+            for (id, name) in &new_pictures {
+                editor.stage(
+                    stage,
+                    Command::AddTrack {
+                        sequence: parent_id,
+                        kind: TrackKindRepr::Video,
+                        name: name.clone(),
+                        id: *id,
+                    },
+                )?;
+            }
+            for (id, name) in &new_sounds {
+                editor.stage(
+                    stage,
+                    Command::AddTrack {
+                        sequence: parent_id,
+                        kind: TrackKindRepr::Audio,
+                        name: name.clone(),
+                        id: *id,
+                    },
+                )?;
+            }
+            editor.stage(
+                stage,
+                Command::RemoveClip {
+                    sequence: parent_id,
+                    track: span.track,
+                    clip,
+                },
+            )?;
+            for (lane, payload) in &pictures {
+                editor.stage(
+                    stage,
+                    Command::AddClip {
+                        sequence: parent_id,
+                        track: picture_ids[*lane],
+                        clip: payload.clone(),
+                    },
+                )?;
+            }
+            for (lane, payload) in &sounds {
+                editor.stage(
+                    stage,
+                    Command::AddClip {
+                        sequence: parent_id,
+                        track: sound_ids[*lane],
+                        clip: payload.clone(),
+                    },
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(count)
+    }
 }
 
 /// Move a clip to start `by` ticks later (earlier when negative), keeping its

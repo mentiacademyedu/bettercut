@@ -95,6 +95,100 @@ impl Editor {
         Ok((applied, skipped))
     }
 
+    /// The transitions a mixed pass takes in turn: lively, and each reading
+    /// as a cut to somewhere new.
+    pub const MIXED_TRANSITIONS: [TransitionKind; 6] = [
+        TransitionKind::Crossfade,
+        TransitionKind::Slide,
+        TransitionKind::Zoom,
+        TransitionKind::Push,
+        TransitionKind::Wipe,
+        TransitionKind::Flash,
+    ];
+
+    /// A different transition on each cut of picture lane `track`, taking
+    /// [`Self::MIXED_TRANSITIONS`] in turn, at the house length (held to the
+    /// footage each has). One undo step. Returns (applied, skipped).
+    pub fn mixed_transition_every_cut(
+        &mut self,
+        track: TrackId,
+    ) -> Result<(usize, usize), EditorError> {
+        let house = self.project().settings.transition_length;
+        let sequence = self.active_sequence_id()?;
+        let clips: Vec<_> = self
+            .active_sequence()
+            .and_then(|s| s.video_track(track))
+            .ok_or(EditorError::TrackNotFound(track))?
+            .clips()
+            .iter()
+            .map(|clip| clip.id)
+            .collect();
+        let mut commands = Vec::new();
+        let mut skipped = 0;
+        let mut turn = 0;
+        for clip in clips {
+            let kind = Self::MIXED_TRANSITIONS[turn % Self::MIXED_TRANSITIONS.len()];
+            let Some(room) = self.transition_room(clip, kind) else {
+                continue; // not a cut
+            };
+            turn += 1;
+            if room < MIN_TRANSITION {
+                skipped += 1;
+                continue;
+            }
+            commands.push(Command::SetTransition {
+                sequence,
+                track,
+                clip,
+                transition: Some(Transition::new(kind, house.min(room))),
+            });
+        }
+        let applied = commands.len();
+        if applied > 0 {
+            self.dispatch_group("Mixed Transitions on Every Cut", commands)?;
+        }
+        Ok((applied, skipped))
+    }
+
+    /// Make every transition already on picture lane `track` last `length`,
+    /// keeping its kind — each held to the footage it has to fade through.
+    /// One undo step. Returns how many changed.
+    pub fn retime_every_transition(
+        &mut self,
+        track: TrackId,
+        length: TimelineTime,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let existing: Vec<(ClipId, Transition)> = self
+            .active_sequence()
+            .and_then(|s| s.video_track(track))
+            .ok_or(EditorError::TrackNotFound(track))?
+            .clips()
+            .iter()
+            .filter_map(|clip| clip.transition_out.map(|t| (clip.id, t)))
+            .collect();
+        let commands: Vec<Command> = existing
+            .into_iter()
+            .filter_map(|(clip, transition)| {
+                let room = self.transition_room(clip, transition.kind)?;
+                let wanted = length.max(MIN_TRANSITION).min(room);
+                (wanted != transition.duration && wanted >= MIN_TRANSITION).then_some(
+                    Command::SetTransition {
+                        sequence,
+                        track,
+                        clip,
+                        transition: Some(Transition::new(transition.kind, wanted)),
+                    },
+                )
+            })
+            .collect();
+        let count = commands.len();
+        if count > 0 {
+            self.dispatch_group("Transition Lengths", commands)?;
+        }
+        Ok(count)
+    }
+
     /// Take every transition off picture lane `track`, as one undo step.
     /// Returns how many were removed.
     pub fn remove_every_transition(&mut self, track: TrackId) -> Result<usize, EditorError> {

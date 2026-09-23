@@ -129,7 +129,7 @@ impl Editor {
 
     /// How much timeline a clip could grow by at one edge before it runs out
     /// of file. `None` for no limit — a photo, a held frame, a title.
-    fn growth_room(&self, clip: ClipId, edge: TrimEdge) -> Option<i64> {
+    pub(crate) fn growth_room(&self, clip: ClipId, edge: TrimEdge) -> Option<i64> {
         let (earlier, later) = self.slip_room(clip)?;
         // Slipping later means there is material after the out-point, which is
         // exactly what growing at the end needs; and the mirror for the start.

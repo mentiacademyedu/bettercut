@@ -99,6 +99,48 @@ pub fn digest(frame: &VideoFrame) -> Option<FrameDigest> {
     Some(FrameDigest { cells })
 }
 
+/// No part of the picture brighter than this, 0–255, and a frame is black.
+/// Above video black (16) with room for sensor noise; below the darkest
+/// corner of a night shot with anything lit in it.
+pub const BLACK_LEVEL: u8 = 24;
+
+/// Whether a frame is black all over.
+pub fn is_black(frame: &FrameDigest) -> bool {
+    frame.cells.iter().all(|cell| *cell <= BLACK_LEVEL)
+}
+
+/// Black at the ends of a stretch of footage, in source time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlackEnds {
+    /// Where the picture starts, when the stretch opens on black.
+    pub head: Option<MediaTime>,
+    /// Where the black starts, when the stretch closes on it.
+    pub tail: Option<MediaTime>,
+}
+
+impl BlackEnds {
+    pub fn any(&self) -> bool {
+        self.head.is_some() || self.tail.is_some()
+    }
+}
+
+/// The black at either end of `frames` (in order). Footage that is black all
+/// the way through has no picture to keep, so it answers nothing rather
+/// than offering to trim the clip away.
+pub fn black_ends(frames: &[(MediaTime, FrameDigest)]) -> BlackEnds {
+    let Some(first) = frames.iter().position(|(_, d)| !is_black(d)) else {
+        return BlackEnds::default();
+    };
+    let last = frames
+        .iter()
+        .rposition(|(_, d)| !is_black(d))
+        .unwrap_or(first);
+    BlackEnds {
+        head: (first > 0).then(|| frames[first].0),
+        tail: frames.get(last + 1).map(|(at, _)| *at),
+    }
+}
+
 /// How a cut is recognised.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneSettings {
@@ -181,6 +223,35 @@ pub fn scene_cuts(frames: &[(MediaTime, FrameDigest)], settings: SceneSettings) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn black_is_found_at_the_ends_and_only_there() {
+        let black = FrameDigest {
+            cells: [10; CELLS_X * CELLS_Y],
+        };
+        let mut lit = black;
+        lit.cells[40] = 200;
+        let at = |s: i64| MediaTime::from_seconds(s);
+        let frames = [
+            (at(0), black),
+            (at(1), lit),
+            (at(2), black),
+            (at(3), lit),
+            (at(4), black),
+        ];
+        let ends = black_ends(&frames);
+        assert_eq!(ends.head, Some(at(1)));
+        assert_eq!(
+            ends.tail,
+            Some(at(4)),
+            "black in the middle is a fade, not an end"
+        );
+        assert!(!black_ends(&frames[1..4]).any(), "no black at either end");
+        assert!(
+            !black_ends(&[(at(0), black)]).any(),
+            "all black keeps the clip"
+        );
+    }
     use super::*;
 
     fn ms(v: i64) -> MediaTime {

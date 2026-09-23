@@ -12,7 +12,10 @@
 use bettercut_editor_core::Editor;
 use bettercut_editor_core::foundation::{ClipId, TimelineTime};
 use bettercut_jobs::JobId;
-use bettercut_playback::{SceneReport, scene_job::timeline_cuts};
+use bettercut_playback::{
+    SceneReport,
+    scene_job::{timeline_black, timeline_cuts},
+};
 
 use crate::state::UiState;
 use crate::theme;
@@ -28,6 +31,8 @@ pub struct SceneDialog {
     report: SceneReport,
     /// Where the cuts fall on the timeline, once the job has answered.
     cuts: Option<Vec<TimelineTime>>,
+    /// Where the picture starts and stops once black at the ends is gone.
+    black: (Option<TimelineTime>, Option<TimelineTime>),
 }
 
 impl SceneDialog {
@@ -37,6 +42,7 @@ impl SceneDialog {
             job,
             report,
             cuts: None,
+            black: (None, None),
         }
     }
 
@@ -54,7 +60,10 @@ impl SceneDialog {
             return;
         };
         let cuts = match editor.video_clip(self.clip) {
-            Some(clip) => timeline_cuts(clip, &found),
+            Some(clip) => {
+                self.black = timeline_black(clip, self.report.black());
+                timeline_cuts(clip, &found)
+            }
             None => Vec::new(), // the clip went away while we were looking
         };
         self.cuts = Some(cuts);
@@ -63,6 +72,18 @@ impl SceneDialog {
     /// The cuts to draw on the timeline, empty while the job is still running.
     pub fn cuts(&self) -> &[TimelineTime] {
         self.cuts.as_deref().unwrap_or_default()
+    }
+
+    /// How much black comes off the start and the end, in seconds.
+    fn black_seconds(&self, editor: &Editor) -> (f64, f64) {
+        let (Some(start), Some(end)) = (editor.clip_start(self.clip), editor.clip_end(self.clip))
+        else {
+            return (0.0, 0.0);
+        };
+        (
+            self.black.0.map_or(0.0, |at| (at - start).as_seconds_f64()),
+            self.black.1.map_or(0.0, |at| (end - at).as_seconds_f64()),
+        )
     }
 
     pub fn job(&self) -> JobId {
@@ -118,7 +139,9 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     let mut open = true;
     let mut apply = false;
     let mut mark = false;
+    let mut trim = false;
     let mut cancelled = false;
+    let (head, tail) = dialog.black_seconds(editor);
 
     egui::Window::new("Find cuts")
         .open(&mut open)
@@ -156,6 +179,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     .small()
                     .color(theme::disabled()),
                 );
+                if head > 0.0 || tail > 0.0 {
+                    ui.label(match (head > 0.0, tail > 0.0) {
+                        (true, true) => {
+                            format!("Black: {head:.1} s at the start, {tail:.1} s at the end.")
+                        }
+                        (true, false) => format!("Black: {head:.1} s at the start."),
+                        _ => format!("Black: {tail:.1} s at the end."),
+                    });
+                }
             }
 
             ui.add_space(10.0);
@@ -178,6 +210,18 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 {
                     mark = true;
                 }
+                // The lens cap, the camera waking up: off the ends, with
+                // the sound, as one step.
+                if (head > 0.0 || tail > 0.0)
+                    && ui
+                        .button("Trim Black")
+                        .on_hover_text(
+                            "Take the black off the start and end of the clip, and its sound",
+                        )
+                        .clicked()
+                {
+                    trim = true;
+                }
                 if ui.button("Cancel").clicked() {
                     cancelled = true;
                 }
@@ -194,6 +238,17 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         // is what closes it — and a decode still running is stopped.
         if dialog.working() {
             state.scene_cancel = Some(dialog.job());
+        }
+        state.needs_repaint = true;
+        return;
+    }
+
+    if trim {
+        let (from, to) = dialog.black;
+        match editor.trim_ends(dialog.clip, from, to, "Trim Black") {
+            Ok(true) => state.info(format!("Trimmed {:.1} s of black", head + tail)),
+            Ok(false) => state.info("Nothing to trim"),
+            Err(err) => state.error(err.to_string()),
         }
         state.needs_repaint = true;
         return;

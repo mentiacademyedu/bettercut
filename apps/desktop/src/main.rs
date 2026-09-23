@@ -103,6 +103,15 @@ impl App {
         ui.prefs = bettercut_ui::prefs::UserPrefs::stored_in(
             bettercut_ui::prefs::UserPrefs::default_file(),
         );
+        // A first run says hello; after "Don't show this again" it does not.
+        ui.welcome_open = !ui.prefs.seen_welcome;
+        // After an update, what is new — once; then this build is remembered.
+        ui.whats_new_open =
+            bettercut_ui::whats_new::should_show(&ui.prefs.last_version, ui.prefs.seen_welcome);
+        if ui.prefs.last_version != bettercut_ui::whats_new::VERSION {
+            ui.prefs.last_version = bettercut_ui::whats_new::VERSION.to_owned();
+            let _ = ui.prefs.save();
+        }
         bettercut_ui::theme::set_light(ui.prefs.light_theme);
         bettercut_ui::theme::apply(&cc.egui_ctx);
         cc.egui_ctx
@@ -248,6 +257,17 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
+
+        // Closing with unsaved work asks first (`save_prompt`); once it is
+        // answered, `quit_now` lets the close through.
+        if self.ui.quit_now {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if ui.ctx().input(|i| i.viewport().close_requested()) && self.editor.is_dirty() {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.ui.pending_switch = Some(bettercut_ui::save_prompt::Switch::Quit);
+            self.ui.needs_repaint = true;
+        }
 
         // An edit that changed how a clip looks without moving the playhead —
         // a slider, a drag on the picture, a keyframe — leaves the composited
@@ -478,7 +498,20 @@ impl eframe::App for App {
         for (index, request) in requested.into_iter().enumerate() {
             // An extra shape exports a reshaped copy, so the edit on screen
             // never changes shape under the user.
-            match self.editor.export_copy_of(request.sequence, request.shape) {
+            let copied = self
+                .editor
+                .export_copy_of(request.sequence, request.shape)
+                .and_then(|(mut project, sequence)| {
+                    if let Some(lane) = request.stem {
+                        bettercut_editor_core::stems::isolate_sound_lane(
+                            &mut project,
+                            sequence,
+                            lane,
+                        )?;
+                    }
+                    Ok((project, sequence))
+                });
+            match copied {
                 Ok((project, sequence)) => {
                     let cover_path = (!request.settings.sound_only).then(|| {
                         bettercut_editor_core::cover::cover_path_for(&request.settings.path)

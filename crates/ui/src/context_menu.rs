@@ -65,18 +65,36 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     // name gives the file's back.
     match state.clip_name_draft.as_mut() {
         Some((for_clip, draft)) if *for_clip == clip => {
+            // With several selected, the name is a base and every one of
+            // them is numbered after it in timeline order.
+            let many = count > 1 && state.selected_clips.contains(&clip);
             let field = ui.add(
                 egui::TextEdit::singleline(draft)
-                    .hint_text("Clip name")
+                    .hint_text(if many {
+                        "Name, numbered 01, 02…"
+                    } else {
+                        "Clip name"
+                    })
                     .desired_width(180.0),
             );
             field.request_focus();
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let typed = draft.clone();
                 state.clip_name_draft = None;
-                match editor.set_clip_name(clip, Some(&typed)) {
-                    Ok(_) => state.needs_repaint = true,
-                    Err(err) => state.error(err.to_string()),
+                if many && !typed.trim().is_empty() {
+                    let chosen: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+                    match editor.number_clips(&chosen, &typed) {
+                        Ok(n) => {
+                            state.needs_repaint = true;
+                            state.info(format!("Named {n} clip(s) {} 01 onwards", typed.trim()));
+                        }
+                        Err(err) => state.error(err.to_string()),
+                    }
+                } else {
+                    match editor.set_clip_name(clip, Some(&typed)) {
+                        Ok(_) => state.needs_repaint = true,
+                        Err(err) => state.error(err.to_string()),
+                    }
                 }
                 ui.close();
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -85,7 +103,12 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             }
         }
         _ => {
-            if item(ui, "Rename…", "") {
+            let label = if count > 1 && state.selected_clips.contains(&clip) {
+                "Rename and Number…"
+            } else {
+                "Rename…"
+            };
+            if item(ui, label, "") {
                 let current = editor.clip_name(clip).unwrap_or_default();
                 state.clip_name_draft = Some((clip, current));
             }
@@ -115,6 +138,17 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                 state.info(format!("Took off {n} mark(s)"));
             }
             Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    // A lane up or down, keeping its time: over another shot for a
+    // picture-in-picture, or onto a sound lane of its own.
+    for (label, up) in [("Move Up a Lane", true), ("Move Down a Lane", false)] {
+        if editor.neighbour_lane(clip, up).is_some() && item(ui, label, "") {
+            match editor.move_to_neighbour_lane(clip, up) {
+                Ok(()) => state.needs_repaint = true,
+                Err(err) => state.error(err.to_string()),
+            }
         }
     }
 
@@ -236,6 +270,21 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             editor.open_compound(clip);
             state.needs_repaint = true;
             ui.close();
+        }
+        if ui
+            .button("Break Apart")
+            .on_hover_text("Put what is inside back on the timeline where this compound sits")
+            .clicked()
+        {
+            ui.close();
+            match editor.break_apart(clip) {
+                Ok(n) => {
+                    state.clear_selection();
+                    state.needs_repaint = true;
+                    state.info(format!("{n} clip(s) back on the timeline"));
+                }
+                Err(err) => state.error(err.to_string()),
+            }
         }
     } else {
         let mut chosen: Vec<ClipId> = state.selected_clips.iter().copied().collect();
@@ -526,6 +575,20 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                 Err(err) => state.error(err.to_string()),
             }
         }
+        if ui
+            .button("Reverse Order")
+            .on_hover_text("Put the selected clips last-first, keeping the stretch they cover")
+            .clicked()
+        {
+            ui.close();
+            match editor.reverse_clip_order(&selected) {
+                Ok(order) => {
+                    state.info(format!("Reversed {} clips", order.len()));
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
     }
     // Say how many will be affected, so a menu opened on one clip inside a
     // multi-selection cannot be mistaken for acting on just that clip.
@@ -592,6 +655,57 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     }
     if item(ui, "Duplicate", "Ctrl+D") {
         shortcuts::duplicate_selection(editor, state);
+    }
+    // The range for exporting one scene or looping one shot, set in one go.
+    if item(ui, "Mark In and Out Around", "") {
+        let chosen = selection_or(state, clip);
+        match editor.mark_clips(&chosen) {
+            Ok(Some(range)) => {
+                state.needs_repaint = true;
+                state.info(format!(
+                    "Marked {} to {}",
+                    range.start.format_timecode(),
+                    range.end.format_timecode()
+                ));
+            }
+            Ok(None) => state.info("Those clips are no longer on the timeline"),
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    // The location card on every shot, the speaker on every answer.
+    if editor.video_clip(clip).is_some()
+        && ui
+            .button("Title Each Clip")
+            .on_hover_text(
+                "Put a lower third over each selected picture, reading its name, to retype",
+            )
+            .clicked()
+    {
+        ui.close();
+        let chosen = selection_or(state, clip);
+        match editor.title_each_clip(&chosen) {
+            Ok(0) => state.info("The title lane is already taken over those clips"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!(
+                    "Added {n} title(s) — double-click one to retype it"
+                ));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    // A copy right over the shot: where a glow, a blur layer or a
+    // picture-in-picture starts.
+    if editor.video_clip(clip).is_some() && item(ui, "Duplicate Onto Lane Above", "") {
+        match editor.duplicate_onto_lane_above(clip) {
+            Ok(copy) => {
+                state.clear_selection();
+                state.selected_clips.insert(copy);
+                state.needs_repaint = true;
+                state.info("Copied onto the lane above — the copy is selected");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
 
     // A look is minutes of work, and the next twenty clips want the same
@@ -773,7 +887,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             let on = axis.is_set(&transform);
             if ui
                 .button(if on {
-                    format!("{} ✓", axis.label())
+                    format!("{} ✔", axis.label())
                 } else {
                     axis.label().to_string()
                 })
@@ -904,6 +1018,29 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         .response
         .on_hover_text("Freeze the frame under the playhead, zoom in on it fast and flash into it");
 
+        // The opening image standing still before the shot moves: room for
+        // a title over it.
+        ui.menu_button("Hold First Frame", |ui| {
+            for seconds in [1, 2, 3] {
+                if ui.button(format!("{seconds} s")).clicked() {
+                    ui.close();
+                    match editor.hold_first_frame(
+                        clip,
+                        bettercut_editor_core::foundation::TimelineTime::from_seconds(seconds),
+                    ) {
+                        Ok(held) => {
+                            state.select_only(held);
+                            state.info(format!("Holding the first frame for {seconds} s"));
+                        }
+                        Err(err) => state.error(err.to_string()),
+                    }
+                    state.needs_repaint = true;
+                }
+            }
+        })
+        .response
+        .on_hover_text("Stand still on the clip's first frame before it plays, moving it and what follows along");
+
         // The shot lingering on its last image, room made after it.
         ui.menu_button("Hold Last Frame", |ui| {
             for seconds in [1, 2, 3] {
@@ -966,13 +1103,30 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                 .clicked()
             {
                 ui.close();
-                match editor.set_reversed(clip, !reversed) {
-                    Ok(()) => state.info(if reversed {
-                        "Playing forwards"
-                    } else {
-                        "Reversed"
-                    }),
-                    Err(err) => state.error(err.to_string()),
+                // The whole selection, when there is one: each shot turned
+                // the same way as the one clicked.
+                let chosen = selection_or(state, clip);
+                if chosen.len() > 1 {
+                    match editor.set_clips_reversed(&chosen, !reversed) {
+                        Ok(n) => state.info(format!(
+                            "{n} clip(s) {}",
+                            if reversed {
+                                "playing forwards"
+                            } else {
+                                "reversed"
+                            }
+                        )),
+                        Err(err) => state.error(err.to_string()),
+                    }
+                } else {
+                    match editor.set_reversed(clip, !reversed) {
+                        Ok(()) => state.info(if reversed {
+                            "Playing forwards"
+                        } else {
+                            "Reversed"
+                        }),
+                        Err(err) => state.error(err.to_string()),
+                    }
                 }
                 state.needs_repaint = true;
             }
@@ -1055,9 +1209,20 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
                         now.is_some_and(|s| s.num() * speed.den() == speed.num() * s.den());
                     if ui.selectable_label(current, &label).clicked() {
                         ui.close();
-                        match editor.set_clip_speed(clip, speed, false) {
-                            Ok(()) => state.info(format!("Playing at {label}")),
-                            Err(err) => state.error(err.to_string()),
+                        // Every selected shot at once: a montage at 2x is
+                        // one pick, not one per clip.
+                        let chosen = selection_or(state, clip);
+                        if chosen.len() > 1 {
+                            match editor.set_clips_speed(&chosen, speed) {
+                                Ok(0) => state.info("None of those clips has motion to re-time"),
+                                Ok(n) => state.info(format!("{n} clip(s) playing at {label}")),
+                                Err(err) => state.error(err.to_string()),
+                            }
+                        } else {
+                            match editor.set_clip_speed(clip, speed, false) {
+                                Ok(()) => state.info(format!("Playing at {label}")),
+                                Err(err) => state.error(err.to_string()),
+                            }
                         }
                         state.needs_repaint = true;
                     }
@@ -1182,7 +1347,9 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     if editor.video_clip(clip).is_some_and(|clip| !clip.frozen)
         && ui
             .button("Find Cuts…")
-            .on_hover_text("Look through this clip for scene changes and offer to split it there")
+            .on_hover_text(
+                "Look through this clip for scene changes and black at its ends, and offer to split or trim",
+            )
             .clicked()
     {
         ui.close();
@@ -1243,6 +1410,30 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         ui.close();
         cut_on_beats(editor, state, clip, sound);
     }
+    // Several sound clips at different levels — two people, two mics — made
+    // as loud as each other (`loudness::even_out`).
+    let sounds: Vec<ClipId> = selection_or(state, clip)
+        .into_iter()
+        .filter_map(|c| {
+            if editor.audio_clip(c).is_some() {
+                Some(c)
+            } else {
+                sound_of(editor, c)
+            }
+        })
+        .collect();
+    if sounds.len() > 1
+        && ui
+            .button("Even Out Loudness")
+            .on_hover_text(
+                "Measure each selected sound and set its volume so they all sound as loud as each other",
+            )
+            .clicked()
+    {
+        ui.close();
+        crate::loudness::even_out(editor, state, &sounds);
+    }
+
     // The other way round from removing silences: what is loud is what is
     // kept (`playback::highlights`).
     if let Some(sound) = sound_of(editor, clip)
@@ -1255,6 +1446,43 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         match crate::highlight_dialog::HighlightDialog::open(editor, &mut state.waveforms, sound) {
             Some(dialog) => state.highlights = Some(dialog),
             None => state.info("This clip's sound is still being analysed — try again in a moment"),
+        }
+    }
+    // Just the ends, no dialog: room tone before the first word and the
+    // reach for the stop button after the last.
+    if let Some(sound) = sound_of(editor, clip)
+        && ui
+            .button("Trim Silent Ends")
+            .on_hover_text("Take the quiet off the start and end of this clip, picture and all")
+            .clicked()
+    {
+        ui.close();
+        let ends = editor.audio_clip(sound).cloned().and_then(|audio| {
+            let waveform = state.waveforms.get(audio.media_id)?;
+            Some(bettercut_playback::silent_ends(
+                &audio,
+                &waveform,
+                bettercut_playback::SilenceSettings::default(),
+            ))
+        });
+        match ends {
+            None => state.info("This clip's sound is still being analysed — try again in a moment"),
+            Some((None, None)) => state.info("No silence at either end"),
+            Some((from, to)) => {
+                let before = editor.clip_duration(sound);
+                match editor.trim_ends(sound, from, to, "Trim Silent Ends") {
+                    Ok(true) => {
+                        let after = editor.clip_duration(sound);
+                        let cut = before
+                            .zip(after)
+                            .map_or(0.0, |(b, a)| (b - a).as_seconds_f64());
+                        state.info(format!("Trimmed {cut:.1} s of silence"));
+                    }
+                    Ok(false) => state.info("No silence at either end"),
+                    Err(err) => state.error(err.to_string()),
+                }
+                state.needs_repaint = true;
+            }
         }
     }
     if let Some(sound) = sound_of(editor, clip)
@@ -1273,6 +1501,74 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
 
     // Jumping to a clip's edges is what makes trimming to a neighbour precise,
     // and there is no keyboard route to it yet.
+    // The slideshow at three seconds a photo: every selected picture one
+    // length, what follows moved to suit.
+    let pictures: Vec<ClipId> = selection_or(state, clip)
+        .into_iter()
+        .filter(|c| editor.video_clip(*c).is_some() || editor.text_clip(*c).is_some())
+        .collect();
+    if !pictures.is_empty() {
+        ui.menu_button("Set Length", |ui| {
+            for tenths in [5_i64, 10, 20, 30, 50] {
+                if ui.button(format!("{} s", tenths as f64 / 10.0)).clicked() {
+                    ui.close();
+                    let length =
+                        bettercut_editor_core::foundation::TimelineTime::from_millis(tenths * 100);
+                    match editor.set_clip_lengths(&pictures, length) {
+                        Ok(0) => state.info("Already that long, or no more footage to show"),
+                        Ok(n) => {
+                            state.needs_repaint = true;
+                            state.info(format!("{n} clip(s) set to {} s", tenths as f64 / 10.0));
+                        }
+                        Err(err) => state.error(err.to_string()),
+                    }
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "Make the selected pictures and titles this long, moving what follows on their lane",
+        );
+    }
+
+    // The camera's scratch audio gone from under a shot, the shot kept.
+    if editor.video_clip(clip).is_some()
+        && sound_of(editor, clip).is_some_and(|s| s != clip)
+        && ui
+            .button("Remove Its Sound")
+            .on_hover_text("Delete the sound recorded with this clip and keep the picture")
+            .clicked()
+    {
+        ui.close();
+        // The whole selection's camera audio, when several are picked.
+        let chosen = selection_or(state, clip);
+        match editor.remove_sound_of(&chosen) {
+            Ok(0) => state.info("This clip has no sound of its own"),
+            Ok(_) => {
+                state.needs_repaint = true;
+                state.info("Sound removed; the picture stays");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+
+    // The gap after a shot filled with more of the shot, rather than
+    // closed by moving everything after it.
+    if (editor.video_clip(clip).is_some() || editor.audio_clip(clip).is_some())
+        && ui
+            .button("Extend to Next Clip")
+            .on_hover_text("Pull this clip's end out to meet the next clip on its lane, as far as its footage goes")
+            .clicked()
+    {
+        ui.close();
+        match editor.extend_to_next(clip) {
+            Ok(end) => {
+                state.needs_repaint = true;
+                state.info(format!("Now ends at {}", end.format_timecode()));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
     if item(ui, "Playhead to Clip Start", "")
         && let Some(payload) = editor.clip_payload(clip)
     {
@@ -1865,6 +2161,29 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
             }
         }
     }
+    // Back to hearing and seeing everything, after checking one lane alone.
+    for (label, flag, value, none) in [
+        (
+            "Turn All Lanes On",
+            TrackFlag::Enabled,
+            true,
+            "Every lane is already on",
+        ),
+        (
+            "Clear All Solos",
+            TrackFlag::Solo,
+            false,
+            "No lane is soloed",
+        ),
+    ] {
+        if item(ui, label, "") {
+            match editor.set_all_tracks_flag(flag, value) {
+                Ok(0) => state.info(none),
+                Ok(_) => state.needs_repaint = true,
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    }
 
     // Mixing the lane down to one clip: fewer decoders, and thirty small
     // decisions that can no longer be knocked out of place by accident.
@@ -2083,7 +2402,44 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
                     state.needs_repaint = true;
                 }
             }
+            // A different one at each cut, in turn: the montage look.
+            if ui
+                .button("Mixed")
+                .on_hover_text("A different transition at each cut: crossfade, slide, zoom, push, wipe, flash")
+                .clicked()
+            {
+                ui.close();
+                match editor.mixed_transition_every_cut(track) {
+                    Ok((0, 0)) => state.info("There are no cuts on this track"),
+                    Ok((0, skipped)) => state.error(format!(
+                        "None of the {skipped} cut(s) has spare footage for a transition"
+                    )),
+                    Ok((applied, 0)) => state.info(format!("Mixed transitions on {applied} cut(s)")),
+                    Ok((applied, skipped)) => state.info(format!(
+                        "Mixed transitions on {applied} cut(s); {skipped} had no spare footage"
+                    )),
+                    Err(err) => state.error(err.to_string()),
+                }
+                state.needs_repaint = true;
+            }
             ui.separator();
+            // Every transition already there, one length: dissolves added
+            // over a week of cutting come out all slightly different.
+            ui.menu_button("Make All This Long", |ui| {
+                for ms in [250_i64, 500, 1_000, 2_000] {
+                    if ui.button(format!("{} s", ms as f64 / 1000.0)).clicked() {
+                        ui.close();
+                        let length =
+                            bettercut_editor_core::foundation::TimelineTime::from_millis(ms);
+                        match editor.retime_every_transition(track, length) {
+                            Ok(0) => state.info("Every transition is already that long, or has no room"),
+                            Ok(n) => state.info(format!("{n} transition(s) made that long")),
+                            Err(err) => state.error(err.to_string()),
+                        }
+                        state.needs_repaint = true;
+                    }
+                }
+            });
             if ui.button("Remove All").clicked() {
                 ui.close();
                 match editor.remove_every_transition(track) {
@@ -2125,6 +2481,54 @@ fn track_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, track
         );
         if let Err(err) = editor.add_audio_track(name) {
             state.error(err.to_string());
+        }
+    }
+
+    // What is drawn over what: a picture lane moved up covers the one it
+    // passes. The lane keeps its name, flags and volume line.
+    for (label, up) in [("Move Lane Up", true), ("Move Lane Down", false)] {
+        if ui.button(label).clicked() {
+            ui.close();
+            match editor.move_lane(track, up) {
+                Ok(true) => state.needs_repaint = true,
+                Ok(false) => state.info("That lane is already at the end"),
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    }
+    // Two sparse lanes made one, and the empty ones gone: the timeline
+    // after an edit that grew more lanes than it needed.
+    if editor.lane_below(track).is_some()
+        && ui
+            .button("Merge Into Lane Below")
+            .on_hover_text("Move every clip on this lane onto the one below, at the same times, and remove this lane")
+            .clicked()
+    {
+        ui.close();
+        match editor.merge_lane_down(track) {
+            Ok(n) => {
+                state.clear_selection();
+                state.selected_track = None;
+                state.needs_repaint = true;
+                state.info(format!("Merged {n} clip(s) into the lane below"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if ui
+        .button("Remove Empty Lanes")
+        .on_hover_text("Remove every lane with nothing on it, keeping one of each kind")
+        .clicked()
+    {
+        ui.close();
+        match editor.remove_empty_lanes() {
+            Ok(0) => state.info("No empty lanes to remove"),
+            Ok(n) => {
+                state.selected_track = None;
+                state.needs_repaint = true;
+                state.info(format!("Removed {n} empty lane(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
         }
     }
 
@@ -2255,6 +2659,34 @@ fn empty_menu(
         }
         state.needs_repaint = true;
     }
+    // A grid over the edit: a chapter every minute of a talk, a cut point
+    // every two seconds of a montage.
+    ui.menu_button("Add Markers Every", |ui| {
+        for (label, ms) in [
+            ("1 s", 1_000_i64),
+            ("2 s", 2_000),
+            ("5 s", 5_000),
+            ("10 s", 10_000),
+            ("30 s", 30_000),
+            ("1 min", 60_000),
+            ("5 min", 300_000),
+        ] {
+            if ui.button(label).clicked() {
+                ui.close();
+                let interval = bettercut_editor_core::foundation::TimelineTime::from_millis(ms);
+                match editor.add_markers_every(interval) {
+                    Ok(0) => state.info("No room for a marker that far apart"),
+                    Ok(n) => {
+                        state.needs_repaint = true;
+                        state.info(format!("Added {n} marker(s)"));
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        }
+    })
+    .response
+    .on_hover_text("A marker at every interval, over the marked range or the whole edit");
     if !editor.markers().is_empty() && item(ui, "Clear All Markers", "") {
         match editor.clear_markers() {
             Ok(()) => state.info("Markers cleared"),
@@ -2280,6 +2712,65 @@ fn empty_menu(
         && item(ui, "Select All After Here on This Track", "")
     {
         shortcuts::select_from(editor, state, at, Some(track));
+    }
+    if let Some(track) = track
+        && item(ui, "Select All on This Track", "")
+    {
+        shortcuts::select_from(
+            editor,
+            state,
+            bettercut_editor_core::foundation::TimelineTime::ZERO,
+            Some(track),
+        );
+    }
+    // Pick the shots to keep, invert, delete the rest.
+    if !state.selected_clips.is_empty() && item(ui, "Invert Selection", "") {
+        shortcuts::invert_selection(editor, state);
+    }
+    if state.selected_clips.len() > 1 && item(ui, "New Sequence from Selection", "") {
+        let chosen: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+        match editor.sequence_from_clips(&chosen, "") {
+            Ok(_) => {
+                state.needs_repaint = true;
+                state.info("A new sequence of the selected clips is in the tabs above");
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    // After a rough assembly: every lane butted up at once.
+    if ui
+        .button("Close Gaps on Every Lane")
+        .on_hover_text("Pull every clip left against the one before it, on every unlocked lane")
+        .clicked()
+    {
+        ui.close();
+        match editor.close_gaps_everywhere() {
+            Ok(n) => state.info(format!("Closed {n} gap(s)")),
+            Err(err) => state.error(err.to_string()),
+        }
+        state.needs_repaint = true;
+    }
+    // The one-frame leftovers of fast cutting: a flash of the wrong shot,
+    // a blink of black.
+    if ui
+        .button("Clean Up Slivers")
+        .on_hover_text(
+            "Remove clips and close gaps shorter than two frames, on every unlocked lane",
+        )
+        .clicked()
+    {
+        ui.close();
+        match editor.clean_up_slivers(2) {
+            Ok((0, 0)) => state.info("No slivers — nothing shorter than two frames"),
+            Ok((clips, gaps)) => {
+                state.clear_selection();
+                state.needs_repaint = true;
+                state.info(format!(
+                    "Removed {clips} sliver clip(s) and closed {gaps} gap(s)"
+                ));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
     if item(ui, "Select Under Playhead", "") {
         let under = editor.clips_under_playhead();

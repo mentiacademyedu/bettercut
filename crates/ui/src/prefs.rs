@@ -23,6 +23,13 @@ pub struct UserPrefs {
     pub interface_scale: f32,
     /// Seconds between forced recovery snapshots (`Editor::set_autosave_seconds`).
     pub autosave_seconds: u64,
+    /// The command palette's recent actions by name, newest first
+    /// (`crate::palette`).
+    pub palette_recent: Vec<String>,
+    /// The welcome window was dismissed for good.
+    pub seen_welcome: bool,
+    /// The build that last ran here, for "what's new" (`crate::whats_new`).
+    pub last_version: String,
     file: Option<PathBuf>,
 }
 
@@ -64,11 +71,15 @@ fn render(prefs: &UserPrefs) -> String {
         .map(|[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"))
         .collect();
     format!(
-        "# bettercut interface\nlight_theme={}\nrecent_colours={}\ninterface_scale={:.2}\nautosave_seconds={}\n",
+        "# bettercut interface\nlight_theme={}\nrecent_colours={}\ninterface_scale={:.2}\nautosave_seconds={}\npalette_recent={}\nseen_welcome={}\nlast_version={}\n",
         prefs.light_theme,
         colours.join(","),
         prefs.interface_scale,
-        prefs.autosave_seconds
+        prefs.autosave_seconds,
+        // Names never hold a comma or a line break: they are the palette's own.
+        prefs.palette_recent.join(","),
+        prefs.seen_welcome,
+        prefs.last_version
     )
 }
 
@@ -89,6 +100,9 @@ impl Default for UserPrefs {
             recent_colours: Vec::new(),
             interface_scale: 1.0,
             autosave_seconds: 60,
+            palette_recent: Vec::new(),
+            seen_welcome: false,
+            last_version: String::new(),
             file: None,
         }
     }
@@ -118,6 +132,17 @@ fn parse(text: &str) -> UserPrefs {
             "interface_scale" => {
                 prefs.interface_scale = value.trim().parse().map_or(1.0, sane_scale);
             }
+            "seen_welcome" => prefs.seen_welcome = value.trim() == "true",
+            "last_version" => prefs.last_version = value.trim().to_owned(),
+            "palette_recent" => {
+                prefs.palette_recent = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .take(crate::palette::RECENT)
+                    .map(str::to_owned)
+                    .collect();
+            }
             "recent_colours" => {
                 prefs.recent_colours = value
                     .split(',')
@@ -142,8 +167,15 @@ mod tests {
             recent_colours: vec![[255, 136, 0], [0, 0, 16]],
             interface_scale: 1.25,
             autosave_seconds: 120,
+            palette_recent: vec!["Undo".to_owned(), "Select All".to_owned()],
+            seen_welcome: true,
+            last_version: "0.0.9".to_owned(),
             file: None,
         };
+        assert_eq!(parse(&render(&prefs)).last_version, "0.0.9");
+        assert!(parse(&render(&prefs)).seen_welcome);
+        assert!(!parse("").seen_welcome, "a new install shows the welcome");
+        assert_eq!(parse(&render(&prefs)).palette_recent, prefs.palette_recent);
         assert_eq!(parse(&render(&prefs)).autosave_seconds, 120);
         assert_eq!(parse("autosave_seconds=1\n").autosave_seconds, 10);
         assert!(parse(&render(&prefs)).light_theme);

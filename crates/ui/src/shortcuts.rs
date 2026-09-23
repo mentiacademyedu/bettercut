@@ -381,6 +381,14 @@ pub fn handle(
                 state.zoom_to_selection_or_fit(editor, lanes);
             }
 
+            // Every action, one search away.
+            egui::Key::K if modifiers.command => {
+                state.palette_open = !state.palette_open;
+                state.palette_query.clear();
+                state.palette_pick = 0;
+                state.needs_repaint = true;
+            }
+
             egui::Key::H if modifiers.command => {
                 state.history_open = !state.history_open;
                 state.needs_repaint = true;
@@ -981,6 +989,20 @@ pub(crate) fn select_from(
     }
     state.info(format!("Selected {} clip(s)", clips.len()));
     state.selected_clips = clips.into_iter().collect();
+}
+
+/// Select every clip that is not selected, and nothing that is: pick the
+/// shots to keep, invert, delete the rest.
+pub fn invert_selection(editor: &Editor, state: &mut UiState) {
+    let every =
+        editor.clips_starting_from(bettercut_editor_core::foundation::TimelineTime::ZERO, None);
+    let inverted: std::collections::HashSet<_> = every
+        .into_iter()
+        .filter(|clip| !state.selected_clips.contains(clip))
+        .collect();
+    state.needs_repaint = true;
+    state.info(format!("Selected {} clip(s)", inverted.len()));
+    state.selected_clips = inverted;
 }
 
 /// Cut: copy to the clipboard, then delete (§10).

@@ -34,6 +34,30 @@ impl Default for SilenceSettings {
     }
 }
 
+/// Where the sound starts and stops on the timeline once the silence at
+/// `clip`'s ends is gone — `None` for an edge that opens or closes on sound.
+/// A clip silent all the way through answers nothing: there is nothing to
+/// keep, and trimming it to nothing is a delete, not a trim.
+pub fn silent_ends(
+    clip: &AudioClip,
+    waveform: &Waveform,
+    settings: SilenceSettings,
+) -> (Option<TimelineTime>, Option<TimelineTime>) {
+    let ranges = silent_ranges(clip, waveform, settings);
+    let head = ranges
+        .first()
+        .filter(|r| r.start <= clip.timeline.start)
+        .map(|r| r.end);
+    let tail = ranges
+        .last()
+        .filter(|r| r.end >= clip.timeline.end)
+        .map(|r| r.start);
+    match (head, tail) {
+        (Some(from), Some(to)) if from >= to => (None, None),
+        ends => ends,
+    }
+}
+
 /// The stretches of `clip` to take out, in timeline order.
 ///
 /// Silence at the very start or end of the clip is taken out up to the edge,
@@ -145,6 +169,33 @@ mod tests {
 
     fn ms(v: i64) -> TimelineTime {
         TimelineTime::from_millis(v)
+    }
+
+    #[test]
+    fn only_the_silence_at_the_ends_is_trimmed() {
+        // Quiet 1 s, talk 1 s, pause 1 s, talk 1 s, quiet 1 s.
+        let wave = waveform(&[
+            (1.0, false),
+            (1.0, true),
+            (1.0, false),
+            (1.0, true),
+            (1.0, false),
+        ]);
+        let (from, to) = silent_ends(&clip(5), &wave, SilenceSettings::default());
+        assert_eq!(from, Some(TimelineTime::from_seconds(11) - ms(120)));
+        assert_eq!(to, Some(TimelineTime::from_seconds(14) + ms(120)));
+
+        let talk = waveform(&[(5.0, true)]);
+        assert_eq!(
+            silent_ends(&clip(5), &talk, SilenceSettings::default()),
+            (None, None)
+        );
+        let hush = waveform(&[(5.0, false)]);
+        assert_eq!(
+            silent_ends(&clip(5), &hush, SilenceSettings::default()),
+            (None, None),
+            "all quiet keeps the clip"
+        );
     }
 
     #[test]

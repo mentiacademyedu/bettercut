@@ -657,6 +657,14 @@ pub enum Command {
         track: TrackId,
         name: String,
     },
+    /// Move a track to `index` among the tracks of its kind, everything on
+    /// it and about it coming along. For picture tracks the order is what is
+    /// drawn over what.
+    MoveTrack {
+        sequence: SequenceId,
+        track: TrackId,
+        index: usize,
+    },
     /// Put a whole prepared track — clips and all — in at `index` among the
     /// tracks of its kind. What duplicating a track dispatches; the ids inside
     /// are fixed in the request, so a replay makes the same track.
@@ -1534,6 +1542,11 @@ mod tests {
                 sequence: seq,
                 track,
                 name: "Voice".to_owned(),
+            },
+            Command::MoveTrack {
+                sequence: seq,
+                track,
+                index: 0,
             },
             Command::SetCoverFrame {
                 sequence: seq,

@@ -147,7 +147,8 @@ fn a_project_that_has_gone_is_taken_off_the_list() {
 }
 
 /// A recent project one click away must not make throwing away an edit one
-/// click away: unsaved work refuses, as the file dialog route does.
+/// click away: unsaved work is asked about first (Save / Don't Save /
+/// Cancel), and nothing is replaced until the question is answered.
 #[test]
 fn unsaved_work_is_not_replaced_by_a_recent_project() {
     let dir = tempfile::tempdir().unwrap();
@@ -166,7 +167,19 @@ fn unsaved_work_is_not_replaced_by_a_recent_project() {
         "Current",
         "unsaved work was replaced"
     );
-    assert!(state.status.as_ref().is_some_and(|s| s.is_error));
+    assert_eq!(
+        state.pending_switch,
+        Some(bettercut_ui::save_prompt::Switch::OpenPath(other.clone())),
+        "the question was not asked"
+    );
+
+    // "Don't Save": now the other project opens.
+    bettercut_ui::save_prompt::proceed(
+        &mut editor,
+        &mut state,
+        bettercut_ui::save_prompt::Switch::OpenPath(other),
+    );
+    assert_eq!(editor.project().name, "other");
 }
 
 /// Saving a project that already has a file puts it on the list, and a New

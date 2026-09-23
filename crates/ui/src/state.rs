@@ -570,6 +570,9 @@ pub struct UiState {
     pub movement_alternates: bool,
     /// Guide lines over the preview.
     pub preview_guide: PreviewGuide,
+    /// The playhead's timecode drawn over the preview — for a screen
+    /// recording sent for notes. Never in the export.
+    pub preview_timecode: bool,
     /// How big the preview draws the picture, and how far it has been panned
     /// from the middle, in screen points.
     pub preview_zoom: PreviewZoom,
@@ -703,6 +706,39 @@ pub struct UiState {
     pub media_kind: MediaFilter,
     /// Show only files with at least this many stars. Zero shows them all.
     pub media_stars: u8,
+    /// Show only files no clip in the project uses yet.
+    pub media_unused_only: bool,
+    /// Text to put on the clipboard at the end of the frame, for actions
+    /// that run where there is no `egui::Context` to hand.
+    pub copy_out: Option<String>,
+    /// What is waiting on "Save changes?" (`crate::save_prompt`).
+    pub pending_switch: Option<crate::save_prompt::Switch>,
+    /// Set while going on after "Don't Save": the unsaved-work check passes.
+    pub discard_ok: bool,
+    /// The question was answered for closing the window: close it now.
+    pub quit_now: bool,
+    /// The status bar's Undo was pressed.
+    pub undo_request: bool,
+    /// The status message as last drawn, whether it came with a new undo
+    /// step, and the history's depth last frame (`panels::status_bar`).
+    pub status_seen: Option<String>,
+    pub status_from_edit: bool,
+    pub last_undo_depth: usize,
+    /// The first-run welcome window (`crate::welcome`).
+    pub welcome_open: bool,
+    /// The after-an-update window (`crate::whats_new`).
+    pub whats_new_open: bool,
+    /// The command palette (Ctrl+K): open, what is typed, and which row is
+    /// highlighted.
+    pub palette_open: bool,
+    pub palette_query: String,
+    pub palette_pick: usize,
+    /// The palette's recently run actions, most recent first.
+    pub palette_recent: Vec<&'static str>,
+    /// The Captions window's find and replace fields, and whether case counts.
+    pub caption_find: String,
+    pub caption_replace: String,
+    pub caption_match_case: bool,
 
     /// What the browser sorts by, and whether that order is reversed.
     pub media_sort: MediaSort,
@@ -977,6 +1013,7 @@ impl Default for UiState {
             movement_strength: bettercut_editor_core::timeline::MovementStrength::default(),
             movement_alternates: true,
             preview_guide: PreviewGuide::Off,
+            preview_timecode: false,
             preview_zoom: PreviewZoom::Fit,
             preview_pan: egui::Vec2::ZERO,
             scroll_ticks: 0,
@@ -1016,6 +1053,24 @@ impl Default for UiState {
             sequence_name_draft: None,
             media_kind: MediaFilter::All,
             media_stars: 0,
+            media_unused_only: false,
+            copy_out: None,
+            pending_switch: None,
+            discard_ok: false,
+            quit_now: false,
+            undo_request: false,
+            status_seen: None,
+            status_from_edit: false,
+            last_undo_depth: 0,
+            welcome_open: false,
+            whats_new_open: false,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_pick: 0,
+            palette_recent: Vec::new(),
+            caption_find: String::new(),
+            caption_replace: String::new(),
+            caption_match_case: false,
             media_sort: MediaSort::default(),
             media_sort_reversed: false,
             media_view: MediaView::default(),

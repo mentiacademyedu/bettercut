@@ -702,3 +702,25 @@ fn a_moved_shortcut_answers_to_its_new_key() {
     assert_eq!(state.rebinding, None);
     assert_eq!(state.keymap.key_for(Key::M), Key::B);
 }
+
+/// Inverting picks everything that was not picked, and nothing that was.
+#[test]
+fn invert_selection_swaps_what_is_picked() {
+    use bettercut_editor_core::foundation::MediaTime;
+    use bettercut_editor_core::media::{MediaAsset, MediaKind};
+    let (mut editor, _events) = bettercut_editor_core::Editor::new_project("Invert");
+    let mut placed = Vec::new();
+    for name in ["a", "b"] {
+        let media = editor.import_media(MediaAsset::new(
+            MediaKind::Video,
+            format!("C:/media/{name}.mp4"),
+            MediaTime::from_seconds(2),
+        ));
+        placed.extend(editor.place_media(media).unwrap());
+    }
+    let mut state = bettercut_ui::UiState::default();
+    state.selected_clips.insert(placed[0]);
+    bettercut_ui::shortcuts::invert_selection(&editor, &mut state);
+    assert!(!state.selected_clips.contains(&placed[0]));
+    assert_eq!(state.selected_clips.len(), placed.len() - 1);
+}

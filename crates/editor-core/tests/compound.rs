@@ -38,6 +38,58 @@ fn video_clips(editor: &Editor) -> Vec<(TimelineTime, TimelineTime)> {
         .collect()
 }
 
+/// Folded and broken apart again, the shots are back where they were —
+/// picture and sound — and one undo folds them again.
+#[test]
+fn breaking_apart_puts_the_shots_back_where_they_were() {
+    let (mut editor, [a, b, _]) = three_shots();
+    let before = video_clips(&editor);
+    let sounds_before = editor.active_sequence().unwrap().audio_tracks[0]
+        .clips()
+        .len();
+
+    let compound = editor.make_compound(&[a, b], "").unwrap();
+    assert_eq!(video_clips(&editor).len(), 2, "two shots folded into one");
+
+    let depth = editor.undo_depth();
+    let out = editor.break_apart(compound).unwrap();
+    assert_eq!(out, 4, "two pictures and their two sounds");
+    assert_eq!(video_clips(&editor), before);
+    assert_eq!(
+        editor.active_sequence().unwrap().audio_tracks[0]
+            .clips()
+            .len(),
+        sounds_before
+    );
+    assert_eq!(editor.undo_depth(), depth + 1);
+
+    editor.undo().unwrap();
+    assert_eq!(video_clips(&editor).len(), 2, "undo folds them again");
+}
+
+#[test]
+fn a_trimmed_compound_or_an_ordinary_clip_is_refused() {
+    let (mut editor, [a, b, c]) = three_shots();
+    assert!(matches!(
+        editor.break_apart(c),
+        Err(EditorError::NotACompound)
+    ));
+    let compound = editor.make_compound(&[a, b], "").unwrap();
+    let track = editor.active_sequence().unwrap().video_tracks[0].id;
+    editor
+        .trim_clip(
+            track,
+            compound,
+            bettercut_editor_core::TrimEdge::End,
+            secs(3),
+        )
+        .unwrap();
+    assert!(matches!(
+        editor.break_apart(compound),
+        Err(EditorError::CompoundTrimmed)
+    ));
+}
+
 #[test]
 fn folding_two_shots_leaves_one_clip_covering_both() {
     let (mut editor, [a, b, _]) = three_shots();

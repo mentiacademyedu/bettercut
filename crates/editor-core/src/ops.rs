@@ -253,6 +253,11 @@ pub fn build_for_replay(
             track,
             name,
         } => Box::new(RenameTrack::new(sequence, track, name)),
+        Command::MoveTrack {
+            sequence,
+            track,
+            index,
+        } => Box::new(MoveTrack::new(sequence, track, index)),
         Command::RenameMedia { media, name } => Box::new(RenameMedia::new(media, name)),
         Command::SetMediaBin { media, bin } => Box::new(SetMediaBin::new(media, bin)),
         Command::SetMediaRating { media, rating } => Box::new(SetMediaRating::new(media, rating)),
@@ -4205,6 +4210,75 @@ impl EditorCommand for RenameTrack {
 
     fn label(&self) -> String {
         "Rename Track".to_owned()
+    }
+}
+
+// --------------------------------------------------------------------------
+
+/// Move a track among those of its kind (see `Command::MoveTrack`).
+#[derive(Debug)]
+pub struct MoveTrack {
+    pub sequence: SequenceId,
+    pub track: TrackId,
+    index: usize,
+    previous: Option<usize>,
+}
+
+impl MoveTrack {
+    pub fn new(sequence: SequenceId, track: TrackId, index: usize) -> Self {
+        Self {
+            sequence,
+            track,
+            index,
+            previous: None,
+        }
+    }
+
+    /// Move `track` to `to` (clamped) in whichever list holds it; the index
+    /// it was at, or `None` when no list does.
+    fn shift(
+        sequence: &mut bettercut_timeline::Sequence,
+        track: TrackId,
+        to: usize,
+    ) -> Option<usize> {
+        fn within<C>(
+            tracks: &mut Vec<bettercut_timeline::Track<C>>,
+            track: TrackId,
+            to: usize,
+        ) -> Option<usize> {
+            let from = tracks.iter().position(|t| t.id == track)?;
+            let moved = tracks.remove(from);
+            tracks.insert(to.min(tracks.len()), moved);
+            Some(from)
+        }
+        within(&mut sequence.video_tracks, track, to)
+            .or_else(|| within(&mut sequence.audio_tracks, track, to))
+            .or_else(|| within(&mut sequence.text_tracks, track, to))
+            .or_else(|| within(&mut sequence.adjustment_tracks, track, to))
+    }
+}
+
+impl EditorCommand for MoveTrack {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let sequence = sequence_mut(project, self.sequence)?;
+        let was = Self::shift(sequence, self.track, self.index)
+            .ok_or(EditorError::TrackNotFound(self.track))?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.ok_or(EditorError::NotExecuted)?;
+        let sequence = sequence_mut(project, self.sequence)?;
+        Self::shift(sequence, self.track, previous)
+            .ok_or(EditorError::TrackNotFound(self.track))?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        "Move Lane".to_owned()
     }
 }
 

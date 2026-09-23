@@ -30,6 +30,29 @@ impl Editor {
         selected: &[ClipId],
         seed: u64,
     ) -> Result<Vec<ClipId>, EditorError> {
+        self.reorder_run(selected, |count| shuffled(count, seed), "Shuffle Clips")
+    }
+
+    /// Put the selected clips in the opposite order, in place — the same run
+    /// of timeline, the same gaps, last shot first. One undo step; the same
+    /// rules about what may be selected as [`Self::shuffle_clips`]. Returns
+    /// the clips in their new order.
+    pub fn reverse_clip_order(&mut self, selected: &[ClipId]) -> Result<Vec<ClipId>, EditorError> {
+        self.reorder_run(
+            selected,
+            |count| (0..count).rev().collect(),
+            "Reverse Order",
+        )
+    }
+
+    /// Find the run of clips `selected` stands for and lay it out in the
+    /// order `order_for(count)` gives.
+    fn reorder_run(
+        &mut self,
+        selected: &[ClipId],
+        order_for: impl FnOnce(usize) -> Vec<usize>,
+        label: &str,
+    ) -> Result<Vec<ClipId>, EditorError> {
         let sequence_id = self.active_sequence_id()?;
         let sequence = self
             .project()
@@ -79,8 +102,8 @@ impl Editor {
             return Err(EditorError::NothingToShuffle);
         }
 
-        let order = shuffled(placed.len(), seed);
-        self.lay_out_in_order(&placed, &order, "Shuffle Clips")?;
+        let order = order_for(placed.len());
+        self.lay_out_in_order(&placed, &order, label)?;
         Ok(order.into_iter().map(|index| placed[index].0).collect())
     }
 

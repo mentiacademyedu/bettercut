@@ -1515,6 +1515,72 @@ pub struct ClipEq {
 }
 
 impl ClipEq {
+    /// Settings a person reaches for by name, rather than by hertz: the
+    /// sliders stay for the last few percent, but most voices want one of
+    /// these and nobody should have to know that a phone is 300 Hz to 3 kHz.
+    pub const PRESETS: [(&'static str, &'static str, Self); 6] = [
+        (
+            "Voice",
+            "Rumble off, a little presence: speech that sits forward",
+            Self {
+                low_cut: 80.0,
+                high_cut: 0.0,
+                presence: 3.0,
+                hum: 0.0,
+            },
+        ),
+        (
+            "Phone",
+            "A voice on the other end of a call",
+            Self {
+                low_cut: 300.0,
+                high_cut: 3_400.0,
+                presence: 4.0,
+                hum: 0.0,
+            },
+        ),
+        (
+            "Radio",
+            "An old set in the corner: thin and bright",
+            Self {
+                low_cut: 400.0,
+                high_cut: 5_000.0,
+                presence: 6.0,
+                hum: 0.0,
+            },
+        ),
+        (
+            "Rumble",
+            "Only the low rumble off: wind, traffic, handling",
+            Self {
+                low_cut: 100.0,
+                high_cut: 0.0,
+                presence: 0.0,
+                hum: 0.0,
+            },
+        ),
+        (
+            "Hum 50",
+            "Mains hum where the mains is 50 Hz (Europe, most of Asia)",
+            Self {
+                low_cut: 0.0,
+                high_cut: 0.0,
+                presence: 0.0,
+                hum: 50.0,
+            },
+        ),
+        (
+            "Hum 60",
+            "Mains hum where the mains is 60 Hz (the Americas)",
+            Self {
+                low_cut: 0.0,
+                high_cut: 0.0,
+                presence: 0.0,
+                hum: 60.0,
+            },
+        ),
+    ];
+
     /// Whether it changes nothing.
     pub fn is_flat(self) -> bool {
         self.clamped() == Self::default()

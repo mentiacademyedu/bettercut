@@ -310,6 +310,9 @@ pub struct ExportRequest {
     pub shape: Option<Shape>,
     /// Which sequence: `None` for the one on screen.
     pub sequence: Option<bettercut_editor_core::foundation::SequenceId>,
+    /// A stem: only this sound lane is heard in the file
+    /// (`editor_core::stems`).
+    pub stem: Option<bettercut_editor_core::foundation::TrackId>,
 }
 
 /// Whether the window is open, and what it has been set to.
@@ -368,6 +371,10 @@ pub struct ExportDialog {
     /// Export every sequence in the project with these settings, each file
     /// named for its sequence, rather than only the one on screen.
     every_sequence: bool,
+    /// A sound export as one file per sound lane.
+    stems: bool,
+    /// One file per selected clip, each its clip's span.
+    each_clip: bool,
     /// Write each chapter of the sequence as a file of its own, named after
     /// the chapter and numbered in order (`chapter_requests`).
     per_chapter: bool,
@@ -792,6 +799,7 @@ impl ExportDialog {
                     },
                     shape,
                     sequence: None,
+                    stem: None,
                 })
             })
             .collect()
@@ -842,6 +850,71 @@ fn chapter_requests(
         }
     }
     requests
+}
+
+/// The on-screen sequence's requests as one file per clip span, numbered in
+/// order and named after the clip when it has a name of its own:
+/// `trip-01-Arrival.mp4`, `trip-02.mp4`. Other sequences' requests pass
+/// through untouched — the selection is on this one.
+fn clip_requests(
+    requests: Vec<ExportRequest>,
+    spans: &[(TimelineRange, String)],
+) -> Vec<ExportRequest> {
+    let mut out = Vec::new();
+    for request in requests {
+        if request.sequence.is_some() {
+            out.push(request);
+            continue;
+        }
+        for (index, (span, name)) in spans.iter().enumerate() {
+            let mut one = ExportRequest {
+                settings: request.settings.clone(),
+                shape: request.shape,
+                sequence: None,
+                stem: request.stem,
+            };
+            one.settings.range = *span;
+            let part = if name.trim().is_empty() {
+                format!("{:02}", index + 1)
+            } else {
+                format!("{:02}-{}", index + 1, file_part(name))
+            };
+            one.settings.path = with_suffix(&request.settings.path, &part);
+            out.push(one);
+        }
+    }
+    out
+}
+
+/// Each request as one file per sound lane of its sequence, named after
+/// the lane: `mix-Voice.wav`, `mix-Music.wav`.
+fn stem_requests(requests: Vec<ExportRequest>, editor: &Editor) -> Vec<ExportRequest> {
+    let mut out = Vec::new();
+    for request in requests {
+        let sequence = match request.sequence {
+            Some(id) => editor.project().sequence(id),
+            None => editor.active_sequence(),
+        };
+        let Some(sequence) = sequence else {
+            continue;
+        };
+        for (index, lane) in sequence.audio_tracks.iter().enumerate() {
+            let name = if lane.name.trim().is_empty() {
+                format!("A{}", index + 1)
+            } else {
+                lane.name.clone()
+            };
+            let mut stem = ExportRequest {
+                settings: request.settings.clone(),
+                shape: request.shape,
+                sequence: request.sequence,
+                stem: Some(lane.id),
+            };
+            stem.settings.path = with_suffix(&request.settings.path, &file_part(&name));
+            out.push(stem);
+        }
+    }
+    out
 }
 
 fn other_sequence_requests(dialog: &ExportDialog, editor: &Editor) -> Vec<ExportRequest> {
@@ -961,6 +1034,20 @@ pub fn show(
     let marked = sequence.marked_range();
     // What the clips selected on the timeline cover, for the range choice.
     let selected = state.selection_range(editor);
+    // Each selected clip's span and name, earliest first, for one file each.
+    let clip_spans: Vec<(TimelineRange, String)> = {
+        let mut spans: Vec<(TimelineRange, String)> = state
+            .selected_clips
+            .iter()
+            .filter_map(|clip| {
+                let span = sequence.clip_span(*clip)?.timeline;
+                let name = editor.clip_name(*clip).unwrap_or_default();
+                Some((span, name))
+            })
+            .collect();
+        spans.sort_by_key(|(span, _)| span.start.ticks());
+        spans
+    };
     // What the export will actually be long, which is what a site's limit is
     // about: the marked span when one is being sent, the whole cut otherwise.
     let export_length = export_range(
@@ -1092,6 +1179,32 @@ pub fn show(
             .response
             .on_hover_text("Measure the whole mix first, then bring it to the loudness a platform expects, so it is not turned down on delivery");
 
+            // Stems: the voice, the music and the effects as files apart,
+            // for a mixer or a re-edit elsewhere.
+            let sound_lanes = editor
+                .active_sequence()
+                .map_or(0, |s| s.audio_tracks.len());
+            if dialog.sound_only() && sound_lanes > 1 {
+                ui.checkbox(
+                    &mut dialog.stems,
+                    format!("One file per sound lane ({sound_lanes})"),
+                )
+                .on_hover_text(
+                    "Write each sound lane as its own file, named after the lane, as it sits in the mix",
+                );
+            }
+
+            // Shorts from one long edit: each selected clip its own file.
+            if clip_spans.len() > 1 {
+                ui.checkbox(
+                    &mut dialog.each_clip,
+                    format!("One file per selected clip ({})", clip_spans.len()),
+                )
+                .on_hover_text(
+                    "Write each selected clip's stretch of the edit as its own file, numbered in order and named after the clip",
+                );
+            }
+
             let sequences = editor.sequence_list().len();
             if sequences > 1 {
                 ui.add_space(4.0);
@@ -1206,6 +1319,12 @@ pub fn show(
         requests = dialog.requests(native, native_rate, range);
     }
     requests.extend(other_sequence_requests(dialog, editor));
+    if dialog.each_clip && clip_spans.len() > 1 {
+        requests = clip_requests(requests, &clip_spans);
+    }
+    if dialog.stems && dialog.sound_only() {
+        requests = stem_requests(requests, editor);
+    }
     if !requests.is_empty() {
         dialog.open = false;
     }

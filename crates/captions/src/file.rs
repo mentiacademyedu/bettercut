@@ -12,6 +12,9 @@ use crate::vtt;
 pub enum Format {
     SubRip,
     WebVtt,
+    /// Plain text, a line per caption with the time it is said: a
+    /// transcript to read, not a subtitle file. Written only.
+    Transcript,
 }
 
 impl Format {
@@ -29,6 +32,7 @@ impl Format {
             .as_deref()
         {
             Some("vtt") => Self::WebVtt,
+            Some("txt") => Self::Transcript,
             _ => Self::SubRip,
         }
     }
@@ -37,6 +41,7 @@ impl Format {
         match self {
             Self::SubRip => "srt",
             Self::WebVtt => "vtt",
+            Self::Transcript => "txt",
         }
     }
 
@@ -44,6 +49,7 @@ impl Format {
         match self {
             Self::SubRip => "SubRip (.srt)",
             Self::WebVtt => "WebVTT (.vtt)",
+            Self::Transcript => "Transcript (.txt)",
         }
     }
 }
@@ -75,14 +81,53 @@ pub fn write(path: &Path, segments: &[CaptionSegment], format: Format) -> Result
     let text = match format {
         Format::SubRip => srt::write(segments),
         Format::WebVtt => vtt::write(segments),
+        Format::Transcript => transcript(segments),
     };
     std::fs::write(path, text)?;
     Ok(())
 }
 
+/// The captions as reading text: `[m:ss] words` a line, `[h:mm:ss]` past
+/// the hour, line breaks inside a caption folded to spaces.
+pub fn transcript(segments: &[CaptionSegment]) -> String {
+    let mut out = String::new();
+    for segment in segments {
+        let words = segment
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if words.is_empty() {
+            continue;
+        }
+        let seconds = segment.start.ticks().max(0) / bettercut_foundation::TICKS_PER_SECOND;
+        let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+        if h > 0 {
+            out.push_str(&format!("[{h}:{m:02}:{s:02}] {words}\n"));
+        } else {
+            out.push_str(&format!("[{m}:{s:02}] {words}\n"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transcript_is_a_line_per_caption_with_its_time() {
+        let segments = vec![
+            CaptionSegment::new(ms(1_000), ms(2_000), "Hello\nthere"),
+            CaptionSegment::new(ms(65_000), ms(66_000), "   "),
+            CaptionSegment::new(ms(3_725_000), ms(3_726_000), "Late"),
+        ];
+        assert_eq!(
+            transcript(&segments),
+            "[0:01] Hello there\n[1:02:05] Late\n"
+        );
+        assert_eq!(Format::of(Path::new("notes.TXT")), Format::Transcript);
+    }
     use bettercut_foundation::TimelineTime;
 
     fn ms(n: i64) -> TimelineTime {

@@ -17,6 +17,37 @@ use bettercut_timeline::Sequence;
 
 use crate::mixer::{AudioMixer, AudioPlan};
 
+/// The integrated loudness of one sound clip on its own, as it plays in
+/// the mix — its volume, its EQ, its clean-up — in LUFS. Measured through
+/// the same mixer with the clip soloed and only its own span mixed.
+/// `None` for a clip that is not there or has nothing above the gate.
+pub fn measure_clip(
+    project: &Project,
+    sequence: &Sequence,
+    clip: bettercut_foundation::ClipId,
+    decoder_threads: u32,
+) -> Option<f32> {
+    let span = sequence.clip_span(clip)?.timeline;
+    let mut alone = sequence.clone();
+    alone.soloed_clips = vec![clip];
+    let plan = AudioPlan::of(project, &alone);
+    let channels = 2;
+    let mut mixer = AudioMixer::new(decoder_threads);
+    let mut meter = LoudnessMeter::new(channels);
+    let mut block = vec![0.0_f32; BLOCK_FRAMES * channels];
+    let step = TimelineTime::from_ticks(
+        BLOCK_FRAMES as i64 * bettercut_foundation::TICKS_PER_SECOND / i64::from(SAMPLE_RATE),
+    );
+    let mut at = span.start;
+    while at < span.end {
+        block.fill(0.0);
+        mixer.mix_block(&plan, at, BLOCK_FRAMES, channels, &mut block);
+        meter.push_interleaved(&block, channels);
+        at = TimelineTime::from_ticks(at.ticks() + step.ticks());
+    }
+    meter.integrated()
+}
+
 /// How much sound is mixed at a time. A tenth of a second, as the export uses.
 const BLOCK_FRAMES: usize = SAMPLE_RATE as usize / 10;
 

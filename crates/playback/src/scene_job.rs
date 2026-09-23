@@ -16,7 +16,7 @@ use bettercut_foundation::{MediaId, MediaTime, TimelineTime};
 use bettercut_jobs::{JobContext, Priority, Task};
 use bettercut_media::{FfmpegDecoder, MediaAsset, MediaDecoder, MediaKind, SeekMode};
 
-use crate::scenes::{FrameDigest, SceneSettings, digest, scene_cuts};
+use crate::scenes::{BlackEnds, FrameDigest, SceneSettings, black_ends, digest, scene_cuts};
 
 /// Where a file's cuts fall on the timeline, for one clip that plays it.
 ///
@@ -59,6 +59,25 @@ pub fn timeline_cuts(
     found
 }
 
+/// Where the picture starts and stops on the timeline once the black at the
+/// clip's ends is gone, for one clip playing the file — `None` for an edge
+/// with nothing to take off. Through the clip's speed and direction, like
+/// [`timeline_cuts`]: a reversed clip meets the file's closing black first.
+pub fn timeline_black(
+    clip: &bettercut_timeline::VideoClip,
+    ends: BlackEnds,
+) -> (Option<TimelineTime>, Option<TimelineTime>) {
+    let at = |instant: Option<MediaTime>| {
+        instant.and_then(|at| timeline_cuts(clip, &[at]).first().copied())
+    };
+    let (head, tail) = (at(ends.head), at(ends.tail));
+    if clip.reversed {
+        (tail, head)
+    } else {
+        (head, tail)
+    }
+}
+
 struct JobCancellation {
     cancelled: Arc<AtomicBool>,
 }
@@ -74,7 +93,10 @@ impl bettercut_media::CancellationToken for JobCancellation {
 /// Cloneable and shared with the running job: the interface keeps one, hands
 /// the other to the scheduler, and reads it when the job reports finished.
 #[derive(Debug, Clone, Default)]
-pub struct SceneReport(Arc<Mutex<Option<Vec<MediaTime>>>>);
+pub struct SceneReport {
+    cuts: Arc<Mutex<Option<Vec<MediaTime>>>>,
+    black: Arc<Mutex<BlackEnds>>,
+}
 
 impl SceneReport {
     /// The cuts, or `None` while the job is still running.
@@ -83,14 +105,27 @@ impl SceneReport {
     /// "not finished" are different answers and the interface says different
     /// things about them.
     pub fn cuts(&self) -> Option<Vec<MediaTime>> {
-        self.0.lock().ok()?.clone()
+        self.cuts.lock().ok()?.clone()
+    }
+
+    /// The black found at the ends: nothing until the job has finished.
+    pub fn black(&self) -> BlackEnds {
+        self.black.lock().map(|b| *b).unwrap_or_default()
+    }
+
+    /// Record the black at the ends. Before [`Self::finish`], which is what
+    /// says the answer is complete.
+    pub fn finish_black(&self, ends: BlackEnds) {
+        if let Ok(mut held) = self.black.lock() {
+            *held = ends;
+        }
     }
 
     /// Record the answer. Called by the job when it has one — and by tests,
     /// which is why it is public: a window that waits for a worker can only be
     /// tested by something that can play the worker's part.
     pub fn finish(&self, cuts: Vec<MediaTime>) {
-        if let Ok(mut held) = self.0.lock() {
+        if let Ok(mut held) = self.cuts.lock() {
             *held = Some(cuts);
         }
     }
@@ -204,6 +239,7 @@ impl Task for SceneJob {
             cuts = cuts.len(),
             "scene detection finished"
         );
+        self.report.finish_black(black_ends(&frames));
         self.report.finish(cuts);
         ctx.progress(1.0);
         Ok(())

@@ -88,6 +88,32 @@ const USED: &[(char, FontFamily, &str)] = &[
         FontFamily::Proportional,
         "media browser: a star it has not",
     ),
+    (
+        '⤵',
+        FontFamily::Proportional,
+        "captions window: join this line to the next",
+    ),
+    (
+        '½',
+        FontFamily::Proportional,
+        "captions window: split this line in two",
+    ),
+    ('•', FontFamily::Proportional, "what's new: the list"),
+    (
+        '“',
+        FontFamily::Proportional,
+        "save prompt: the project's name",
+    ),
+    (
+        '”',
+        FontFamily::Proportional,
+        "save prompt: the project's name",
+    ),
+    (
+        '✂',
+        FontFamily::Proportional,
+        "captions window: cut this line out",
+    ),
 ];
 
 /// The sticker picker's own symbols, held to the same rule.
@@ -108,12 +134,8 @@ fn every_sticker_in_the_picker_has_a_glyph() {
 
     assert!(
         missing.is_empty(),
-        "these stickers would draw as empty boxes in the picker:
-  {}",
-        missing.join(
-            "
-  "
-        )
+        "these stickers would draw as empty boxes in the picker:\n  {}",
+        missing.join("\n  ")
     );
 }
 
@@ -197,5 +219,65 @@ fn the_toolbar_symbols_are_still_unavailable_where_it_matters() {
         is_drawable('↶', &FontFamily::Monospace),
         "the undo arrow was in Hack when this was written; if it no longer is, \
          the explanation above needs revisiting"
+    );
+}
+
+/// Every non-ASCII character in a string literal anywhere in the interface
+/// source, checked against the proportional family — the list above is kept
+/// by hand, and a hand-kept list is how `→` got into three windows unchecked.
+///
+/// Comment lines are skipped; a character only ever drawn in the monospace
+/// family would need a line in `MONOSPACE_ONLY`.
+#[test]
+fn every_symbol_in_the_interface_source_has_a_glyph() {
+    const MONOSPACE_ONLY: &[char] = &[];
+    let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The interface's own source, and the editor's error messages, which the
+    // status bar shows in the same family.
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(ui.join("src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.push(ui.join("../editor-core/src/error.rs"));
+    let mut missing = Vec::new();
+    for path in files {
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let (mut inside, mut escaped) = (false, false);
+            for c in line.chars() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match c {
+                    '\\' if inside => escaped = true,
+                    '"' => inside = !inside,
+                    c if inside
+                        && !c.is_ascii()
+                        && !MONOSPACE_ONLY.contains(&c)
+                        && !is_drawable(c, &FontFamily::Proportional) =>
+                    {
+                        missing.push(format!(
+                            "U+{:04X} {c} in {}:{}",
+                            c as u32,
+                            path.file_name().unwrap().to_string_lossy(),
+                            number + 1
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these would render as empty boxes:\n  {}",
+        missing.join("\n  ")
     );
 }

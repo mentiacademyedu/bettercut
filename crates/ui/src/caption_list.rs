@@ -132,6 +132,14 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     let mut shift: Option<i64> = None;
     // A style saved from a title, put on every caption.
     let mut wear: Option<bettercut_editor_core::text::TextStyle> = None;
+    let mut replace = false;
+    let mut merge: Option<ClipId> = None;
+    let mut halve: Option<ClipId> = None;
+    let mut split_long = false;
+    let mut place: Option<f32> = None;
+    let mut clear_blank = false;
+    let mut close_gaps = false;
+    let mut recase: Option<bettercut_editor_core::caption_replace::LetterCase> = None;
     let saved: Vec<String> = state
         .title_styles
         .all()
@@ -165,6 +173,88 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             );
             ui.add_space(4.0);
 
+            // The misheard name, fixed everywhere at once.
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.caption_find)
+                        .hint_text("Find")
+                        .desired_width(110.0),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.caption_replace)
+                        .hint_text("Replace with")
+                        .desired_width(110.0),
+                );
+                ui.checkbox(&mut state.caption_match_case, "Aa")
+                    .on_hover_text("Match upper and lower case");
+                if ui
+                    .add_enabled(
+                        !state.caption_find.is_empty(),
+                        egui::Button::new("Replace All"),
+                    )
+                    .clicked()
+                {
+                    replace = true;
+                }
+            });
+            // Tidying the lane as a whole: wraps, since it outgrows the window.
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("tidy").small().color(theme::disabled()));
+                let blanks = rows.iter().filter(|r| r.text.trim().is_empty()).count();
+                if blanks > 0
+                    && ui
+                        .small_button(format!("Remove {blanks} empty"))
+                        .on_hover_text("Remove the captions nobody typed into")
+                        .clicked()
+                {
+                    clear_blank = true;
+                }
+                if ui
+                    .small_button("Close gaps")
+                    .on_hover_text("Hold each caption until the next when the gap is under half a second, so they do not blink")
+                    .clicked()
+                {
+                    close_gaps = true;
+                }
+                if ui
+                    .small_button("Split long")
+                    .on_hover_text(format!(
+                        "Split every line over {} characters in two",
+                        bettercut_editor_core::caption_replace::LONG_CAPTION
+                    ))
+                    .clicked()
+                {
+                    split_long = true;
+                }
+                for case in bettercut_editor_core::caption_replace::LetterCase::ALL {
+                    if ui
+                        .small_button(case.label())
+                        .on_hover_text("Set every caption in this case")
+                        .clicked()
+                    {
+                        recase = Some(case);
+                    }
+                }
+            });
+            ui.add_space(4.0);
+
+            // Up out of the way of a lower third, or back down.
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("place")
+                        .small()
+                        .color(theme::disabled()),
+                );
+                for (label, y) in bettercut_editor_core::caption_replace::CAPTION_PLACES {
+                    if ui
+                        .small_button(label)
+                        .on_hover_text("Put every caption at this height in the frame")
+                        .clicked()
+                    {
+                        place = Some(y);
+                    }
+                }
+            });
             // The look belongs to the lane: subtitles that changed style
             // halfway through read as a mistake.
             ui.horizontal(|ui| {
@@ -276,6 +366,24 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                             });
                         }
 
+                        // A line too long to read in one go, in two.
+                        if ui
+                            .add(egui::Button::new("½").frame(false))
+                            .on_hover_text("Split this line in two at the middle word")
+                            .clicked()
+                        {
+                            halve = Some(row.clip);
+                        }
+                        // The sentence the transcriber cut in two, whole
+                        // again.
+                        if ui
+                            .add(egui::Button::new("⤵").frame(false))
+                            .on_hover_text("Join this line to the next one")
+                            .clicked()
+                        {
+                            merge = Some(row.clip);
+                        }
+
                         let id = egui::Id::new(("caption", row.clip));
                         let mut text = row.text.clone();
                         let field = ui.add(
@@ -311,6 +419,56 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             });
         });
 
+    if close_gaps {
+        match editor.close_caption_gaps(TimelineTime::from_millis(500)) {
+            Ok(0) => state.info("No short gaps between captions"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Closed {n} short gap(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if clear_blank {
+        match editor.remove_empty_captions() {
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Removed {n} empty caption(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(y) = place {
+        match editor.place_captions(y) {
+            Ok(0) => state.info("The captions are already there"),
+            Ok(_) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(clip) = halve {
+        match editor.split_caption(clip) {
+            Ok(true) => state.needs_repaint = true,
+            Ok(false) => state.info("That line is one word, or too short to share"),
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if split_long {
+        match editor.split_long_captions(bettercut_editor_core::caption_replace::LONG_CAPTION) {
+            Ok(0) => state.info("No line is that long"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Split {n} long line(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if let Some(clip) = merge {
+        match editor.merge_caption_with_next(clip) {
+            Ok(true) => state.needs_repaint = true,
+            Ok(false) => state.info("That is the last line: nothing to join it to"),
+            Err(err) => state.error(err.to_string()),
+        }
+    }
     if let Some(range) = cut {
         match editor.remove_time(range) {
             Ok(0) => state.info("That line covers nothing to cut"),
@@ -339,6 +497,30 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
             Err(err) => state.error(err.to_string()),
         }
         state.needs_repaint = true;
+    }
+    if let Some(case) = recase {
+        match editor.set_caption_case(case) {
+            Ok(0) => state.info("Every caption is already like that"),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Changed the case of {n} caption(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
+    if replace {
+        match editor.replace_in_captions(
+            &state.caption_find,
+            &state.caption_replace,
+            state.caption_match_case,
+        ) {
+            Ok(0) => state.info(format!("No caption has \"{}\"", state.caption_find)),
+            Ok(n) => {
+                state.needs_repaint = true;
+                state.info(format!("Replaced in {n} caption(s)"));
+            }
+            Err(err) => state.error(err.to_string()),
+        }
     }
     if let Some(style) = wear {
         match editor.set_caption_style(style) {

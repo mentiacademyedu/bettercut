@@ -100,3 +100,16 @@ fn a_shuffle_needs_neighbours_on_one_lane() {
     ));
     assert_eq!(start(&editor, clips[0]), seconds(0));
 }
+
+#[test]
+fn reversing_puts_the_last_shot_first_and_keeps_the_gaps() {
+    let (mut editor, clips) = montage();
+    let depth = editor.undo_depth();
+    let order = editor.reverse_clip_order(&clips).unwrap();
+    assert_eq!(order, [clips[2], clips[1], clips[0]]);
+    // c (4 s) at 0, b (3 s) at 4, then the one-second gap, a at 8.
+    assert_eq!(start(&editor, clips[2]), seconds(0));
+    assert_eq!(start(&editor, clips[1]), seconds(4));
+    assert_eq!(start(&editor, clips[0]), seconds(8));
+    assert_eq!(editor.undo_depth(), depth + 1);
+}

@@ -231,3 +231,111 @@ impl Editor {
         Ok(count)
     }
 }
+
+impl Editor {
+    /// Take out every picture and sound clip shorter than `frames` frames,
+    /// and close every gap on those lanes shorter than that — the flash
+    /// frames and blinks of black a fast edit leaves behind. Locked lanes
+    /// are left alone. One undo step. Returns (clips removed, gaps closed).
+    pub fn clean_up_slivers(&mut self, frames: u32) -> Result<(usize, usize), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .active_sequence()
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let rate = sequence.frame_rate.as_rational();
+        let limit = bettercut_foundation::TICKS_PER_SECOND * rate.den() * i64::from(frames.max(1))
+            / rate.num().max(1);
+        let lanes: Vec<TrackId> = sequence
+            .video_tracks
+            .iter()
+            .map(|t| t.id)
+            .chain(sequence.audio_tracks.iter().map(|t| t.id))
+            .filter(|t| !self.track_flag(*t, crate::command::TrackFlag::Locked))
+            .collect();
+        let slivers: Vec<(TrackId, ClipId)> = sequence
+            .clip_spans()
+            .filter(|s| lanes.contains(&s.track))
+            .filter(|s| (s.timeline.end - s.timeline.start).ticks() < limit)
+            .map(|s| (s.track, s.clip))
+            .collect();
+        let short = |editor: &Self, track: TrackId| -> Vec<TimelineRange> {
+            editor
+                .gaps_on(track)
+                .into_iter()
+                .filter(|g| (g.end - g.start).ticks() < limit)
+                .collect()
+        };
+        if slivers.is_empty() && lanes.iter().all(|t| short(self, *t).is_empty()) {
+            return Ok((0, 0));
+        }
+        self.staged("Clean Up Slivers", |editor, stage| {
+            for (track, clip) in &slivers {
+                editor.stage(
+                    stage,
+                    Command::RemoveClip {
+                        sequence: sequence_id,
+                        track: *track,
+                        clip: *clip,
+                    },
+                )?;
+            }
+            let mut closed = 0;
+            for track in &lanes {
+                // Latest first, as in `close_all_gaps`; and read again per
+                // lane, since closing one moves linked clips on others.
+                let mut gaps = short(editor, *track);
+                gaps.reverse();
+                for gap in gaps {
+                    if let Ok(moves) = editor.gap_moves(*track, gap) {
+                        editor.stage_moves(stage, sequence_id, moves)?;
+                        editor.stage_markers_closed(stage, sequence_id, gap)?;
+                        closed += 1;
+                    }
+                }
+            }
+            Ok((slivers.len(), closed))
+        })
+    }
+}
+
+impl Editor {
+    /// Close every gap on every unlocked picture and sound lane, pictures
+    /// first so their linked sound comes along. Gaps whose linked partners
+    /// have no room stay open. One undo step. Returns how many closed.
+    pub fn close_gaps_everywhere(&mut self) -> Result<usize, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .active_sequence()
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let lanes: Vec<TrackId> = sequence
+            .video_tracks
+            .iter()
+            .map(|t| t.id)
+            .chain(sequence.audio_tracks.iter().map(|t| t.id))
+            .filter(|t| !self.track_flag(*t, crate::command::TrackFlag::Locked))
+            .collect();
+        if lanes.iter().all(|t| self.gaps_on(*t).is_empty()) {
+            return Err(EditorError::NoGapThere);
+        }
+        let closed = self.staged("Close Gaps Everywhere", |editor, stage| {
+            let mut closed = 0;
+            for track in &lanes {
+                // Read per lane: closing a picture gap moves its sound.
+                let mut gaps = editor.gaps_on(*track);
+                gaps.reverse();
+                for gap in gaps {
+                    if let Ok(moves) = editor.gap_moves(*track, gap) {
+                        editor.stage_moves(stage, sequence_id, moves)?;
+                        editor.stage_markers_closed(stage, sequence_id, gap)?;
+                        closed += 1;
+                    }
+                }
+            }
+            Ok(closed)
+        })?;
+        if closed == 0 {
+            return Err(EditorError::GapBlocked);
+        }
+        Ok(closed)
+    }
+}

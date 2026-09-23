@@ -5,12 +5,14 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod bounce;
+pub mod bug_report;
 pub mod caption_list;
 pub mod context_menu;
 pub mod effects;
 pub mod export_dialog;
 pub mod export_presets;
 pub mod export_queue;
+pub mod file_details;
 pub mod file_drop;
 pub mod highlight_dialog;
 pub mod history_panel;
@@ -21,6 +23,7 @@ pub mod marker_list;
 pub mod media_jobs;
 pub mod motion_path;
 pub mod notes_panel;
+pub mod palette;
 pub mod panels;
 pub mod prefs;
 pub mod preview;
@@ -28,6 +31,8 @@ pub mod preview_overlay;
 pub mod recent;
 pub mod render;
 pub mod reveal;
+pub mod sample;
+pub mod save_prompt;
 pub mod scene_dialog;
 pub mod scopes;
 pub mod shortcuts;
@@ -49,6 +54,8 @@ pub mod version_changes;
 pub mod voiceover;
 pub mod waveform_view;
 pub mod waveforms;
+pub mod welcome;
+pub mod whats_new;
 pub mod wheels;
 
 pub use media_jobs::{MediaJobs, MediaUpdate};
@@ -109,6 +116,15 @@ pub fn draw(
         .resizable(false)
         .show(ui, |ui| {
             panels::status_bar(ui, editor, state);
+            if std::mem::take(&mut state.undo_request) {
+                match editor.undo() {
+                    Ok(()) => {
+                        state.status = None;
+                        state.needs_repaint = true;
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
         });
 
     let timeline_rect = egui::Panel::bottom("timeline")
@@ -153,6 +169,14 @@ pub fn draw(
     silence_dialog::show(ui.ctx(), editor, state);
     highlight_dialog::show(ui.ctx(), editor, state);
     scene_dialog::show(ui.ctx(), editor, state);
+    palette::show(ui.ctx(), editor, state);
+    welcome::show(ui.ctx(), editor, state);
+    save_prompt::show(ui.ctx(), editor, state);
+    whats_new::show(ui.ctx(), state);
+    // Text an action asked to have put on the clipboard.
+    if let Some(text) = state.copy_out.take() {
+        ui.ctx().copy_text(text);
+    }
     caption_list::show(ui.ctx(), editor, state);
     marker_list::show(ui.ctx(), editor, state);
     export_queue::show(ui.ctx(), state);

@@ -154,3 +154,48 @@ fn confirming_splits_the_picture_and_its_sound() {
         "§12: the sound stayed whole"
     );
 }
+
+/// Black at the ends is found by the same look, and comes off with the sound.
+#[test]
+fn black_at_the_ends_is_offered_and_trimmed_with_the_sound() {
+    let (mut editor, mut state, clip) = setup();
+    let report = SceneReport::default();
+    report.finish_black(bettercut_playback::BlackEnds {
+        head: Some(MediaTime::from_seconds(1)),
+        tail: Some(MediaTime::from_seconds(8)),
+    });
+    report.finish(Vec::new());
+    state.scenes = Some(SceneDialog::started(clip, JobId(1), report));
+
+    let words = frame(&mut editor, &mut state);
+    assert!(
+        words.contains("1.0 s at the start, 2.0 s at the end"),
+        "{words}"
+    );
+    assert!(words.contains("Trim Black"), "{words}");
+
+    let depth = editor.undo_depth();
+    editor
+        .trim_ends(
+            clip,
+            Some(TimelineTime::from_seconds(1)),
+            Some(TimelineTime::from_seconds(8)),
+            "Trim Black",
+        )
+        .unwrap();
+    assert_eq!(editor.undo_depth(), depth + 1, "one step");
+    for member in [
+        clip,
+        editor
+            .linked_with(clip)
+            .into_iter()
+            .find(|c| *c != clip)
+            .unwrap(),
+    ] {
+        assert_eq!(
+            editor.clip_start(member),
+            Some(TimelineTime::from_seconds(1))
+        );
+        assert_eq!(editor.clip_end(member), Some(TimelineTime::from_seconds(8)));
+    }
+}

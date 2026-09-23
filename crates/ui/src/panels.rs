@@ -770,6 +770,16 @@ pub fn toolbar(
             {
                 state.history_open = !state.history_open;
             }
+            // The palette, findable without knowing its key.
+            if ui
+                .button("Actions")
+                .on_hover_text("Find any action by typing its name (Ctrl+K)")
+                .clicked()
+            {
+                state.palette_open = !state.palette_open;
+                state.palette_query.clear();
+                state.palette_pick = 0;
+            }
             if ui
                 .button("Shortcuts")
                 .on_hover_text("Every keyboard shortcut (? or F1)")
@@ -787,16 +797,25 @@ pub fn toolbar(
 fn timecode_readout(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
     let shown = editor.display_time(editor.playhead()).format_timecode();
     let Some(draft) = state.timecode_draft.as_mut() else {
-        if ui
+        let readout = ui
             .add(
                 egui::Label::new(egui::RichText::new(&shown).monospace().size(15.0))
                     .sense(egui::Sense::click()),
             )
             .on_hover_text(
-                "Click to type a timecode: 1:02:03, 2:03.5, 120f, or +10 / -1:00 to move",
-            )
-            .clicked()
-        {
+                "Click to type a timecode: 1:02:03, 2:03.5, 120f, or +10 / -1:00 to move. \
+                 Right-click to copy it",
+            );
+        // For a note to the client or a comment on a review: the time,
+        // exactly as shown, on the clipboard.
+        readout.context_menu(|ui| {
+            if ui.button("Copy Timecode").clicked() {
+                ui.ctx().copy_text(shown.clone());
+                state.info(format!("Copied {shown}"));
+                ui.close();
+            }
+        });
+        if readout.clicked() {
             state.timecode_draft = Some(shown);
             state.needs_repaint = true;
         }
@@ -1124,6 +1143,15 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             state.media_stars = if starred { 0 } else { 3 };
             state.needs_repaint = true;
         }
+        // What is left to look at: the takes nothing in the edit uses yet.
+        if ui
+            .selectable_label(state.media_unused_only, "Not used yet")
+            .on_hover_text("Show only the files no clip in the project uses")
+            .clicked()
+        {
+            state.media_unused_only = !state.media_unused_only;
+            state.needs_repaint = true;
+        }
     });
     // How the files are ordered, and how much of each one is shown. Both are
     // one row: a long import is read by narrowing, then ordering, then
@@ -1219,6 +1247,11 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         }
     }
     let total = editor.project().media.iter().filter(|m| !m.baked).count();
+    let unused_ids = if state.media_unused_only {
+        editor.unused_media()
+    } else {
+        Vec::new()
+    };
 
     // Collect first so the list can be drawn while dispatching commands below.
     let mut assets: Vec<(MediaId, String, bool, bool, MediaTime, bool, MediaKind)> = editor
@@ -1231,6 +1264,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             !m.baked
                 && state.media_kind.accepts(m.kind)
                 && m.rating >= state.media_stars
+                && (!state.media_unused_only || unused_ids.contains(&m.id))
                 && state
                     .media_bin
                     .as_ref()
@@ -1437,9 +1471,16 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                 }
 
                 ui.horizontal(|ui| {
+                    let about = editor
+                        .project()
+                        .media_asset(*id)
+                        .map(crate::file_details::details)
+                        .unwrap_or_default();
                     let label = ui
                         .label(egui::RichText::new(name).strong())
-                        .on_hover_text("Right-click to rename it in the project");
+                        .on_hover_text(format!(
+                            "{about}\n\nRight-click to rename it in the project"
+                        ));
                     // A name of its own, typed in a menu and applied when the
                     // menu closes, as a track's is.
                     label.context_menu(|ui| {
@@ -2017,6 +2058,15 @@ pub fn preview(
     // Guides over the picture, under the handles: they help place things, and
     // must never get in the way of grabbing one.
     crate::preview_overlay::draw_guides(&painter, state.preview_guide, canvas);
+    if state.preview_timecode {
+        let text = editor.display_time(editor.playhead()).format_timecode();
+        let galley =
+            painter.layout_no_wrap(text, egui::FontId::monospace(14.0), egui::Color32::WHITE);
+        let at = canvas.left_bottom() + egui::vec2(8.0, -8.0 - galley.size().y);
+        let back = egui::Rect::from_min_size(at, galley.size()).expand(4.0);
+        painter.rect_filled(back, 3, egui::Color32::from_black_alpha(170));
+        painter.galley(at, galley, egui::Color32::WHITE);
+    }
 
     // The eyedropper, before the handles: while it is armed the picture is
     // a colour chart, not a thing to drag, and letting a transform handle take
@@ -3458,6 +3508,16 @@ pub fn transport(
                         state.needs_repaint = true;
                         ui.close();
                     }
+                }
+                ui.separator();
+                if ui
+                    .checkbox(&mut state.preview_timecode, "Timecode")
+                    .on_hover_text(
+                        "The playhead's timecode in the corner of the preview, for a screen recording sent for notes. Never in the export.",
+                    )
+                    .changed()
+                {
+                    state.needs_repaint = true;
                 }
             },
         )
@@ -9596,6 +9656,27 @@ fn eq_controls(
     let mut next = current;
     let mut dragging = false;
     ui.label(egui::RichText::new("EQ").small().color(theme::disabled()));
+    // By name first: most sound wants one of these, and the sliders below
+    // are for the last few percent.
+    ui.horizontal_wrapped(|ui| {
+        for (name, hint, preset) in ClipEq::PRESETS {
+            if ui
+                .selectable_label(current == preset, name)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                next = preset;
+            }
+        }
+        if !current.is_flat()
+            && ui
+                .small_button("Flat")
+                .on_hover_text("Take the EQ off")
+                .clicked()
+        {
+            next = ClipEq::default();
+        }
+    });
 
     // Low cut: 0 (off) up to 400 Hz.
     let response = ui
@@ -10528,6 +10609,15 @@ pub fn recovery_prompt(ctx: &egui::Context, editor: &mut Editor, state: &mut UiS
 
 /// Status bar: project state at a glance, plus the last message.
 pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
+    // A message that arrived with a new undo step is an edit's: only then is
+    // Undo offered beside it.
+    let depth = editor.undo_depth();
+    let text = state.status.as_ref().map(|m| m.text.clone());
+    if text != state.status_seen {
+        state.status_from_edit = text.is_some() && depth > state.last_undo_depth;
+        state.status_seen = text;
+    }
+    state.last_undo_depth = depth;
     ui.horizontal(|ui| {
         match &state.status {
             Some(message) if message.is_error => {
@@ -10535,12 +10625,22 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
             }
             Some(message) => {
                 ui.label(egui::RichText::new(&message.text).color(theme::ok_text()));
+                // The way back, right beside what was just done.
+                if state.status_from_edit
+                    && let Some(label) = editor.undo_label()
+                    && ui
+                        .small_button("Undo")
+                        .on_hover_text(format!("Undo {label} (Ctrl+Z)"))
+                        .clicked()
+                {
+                    state.undo_request = true;
+                }
             }
             None => {
                 ui.label(
                     egui::RichText::new(
                         "S split · Del delete · Shift+Del ripple · Ctrl+D duplicate · \
-                         N snap · drag edges to trim",
+                         N snap · drag edges to trim · Ctrl+K any action",
                     )
                     .color(theme::disabled()),
                 );
@@ -10553,7 +10653,25 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
         if let Some(sequence) = editor.active_sequence() {
             let duration = sequence.duration();
             let clips = sequence.clip_count();
+            let picked = state.selected_clips.len();
+            let span = (picked > 1)
+                .then(|| state.selection_range(editor))
+                .flatten();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Several clips selected: how much of the cut they cover —
+                // the number checked before a delete or a move.
+                if let Some(span) = span {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{picked} selected · {}",
+                            span.duration().format_timecode()
+                        ))
+                        .monospace()
+                        .color(theme::selection()),
+                    )
+                    .on_hover_text("From the first selected clip's start to the last one's end");
+                    ui.separator();
+                }
                 ui.label(
                     egui::RichText::new(format!(
                         "{} · {clips} clip{}",
@@ -10585,8 +10703,8 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
             }
             ui.label(egui::RichText::new(parts.join(" · ")).color(theme::error_text()))
                 .on_hover_text(
-                    "Playback is not keeping up. Inspector → System has the full \
-                     counters; lowering Proxies → Quality is the usual fix.",
+                    "Playback is not keeping up. Inspector, System has the full \
+                     counters; lowering Proxies, Quality is the usual fix.",
                 );
         }
 
@@ -10699,8 +10817,9 @@ fn autosave_warning(failures: u32) -> String {
 pub fn new_project(editor: &mut Editor, state: &mut UiState) {
     // §39/§50: never discard unsaved work silently. Until a proper prompt
     // exists, refuse and say why.
-    if editor.is_dirty() {
-        state.error("Save the current project first — unsaved changes would be lost.");
+    // Unsaved work: ask, and come back here once it is answered.
+    if editor.is_dirty() && !state.discard_ok {
+        state.pending_switch = Some(crate::save_prompt::Switch::New);
         return;
     }
     let (fresh, _rx) = Editor::new_project("Untitled");
@@ -10729,6 +10848,7 @@ pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
     let Some(path) = rfd::FileDialog::new()
         .add_filter("SubRip", &["srt"])
         .add_filter("WebVTT", &["vtt"])
+        .add_filter("Transcript (plain text)", &["txt"])
         .set_file_name("captions.srt")
         .save_file()
     else {
@@ -10742,8 +10862,9 @@ pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
 }
 
 pub fn open_project(editor: &mut Editor, state: &mut UiState) {
-    if editor.is_dirty() {
-        state.error("Save the current project first — unsaved changes would be lost.");
+    // Unsaved work: ask, and come back here once it is answered.
+    if editor.is_dirty() && !state.discard_ok {
+        state.pending_switch = Some(crate::save_prompt::Switch::Open);
         return;
     }
     let Some(path) = rfd::FileDialog::new()
@@ -10759,8 +10880,9 @@ pub fn open_project(editor: &mut Editor, state: &mut UiState) {
 /// remember it. The same unsaved-work guard as the dialog route: a recent
 /// project one click away must not make discarding an edit one click away.
 pub fn open_project_at(editor: &mut Editor, state: &mut UiState, path: &std::path::Path) {
-    if editor.is_dirty() {
-        state.error("Save the current project first — unsaved changes would be lost.");
+    // Unsaved work: ask, and come back here once it is answered.
+    if editor.is_dirty() && !state.discard_ok {
+        state.pending_switch = Some(crate::save_prompt::Switch::OpenPath(path.to_path_buf()));
         return;
     }
     if !path.exists() {
@@ -10789,11 +10911,31 @@ pub fn open_project_at(editor: &mut Editor, state: &mut UiState, path: &std::pat
 }
 
 /// A fresh interface for a different project, keeping what belongs to the
-/// person rather than the project: the recent list.
-fn reset_state(state: &mut UiState) {
+/// person or the machine rather than the project: the recent list, the
+/// prefs and everything saved beside them, the key bindings, the palette's
+/// recent actions, the font list and the graphics card. Losing those here
+/// emptied the font picker and stopped prefs being saved after the first
+/// project was opened.
+pub fn reset_state(state: &mut UiState) {
     let recent = std::mem::take(&mut state.recent);
+    let prefs = std::mem::take(&mut state.prefs);
+    let title_styles = std::mem::take(&mut state.title_styles);
+    let export_presets = std::mem::take(&mut state.export_presets);
+    let user_looks = std::mem::take(&mut state.user_looks);
+    let keymap = std::mem::take(&mut state.keymap);
+    let font_families = std::mem::take(&mut state.font_families);
+    let gpu = state.gpu.take();
+    let palette_recent = std::mem::take(&mut state.palette_recent);
     *state = UiState::default();
     state.recent = recent;
+    state.prefs = prefs;
+    state.title_styles = title_styles;
+    state.export_presets = export_presets;
+    state.user_looks = user_looks;
+    state.keymap = keymap;
+    state.font_families = font_families;
+    state.gpu = gpu;
+    state.palette_recent = palette_recent;
 }
 
 /// What a copy is called by default: the project's name with "copy" after it.

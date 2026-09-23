@@ -1197,6 +1197,22 @@ impl Editor {
         &self,
         sequence: SequenceId,
     ) -> Result<(bettercut_timeline::Sequence, usize), EditorError> {
+        self.sequence_copy_mapped(sequence)
+            .map(|(copy, index, _)| (copy, index))
+    }
+
+    /// [`Self::sequence_copy`], with what each old clip id became.
+    pub(crate) fn sequence_copy_mapped(
+        &self,
+        sequence: SequenceId,
+    ) -> Result<
+        (
+            bettercut_timeline::Sequence,
+            usize,
+            std::collections::HashMap<ClipId, ClipId>,
+        ),
+        EditorError,
+    > {
         let index = self
             .project
             .sequences
@@ -1284,7 +1300,7 @@ impl Editor {
             }
             None => false,
         });
-        Ok((copy, index))
+        Ok((copy, index, clips))
     }
 
     /// Take a sequence out of the project. The last one cannot go — a project
@@ -1429,6 +1445,70 @@ impl Editor {
 
         self.staged("Hold Last Frame", |editor, stage| {
             editor.stage_insert_time(stage, sequence, span.end, duration)?;
+            editor.stage(
+                stage,
+                Command::AddClip {
+                    sequence,
+                    track,
+                    clip: ClipPayload::Video(Box::new(frozen.clone())),
+                },
+            )
+        })?;
+        Ok(held)
+    }
+
+    /// Hold `clip`'s first frame for `duration` before it plays, pushing the
+    /// clip and what follows along — the opening image standing still under
+    /// a title before the shot moves. One undo step; returns the held frame.
+    pub fn hold_first_frame(
+        &mut self,
+        clip: ClipId,
+        duration: TimelineTime,
+    ) -> Result<ClipId, EditorError> {
+        let source = self
+            .video_clip(clip)
+            .ok_or(EditorError::ClipKindMismatch)?
+            .clone();
+        let span = source.timeline;
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let duration = TimelineTime::from_ticks(self.snap_to_frame(sequence, duration).ticks());
+        if duration <= TimelineTime::ZERO {
+            return Err(EditorError::PlayheadOffClip);
+        }
+        let frame = self
+            .project
+            .sequence(sequence)
+            .map_or(1, |s| s.ticks_per_frame().max(1));
+        // The first frame seen: the in-point, or the out-point's last frame
+        // for a clip playing backwards.
+        let first = if source.reversed {
+            (source.source.end.ticks() - frame).max(source.source.start.ticks())
+        } else {
+            source.source.start.ticks()
+        };
+        let range = bettercut_timeline::SourceRange::new(
+            bettercut_foundation::MediaTime::from_ticks(first),
+            bettercut_foundation::MediaTime::from_ticks(first + frame),
+        )?;
+        let mut frozen = bettercut_timeline::VideoClip::new(source.media_id, span.start, range)?;
+        frozen.frozen = true;
+        frozen.timeline = bettercut_timeline::TimelineRange {
+            start: span.start,
+            end: span.start + duration,
+        };
+        frozen.transform = source.transform;
+        frozen.crop = source.crop;
+        frozen.opacity = source.opacity;
+        frozen.color = source.color;
+        frozen.blur = source.blur;
+        frozen.curves = source.curves;
+        frozen.lut = source.lut;
+        frozen.blend = source.blend;
+        let held = frozen.id;
+
+        self.staged("Hold First Frame", |editor, stage| {
+            editor.stage_insert_time(stage, sequence, span.start, duration)?;
             editor.stage(
                 stage,
                 Command::AddClip {
@@ -1682,6 +1762,42 @@ impl Editor {
         }
         self.set_sequence_value(crate::command::ClipProperty::Gain(wanted), false)?;
         Ok(wanted)
+    }
+
+    /// Set each clip's volume so it measures `target` LUFS, from what it
+    /// measured (`measured`, one reading per clip) — one undo step. The same
+    /// ±20 dB limit as the master's match, and the same 0–4 volume range.
+    /// Returns how many clips changed.
+    pub fn match_clips_loudness(
+        &mut self,
+        measured: &[(ClipId, f32)],
+        target: f32,
+    ) -> Result<usize, EditorError> {
+        if !target.is_finite() {
+            return Err(EditorError::NothingToHear);
+        }
+        let sequence = self.active_sequence_id()?;
+        let commands: Vec<Command> = measured
+            .iter()
+            .filter(|(_, lufs)| lufs.is_finite())
+            .filter_map(|(clip, lufs)| {
+                let now = self.audio_clip(*clip)?.gain;
+                let track = self.track_of(*clip)?;
+                let difference = (target - lufs).clamp(-20.0, 20.0);
+                let wanted = (now * 10.0_f32.powf(difference / 20.0)).clamp(0.0, 4.0);
+                ((wanted - now).abs() >= 1e-4).then_some(Command::SetClipProperty {
+                    sequence,
+                    track,
+                    clip: *clip,
+                    property: crate::command::ClipProperty::Gain(wanted),
+                })
+            })
+            .collect();
+        let count = commands.len();
+        if count > 0 {
+            self.dispatch_group("Even Out Loudness", commands)?;
+        }
+        Ok(count)
     }
 
     // ---- the media library (§66) ----
@@ -2826,6 +2942,75 @@ impl Editor {
         self.dispatch_gesture("Change speed".to_owned(), commands, continuing)
     }
 
+    /// Set every clip in `clips` that has motion to play at `speed`, each
+    /// with whatever is linked to it — one undo step. Photos and held frames
+    /// are skipped. Returns how many shots changed.
+    pub fn set_clips_speed(
+        &mut self,
+        clips: &[ClipId],
+        speed: bettercut_foundation::Rational,
+    ) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut seen: Vec<ClipId> = Vec::new();
+        let mut commands = Vec::new();
+        let mut shots = 0;
+        for clip in clips {
+            if seen.contains(clip) || !self.can_retime(*clip) {
+                continue;
+            }
+            let members = self.linked_with(*clip);
+            seen.extend(members.iter().copied());
+            shots += 1;
+            for member in members {
+                if let Some(track) = self.track_of(member) {
+                    commands.push(Command::SetClipSpeed {
+                        sequence,
+                        track,
+                        clip: member,
+                        speed,
+                    });
+                }
+            }
+        }
+        if shots > 0 {
+            self.dispatch_group(format!("Change Speed of {shots} Clips"), commands)?;
+        }
+        Ok(shots)
+    }
+
+    /// Play every clip in `clips` that has motion backwards (`on`) or
+    /// forwards again, each with whatever is linked to it — one undo step.
+    /// Returns how many shots changed.
+    pub fn set_clips_reversed(&mut self, clips: &[ClipId], on: bool) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let mut seen: Vec<ClipId> = Vec::new();
+        let mut commands = Vec::new();
+        let mut shots = 0;
+        for clip in clips {
+            if seen.contains(clip) || !self.can_retime(*clip) || self.is_reversed(*clip) == on {
+                continue;
+            }
+            let members = self.linked_with(*clip);
+            seen.extend(members.iter().copied());
+            shots += 1;
+            for member in members {
+                if let Some(track) = self.track_of(member) {
+                    commands.push(Command::SetClipProperty {
+                        sequence,
+                        track,
+                        clip: member,
+                        property: crate::command::ClipProperty::Reverse(on),
+                    });
+                }
+            }
+        }
+        if shots > 0 {
+            let label = if on { "Reverse" } else { "Play Forwards" };
+            self.dispatch_group(format!("{label} {shots} Clips"), commands)?;
+        }
+        Ok(shots)
+    }
+
     /// Play a clip backwards, or forwards again — and whatever is linked to it,
     /// so the sound runs backwards under its picture (§12). One undo step.
     ///
@@ -3607,6 +3792,63 @@ impl Editor {
         Ok(true)
     }
 
+    /// Name `clips` "`base` 01", "`base` 02"… in timeline order, as one
+    /// undo step. A clip linked to one already numbered takes the same
+    /// number, so a shot and its sound read alike. Numbers are padded to at
+    /// least two digits so they sort. Returns how many were named.
+    pub fn number_clips(&mut self, clips: &[ClipId], base: &str) -> Result<usize, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let base = base.trim();
+        if base.is_empty() {
+            return Ok(0);
+        }
+        let mut ordered: Vec<(ClipId, TrackId, i64)> = clips
+            .iter()
+            .filter_map(|clip| {
+                let track = self.track_of(*clip)?;
+                let start = self.active_sequence()?.clip_span(*clip)?.timeline.start;
+                Some((*clip, track, start.ticks()))
+            })
+            .collect();
+        ordered.sort_by_key(|(_, _, start)| *start);
+        ordered.dedup_by_key(|(clip, _, _)| *clip);
+
+        let mut numbered: Vec<(ClipId, usize)> = Vec::new();
+        let mut next = 0;
+        for (clip, _, _) in &ordered {
+            let partners = self.linked_with(*clip);
+            let shared = numbered
+                .iter()
+                .find(|(other, _)| partners.contains(other))
+                .map(|(_, n)| *n);
+            let number = shared.unwrap_or_else(|| {
+                next += 1;
+                next
+            });
+            numbered.push((*clip, number));
+        }
+        let width = next.to_string().len().max(2);
+        let commands: Vec<Command> = ordered
+            .iter()
+            .zip(&numbered)
+            .filter_map(|((clip, track, _), (_, number))| {
+                let name = format!("{base} {number:0width$}");
+                let changed = self.clip_name(*clip).as_deref() != Some(name.as_str());
+                changed.then_some(Command::SetClipName {
+                    sequence,
+                    track: *track,
+                    clip: *clip,
+                    name: Some(name),
+                })
+            })
+            .collect();
+        let count = commands.len();
+        if count > 0 {
+            self.dispatch_group("Number Clips", commands)?;
+        }
+        Ok(count)
+    }
+
     // ---- clip solo ----
 
     /// Whether `clip` is soloed.
@@ -3731,6 +3973,39 @@ impl Editor {
             self.replace_markers(markers)?;
         }
         Ok(added)
+    }
+
+    /// A marker every `interval`, from the marked in-point (or the start)
+    /// up to the out-point (or the end of the edit), as one undo step. The
+    /// start itself is skipped — a marker at zero marks nothing. Returns how
+    /// many were added; those already there are not added twice.
+    pub fn add_markers_every(&mut self, interval: TimelineTime) -> Result<usize, EditorError> {
+        let Some(sequence) = self.active_sequence() else {
+            return Ok(0);
+        };
+        let step = interval.ticks();
+        if step <= 0 {
+            return Ok(0);
+        }
+        let from = sequence.mark_in.unwrap_or(TimelineTime::ZERO).ticks();
+        let to = sequence
+            .mark_out
+            .unwrap_or_else(|| sequence.duration())
+            .ticks();
+        // Past this the ruler is solid markers and nothing can be read.
+        const MOST: i64 = 1_000;
+        if (to - from) / step > MOST {
+            return Err(EditorError::TooManyMarkers);
+        }
+        let times: Vec<TimelineTime> = (1..)
+            .map(|n| from + n * step)
+            .take_while(|at| *at < to)
+            .map(TimelineTime::from_ticks)
+            .collect();
+        if times.is_empty() {
+            return Ok(0);
+        }
+        self.add_markers(&times)
     }
 
     /// The longest name a marker keeps. Enough for "second chorus — cut to
@@ -3941,6 +4216,36 @@ impl Editor {
             mark_in,
             mark_out: Some(at),
         })
+    }
+
+    /// Mark in and out around `clips`: from the earliest start to the
+    /// latest end among them, as one step. Returns the range marked, or
+    /// `None` when none of them is on the timeline.
+    pub fn mark_clips(
+        &mut self,
+        clips: &[ClipId],
+    ) -> Result<Option<bettercut_timeline::TimelineRange>, EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let spans: Vec<_> = clips
+            .iter()
+            .filter_map(|clip| sequence.clip_span(*clip).map(|s| s.timeline))
+            .collect();
+        let (Some(start), Some(end)) = (
+            spans.iter().map(|s| s.start).min(),
+            spans.iter().map(|s| s.end).max(),
+        ) else {
+            return Ok(None);
+        };
+        self.dispatch(Command::SetInOut {
+            sequence: sequence_id,
+            mark_in: Some(start),
+            mark_out: Some(end),
+        })?;
+        Ok(Some(bettercut_timeline::TimelineRange { start, end }))
     }
 
     /// Clear both marks. Nothing to clear is no step.
@@ -5361,6 +5666,15 @@ impl Editor {
                 Ok(Box::new(ops::RenameTrack::new(sequence, track, name)))
             }
 
+            Command::MoveTrack {
+                sequence,
+                track,
+                index,
+            } => {
+                self.require_track(sequence, track)?;
+                Ok(Box::new(ops::MoveTrack::new(sequence, track, index)))
+            }
+
             Command::SetTrackFlag {
                 sequence,
                 track,
@@ -6011,12 +6325,12 @@ impl Editor {
     }
 
     /// Where a video or audio clip starts, for the linked edits above.
-    fn clip_start(&self, clip: ClipId) -> Option<TimelineTime> {
+    pub fn clip_start(&self, clip: ClipId) -> Option<TimelineTime> {
         Some(self.project.active()?.clip_span(clip)?.timeline.start)
     }
 
     /// The same, for the end.
-    fn clip_end(&self, clip: ClipId) -> Option<TimelineTime> {
+    pub fn clip_end(&self, clip: ClipId) -> Option<TimelineTime> {
         Some(self.project.active()?.clip_span(clip)?.timeline.end)
     }
 

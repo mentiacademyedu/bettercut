@@ -278,3 +278,20 @@ fn the_star_filter_hides_the_unrated_takes() {
     // And the stars themselves are drawn, lit as far as the rating goes.
     assert!(few.contains('★'), "{few}");
 }
+
+/// "Not used yet" shows only the files nothing in the edit uses.
+#[test]
+fn the_unused_filter_hides_what_is_already_in_the_edit() {
+    let mut editor = library();
+    let used = editor.project().media[1].id;
+    editor.place_media(used).unwrap();
+    let mut state = UiState::default();
+
+    state.media_unused_only = true;
+    let left = words(&mut editor, &mut state);
+    assert!(left.contains("beach sunset.mp4"), "{left}");
+    assert!(
+        !left.contains("city night.mp4"),
+        "a used file is still shown: {left}"
+    );
+}
