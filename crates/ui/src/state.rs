@@ -726,6 +726,8 @@ pub struct UiState {
     pub status_seen: Option<String>,
     pub status_from_edit: bool,
     pub last_undo_depth: usize,
+    /// A crash report from the last run, waiting to be shown (`crate::crash`).
+    pub crash_report: Option<(std::path::PathBuf, String)>,
     /// The first-run welcome window (`crate::welcome`).
     pub welcome_open: bool,
     /// The after-an-update window (`crate::whats_new`).
@@ -1065,6 +1067,7 @@ impl Default for UiState {
             status_seen: None,
             status_from_edit: false,
             last_undo_depth: 0,
+            crash_report: None,
             welcome_open: false,
             whats_new_open: false,
             palette_open: false,

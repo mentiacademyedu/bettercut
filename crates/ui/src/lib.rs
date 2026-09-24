@@ -8,6 +8,7 @@ pub mod bounce;
 pub mod bug_report;
 pub mod caption_list;
 pub mod context_menu;
+pub mod crash;
 pub mod effects;
 pub mod export_dialog;
 pub mod export_presets;
@@ -171,6 +172,7 @@ pub fn draw(
     scene_dialog::show(ui.ctx(), editor, state);
     palette::show(ui.ctx(), editor, state);
     welcome::show(ui.ctx(), editor, state);
+    crash::show(ui.ctx(), state);
     save_prompt::show(ui.ctx(), editor, state);
     whats_new::show(ui.ctx(), state);
     // Text an action asked to have put on the clipboard.

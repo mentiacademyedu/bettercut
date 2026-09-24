@@ -17,6 +17,8 @@ use bettercut_ui::UiState;
 
 fn main() -> eframe::Result {
     init_logging();
+    // A panic leaves a report for the next launch to show (`bettercut_ui::crash`).
+    bettercut_ui::crash::install_hook(bettercut_ui::crash::crash_dir());
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting bettercut");
 
@@ -105,6 +107,8 @@ impl App {
         );
         // A first run says hello; after "Don't show this again" it does not.
         ui.welcome_open = !ui.prefs.seen_welcome;
+        // A crash last time: say so, with the report to send.
+        ui.crash_report = bettercut_ui::crash::pending(&bettercut_ui::crash::crash_dir());
         // After an update, what is new — once; then this build is remembered.
         ui.whats_new_open =
             bettercut_ui::whats_new::should_show(&ui.prefs.last_version, ui.prefs.seen_welcome);
