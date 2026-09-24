@@ -262,6 +262,27 @@ pub const ACTIONS: &[Action] = &[
         },
     },
     Action {
+        name: "Zoom to Fit",
+        hint: "the whole edit across the timeline",
+        run: |e, s| {
+            let lanes = (s.screen_width - crate::theme::TRACK_HEADER_WIDTH).max(200.0);
+            let duration = e
+                .active_sequence()
+                .map_or(TimelineTime::ZERO, |q| q.duration());
+            s.zoom_to_fit(duration, lanes);
+            s.needs_repaint = true;
+        },
+    },
+    Action {
+        name: "Zoom to Selection",
+        hint: "the selected clips, or the whole edit",
+        run: |e, s| {
+            let lanes = (s.screen_width - crate::theme::TRACK_HEADER_WIDTH).max(200.0);
+            s.zoom_to_selection_or_fit(e, lanes);
+            s.needs_repaint = true;
+        },
+    },
+    Action {
         name: "Toggle Snapping",
         hint: "N",
         run: |_, s| s.snapping = !s.snapping,
@@ -504,6 +525,8 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     if !state.palette_open {
         return;
     }
+    // What the zoom actions measure against: they run without a context.
+    state.screen_width = ctx.content_rect().width();
     // Recent actions from an earlier run, the first time the palette opens:
     // only names this build still has.
     if state.palette_recent.is_empty() && !state.prefs.palette_recent.is_empty() {
@@ -536,6 +559,14 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     let places = marker_matches(editor, &state.palette_query);
     let mut to_marker: Option<TimelineTime> = None;
     let projects = project_matches(&state.recent, &state.palette_query);
+    // Clips by name, a title's words or a note — the editor's own search,
+    // held to a handful so the actions stay in view.
+    let clips: Vec<_> = editor
+        .find_clips(&state.palette_query)
+        .into_iter()
+        .take(5)
+        .collect();
+    let mut to_clip: Option<(ClipId, TimelineTime)> = None;
     let mut to_project: Option<std::path::PathBuf> = None;
     let pick = state.palette_pick.min(found.len().saturating_sub(1));
     let (down, up, enter, escape) = ctx.input(|i| {
@@ -591,6 +622,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     to_marker = Some(*at);
                 }
             }
+            for found in &clips {
+                if ui
+                    .selectable_label(false, format!("Clip · {}", found.label))
+                    .on_hover_text(found.start.format_timecode())
+                    .clicked()
+                {
+                    to_clip = Some((found.clip, found.start));
+                }
+            }
             for path in &projects {
                 let (name, folder) = crate::recent::menu_label(path);
                 if ui
@@ -601,7 +641,12 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     to_project = Some(path.clone());
                 }
             }
-            if found.is_empty() && jump.is_none() && places.is_empty() && projects.is_empty() {
+            if found.is_empty()
+                && jump.is_none()
+                && places.is_empty()
+                && projects.is_empty()
+                && clips.is_empty()
+            {
                 ui.label(egui::RichText::new("Nothing by that name").color(theme::disabled()));
             }
             egui::ScrollArea::vertical()
@@ -649,6 +694,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         } else {
             chosen = chosen.or_else(|| found.get(pick).copied());
         }
+    }
+    if let Some((clip, start)) = to_clip {
+        state.select_only(clip);
+        state.jump_to = Some(start);
+        state.palette_open = false;
+        state.palette_query.clear();
+        state.palette_pick = 0;
+        state.needs_repaint = true;
+        return;
     }
     if let Some(path) = to_project {
         state.palette_open = false;

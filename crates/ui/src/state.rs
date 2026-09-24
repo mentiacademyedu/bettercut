@@ -719,6 +719,8 @@ pub struct UiState {
     pub quit_now: bool,
     /// The status bar's Undo was pressed.
     pub undo_request: bool,
+    /// The window's width when the palette last opened, for its zoom actions.
+    pub screen_width: f32,
     /// The status message as last drawn, whether it came with a new undo
     /// step, and the history's depth last frame (`panels::status_bar`).
     pub status_seen: Option<String>,
@@ -1059,6 +1061,7 @@ impl Default for UiState {
             discard_ok: false,
             quit_now: false,
             undo_request: false,
+            screen_width: 1280.0,
             status_seen: None,
             status_from_edit: false,
             last_undo_depth: 0,

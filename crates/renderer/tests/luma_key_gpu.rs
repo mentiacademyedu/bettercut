@@ -55,7 +55,11 @@ fn halves() -> VideoFrame {
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for _ in 0..h {
         for x in 0..w {
-            let v = if x < w / 2 { 40 } else { 255 };
+            // Near-black against white: the case the default key is for — a
+            // logo or a light leak on black. (A mid grey such as 40/255 sits
+            // above the default threshold on the key's perceptual scale, and
+            // is rightly only thinned.)
+            let v = if x < w / 2 { 12 } else { 255 };
             data.extend_from_slice(&[v, v, v, 255]);
         }
     }
@@ -178,7 +182,7 @@ fn the_dark_or_the_bright_side_goes() {
 
     let plain = keyed(&device, &queue, None);
     assert!(
-        red_at(&plain, left) > 20 && red_at(&plain, left) < 90,
+        red_at(&plain, left) > 5 && red_at(&plain, left) < 20,
         "{}",
         red_at(&plain, left)
     );
@@ -206,5 +210,5 @@ fn the_dark_or_the_bright_side_goes() {
         "the bright side stayed: {}",
         red_at(&drop_bright, right)
     );
-    assert!(red_at(&drop_bright, left) > 20, "the dark side went");
+    assert!(red_at(&drop_bright, left) > 5, "the dark side went");
 }
