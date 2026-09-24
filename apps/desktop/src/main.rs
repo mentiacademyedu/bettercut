@@ -30,7 +30,13 @@ fn main() -> eframe::Result {
             // `bettercut_ui::file_drop`). Said explicitly rather than left to
             // the default, because it is a feature people rely on.
             .with_drag_and_drop(true)
-            .with_title("bettercut"),
+            .with_title("bettercut")
+            // The window's and the taskbar's icon, drawn at start.
+            .with_icon(std::sync::Arc::new(egui::IconData {
+                rgba: bettercut_ui::icon::rgba(64),
+                width: 64,
+                height: 64,
+            })),
         ..Default::default()
     };
 
@@ -49,17 +55,36 @@ fn main() -> eframe::Result {
 }
 
 /// §49: structured logs, `INFO` by default, overridable with `RUST_LOG`.
+///
+/// To the console and to a file: a release build has no console, so without
+/// the file a tester's logs went nowhere. The run before is kept beside it.
 fn init_logging() {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"));
 
-    tracing_subscriber::fmt()
+    let path = bettercut_ui::crash::log_file();
+    let file = path.parent().and_then(|dir| {
+        std::fs::create_dir_all(dir).ok()?;
+        let _ = std::fs::rename(&path, path.with_extension("previous.log"));
+        std::fs::File::create(&path).ok()
+    });
+
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
         .with_level(true)
-        .init();
+        // Plain text: colour codes are noise in a file someone attaches.
+        .with_ansi(false);
+    match file {
+        Some(file) => builder
+            .with_writer(std::io::stderr.and(std::sync::Mutex::new(file)))
+            .init(),
+        // No file to write to: the console alone, as before.
+        None => builder.init(),
+    }
 }
 
 struct App {

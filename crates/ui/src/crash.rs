@@ -22,6 +22,27 @@ pub fn crash_dir() -> PathBuf {
         .join("crashes")
 }
 
+/// This run's log file: beside the crash reports, so both are in the one
+/// folder a tester is pointed at. The run before is kept as
+/// `bettercut.previous.log`.
+pub fn log_file() -> PathBuf {
+    crash_dir()
+        .parent()
+        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+        .join("logs")
+        .join("bettercut.log")
+}
+
+/// The last `lines` lines of the file at `path`, or nothing when it cannot
+/// be read — for a crash report, where the last thing logged is the clue.
+pub fn tail(path: &Path, lines: usize) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
 /// The report for a panic: `message` at `location`, with `backtrace`.
 pub fn report(message: &str, location: &str, backtrace: &str, when_unix: u64) -> String {
     format!(
@@ -51,7 +72,14 @@ pub fn install_hook(dir: PathBuf) {
         let when = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let text = report(&message, &location, &backtrace, when);
+        let mut text = report(&message, &location, &backtrace, when);
+        // What the editor was doing just before: the end of this run's log.
+        let log = tail(&log_file(), 40);
+        if !log.is_empty() {
+            text.push_str("\nlast lines of the log:\n");
+            text.push_str(&log);
+            text.push('\n');
+        }
         // Best effort: a crash while reporting a crash must not hide the
         // first one.
         let _ = std::fs::create_dir_all(&dir);
@@ -129,6 +157,16 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tail_is_the_last_lines() {
+        let path = std::env::temp_dir().join(format!("bettercut-tail-{}.log", std::process::id()));
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+        assert_eq!(tail(&path, 2), "three\nfour");
+        assert_eq!(tail(&path, 10), "one\ntwo\nthree\nfour");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(tail(&path, 2), "", "a missing log is no tail");
+    }
 
     #[test]
     fn a_report_is_written_found_once_and_then_set_aside() {

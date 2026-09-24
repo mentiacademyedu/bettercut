@@ -42,6 +42,7 @@ pub fn details(editor: &Editor) -> String {
         ));
     }
     lines.push(format!("undo steps: {}", editor.undo_depth()));
+    lines.push("log: attach bettercut.log from %APPDATA%\\bettercut\\logs".to_owned());
     lines.push(String::new());
     lines.push("What happened:".to_owned());
     lines.push("What I expected:".to_owned());
