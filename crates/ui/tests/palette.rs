@@ -109,3 +109,19 @@ fn recent_projects_are_found_by_name() {
     assert!(palette::project_matches(&recent, "").is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_title_added_from_the_palette_is_selected() {
+    let (mut editor, _events) = Editor::new_project("Adding");
+    let mut state = UiState::default();
+    assert!(palette::run(&mut editor, &mut state, "Add Title"));
+    assert_eq!(state.selected_clips.len(), 1);
+    let titles: usize = editor
+        .active_sequence()
+        .unwrap()
+        .text_tracks
+        .iter()
+        .map(|t| t.clips().len())
+        .sum();
+    assert_eq!(titles, 1);
+}

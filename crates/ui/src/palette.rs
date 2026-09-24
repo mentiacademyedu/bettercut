@@ -283,6 +283,83 @@ pub const ACTIONS: &[Action] = &[
         },
     },
     Action {
+        name: "Add Title",
+        hint: "at the playhead",
+        run: |e, s| added(s, e.add_text("Title")),
+    },
+    Action {
+        name: "Add Colour Background",
+        hint: "a gradient under everything, at the playhead",
+        run: |e, s| {
+            let colour = bettercut_editor_core::media::Generated::Colour {
+                top: [40, 60, 150],
+                bottom: [10, 10, 40],
+            };
+            added(s, e.add_colour_clip(colour));
+        },
+    },
+    Action {
+        name: "Add Whoosh",
+        hint: "a sound effect at the playhead",
+        run: |e, s| {
+            let result = e.add_generated_sound(
+                bettercut_editor_core::media::GeneratedSound::Whoosh,
+                TimelineTime::from_seconds(1),
+            );
+            added(s, result);
+        },
+    },
+    Action {
+        name: "New Project",
+        hint: "asks first if there is unsaved work",
+        run: |e, s| crate::panels::new_project(e, s),
+    },
+    Action {
+        name: "Open Project",
+        hint: "a .vproj file",
+        run: |e, s| crate::panels::open_project(e, s),
+    },
+    Action {
+        name: "Save As",
+        hint: "save under a new name and keep working in it",
+        run: |e, s| crate::panels::save_project_as(e, s),
+    },
+    Action {
+        name: "Save a Copy",
+        hint: "write a copy and stay in this project",
+        run: |e, s| crate::panels::save_copy(e, s),
+    },
+    Action {
+        name: "Collect Files",
+        hint: "the project and every file it uses, into one folder",
+        run: |e, s| crate::panels::collect_files(e, s),
+    },
+    Action {
+        name: "Import Captions",
+        hint: "an .srt or .vtt file",
+        run: |e, s| crate::panels::import_captions(e, s),
+    },
+    Action {
+        name: "Storyboard",
+        hint: "the edit as cards to reorder",
+        run: |_, s| s.storyboard_open = true,
+    },
+    Action {
+        name: "Notes",
+        hint: "the notes on this project's clips",
+        run: |_, s| s.notes_open = true,
+    },
+    Action {
+        name: "Scopes",
+        hint: "waveform, vectorscope and histogram",
+        run: |_, s| s.scopes.open = true,
+    },
+    Action {
+        name: "Export Queue",
+        hint: "exports waiting and done",
+        run: |_, s| s.export_queue.open = true,
+    },
+    Action {
         name: "Toggle Snapping",
         hint: "N",
         run: |_, s| s.snapping = !s.snapping,
@@ -423,6 +500,17 @@ pub const ACTIONS: &[Action] = &[
         },
     },
 ];
+
+/// Select what was just added, or say why nothing was.
+fn added(state: &mut UiState, result: Result<ClipId, bettercut_editor_core::EditorError>) {
+    match result {
+        Ok(clip) => {
+            state.select_only(clip);
+            state.needs_repaint = true;
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
 
 /// The one selected clip, when exactly one is.
 fn one(state: &UiState) -> Option<ClipId> {

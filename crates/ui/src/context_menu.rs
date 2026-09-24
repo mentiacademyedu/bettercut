@@ -2579,6 +2579,48 @@ fn empty_menu(
         editor.set_playhead(at);
         state.needs_repaint = true;
     }
+    // Something new, where the click was: the playhead moves there and the
+    // thing is placed the way its own button places it.
+    ui.menu_button("Add Here", |ui| {
+        use bettercut_editor_core::media::{Generated, GeneratedSound};
+        let mut added: Option<Result<ClipId, bettercut_editor_core::EditorError>> = None;
+        if ui.button("Title").clicked() {
+            editor.set_playhead(at);
+            added = Some(editor.add_text("Title"));
+        }
+        if ui.button("Colour Background").clicked() {
+            editor.set_playhead(at);
+            added = Some(editor.add_colour_clip(Generated::Colour {
+                top: [40, 60, 150],
+                bottom: [10, 10, 40],
+            }));
+        }
+        for (label, sound, seconds) in [
+            ("Whoosh", GeneratedSound::Whoosh, 1),
+            ("Click", GeneratedSound::Click, 1),
+            ("Riser", GeneratedSound::Riser, 3),
+        ] {
+            if ui.button(label).clicked() {
+                editor.set_playhead(at);
+                added = Some(editor.add_generated_sound(
+                    sound,
+                    bettercut_editor_core::foundation::TimelineTime::from_seconds(seconds),
+                ));
+            }
+        }
+        if let Some(result) = added {
+            ui.close();
+            match result {
+                Ok(clip) => {
+                    state.select_only(clip);
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+    })
+    .response
+    .on_hover_text("A title, a colour background or a sound effect, right here");
     if item(ui, "Split at Playhead", "S") {
         shortcuts::split_at_playhead(editor, state);
     }
