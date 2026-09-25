@@ -43,11 +43,12 @@ fn every_mask_shape_is_offered() {
             | MaskShape::Rectangle
             | MaskShape::Ellipse
             | MaskShape::Star
-            | MaskShape::Heart => true,
+            | MaskShape::Heart
+            | MaskShape::Mirror => true,
         }
     }
 
-    assert_eq!(MaskShape::ALL.len(), 5, "a mask shape was added or removed");
+    assert_eq!(MaskShape::ALL.len(), 6, "a mask shape was added or removed");
     assert!(MaskShape::ALL.into_iter().all(offered));
 }
 
@@ -56,6 +57,8 @@ fn every_backdrop_is_offered() {
     fn offered(backdrop: Backdrop) -> bool {
         match backdrop {
             Backdrop::None | Backdrop::Blur => true,
+            // Offered as the project's pictures, not as one entry of ALL.
+            Backdrop::Image(_) => false,
         }
     }
 
@@ -122,6 +125,7 @@ fn every_motion_is_in_the_right_lists() {
             | MotionKind::SlideRight
             | MotionKind::SlideLeft
             | MotionKind::Pop
+            | MotionKind::Bounce
             | MotionKind::Spin => (true, true),
             MotionKind::Typewriter => (false, true),
         }
@@ -138,8 +142,8 @@ fn every_motion_is_in_the_right_lists() {
         assert!(title, "{} is missing from the title list", kind.label());
     }
 
-    assert_eq!(MotionKind::ALL.len(), 7);
-    assert_eq!(MotionKind::FOR_TEXT.len(), 8);
+    assert_eq!(MotionKind::ALL.len(), 8);
+    assert_eq!(MotionKind::FOR_TEXT.len(), 9);
 }
 
 /// Two axes, and each has to reach its own flag. A `flag` that returned the

@@ -457,6 +457,17 @@ impl AudioMixer {
                             *next = starts_at + frames as i64 * TICKS_PER_AUDIO_SAMPLE;
                         }
                     }
+                    // The robot after the clean-up, so it is the voice that
+                    // turns into a machine rather than the room's hiss, and
+                    // before the space, so the machine is heard in the room.
+                    if audible.robot > 0.0 {
+                        let starts_at = position.ticks() + audible.offset.ticks();
+                        bettercut_audio::robot(
+                            &mut planes,
+                            audible.robot,
+                            starts_at.div_euclid(TICKS_PER_AUDIO_SAMPLE),
+                        );
+                    }
                     // The space last: a room around the cleaned-up voice, not
                     // a clean-up fighting the room's tail.
                     if !audible.space.is_dry() {

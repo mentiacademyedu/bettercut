@@ -368,6 +368,7 @@ pub(crate) fn plan(
                     tilt_band: 0.0,
                     tilt_centre: 0.5,
                     posterise: 0.0,
+                    smooth_skin: 0.0,
                     vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     // A title is generated at exactly the size it is drawn at;
@@ -426,6 +427,7 @@ fn baked_layer(render: &bettercut_timeline::RenderedRange, position: TimelineTim
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -475,6 +477,7 @@ fn push_burn_in(requests: &mut Vec<LayerRequest>, sequence: &Sequence, position:
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -586,6 +589,7 @@ fn push_progress_bar(
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -652,6 +656,7 @@ fn push_watermark(requests: &mut Vec<LayerRequest>, project: &Project, sequence:
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -713,6 +718,7 @@ fn push_visualizer(requests: &mut Vec<LayerRequest>, sequence: &Sequence, positi
                 tilt_band: 0.0,
                 tilt_centre: 0.5,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 vignette: 0.0,
                 reflection: bettercut_timeline::Reflection::None,
                 crop: bettercut_timeline::Crop::NONE,
@@ -1040,6 +1046,7 @@ pub fn resolve_audio_tracks(
                 keep_pitch: clip.keep_pitch,
                 leveller: clip.leveller,
                 de_ess: clip.de_ess,
+                robot: clip.robot,
                 gain: if automation.is_some() { 1.0 } else { clip.gain },
                 offset,
                 fades,
@@ -1447,9 +1454,11 @@ fn push_backdrop(
     clip: &VideoClip,
     position: TimelineTime,
 ) {
-    if clip.backdrop != bettercut_timeline::Backdrop::Blur {
-        return;
-    }
+    let picture = match clip.backdrop {
+        bettercut_timeline::Backdrop::None => return,
+        bettercut_timeline::Backdrop::Blur => None,
+        bettercut_timeline::Backdrop::Image(media) => Some(media),
+    };
     let Some(asset) = project.media_asset(clip.media_id) else {
         return; // §66: missing media leaves a gap, not a backdrop
     };
@@ -1467,6 +1476,19 @@ fn push_backdrop(
     if cover <= 1.001 {
         return;
     }
+    // A chosen picture covers the frame at its own shape, not the shot's.
+    let picture = match picture {
+        None => None,
+        Some(media) => {
+            let Some(image) = project.media_asset(media) else {
+                return; // removed or missing: bars, as with no backdrop
+            };
+            let Some(shape) = aspect(image.width, image.height) else {
+                return;
+            };
+            Some((media, bettercut_timeline::fill_scale(shape, output)))
+        }
+    };
 
     let before = requests.len();
     push_layer_with(requests, project, track, clip, position, 1.0, Trail::Single);
@@ -1496,6 +1518,28 @@ fn push_backdrop(
         rotation_degrees: moved.rotation_degrees,
         ..bettercut_timeline::Transform::default()
     };
+    if let Some((media, picture_cover)) = picture {
+        // The picture as it is: none of the shot's grade, crop or effects,
+        // which belong to the shot. Only its opacity and movement carry over,
+        // for the reasons given for the blur.
+        let neutral = VideoClip::new(media, clip.timeline.start, clip.source)
+            .map(|fresh| fresh.look_at(MediaTime::ZERO));
+        if let Ok(mut look) = neutral {
+            look.opacity = request.look.opacity;
+            look.transform = bettercut_timeline::Transform {
+                scale: bettercut_timeline::Vec2::new(
+                    picture_cover * moved.scale.x,
+                    picture_cover * moved.scale.y,
+                ),
+                ..request.look.transform
+            };
+            request.look = look;
+            request.source = LayerSource::Media(media);
+            request.source_time = MediaTime::ZERO;
+            request.angle = None;
+            return;
+        }
+    }
     request.look.blur = bettercut_timeline::BACKDROP_BLUR;
     // A fill behind the shot, not a second framed copy of it.
     request.look.border = bettercut_timeline::Border::NONE;
@@ -1777,6 +1821,7 @@ fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, al
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -1885,6 +1930,7 @@ fn push_light_leak(
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             vignette: 0.0,
             reflection: bettercut_timeline::Reflection::None,
             crop: bettercut_timeline::Crop::NONE,
@@ -2026,6 +2072,8 @@ pub struct AudibleClip {
     pub leveller: f32,
     /// The de-esser, 0–100. Carried from block to block by the mixer.
     pub de_ess: f32,
+    /// The robot voice, 0–100. Needs no state: its phase is the timeline's.
+    pub robot: f32,
     pub gain: f32,
     /// Offset from the start of the requested block, in timeline ticks.
     pub offset: TimelineTime,

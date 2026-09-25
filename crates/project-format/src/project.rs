@@ -142,12 +142,14 @@ impl Project {
 
     pub fn media_is_used(&self, id: MediaId) -> bool {
         self.sequences.iter().any(|s| {
-            s.video_tracks
+            s.video_tracks.iter().any(|t| {
+                t.clips().iter().any(|c| {
+                    c.media_id == id || c.backdrop == bettercut_timeline::Backdrop::Image(id)
+                })
+            }) || s
+                .audio_tracks
                 .iter()
                 .any(|t| t.clips().iter().any(|c| c.media_id == id))
-                || s.audio_tracks
-                    .iter()
-                    .any(|t| t.clips().iter().any(|c| c.media_id == id))
                 || s.watermark.is_some_and(|w| w.media == id)
         })
     }

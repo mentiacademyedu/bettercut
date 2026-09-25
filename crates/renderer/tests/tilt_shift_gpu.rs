@@ -107,6 +107,7 @@ fn blurred(device: &wgpu::Device, queue: &wgpu::Queue, band: f32) -> Vec<u8> {
             color: ColorAdjust::default(),
             lens: 0.0,
             posterise: 0.0,
+            smooth_skin: 0.0,
             tilt_band: band,
             tilt_centre: 0.5,
             blur: 60.0,

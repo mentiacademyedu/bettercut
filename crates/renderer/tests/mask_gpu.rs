@@ -109,6 +109,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, mask: Option<Mask>) -> Vec
                         tilt_band: 0.0,
                         tilt_centre: 0.5,
                         posterise: 0.0,
+                        smooth_skin: 0.0,
                         vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
@@ -141,6 +142,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, mask: Option<Mask>) -> Vec
                         tilt_band: 0.0,
                         tilt_centre: 0.5,
                         posterise: 0.0,
+                        smooth_skin: 0.0,
                         vignette: 0.0,
                         reflection: bettercut_timeline::Reflection::None,
                         crop: bettercut_timeline::Crop::NONE,
@@ -450,4 +452,32 @@ fn a_heart_is_heart_shaped() {
     assert!(at(&pixels, 0.3, 0.22) > 200, "the left lobe was removed");
     assert!(at(&pixels, 0.5, 0.08) < 60, "the notch was kept");
     assert!(at(&pixels, 0.86, 0.82) < 60, "beside the point was kept");
+}
+
+/// A mirror mask keeps a band across the middle, whatever its width says, and
+/// removes above and below it.
+#[test]
+fn a_mirror_mask_keeps_a_band() {
+    let (device, queue) = gpu_or_skip!();
+    let pixels = render(
+        &device,
+        &queue,
+        Some(Mask {
+            shape: MaskShape::Mirror,
+            center: [0.5, 0.5],
+            size: [0.05, 0.2],
+            feather: 0.0,
+            ..Mask::default()
+        }),
+    );
+    // The whole width of the band, not just the width the size gives.
+    for x in [0.05, 0.5, 0.95] {
+        assert!(at(&pixels, x, 0.5) > 200, "the band was removed at x {x}");
+    }
+    assert!(
+        at(&pixels, 0.5, 0.35) > 200,
+        "the band is thinner than asked"
+    );
+    assert!(at(&pixels, 0.5, 0.1) < 60, "above the band survived");
+    assert!(at(&pixels, 0.5, 0.9) < 60, "below the band survived");
 }

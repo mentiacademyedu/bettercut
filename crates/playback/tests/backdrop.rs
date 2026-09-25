@@ -254,3 +254,42 @@ fn missing_media_draws_no_backdrop() {
     assert!(layers(&project).is_empty());
     let _ = MediaId::new();
 }
+
+/// A picture chosen from the project fills the frame instead of the blur: the
+/// layer reads the picture, covers the frame at the picture's own shape, is
+/// sharp, and sits behind the shot. The picture then counts as in use.
+#[test]
+fn a_picture_backdrop_covers_the_frame_with_that_picture() {
+    let mut project = project_with((1920, 1080), (1080, 1920), Backdrop::None);
+    let mut photo = MediaAsset::new(MediaKind::Image, "C:/media/card.png", MediaTime::ZERO);
+    photo.width = 1000;
+    photo.height = 1000;
+    let photo = project.add_media(photo);
+    {
+        let sequence = project.active_mut().expect("sequence");
+        let clip = sequence.video_tracks[0].clips()[0].id;
+        sequence.video_tracks[0].get_mut(clip).unwrap().backdrop = Backdrop::Image(photo);
+    }
+
+    let layers = layers(&project);
+    assert_eq!(layers.len(), 2, "expected the picture and the shot");
+    let backdrop = &layers[0];
+    assert_eq!(
+        backdrop.source,
+        bettercut_playback::LayerSource::Media(photo),
+        "the backdrop is not the chosen picture"
+    );
+    // A square picture in a 9:16 frame covers at 16/9 of the frame's width,
+    // a little over for the overscan.
+    let scale = backdrop.look.transform.scale.x;
+    assert!(
+        (1.77..2.0).contains(&scale),
+        "the picture does not cover at its own shape: {scale}"
+    );
+    assert_eq!(backdrop.look.blur, 0.0, "the picture was blurred");
+    assert_eq!(layers[1].look.transform.scale.x, 1.0, "the shot was scaled");
+    assert!(
+        project.media_is_used(photo),
+        "the backdrop picture is not in use"
+    );
+}

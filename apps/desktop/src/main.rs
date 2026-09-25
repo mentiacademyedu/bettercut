@@ -110,6 +110,12 @@ struct App {
     /// Where the playhead was when the last scrub burst was played, so one
     /// burst is played per move rather than per frame.
     last_scrub: Option<bettercut_editor_core::foundation::TimelineTime>,
+    /// `BETTERCUT_SCREENSHOT`: where to save a picture of this window once it
+    /// has settled, before quitting — for reviewing the interface. The app's
+    /// own pixels only.
+    screenshot: Option<std::path::PathBuf>,
+    /// Frames drawn, to know when the window has settled.
+    frames: u32,
 }
 
 impl App {
@@ -267,6 +273,28 @@ impl App {
             ui.info(message);
         }
 
+        // `BETTERCUT_SAMPLE`: the sample edit, a clip selected, nothing in
+        // the way — the interface as it looks mid-edit, for a screenshot.
+        if std::env::var_os("BETTERCUT_SAMPLE").is_some() {
+            let (mut sample, _sample_events) = Editor::new_project("Sample");
+            if bettercut_ui::sample::build(&mut sample).is_ok() {
+                editor = sample;
+                if let Some(first) = editor
+                    .active_sequence()
+                    .and_then(|s| s.video_tracks.first())
+                    .and_then(|t| t.clips().first())
+                    .map(|c| c.id)
+                {
+                    ui.select_only(first);
+                }
+            }
+            ui.welcome_open = false;
+            ui.whats_new_open = false;
+            ui.crash_report = None;
+            ui.pending_recovery = None;
+        }
+        let screenshot = std::env::var_os("BETTERCUT_SCREENSHOT").map(std::path::PathBuf::from);
+
         let last_title = editor.window_title();
         Self {
             editor,
@@ -278,6 +306,8 @@ impl App {
             last_title,
             voiceover: Default::default(),
             last_scrub: None,
+            screenshot,
+            frames: 0,
         }
     }
 }
@@ -286,6 +316,37 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
+
+        // A screenshot of this window, when one was asked for: requested once
+        // the layout has settled, saved when it arrives, then the app quits.
+        if let Some(path) = self.screenshot.clone() {
+            self.frames += 1;
+            if self.frames == 90 {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            }
+            let shot = ui.ctx().input(|i| {
+                i.raw.events.iter().find_map(|event| match event {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(image) = shot {
+                let size = bettercut_editor_core::timeline::Resolution::new(
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                );
+                let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Err(err) = bettercut_export::write_png(&path, size, &rgba) {
+                    tracing::error!(%err, "could not save the screenshot");
+                }
+                self.screenshot = None;
+                // Straight out: the sample edit is unsaved, and the save
+                // prompt would otherwise hold the window open.
+                self.ui.quit_now = true;
+            }
+            ui.ctx().request_repaint();
+        }
 
         // Closing with unsaved work asks first (`save_prompt`); once it is
         // answered, `quit_now` lets the close through.

@@ -48,6 +48,8 @@ pub enum MotionKind {
     SlideLeft,
     /// Grows from half size with a slight overshoot, or shrinks away.
     Pop,
+    /// Drops in from above and bounces as it lands, or hops up and away.
+    Bounce,
     /// Turns into place, or turns away.
     Spin,
     /// Letters appear one at a time, or disappear from the end.
@@ -55,26 +57,28 @@ pub enum MotionKind {
 }
 
 impl MotionKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Fade,
         Self::SlideUp,
         Self::SlideDown,
         Self::SlideRight,
         Self::SlideLeft,
         Self::Pop,
+        Self::Bounce,
         Self::Spin,
     ];
 
     /// The ones a title can also do. A picture has no letters to reveal, so
     /// the typewriter is a title's alone — offering it on a clip would be a
     /// preset that visibly does nothing.
-    pub const FOR_TEXT: [Self; 8] = [
+    pub const FOR_TEXT: [Self; 9] = [
         Self::Fade,
         Self::SlideUp,
         Self::SlideDown,
         Self::SlideRight,
         Self::SlideLeft,
         Self::Pop,
+        Self::Bounce,
         Self::Spin,
         Self::Typewriter,
     ];
@@ -87,6 +91,7 @@ impl MotionKind {
             Self::SlideRight => "Slide right",
             Self::SlideLeft => "Slide left",
             Self::Pop => "Pop",
+            Self::Bounce => "Bounce",
             Self::Spin => "Spin",
             Self::Typewriter => "Typewriter",
         }
@@ -515,6 +520,14 @@ fn apply(
             // Visible quickly, so the overshoot is seen rather than faded.
             look.opacity *= (presence * 3.0).min(1.0);
         }
+        MotionKind::Bounce => {
+            // Falls from above and lands with two smaller bounces; leaving,
+            // the same played backwards, so it hops up and out. Solid almost
+            // at once, so the bounce is seen rather than faded.
+            let away = travel * (1.0 - ease_out_bounce(presence));
+            look.transform.position.y -= away;
+            look.opacity *= (presence * 4.0).min(1.0);
+        }
         MotionKind::Typewriter => {
             // Rounded up, so the first letter shows as soon as the motion
             // starts and the last goes only as it ends.
@@ -526,6 +539,25 @@ fn apply(
 
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+/// A ball dropped onto a floor: lands at a third of the way, then two
+/// smaller bounces, each touching 1 again.
+fn ease_out_bounce(t: f32) -> f32 {
+    const N1: f32 = 7.5625;
+    const D1: f32 = 2.75;
+    if t < 1.0 / D1 {
+        N1 * t * t
+    } else if t < 2.0 / D1 {
+        let t = t - 1.5 / D1;
+        N1 * t * t + 0.75
+    } else if t < 2.5 / D1 {
+        let t = t - 2.25 / D1;
+        N1 * t * t + 0.9375
+    } else {
+        let t = t - 2.625 / D1;
+        N1 * t * t + 0.984375
+    }
 }
 
 /// Past 1 briefly before settling: the "pop".
@@ -549,6 +581,18 @@ mod tests {
 
     fn span() -> TimelineRange {
         TimelineRange::new(secs(10), secs(14)).unwrap()
+    }
+
+    /// The bounce starts above, lands, rises again and settles home.
+    #[test]
+    fn bounce_lands_and_rises_again_before_settling() {
+        assert_eq!(ease_out_bounce(0.0), 0.0);
+        assert!(
+            (ease_out_bounce(1.0 / 2.75) - 1.0).abs() < 1e-4,
+            "no first landing"
+        );
+        assert!(ease_out_bounce(1.5 / 2.75) < 0.8, "no bounce after landing");
+        assert!((ease_out_bounce(1.0) - 1.0).abs() < 1e-4, "does not settle");
     }
 
     fn animated(intro: MotionKind, outro: MotionKind) -> TextAnimation {

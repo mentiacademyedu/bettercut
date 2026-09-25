@@ -388,6 +388,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         tilt_band: 0.0,
         tilt_centre: 0.5,
         posterise: 0.3,
+        smooth_skin: 0.0,
         frozen: false,
         enabled: true,
 
@@ -556,6 +557,7 @@ fn a_title_and_a_sound_come_back_exactly_as_they_went_in() {
         pitch: -3.5,
         leveller: 40.0,
         de_ess: 55.0,
+        robot: 70.0,
         stereo_width: 1.4,
         muted: true,
         space: bettercut_timeline::ClipSpace {

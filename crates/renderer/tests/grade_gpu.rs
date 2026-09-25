@@ -93,6 +93,7 @@ fn look(transform: Transform, blur: f32) -> ClipLook {
         tilt_band: 0.0,
         tilt_centre: 0.5,
         posterise: 0.0,
+        smooth_skin: 0.0,
         vignette: 0.0,
         reflection: bettercut_timeline::Reflection::None,
         crop: Crop::NONE,

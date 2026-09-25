@@ -609,6 +609,7 @@ impl Compositor {
                     corner_pin: layer.look.corner_pin,
                     lens: layer.look.lens,
                     posterise: layer.look.posterise,
+                    smooth_skin: layer.look.smooth_skin,
                     grain: 0.0,
                     grain_seed: 0,
                 },
@@ -653,6 +654,7 @@ impl Compositor {
                         // Nor shot through a lens.
                         lens: 0.0,
                         posterise: 0.0,
+                        smooth_skin: 0.0,
                     },
                     self.config.resolution.width,
                     self.config.resolution.height,
@@ -1411,6 +1413,8 @@ struct LayerLook {
     lens: f32,
     /// Posterise: levels a channel, 2..16; below 2 is off (`VideoClip::posterise`).
     posterise: f32,
+    /// Smooth skin, 0-1 (`VideoClip::smooth_skin`).
+    smooth_skin: f32,
 }
 
 fn layer_uniform(
@@ -1436,6 +1440,7 @@ fn layer_uniform(
         corner_pin,
         lens,
         posterise,
+        smooth_skin,
     } = look;
     // §22 crops *before* transforming, and that ordering is visible right here:
     // the aspect fitted to the frame is the **cropped** picture's, not the
@@ -1596,6 +1601,13 @@ fn layer_uniform(
         let mode: f32 = if key.keep_bright { 1.0 } else { 2.0 };
         bytes[304..308].copy_from_slice(&mode.to_ne_bytes());
     }
+    // Smooth skin at 308, 0-1. The struct ends at 312 and still rounds to 320.
+    let smooth = if smooth_skin.is_finite() {
+        smooth_skin.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    bytes[308..312].copy_from_slice(&smooth.to_ne_bytes());
 
     // The chroma key, or zeroes — which the shader reads as "no key", because
     // a tolerance and softness of zero remove nothing.
@@ -1618,6 +1630,7 @@ fn layer_uniform(
             bettercut_timeline::MaskShape::Ellipse => 3,
             bettercut_timeline::MaskShape::Star => 4,
             bettercut_timeline::MaskShape::Heart => 5,
+            bettercut_timeline::MaskShape::Mirror => 6,
         };
         bytes[88..92].copy_from_slice(&shape.to_ne_bytes());
         bytes[92..96].copy_from_slice(&mask.feather.to_ne_bytes());
@@ -1784,6 +1797,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE.with_corner(0, [-0.25, -0.25]),
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
             },
             1920,
             1080,
@@ -1811,6 +1825,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1857,6 +1872,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1895,6 +1911,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1932,6 +1949,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -1972,6 +1990,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2031,6 +2050,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 0.5,
                 color,
@@ -2092,6 +2112,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::IDENTITY,
@@ -2178,6 +2199,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2216,6 +2238,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2251,6 +2274,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2301,6 +2325,7 @@ mod tests {
                 corner_pin: bettercut_timeline::CornerPin::NONE,
                 lens: 0.0,
                 posterise: 0.0,
+                smooth_skin: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color,

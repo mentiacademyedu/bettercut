@@ -26,6 +26,7 @@ fn kept(mask: &Mask, uv: [f32; 2]) -> f32 {
     ];
     let distance = match mask.shape {
         MaskShape::Linear => local[1],
+        MaskShape::Mirror => local[1].abs() - mask.size[1].max(1e-4),
         MaskShape::Ellipse => {
             let half = [mask.size[0].max(1e-4), mask.size[1].max(1e-4)];
             ((local[0] / half[0]).powi(2) + (local[1] / half[1]).powi(2)).sqrt() - 1.0

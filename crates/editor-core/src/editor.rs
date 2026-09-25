@@ -592,6 +592,42 @@ impl Editor {
         )
     }
 
+    /// Enhance Voice: the clean-up a spoken recording usually wants, in one
+    /// click and one undo step — the room's hiss down, rumble cut below
+    /// 80 Hz, a little presence, loud and quiet words brought closer, and
+    /// the hiss on an "s" dipped. Each stays on its own slider to adjust.
+    ///
+    /// Controls already set further than the preset are left alone, so a
+    /// second click never undoes a stronger hand-made setting.
+    pub fn enhance_voice(&mut self, clip: ClipId) -> Result<(), EditorError> {
+        use crate::command::ClipProperty;
+
+        let sound = self
+            .audio_clip(clip)
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let mut eq = sound.eq;
+        eq.low_cut = eq.low_cut.max(80.0);
+        eq.presence = eq.presence.max(3.0);
+        let properties = [
+            ClipProperty::Denoise(sound.denoise.max(60.0)),
+            ClipProperty::Eq(eq),
+            ClipProperty::Leveller(sound.leveller.max(50.0)),
+            ClipProperty::DeEss(sound.de_ess.max(40.0)),
+        ];
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let commands = properties
+            .into_iter()
+            .map(|property| Command::SetClipProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            })
+            .collect();
+        self.dispatch_group("Enhance Voice", commands)
+    }
+
     /// Execute commands as one undo entry, continuing the entry on top of the
     /// stack while `continuing` (§11).
     ///
@@ -872,6 +908,7 @@ impl Editor {
             P::ZoomBlur(_) => P::ZoomBlur(0.0),
             P::Lens(_) => P::Lens(0.0),
             P::Posterise(_) => P::Posterise(0.0),
+            P::SmoothSkin(_) => P::SmoothSkin(0.0),
             P::TiltShift { .. } => P::TiltShift {
                 band: 0.0,
                 centre: 0.5,
@@ -888,6 +925,7 @@ impl Editor {
             P::Pitch(_) => P::Pitch(0.0),
             P::Leveller(_) => P::Leveller(0.0),
             P::DeEss(_) => P::DeEss(0.0),
+            P::Robot(_) => P::Robot(0.0),
             P::StereoWidth(_) => P::StereoWidth(1.0),
             P::Pan(_) => P::Pan(0.0),
             P::FadeShape(_) => P::FadeShape(bettercut_timeline::FadeShape::Smooth),
@@ -3508,6 +3546,7 @@ impl Editor {
             ClipProperty::Pixelate(clip.pixelate),
             ClipProperty::ZoomBlur(clip.zoom_blur),
             ClipProperty::Posterise(clip.posterise),
+            ClipProperty::SmoothSkin(clip.smooth_skin),
             ClipProperty::TiltShift {
                 band: clip.tilt_band,
                 centre: clip.tilt_centre,
@@ -3559,6 +3598,7 @@ impl Editor {
             ClipProperty::Pixelate(0.0),
             ClipProperty::ZoomBlur(0.0),
             ClipProperty::Posterise(0.0),
+            ClipProperty::SmoothSkin(0.0),
             ClipProperty::TiltShift {
                 band: 0.0,
                 centre: 0.5,

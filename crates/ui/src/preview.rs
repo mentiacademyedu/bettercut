@@ -196,8 +196,11 @@ impl Preview {
         &self,
         clip: bettercut_editor_core::foundation::ClipId,
     ) -> Option<(u32, u32)> {
+        // The last layer with the id: a backdrop is drawn first under the
+        // same clip, and a picture backdrop is another shape entirely.
         self.layer_sizes
             .iter()
+            .rev()
             .find(|(id, _, _)| *id == clip)
             .map(|&(_, width, height)| (width, height))
     }

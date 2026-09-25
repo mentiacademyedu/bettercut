@@ -95,8 +95,10 @@ fn the_uniform_structs_are_the_sizes_the_rust_side_writes() {
             // from 128, the vignette and grain from 144, and the corners and
             // border and shadow from 160 to 192, and the bars at 192 — rounded
             // to the struct's 16-byte alignment — and §45's four pinned corners
-            // from 208, which take it to 240.
-            240,
+            // from 208 to 240; then the grade wheels, the secondary, the lens,
+            // posterise, the luma key and smooth skin, which end at 312 and
+            // round to 320: the compositor's `UNIFORM_SIZE`.
+            320,
         ),
         (
             "blur.wgsl",

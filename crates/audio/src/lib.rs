@@ -28,6 +28,7 @@ pub mod output;
 pub mod pitch;
 pub mod recorder;
 pub mod resample;
+pub mod robot;
 pub mod space;
 pub mod voice;
 
@@ -44,6 +45,7 @@ pub use output::{AudioOutput, AudioSink};
 pub use pitch::{MAX_SEMITONES, PitchShifter};
 pub use recorder::{Recorder, Recording};
 pub use resample::{input_frames_needed, resample};
+pub use robot::{ROBOT_HZ, robot};
 pub use space::{Place, Space};
 pub use voice::{MAX_DENOISE, VoiceCleaner};
 

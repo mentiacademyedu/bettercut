@@ -540,6 +540,46 @@ fn a_levelled_clip_sounds_the_same_in_any_block_size() {
     );
 }
 
+/// The robot voice, like the leveller: the same samples in any block size,
+/// and a sound that differs from the recording.
+#[test]
+fn a_robot_voice_sounds_the_same_in_any_block_size() {
+    use bettercut_foundation::TICKS_PER_AUDIO_SAMPLE;
+    use bettercut_playback::{AudioMixer, AudioPlan};
+
+    let mut project = project_with_sound();
+    let plain_project = project.clone();
+    {
+        let sequence = project.active_mut().unwrap();
+        let clip = sequence.audio_tracks[0].clips()[0].id;
+        sequence.audio_tracks[0].get_mut(clip).unwrap().robot = 100.0;
+    }
+    let mix = |project: &Project, block: usize| {
+        let sequence = project.active().unwrap();
+        let plan = AudioPlan::of(project, sequence);
+        let mut mixer = AudioMixer::new(1);
+        let total = 24_000;
+        let mut out = Vec::new();
+        let mut done = 0;
+        while done < total {
+            let frames = block.min(total - done);
+            let mut buffer = vec![0.0_f32; frames * 2];
+            let at = TimelineTime::from_ticks(done as i64 * TICKS_PER_AUDIO_SAMPLE);
+            mixer.mix_block(&plan, at, frames, 2, &mut buffer);
+            out.extend_from_slice(&buffer);
+            done += frames;
+        }
+        out
+    };
+    let big = mix(&project, 4_800);
+    assert_eq!(
+        big,
+        mix(&project, 441),
+        "the robot depends on the block size"
+    );
+    assert_ne!(big, mix(&plain_project, 4_800), "the robot changed nothing");
+}
+
 /// A sound export brought to a target measures at that target, within the
 /// standard's own tolerance; left alone, it is the mix as mixed.
 #[test]

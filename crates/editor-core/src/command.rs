@@ -271,6 +271,7 @@ impl TextProperty {
             | ClipProperty::ZoomBlur(_)
             | ClipProperty::Lens(_)
             | ClipProperty::Posterise(_)
+            | ClipProperty::SmoothSkin(_)
             | ClipProperty::TiltShift { .. }
             | ClipProperty::Glow(_)
             | ClipProperty::OldFilm(_)
@@ -287,6 +288,7 @@ impl TextProperty {
             | ClipProperty::Pitch(_)
             | ClipProperty::Leveller(_)
             | ClipProperty::DeEss(_)
+            | ClipProperty::Robot(_)
             | ClipProperty::StereoWidth(_)
             | ClipProperty::FadeShape(_)
             | ClipProperty::Mute(_)
@@ -929,6 +931,8 @@ pub enum ClipProperty {
     Lens(f32),
     /// Posterise levels, 2–16; below 2 is off. Video only.
     Posterise(f32),
+    /// Smooth skin, 0-1. Video only.
+    SmoothSkin(f32),
     /// Tilt-shift: the sharp band's height (0–1, 0 for none) and centre
     /// (0–1), with the blur growing away from it. Video only.
     TiltShift {
@@ -966,6 +970,8 @@ pub enum ClipProperty {
     Leveller(f32),
     /// A sound clip's de-esser, 0–100. Sound only.
     DeEss(f32),
+    /// A sound clip's robot voice, 0–100. Sound only.
+    Robot(f32),
     /// How wide a sound clip's stereo image is, 0–2, one for as recorded.
     /// Sound only.
     StereoWidth(f32),
@@ -1039,6 +1045,7 @@ impl ClipProperty {
             | Self::ZoomBlur(_)
             | Self::Lens(_)
             | Self::Posterise(_)
+            | Self::SmoothSkin(_)
             | Self::TiltShift { .. }
             | Self::Glow(_)
             | Self::OldFilm(_)
@@ -1055,6 +1062,7 @@ impl ClipProperty {
             | Self::Pitch(_)
             | Self::Leveller(_)
             | Self::DeEss(_)
+            | Self::Robot(_)
             | Self::StereoWidth(_)
             | Self::FadeShape(_)
             | Self::Mute(_)
@@ -1162,6 +1170,9 @@ impl ClipProperty {
         if let Self::DeEss(amount) = self {
             return amount == 0.0;
         }
+        if let Self::Robot(amount) = self {
+            return amount == 0.0;
+        }
         if let Self::StereoWidth(width) = self {
             return width == 1.0;
         }
@@ -1180,6 +1191,7 @@ impl ClipProperty {
         | Self::ZoomBlur(amount)
         | Self::Lens(amount)
         | Self::Posterise(amount)
+        | Self::SmoothSkin(amount)
         | Self::Glow(amount)
         | Self::OldFilm(amount)
         | Self::LightLeak(amount)
@@ -1270,6 +1282,7 @@ impl ClipProperty {
             Self::ZoomBlur(_) => "Zoom blur",
             Self::Lens(_) => "Lens",
             Self::Posterise(_) => "Posterise",
+            Self::SmoothSkin(_) => "Smooth Skin",
             Self::TiltShift { .. } => "Tilt-shift",
             Self::Glow(_) => "Glow",
             Self::OldFilm(_) => "Old film",
@@ -1286,6 +1299,7 @@ impl ClipProperty {
             Self::Pitch(_) => "Voice pitch",
             Self::Leveller(_) => "Leveller",
             Self::DeEss(_) => "De-esser",
+            Self::Robot(_) => "Robot voice",
             Self::StereoWidth(_) => "Stereo Width",
             Self::FadeShape(_) => "Fade shape",
             Self::Mute(_) => "Mute",

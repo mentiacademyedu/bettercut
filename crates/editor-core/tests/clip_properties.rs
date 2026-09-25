@@ -1193,3 +1193,48 @@ fn a_sound_takes_a_fade_shape_and_a_picture_does_not() {
             .is_err()
     );
 }
+
+/// Enhance Voice: four controls set as one undo step, a stronger hand-made
+/// setting kept, and a picture refused.
+#[test]
+fn enhance_voice_sets_the_clean_up_as_one_step() {
+    let (mut editor, video, audio) = editor_with_clips();
+    editor
+        .set_clip_property(audio, ClipProperty::Leveller(80.0), false)
+        .unwrap();
+
+    editor.enhance_voice(audio).unwrap();
+    let sound = editor.audio_clip(audio).unwrap();
+    assert_eq!(sound.denoise, 60.0);
+    assert_eq!(sound.eq.low_cut, 80.0);
+    assert_eq!(sound.eq.presence, 3.0);
+    assert_eq!(sound.leveller, 80.0, "a stronger setting is kept");
+    assert_eq!(sound.de_ess, 40.0);
+
+    editor.undo().unwrap();
+    let sound = editor.audio_clip(audio).unwrap();
+    assert_eq!(sound.denoise, 0.0);
+    assert_eq!(sound.eq.low_cut, 0.0);
+    assert_eq!(sound.de_ess, 0.0);
+    assert_eq!(sound.leveller, 80.0, "one undo, back to before the click");
+
+    assert!(editor.enhance_voice(video).is_err());
+}
+
+/// The robot voice: set, clamped, undone, and refused by a picture.
+#[test]
+fn a_sound_clip_takes_the_robot_voice_and_a_picture_does_not() {
+    assert!(ClipProperty::Robot(0.0).is_default());
+    let (mut editor, video, audio) = editor_with_clips();
+    editor
+        .set_clip_property(audio, ClipProperty::Robot(250.0), false)
+        .unwrap();
+    assert_eq!(editor.audio_clip(audio).unwrap().robot, 100.0);
+    editor.undo().unwrap();
+    assert_eq!(editor.audio_clip(audio).unwrap().robot, 0.0);
+    assert!(
+        editor
+            .set_clip_property(video, ClipProperty::Robot(50.0), false)
+            .is_err()
+    );
+}

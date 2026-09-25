@@ -406,10 +406,134 @@ pub fn apply(ctx: &egui::Context) {
 
         // Roomier controls: the brief is an editor whose controls are easy to
         // understand, not one that fits the most knobs per square inch.
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 6.0);
         style.spacing.interact_size.y = 26.0;
+
+        // One accent, used for what is chosen and for the main action, so the
+        // eye has one colour to follow. Everything else stays neutral.
+        let accent = accent();
+        style.visuals.selection.bg_fill = accent;
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent_text());
+        style.visuals.hyperlink_color = accent_text();
+
+        // Flat controls: a button is a quiet shape until the pointer is on
+        // it. Twenty filled grey boxes in a row all shout at once.
+        let radius = egui::CornerRadius::same(6);
+        let quiet = if light {
+            egui::Color32::from_rgb(226, 228, 233)
+        } else {
+            egui::Color32::from_rgb(40, 42, 48)
+        };
+        let lifted = if light {
+            egui::Color32::from_rgb(212, 215, 222)
+        } else {
+            egui::Color32::from_rgb(52, 55, 62)
+        };
+        let widgets = &mut style.visuals.widgets;
+        widgets.inactive.weak_bg_fill = quiet;
+        widgets.inactive.bg_fill = quiet;
+        widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        widgets.inactive.corner_radius = radius;
+        widgets.hovered.weak_bg_fill = lifted;
+        widgets.hovered.bg_fill = lifted;
+        widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        widgets.hovered.corner_radius = radius;
+        widgets.active.weak_bg_fill = accent;
+        widgets.active.bg_fill = accent;
+        widgets.active.bg_stroke = egui::Stroke::NONE;
+        widgets.active.corner_radius = radius;
+        widgets.open.weak_bg_fill = lifted;
+        widgets.open.bg_fill = lifted;
+        widgets.open.bg_stroke = egui::Stroke::NONE;
+        widgets.open.corner_radius = radius;
+        widgets.noninteractive.corner_radius = radius;
+        // The lines between panels and sections: there, but not a border.
+        widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, grid_line());
+
+        style.visuals.window_corner_radius = egui::CornerRadius::same(10);
+        style.visuals.menu_corner_radius = egui::CornerRadius::same(8);
+        style.visuals.window_stroke = egui::Stroke::new(1.0, grid_line());
     });
+}
+
+/// The one accent: selection, the main action, what is switched on.
+pub fn accent() -> Color32 {
+    if is_light() {
+        Color32::from_rgb(47, 110, 214)
+    } else {
+        Color32::from_rgb(58, 118, 216)
+    }
+}
+
+/// The accent as text on the panel colour: a little lighter, to read.
+pub fn accent_text() -> Color32 {
+    if is_light() {
+        Color32::from_rgb(34, 90, 190)
+    } else {
+        Color32::from_rgb(120, 170, 245)
+    }
+}
+
+/// The screen's main action — Export — in the accent, so there is one thing
+/// to find when the work is done.
+pub fn primary_button(text: &str) -> egui::Button<'_> {
+    egui::Button::new(egui::RichText::new(text).color(Color32::WHITE).strong()).fill(accent())
+}
+
+/// A control's name, at the start of its row and a fixed width, so the
+/// sliders beside it line up in one column: label, slider, value.
+pub fn row_label(ui: &mut egui::Ui, text: impl Into<String>) {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(96.0, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(96.0);
+            ui.add(
+                egui::Label::new(egui::RichText::new(text.into()).color(ruler_text())).truncate(),
+            );
+        },
+    );
+}
+
+/// A slider with its name before it rather than after — label, slider,
+/// value, the way a row is read. The response is the slider's own, so
+/// `changed`, `dragged` and hover text behave as they would on the slider.
+pub fn labeled(text: impl Into<String>, slider: egui::Slider<'_>) -> Labeled<'_> {
+    Labeled {
+        text: text.into(),
+        slider,
+    }
+}
+
+/// A slider and its name, drawn as one row; made by [`labeled`].
+pub struct Labeled<'a> {
+    text: String,
+    slider: egui::Slider<'a>,
+}
+
+impl egui::Widget for Labeled<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            row_label(ui, self.text);
+            ui.add(self.slider)
+        })
+        .inner
+    }
+}
+
+/// A section's heading: small capitals in the accent, as the inspector's
+/// groups are titled, so a long panel reads as a few named parts.
+pub fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .size(11.5)
+            .strong()
+            .color(accent_text()),
+    );
+    ui.add_space(2.0);
 }
 
 #[cfg(test)]

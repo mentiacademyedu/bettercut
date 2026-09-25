@@ -158,6 +158,10 @@ pub fn draw(
         // unusable.
         .default_size(420.0)
         .min_size(300.0)
+        // And no wider than this unless dragged: the picture is what the
+        // screen is for, and a long row of choices wraps rather than pushing
+        // the preview into a strip.
+        .max_size(460.0)
         .show(ui, |ui| {
             panels::inspector(ui, editor, state);
         });

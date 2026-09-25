@@ -138,6 +138,8 @@ struct Layer {
     luma_threshold: f32,
     luma_softness: f32,
     luma_mode: f32,
+    // Smooth skin at 308, 0-1.
+    smooth_skin: f32,
 }
 
 // The weight each corner of a pinned quad carries, so the texture follows the
@@ -240,6 +242,7 @@ const MASK_RECTANGLE: u32 = 2u;
 const MASK_ELLIPSE: u32 = 3u;
 const MASK_STAR: u32 = 4u;
 const MASK_HEART: u32 = 5u;
+const MASK_MIRROR: u32 = 6u;
 
 // Distance to a five-pointed star of outer radius 1, point up, in y-down
 // units (after Inigo Quilez's star distance). Negative inside.
@@ -449,6 +452,44 @@ fn key_alpha(rgb: vec3<f32>, layer: Layer) -> f32 {
     return smoothstep(layer.tolerance, edge, distance);
 }
 
+// Smooth skin: a colour-aware blur, where the pixel is skin-coloured. Two
+// rings of eight samples; each counts as much as its colour is close to the
+// centre's, so an edge — an eye, a lip, a strand of hair — keeps its line
+// while the small differences across skin average out. The radius grows
+// with the amount and with the picture's own height.
+fn smooth_skin(rgb: vec3<f32>, uv: vec2<f32>, amount: f32) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(source, 0));
+    let texel = 1.0 / size;
+    // Half-pixel steps, so the taps fall between pixels and each one is
+    // itself an average: whole even steps would land on the same
+    // pixel pattern and average nothing.
+    let radius = (1.5 + 2.0 * amount) * max(size.y / 720.0, 1.0);
+    var total = rgb;
+    var weight = 1.0;
+    for (var i = 0; i < 16; i = i + 1) {
+        let angle = f32(i % 8) * 0.785398;
+        let reach = select(radius, radius * 2.0, i >= 8);
+        let offset = vec2<f32>(cos(angle), sin(angle)) * reach * texel;
+        let s = textureSampleLevel(source, samp, uv + offset, 0.0).rgb;
+        let d = s - rgb;
+        // Blotches and pores differ from the skin around them by a few
+        // percent and count almost fully; an eye or a strand of hair differs
+        // by a third or more and counts for nothing.
+        let w = exp(-dot(d, d) * 30.0);
+        total = total + s * w;
+        weight = weight + w;
+    }
+    let smoothed = total / weight;
+    // Skin, judged in gamma-like terms: red over green over blue, warm but
+    // not saturated, neither black nor blown out.
+    let g = sqrt(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    let warm = smoothstep(0.04, 0.12, g.r - g.b) * (1.0 - smoothstep(0.45, 0.6, g.r - g.b));
+    let order = smoothstep(-0.02, 0.03, g.r - g.g) * smoothstep(-0.02, 0.03, g.g - g.b);
+    let lit = smoothstep(0.15, 0.3, g.r) * (1.0 - smoothstep(0.97, 1.0, g.b));
+    let skin = warm * order * lit;
+    return mix(rgb, smoothed, clamp(amount * skin, 0.0, 1.0));
+}
+
 // How much of a pixel survives the luma key: what is brighter than the
 // threshold (mode 1) or darker (mode 2), fading over the softness. Judged on
 // perceptual brightness, so the threshold means what the eye sees.
@@ -508,6 +549,10 @@ fn mask_alpha(uv: vec2<f32>, layer: Layer) -> f32 {
     if layer.mask_shape == MASK_LINEAR {
         // A straight edge through the centre: everything above it is kept.
         distance = local.y;
+    } else if layer.mask_shape == MASK_MIRROR {
+        // A band across the centre, its height the size's second half: both
+        // edges straight and both feathered.
+        distance = abs(local.y) - max(layer.mask_size.y, 0.0001);
     } else if layer.mask_shape == MASK_RECTANGLE {
         let half = max(layer.mask_size, vec2<f32>(0.0001, 0.0001));
         // The larger of the two axis overshoots: inside only where both are.
@@ -650,6 +695,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     var rgb = texel.rgb;
     var alpha = texel.a * layer.opacity;
+    // Before the keys and the grade: skin is judged on what the camera saw.
+    if layer.smooth_skin > 0.0 {
+        rgb = smooth_skin(rgb, uv, layer.smooth_skin);
+    }
     if (uncovered) {
         alpha = 0.0;
     }

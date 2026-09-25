@@ -612,11 +612,16 @@ pub enum MaskShape {
     Star,
     /// A heart.
     Heart,
+    /// A band between two parallel edges, as tall as its height: two linear
+    /// masks facing each other, the stripe through a shot that phone editors
+    /// call a mirror mask.
+    Mirror,
 }
 
 impl MaskShape {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Linear,
+        Self::Mirror,
         Self::Rectangle,
         Self::Ellipse,
         Self::Star,
@@ -630,6 +635,7 @@ impl MaskShape {
             Self::Ellipse => "Ellipse",
             Self::Star => "Star",
             Self::Heart => "Heart",
+            Self::Mirror => "Mirror",
         }
     }
 }
@@ -840,15 +846,21 @@ pub enum Backdrop {
     None,
     /// The clip's own picture, scaled to cover the frame and blurred.
     Blur,
+    /// A picture from the project, scaled to cover the frame, sharp — a
+    /// branded card or a texture behind the shot.
+    Image(MediaId),
 }
 
 impl Backdrop {
+    /// The kinds that need nothing chosen. [`Backdrop::Image`] is offered
+    /// separately, as a list of the project's pictures.
     pub const ALL: [Self; 2] = [Self::None, Self::Blur];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "None",
             Self::Blur => "Blur",
+            Self::Image(_) => "Picture",
         }
     }
 }
@@ -1001,6 +1013,11 @@ pub struct VideoClip {
     /// projects have none.
     #[serde(default)]
     pub posterise: f32,
+    /// Smooth skin, 0-1: a colour-aware blur where the picture is
+    /// skin-coloured — CapCut's "Retouch". Defaulted: older projects have
+    /// none.
+    #[serde(default)]
+    pub smooth_skin: f32,
     /// Tilt-shift: how tall the sharp band across the picture is, as a
     /// fraction of its height, 0 for no band (the blur is everywhere); the
     /// blur grows away from it. A miniature, or a face held sharp in a
@@ -1834,6 +1851,8 @@ pub struct ClipLook {
     pub lens: f32,
     /// Posterise levels, 2–16 or off below 2 (`VideoClip::posterise`).
     pub posterise: f32,
+    /// Smooth skin, 0-1 (`VideoClip::smooth_skin`).
+    pub smooth_skin: f32,
     /// Tilt-shift band height and centre (`VideoClip::tilt_band`).
     pub tilt_band: f32,
     pub tilt_centre: f32,
@@ -1883,6 +1902,7 @@ impl ClipLook {
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             glow: 0.0,
             old_film: 0.0,
             vignette: 0.0,
@@ -2014,6 +2034,10 @@ pub struct AudioClip {
     /// off the whole voice, and this only moves while an ess does.
     #[serde(default)]
     pub de_ess: f32,
+    /// The robot voice, 0–100 (`bettercut_audio::robot`): the voice
+    /// ring-modulated into a machine's. Zero is off.
+    #[serde(default)]
+    pub robot: f32,
 
     /// How the fade in and fade out curve. Defaulted to the smooth fade
     /// every older project had.
@@ -2555,6 +2579,7 @@ impl VideoClip {
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
+            smooth_skin: 0.0,
             curves: crate::curves::ColourCurves::default(),
             light_leak: 0.0,
             beat_pulse: 0.0,
@@ -2634,6 +2659,7 @@ impl VideoClip {
             tilt_band: self.tilt_band,
             tilt_centre: self.tilt_centre,
             posterise: self.posterise,
+            smooth_skin: self.smooth_skin,
             glow: self.glow,
             old_film: self.old_film,
             vignette: self.vignette,
@@ -2836,6 +2862,7 @@ impl AudioClip {
             keep_pitch: false,
             leveller: 0.0,
             de_ess: 0.0,
+            robot: 0.0,
             fade_shape: FadeShape::Smooth,
             muted: false,
             link: None,

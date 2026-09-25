@@ -2290,6 +2290,15 @@ impl SetClipProperty {
                         };
                         ClipProperty::Lens(was)
                     }
+                    ClipProperty::SmoothSkin(amount) => {
+                        let was = clip.smooth_skin;
+                        clip.smooth_skin = if amount.is_finite() {
+                            amount.clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ClipProperty::SmoothSkin(was)
+                    }
                     ClipProperty::Posterise(levels) => {
                         let was = clip.posterise;
                         clip.posterise = if levels.is_finite() && levels >= 2.0 {
@@ -2446,6 +2455,7 @@ impl SetClipProperty {
                     | ClipProperty::KeepPitch(_)
                     | ClipProperty::Leveller(_)
                     | ClipProperty::DeEss(_)
+                    | ClipProperty::Robot(_)
                     | ClipProperty::StereoWidth(_)
                     | ClipProperty::Pan(_)
                     | ClipProperty::FadeShape(_)
@@ -2493,6 +2503,7 @@ impl SetClipProperty {
                     | ClipProperty::Reflection(_)
                     | ClipProperty::Lens(_)
                     | ClipProperty::Posterise(_)
+                    | ClipProperty::SmoothSkin(_)
                     | ClipProperty::TiltShift { .. }
                     | ClipProperty::Wheels(_)
                     | ClipProperty::Secondary(_)
@@ -2581,6 +2592,15 @@ impl SetClipProperty {
                             0.0
                         };
                         Ok(ClipProperty::DeEss(was))
+                    }
+                    ClipProperty::Robot(amount) => {
+                        let was = clip.robot;
+                        clip.robot = if amount.is_finite() {
+                            amount.clamp(0.0, 100.0)
+                        } else {
+                            0.0
+                        };
+                        Ok(ClipProperty::Robot(was))
                     }
                     ClipProperty::Leveller(amount) => {
                         let was = clip.leveller;
@@ -3094,6 +3114,7 @@ impl SetSequenceProperty {
             | ClipProperty::Lens(_)
             // Posterise is a clip's finish, as the other effects are.
             | ClipProperty::Posterise(_)
+            | ClipProperty::SmoothSkin(_)
             | ClipProperty::TiltShift { .. }
             // Pitch belongs to a sound clip, and the master mixes them all.
             | ClipProperty::KeepPitch(_)
@@ -3132,6 +3153,7 @@ impl SetSequenceProperty {
             | ClipProperty::Pitch(_)
             | ClipProperty::Leveller(_)
             | ClipProperty::DeEss(_)
+            | ClipProperty::Robot(_)
             | ClipProperty::StereoWidth(_)
             | ClipProperty::Pan(_)
             | ClipProperty::FadeShape(_)

@@ -1,15 +1,15 @@
-//! The luma key on a real device: a frame half dark grey, half white, keyed
-//! by brightness — the dark half goes (or the bright one), the other stays,
-//! measured in pixels on an opaque backdrop. Skips without an adapter.
+//! Smooth skin on the GPU: a noisy skin-coloured patch comes out smoother,
+//! a noisy blue one does not — read back from a rendered frame, so it is
+//! the shader answering (`VideoClip::smooth_skin`).
+//!
+//! Skips itself when no adapter can be found, like `blend_gpu.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use bettercut_media::{ColorMetadata, FrameStorage, VideoFrame};
 use bettercut_renderer::wgpu;
 use bettercut_renderer::{Compositor, Layer, RenderConfig};
-use bettercut_timeline::{
-    BlendMode, ClipLook, ColorAdjust, LumaKey, MasterLook, Resolution, Transform,
-};
+use bettercut_timeline::{BlendMode, ClipLook, ColorAdjust, MasterLook, Resolution, Transform};
 
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> =
@@ -24,7 +24,7 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
             )
             .ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("luma key test"),
+                label: Some("smooth skin test"),
                 ..Default::default()
             }))
             .ok()
@@ -45,46 +45,21 @@ macro_rules! gpu_or_skip {
 }
 
 const OUTPUT: Resolution = Resolution {
-    width: 32,
-    height: 8,
+    width: 64,
+    height: 16,
 };
 
-/// Dark grey on the left, white on the right.
-fn halves() -> VideoFrame {
-    let (w, h) = (OUTPUT.width, OUTPUT.height);
-    let mut data = Vec::with_capacity((w * h * 4) as usize);
-    for _ in 0..h {
-        for x in 0..w {
-            // Near-black against white: the case the default key is for — a
-            // logo or a light leak on black. (A mid grey such as 40/255 sits
-            // above the default threshold on the key's perceptual scale, and
-            // is rightly only thinned.)
-            let v = if x < w / 2 { 12 } else { 255 };
-            data.extend_from_slice(&[v, v, v, 255]);
-        }
-    }
-    VideoFrame {
-        timestamp: bettercut_foundation::MediaTime::ZERO,
-        width: w,
-        height: h,
-        color: ColorMetadata::srgb(),
-        storage: FrameStorage::System {
-            data,
-            stride: w * 4,
-        },
-    }
-}
-
-fn keyed(device: &wgpu::Device, queue: &wgpu::Queue, key: Option<LumaKey>) -> Vec<u8> {
+/// `frame` drawn with `smooth` skin smoothing, read back whole (tight RGBA rows).
+fn held(device: &wgpu::Device, queue: &wgpu::Queue, frame: &VideoFrame, smooth: f32) -> Vec<u8> {
     let mut compositor = Compositor::new(
         device.clone(),
         queue.clone(),
         RenderConfig::export_to_texture(OUTPUT),
     )
     .expect("compositor");
-    let frame = halves();
+
     let layer = Layer {
-        frame: &frame,
+        frame,
         look: ClipLook {
             corner_pin: Default::default(),
             old_film: 0.0,
@@ -107,10 +82,10 @@ fn keyed(device: &wgpu::Device, queue: &wgpu::Queue, key: Option<LumaKey>) -> Ve
             tilt_band: 0.0,
             tilt_centre: 0.5,
             posterise: 0.0,
-            smooth_skin: 0.0,
+            smooth_skin: smooth,
             blur: 0.0,
             chroma_key: None,
-            luma_key: key,
+            luma_key: None,
             mask: None,
             blend: BlendMode::Normal,
         },
@@ -118,6 +93,7 @@ fn keyed(device: &wgpu::Device, queue: &wgpu::Queue, key: Option<LumaKey>) -> Ve
     compositor
         .composite(&[layer], MasterLook::default())
         .expect("composite");
+
     read_back(device, queue, compositor.target())
 }
 
@@ -130,6 +106,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
@@ -153,6 +130,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
         },
     );
     queue.submit([encoder.finish()]);
+
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device
@@ -169,47 +147,59 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
     tight
 }
 
-fn red_at(pixels: &[u8], x: u32) -> u8 {
-    let y = OUTPUT.height / 2;
-    pixels[((y * OUTPUT.width + x) * 4) as usize]
+/// Skin on the left, blue on the right, each with a fine checker of noise.
+fn patches() -> VideoFrame {
+    let (w, h) = (OUTPUT.width, OUTPUT.height);
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let bump: i32 = if (x + y) % 2 == 0 { 14 } else { -14 };
+            let base: [i32; 3] = if x < w / 2 {
+                [205, 150, 120]
+            } else {
+                [60, 90, 200]
+            };
+            let px = base.map(|c| (c + bump).clamp(0, 255) as u8);
+            data.extend_from_slice(&[px[0], px[1], px[2], 255]);
+        }
+    }
+    VideoFrame {
+        timestamp: bettercut_foundation::MediaTime::ZERO,
+        width: w,
+        height: h,
+        color: ColorMetadata::srgb(),
+        storage: FrameStorage::System {
+            data,
+            stride: w * 4,
+        },
+    }
 }
 
-/// Dropping the dark leaves the backdrop (black) on the left and the white
-/// on the right; dropping the bright does the opposite; no key keeps both.
+/// How much the red channel jumps from pixel to pixel along the middle row,
+/// over `from..to`: the noise left.
+fn roughness(pixels: &[u8], from: u32, to: u32) -> u32 {
+    let y = OUTPUT.height / 2;
+    let red = |x: u32| i32::from(pixels[((y * OUTPUT.width + x) * 4) as usize]);
+    (from..to - 1).map(|x| red(x).abs_diff(red(x + 1))).sum()
+}
+
 #[test]
-fn the_dark_or_the_bright_side_goes() {
+fn skin_is_smoothed_and_blue_is_left_alone() {
     let (device, queue) = gpu_or_skip!();
-    let (left, right) = (OUTPUT.width / 4, OUTPUT.width * 3 / 4);
+    let frame = patches();
+    let before = held(&device, &queue, &frame, 0.0);
+    let after = held(&device, &queue, &frame, 1.0);
+    let (skin, blue) = ((4, 28), (36, 60));
 
-    let plain = keyed(&device, &queue, None);
     assert!(
-        red_at(&plain, left) > 5 && red_at(&plain, left) < 20,
-        "{}",
-        red_at(&plain, left)
+        roughness(&after, skin.0, skin.1) * 2 < roughness(&before, skin.0, skin.1),
+        "the skin kept its noise: {} then {}",
+        roughness(&before, skin.0, skin.1),
+        roughness(&after, skin.0, skin.1)
     );
-    assert!(red_at(&plain, right) > 240);
-
-    let drop_dark = keyed(&device, &queue, Some(LumaKey::default()));
-    assert!(
-        red_at(&drop_dark, left) < 8,
-        "the dark side stayed: {}",
-        red_at(&drop_dark, left)
+    assert_eq!(
+        roughness(&after, blue.0, blue.1),
+        roughness(&before, blue.0, blue.1),
+        "the blue was smoothed too"
     );
-    assert!(red_at(&drop_dark, right) > 240, "the bright side went");
-
-    let drop_bright = keyed(
-        &device,
-        &queue,
-        Some(LumaKey {
-            threshold: 0.7,
-            softness: 0.05,
-            keep_bright: false,
-        }),
-    );
-    assert!(
-        red_at(&drop_bright, right) < 8,
-        "the bright side stayed: {}",
-        red_at(&drop_bright, right)
-    );
-    assert!(red_at(&drop_bright, left) > 5, "the dark side went");
 }

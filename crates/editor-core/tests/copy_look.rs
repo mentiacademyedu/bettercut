@@ -328,6 +328,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         tilt_band: plain.tilt_band,
         tilt_centre: plain.tilt_centre,
         posterise: plain.posterise,
+        smooth_skin: plain.smooth_skin,
         frozen: plain.frozen,
         enabled: plain.enabled,
     };
@@ -357,6 +358,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         tilt_band: pasted.tilt_band,
         tilt_centre: pasted.tilt_centre,
         posterise: pasted.posterise,
+        smooth_skin: pasted.smooth_skin,
         frozen: pasted.frozen,
         enabled: pasted.enabled,
         ..source
