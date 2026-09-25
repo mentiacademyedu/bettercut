@@ -43,6 +43,7 @@ fn moving_source(path: &Path) {
         path,
         ExportFormat {
             transparent: false,
+            prores: false,
             width,
             height,
             frame_rate: FrameRate::FPS_30,
@@ -79,8 +80,11 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
+        Self::with_extension(name, "mp4")
+    }
+    fn with_extension(name: &str, extension: &str) -> Self {
         let mut path = std::env::temp_dir();
-        path.push(format!("bettercut-export-e2e-{name}.mp4"));
+        path.push(format!("bettercut-export-e2e-{name}.{extension}"));
         let _ = std::fs::remove_file(&path);
         Self(path)
     }
@@ -123,6 +127,7 @@ fn one_second() -> TimelineRange {
 fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
     ExportSettings {
         transparent: false,
+        prores: false,
         path: path.to_path_buf(),
         resolution: Resolution::new(640, 360),
         // The fixture is 29.97, and exporting at its own rate is the ordinary
@@ -944,6 +949,24 @@ fn h265_exports_when_the_machine_can_write_it() {
         codec.contains("hevc") || codec.contains("h265"),
         "asked for H.265 and got {codec}"
     );
+    assert_eq!(summary.frames, 30);
+}
+
+/// A ProRes master: `prores_ks` is in the LGPL build and runs on the CPU, so
+/// this runs on every machine.
+#[test]
+fn prores_exports_a_mov() {
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let scratch = Scratch::with_extension("prores", "mov");
+    let project = project_with_fixture();
+    let mut settings = settings(scratch.path(), one_second());
+    settings.prores = true;
+    let summary = run(&project, &settings);
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let codec = asset.video_codec.expect("no video stream");
+    assert!(codec.contains("prores"), "asked for ProRes and got {codec}");
     assert_eq!(summary.frames, 30);
 }
 

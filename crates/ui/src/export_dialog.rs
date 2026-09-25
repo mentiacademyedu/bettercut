@@ -124,7 +124,7 @@ impl BitrateChoice {
 /// Containers offered. Both hold H.264 and H.265.
 /// The formats offered. The last is sound only: the mix as a WAV, with no
 /// picture rendered — for a voice-over to master, or the podcast cut.
-const CONTAINERS: [(&str, &str); 6] = [
+const CONTAINERS: [(&str, &str); 7] = [
     ("mp4", "Plays everywhere"),
     ("mov", "QuickTime; editors"),
     ("wav", "Sound only — the mix, uncompressed"),
@@ -140,7 +140,14 @@ const CONTAINERS: [(&str, &str); 6] = [
         "webm",
         "A see-through background wherever nothing is drawn — for overlays and stickers; no sound",
     ),
+    (
+        "mov",
+        "ProRes 422 HQ: large files to edit or grade in another program",
+    ),
 ];
+
+/// The index in [`CONTAINERS`] that means a ProRes master.
+const PRORES: usize = 6;
 
 /// The index in [`CONTAINERS`] that means a video with a transparent background.
 const TRANSPARENT: usize = 5;
@@ -557,7 +564,12 @@ impl ExportDialog {
         // A shape is a picture's; sound has none, and three identical WAVs
         // under three names would be a surprise. A GIF is one small loop of
         // the edit as it is.
-        if self.sound_only() || self.gif() || self.image_sequence() || self.transparent() {
+        if self.sound_only()
+            || self.gif()
+            || self.image_sequence()
+            || self.transparent()
+            || self.prores()
+        {
             return Vec::new();
         }
         let main = self.resolution(native);
@@ -569,7 +581,12 @@ impl ExportDialog {
 
     /// The main file's shape, when it differs from the sequence's.
     fn main_shape_for(&self, native: Resolution) -> Option<Shape> {
-        if self.sound_only() || self.gif() || self.image_sequence() || self.transparent() {
+        if self.sound_only()
+            || self.gif()
+            || self.image_sequence()
+            || self.transparent()
+            || self.prores()
+        {
             return None;
         }
         self.main_shape.filter(|shape| !shape.matches(native))
@@ -730,6 +747,11 @@ impl ExportDialog {
         self.container == TRANSPARENT
     }
 
+    /// Whether the chosen format is a ProRes master.
+    fn prores(&self) -> bool {
+        self.container == PRORES
+    }
+
     fn gif_width(&self) -> u32 {
         if self.gif_width == 0 {
             DEFAULT_GIF_WIDTH
@@ -796,6 +818,7 @@ impl ExportDialog {
                         loudness_target: self.loudness_target,
                         audio_bitrate: self.audio_bitrate,
                         transparent: self.transparent(),
+                        prores: self.prores(),
                     },
                     shape,
                     sequence: None,
@@ -1105,6 +1128,18 @@ pub fn show(
                 ui.label(egui::RichText::new("Animation").strong());
                 ui.add_space(2.0);
                 gif_rows(ui, dialog, native);
+            } else if dialog.prores() {
+                // A size and a rate; ProRes sets its own quality.
+                ui.label(egui::RichText::new("ProRes master").strong());
+                ui.add_space(2.0);
+                resolution_row(ui, dialog, native);
+                frame_rate_row(ui, dialog, native_rate);
+                row(ui, "Written as", |ui| {
+                    ui.label(
+                        egui::RichText::new("ProRes 422 HQ · 10-bit · sound as AAC · large files")
+                            .color(theme::disabled()),
+                    );
+                });
             } else if dialog.transparent() {
                 // A size and a rate; the codec is fixed by the transparency.
                 ui.label(egui::RichText::new("Transparent video").strong());

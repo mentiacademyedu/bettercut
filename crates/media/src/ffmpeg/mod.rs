@@ -34,7 +34,8 @@ mod raii;
 pub use decode::FfmpegDecoder;
 pub use encode::generate_proxy;
 pub use encoders::{
-    EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, RateControl, VideoCodec, probe_all,
+    EncodeTarget, EncoderChoice, EncoderKind, EncoderProbe, PRORES, RateControl, VideoCodec,
+    probe_all,
 };
 pub use export::{
     AUDIO_BITRATES_KBPS, ChapterMark, DEFAULT_AUDIO_BITRATE, ExportFormat, MAX_AUDIO_BITRATE,

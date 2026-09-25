@@ -69,6 +69,7 @@ fn project_with_two_lanes() -> (Project, TrackId, TrackId) {
 fn settings(path: &Path, range: TimelineRange) -> ExportSettings {
     ExportSettings {
         transparent: false,
+        prores: false,
         path: path.to_path_buf(),
         resolution: Resolution::new(640, 360),
         frame_rate: FrameRate::NTSC_29_97,

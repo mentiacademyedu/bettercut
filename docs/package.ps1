@@ -30,6 +30,11 @@ if (-not (Test-Path "$FfmpegBin\avcodec-62.dll")) {
 
 if (-not $SkipBuild) {
     Write-Host "Building the release (this takes a while)..."
+    # The C runtime linked into the exe: otherwise it needs VCRUNTIME140.dll,
+    # which a fresh Windows install may not have, and fails to open there
+    # with a missing-DLL error. Set here only, so everyday builds are
+    # untouched; the Windows CRT (ucrt) itself ships with Windows 10 and up.
+    $env:RUSTFLAGS = '-C target-feature=+crt-static'
     # Two jobs: a release build with LTO is heavy, and this machine has run
     # out of memory on wider builds before.
     cargo build --release -p bettercut-desktop -j 2
@@ -37,6 +42,11 @@ if (-not $SkipBuild) {
 }
 $Exe = "$Repo\target\release\bettercut.exe"
 if (-not (Test-Path $Exe)) { throw "No release build at $Exe" }
+# Refuse to ship an exe that still needs the Visual C++ runtime DLL.
+$ExeText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($Exe))
+if ($ExeText.IndexOf('VCRUNTIME140.dll', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    throw "bettercut.exe still needs VCRUNTIME140.dll: build without -SkipBuild so the C runtime is linked in"
+}
 
 # Stage: the program, the seven FFmpeg libraries beside it (Windows loads
 # DLLs from the program's own folder first), and the licences.

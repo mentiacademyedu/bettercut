@@ -73,6 +73,7 @@ fn project_with_sound() -> Project {
 fn sound_settings(path: &Path, start_ms: i64, end_ms: i64) -> ExportSettings {
     ExportSettings {
         transparent: false,
+        prores: false,
         path: path.to_path_buf(),
         resolution: Resolution::new(640, 360),
         frame_rate: FrameRate::NTSC_29_97,

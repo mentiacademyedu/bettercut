@@ -47,6 +47,7 @@ impl Drop for Scratch {
 fn format(channels: usize) -> ExportFormat {
     ExportFormat {
         transparent: false,
+        prores: false,
         width: WIDTH,
         height: HEIGHT,
         frame_rate: bettercut_foundation::FrameRate::FILM_24,

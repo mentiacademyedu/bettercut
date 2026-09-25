@@ -447,6 +447,63 @@ pub const VP9_ALPHA: EncoderChoice = EncoderChoice {
     codec: VideoCodec::H264,
 };
 
+/// The encoder for a ProRes master: FFmpeg's own `prores_ks`, part of the
+/// LGPL build (no GPL component), on the CPU.
+pub const PRORES: EncoderChoice = EncoderChoice {
+    name: "prores_ks",
+    label: "ProRes 422 HQ",
+    kind: EncoderKind::Software,
+    codec: VideoCodec::H264,
+};
+
+/// Open [`PRORES`] at the target's size and rate: 422 HQ, 10-bit 4:2:2,
+/// every frame a keyframe as ProRes always is. Quality is set by the
+/// profile, not a bitrate.
+pub fn open_prores(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), MediaError> {
+    let _guard = OPENING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let context = CodecContext::encoder(PRORES.name, target.threads)?;
+    let rate = av_rational(target.frame_rate);
+
+    // SAFETY: allocated and not yet opened, which is when these may be set.
+    unsafe {
+        let ctx = &mut *context.as_ptr();
+        ctx.width = target.width as i32;
+        ctx.height = target.height as i32;
+        ctx.pix_fmt = ffi::AV_PIX_FMT_YUV422P10LE;
+        ctx.time_base = ffi::AVRational {
+            num: rate.den,
+            den: rate.num,
+        };
+        ctx.framerate = rate;
+        ctx.color_range = ffi::AVCOL_RANGE_MPEG;
+        ctx.color_primaries = ffi::AVCOL_PRI_BT709;
+        ctx.color_trc = ffi::AVCOL_TRC_BT709;
+        ctx.colorspace = ffi::AVCOL_SPC_BT709;
+        if target.global_header {
+            ctx.flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+        }
+    }
+    // Profile 3 is 422 HQ: what "a ProRes master" usually means.
+    for (name, value) in [("profile", "3"), ("vendor", "apl0")] {
+        let (Ok(name_c), Ok(value_c)) =
+            (std::ffi::CString::new(name), std::ffi::CString::new(value))
+        else {
+            continue;
+        };
+        // SAFETY: allocated and not yet opened; a null `priv_data` is skipped.
+        unsafe {
+            let priv_data = (*context.as_ptr()).priv_data;
+            if !priv_data.is_null() {
+                let _ = ffi::av_opt_set(priv_data, name_c.as_ptr(), value_c.as_ptr(), 0);
+            }
+        }
+    }
+    context.open_encoder()?;
+    Ok((PRORES, context))
+}
+
 /// Open [`VP9_ALPHA`] at the target's size and rate, for 4:2:0 with alpha.
 pub fn open_vp9_alpha(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), MediaError> {
     let _guard = OPENING

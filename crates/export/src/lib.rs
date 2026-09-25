@@ -121,6 +121,8 @@ pub struct ExportSettings {
     /// Write a video with a see-through background at `path` (a `.webm`):
     /// VP9 with alpha, no sound. What no clip covers is transparent.
     pub transparent: bool,
+    /// A ProRes 422 HQ master in a `.mov`, for editing or grading elsewhere.
+    pub prores: bool,
 }
 
 impl ExportSettings {
@@ -145,6 +147,7 @@ impl ExportSettings {
             loudness_target: None,
             audio_bitrate: None,
             transparent: false,
+            prores: false,
         }
     }
 }
@@ -321,6 +324,7 @@ pub fn export(
         &settings.path,
         ExportFormat {
             transparent: settings.transparent,
+            prores: settings.prores,
             width: settings.resolution.width,
             height: settings.resolution.height,
             frame_rate: settings.frame_rate,

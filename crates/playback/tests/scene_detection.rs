@@ -69,6 +69,7 @@ fn three_shots(path: &Path, shots: &[u8], seconds: i64) {
         path,
         ExportFormat {
             transparent: false,
+            prores: false,
             width: WIDTH,
             height: HEIGHT,
             frame_rate: FrameRate::FPS_30,

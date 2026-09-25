@@ -34,7 +34,8 @@ use bettercut_foundation::FrameRate;
 use super::INTERNAL_SAMPLE_RATE;
 use super::encode::{Muxer, drain_encoder};
 use super::encoders::{
-    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best, open_vp9_alpha,
+    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best, open_prores,
+    open_vp9_alpha,
 };
 use super::raii::{CodecContext, Frame, Scaler};
 
@@ -81,6 +82,9 @@ pub struct ExportFormat {
     /// path), no sound — WebM carries no AAC. The frames pushed must then be
     /// straight, not premultiplied, alpha.
     pub transparent: bool,
+    /// A ProRes 422 HQ master (write to a `.mov` path): 10-bit 4:2:2, the
+    /// codec's own quality, sound as AAC. Ignored with `transparent`.
+    pub prores: bool,
 }
 
 /// An open output file, accepting frames until [`Self::finish`].
@@ -165,11 +169,15 @@ impl VideoWriter {
         };
         let (encoder, video) = if format.transparent {
             open_vp9_alpha(target)?
+        } else if format.prores {
+            open_prores(target)?
         } else {
             open_best(target)?
         };
         let picture_format = if format.transparent {
             ffi::AV_PIX_FMT_YUVA420P
+        } else if format.prores {
+            ffi::AV_PIX_FMT_YUV422P10LE
         } else {
             ffi::AV_PIX_FMT_YUV420P
         };

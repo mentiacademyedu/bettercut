@@ -80,6 +80,7 @@ fn sweeping_bar(path: &Path) {
         path,
         ExportFormat {
             transparent: false,
+            prores: false,
             width,
             height,
             frame_rate: FrameRate::FPS_30,
