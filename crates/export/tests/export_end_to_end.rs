@@ -947,6 +947,30 @@ fn h265_exports_when_the_machine_can_write_it() {
     assert_eq!(summary.frames, 30);
 }
 
+/// AV1 when the machine can write it (an RTX 40, Arc or RX 7000); skipped
+/// elsewhere, as H.265 is, since no software AV1 encoder is linked.
+#[test]
+fn av1_exports_when_the_machine_can_write_it() {
+    let _encoder = encoder_guard();
+    gpu_or_skip!();
+    let resolution = Resolution::new(640, 360);
+    if !codec_is_available(VideoCodec::Av1, resolution, FrameRate::NTSC_29_97) {
+        eprintln!("no AV1 encoder on this machine; skipping");
+        return;
+    }
+
+    let scratch = Scratch::new("av1");
+    let project = project_with_fixture();
+    let mut settings = settings(scratch.path(), one_second());
+    settings.codec = VideoCodec::Av1;
+    let summary = run(&project, &settings);
+
+    let asset = FfmpegProber.probe(scratch.path()).expect("probe");
+    let codec = asset.video_codec.expect("no video stream");
+    assert!(codec.contains("av1"), "asked for AV1 and got {codec}");
+    assert_eq!(summary.frames, 30);
+}
+
 /// H.264 is always available — `libopenh264` is linked in — and asking must not
 /// cost a driver probe. The export window asks on the UI thread when it opens,
 /// and §74 is explicit that the interface must not stall behind FFmpeg.

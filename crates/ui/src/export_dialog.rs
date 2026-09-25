@@ -2115,6 +2115,7 @@ fn automatic_kbps_at(dialog: &ExportDialog, size: Resolution) -> u32 {
     let scale = match dialog.codec {
         VideoCodec::H264 => 1.0,
         VideoCodec::H265 => 0.55,
+        VideoCodec::Av1 => 0.45,
     };
     // The same shape as `encoders::bitrate_for`: 0.2 bits per pixel at 30 fps.
     let bits = pixels * fps.clamp(1.0, 120.0) / 5.0 * scale;

@@ -53,15 +53,19 @@ pub enum VideoCodec {
     /// support on older devices — and, for us, of having no software fallback.
     /// See [`CANDIDATES_H265`].
     H265,
+    /// Smaller again than H.265, and what YouTube prefers to be sent. Written
+    /// only by recent GPUs — see [`CANDIDATES_AV1`].
+    Av1,
 }
 
 impl VideoCodec {
-    pub const ALL: [Self; 2] = [Self::H264, Self::H265];
+    pub const ALL: [Self; 3] = [Self::H264, Self::H265, Self::Av1];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::H264 => "H.264",
             Self::H265 => "H.265",
+            Self::Av1 => "AV1",
         }
     }
 
@@ -72,6 +76,11 @@ impl VideoCodec {
             Self::H265 => {
                 "About half the size for the same quality. Needs a recent device \
                  to play it, and a GPU encoder to write it."
+            }
+            Self::Av1 => {
+                "The smallest files for the quality, and YouTube's preferred \
+                 upload. Needs a recent GPU to write it and a recent device to \
+                 play it."
             }
         }
     }
@@ -85,6 +94,7 @@ impl VideoCodec {
         match self {
             Self::H264 => 1.0,
             Self::H265 => 0.55,
+            Self::Av1 => 0.45,
         }
     }
 
@@ -92,6 +102,7 @@ impl VideoCodec {
         match self {
             Self::H264 => CANDIDATES_H264,
             Self::H265 => CANDIDATES_H265,
+            Self::Av1 => CANDIDATES_AV1,
         }
     }
 }
@@ -280,6 +291,49 @@ const CANDIDATES_H265: &[EncoderChoice] = &[
         label: "VAAPI",
         kind: EncoderKind::Hardware,
         codec: VideoCodec::H265,
+    },
+];
+
+/// AV1 candidates in preference order.
+///
+/// Hardware only, like H.265: offered when the machine has an encoder for it
+/// — NVIDIA RTX 40 and later, Intel Arc, AMD RX 7000 — and not otherwise.
+/// Media Foundation last, as the generic route to the same silicon.
+const CANDIDATES_AV1: &[EncoderChoice] = &[
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    EncoderChoice {
+        name: "av1_nvenc",
+        label: "NVIDIA NVENC",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::Av1,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "av1_qsv",
+        label: "Intel Quick Sync",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::Av1,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "av1_amf",
+        label: "AMD AMF",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::Av1,
+    },
+    #[cfg(target_os = "windows")]
+    EncoderChoice {
+        name: "av1_mf",
+        label: "Windows Media Foundation",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::Av1,
+    },
+    #[cfg(target_os = "linux")]
+    EncoderChoice {
+        name: "av1_vaapi",
+        label: "VAAPI",
+        kind: EncoderKind::Hardware,
+        codec: VideoCodec::Av1,
     },
 ];
 
@@ -574,12 +628,12 @@ fn set_rate_control(context: &CodecContext, choice: EncoderChoice, mode: RateCon
     use RateControl::{Constant, Variable};
 
     let options: &[(&str, &str)] = match (choice.name, mode) {
-        ("h264_nvenc" | "hevc_nvenc", Constant) => &[("rc", "cbr")],
-        ("h264_nvenc" | "hevc_nvenc", Variable) => &[("rc", "vbr")],
-        ("h264_amf" | "hevc_amf", Constant) => &[("rc", "cbr")],
-        ("h264_amf" | "hevc_amf", Variable) => &[("rc", "vbr_peak")],
-        ("h264_mf" | "hevc_mf", Constant) => &[("rate_control", "cbr")],
-        ("h264_mf" | "hevc_mf", Variable) => &[("rate_control", "u_vbr")],
+        ("h264_nvenc" | "hevc_nvenc" | "av1_nvenc", Constant) => &[("rc", "cbr")],
+        ("h264_nvenc" | "hevc_nvenc" | "av1_nvenc", Variable) => &[("rc", "vbr")],
+        ("h264_amf" | "hevc_amf" | "av1_amf", Constant) => &[("rc", "cbr")],
+        ("h264_amf" | "hevc_amf" | "av1_amf", Variable) => &[("rc", "vbr_peak")],
+        ("h264_mf" | "hevc_mf" | "av1_mf", Constant) => &[("rate_control", "cbr")],
+        ("h264_mf" | "hevc_mf" | "av1_mf", Variable) => &[("rate_control", "u_vbr")],
         // Quick Sync picks its mode from which rate fields are set, which the
         // caller has already done; there is no name to set here.
         _ => &[],
@@ -714,7 +768,11 @@ mod tests {
     /// they know, so it is asserted rather than left to review.
     #[test]
     fn no_gpl_encoder_is_a_candidate() {
-        for choice in CANDIDATES_H264.iter().chain(CANDIDATES_H265) {
+        for choice in CANDIDATES_H264
+            .iter()
+            .chain(CANDIDATES_H265)
+            .chain(CANDIDATES_AV1)
+        {
             assert!(
                 !choice.name.contains("x264") && !choice.name.contains("x265"),
                 "{} is GPL and must never be linked (§0.1, §74)",
@@ -734,6 +792,20 @@ mod tests {
                 .all(|c| c.kind == EncoderKind::Hardware),
             "a software H.265 encoder appeared; check its licence against §0.1"
         );
+    }
+
+    /// AV1, like H.265, is offered only where a GPU can write it: no software
+    /// AV1 encoder is linked, so the choice never means a slow CPU export the
+    /// person did not ask for.
+    #[test]
+    fn av1_has_no_software_encoder() {
+        assert!(
+            CANDIDATES_AV1
+                .iter()
+                .all(|c| c.kind == EncoderKind::Hardware && c.codec == VideoCodec::Av1),
+            "a software or mislabelled AV1 encoder appeared"
+        );
+        assert!(VideoCodec::Av1.bitrate_scale() < VideoCodec::H265.bitrate_scale());
     }
 
     /// There must always be something to fall back to, on any platform.
