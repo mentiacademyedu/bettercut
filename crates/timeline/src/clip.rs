@@ -1065,6 +1065,12 @@ pub struct VideoClip {
     #[serde(default)]
     pub light_leak: f32,
 
+    /// Lens flare, 0–100: a bright source near a corner with its halo, a
+    /// streak and ghosts along the line through the centre, drifting slowly
+    /// while the clip plays.
+    #[serde(default)]
+    pub lens_flare: f32,
+
     /// Smooth slow motion: a slowed clip blends each frame into the next
     /// rather than repeating it, so the motion glides instead of stepping.
     #[serde(default)]
@@ -1535,7 +1541,7 @@ impl ClipEq {
     /// Settings a person reaches for by name, rather than by hertz: the
     /// sliders stay for the last few percent, but most voices want one of
     /// these and nobody should have to know that a phone is 300 Hz to 3 kHz.
-    pub const PRESETS: [(&'static str, &'static str, Self); 6] = [
+    pub const PRESETS: [(&'static str, &'static str, Self); 7] = [
         (
             "Voice",
             "Rumble off, a little presence: speech that sits forward",
@@ -1563,6 +1569,16 @@ impl ClipEq {
                 low_cut: 400.0,
                 high_cut: 5_000.0,
                 presence: 6.0,
+                hum: 0.0,
+            },
+        ),
+        (
+            "Megaphone",
+            "Shouted through a horn: narrow, hard and forward",
+            Self {
+                low_cut: 400.0,
+                high_cut: 2_500.0,
+                presence: 12.0,
                 hum: 0.0,
             },
         ),
@@ -2582,6 +2598,7 @@ impl VideoClip {
             smooth_skin: 0.0,
             curves: crate::curves::ColourCurves::default(),
             light_leak: 0.0,
+            lens_flare: 0.0,
             beat_pulse: 0.0,
             smooth_motion: false,
             vignette: 0.0,

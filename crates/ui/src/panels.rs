@@ -6614,6 +6614,21 @@ fn clip_effect_properties(
         });
         ui.horizontal_wrapped(|ui| {
             ui.add_space(4.0);
+            let mut next_flare = editor.video_clip(clip).map_or(0.0, |clip| clip.lens_flare);
+            let response = ui
+                .add(theme::labeled(
+                    "lens flare",
+                    egui::Slider::new(&mut next_flare, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text(
+                    "A bright light near the corner with its streak and reflections, as if shot into the sun",
+                );
+            if response.changed() {
+                change = Some((ClipProperty::LensFlare(next_flare), response.dragged()));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
             let mut next_pulse = editor.video_clip(clip).map_or(0.0, |clip| clip.beat_pulse);
             let response = ui
                 .add(theme::labeled("beat pulse", egui::Slider::new(&mut next_pulse, 0.0..=max).suffix("%")))

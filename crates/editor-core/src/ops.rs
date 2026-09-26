@@ -2354,6 +2354,11 @@ impl SetClipProperty {
                         clip.light_leak = glitch_amount(amount);
                         ClipProperty::LightLeak(was)
                     }
+                    ClipProperty::LensFlare(amount) => {
+                        let was = clip.lens_flare;
+                        clip.lens_flare = glitch_amount(amount);
+                        ClipProperty::LensFlare(was)
+                    }
                     ClipProperty::BeatPulse(amount) => {
                         let was = clip.beat_pulse;
                         clip.beat_pulse = glitch_amount(amount);
@@ -3141,6 +3146,7 @@ impl SetSequenceProperty {
             | ClipProperty::Tone(_)
             | ClipProperty::Curves(_)
             | ClipProperty::LightLeak(_)
+            | ClipProperty::LensFlare(_)
             | ClipProperty::BeatPulse(_)
             // A reflection is made of one shot's own picture.
             | ClipProperty::Reflection(_)

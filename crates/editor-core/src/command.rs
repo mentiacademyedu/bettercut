@@ -278,6 +278,7 @@ impl TextProperty {
             | ClipProperty::Tone(_)
             | ClipProperty::Curves(_)
             | ClipProperty::LightLeak(_)
+            | ClipProperty::LensFlare(_)
             | ClipProperty::BeatPulse(_)
             | ClipProperty::Reflection(_)
             | ClipProperty::Denoise(_)
@@ -949,6 +950,8 @@ pub enum ClipProperty {
     Curves(bettercut_timeline::curves::ColourCurves),
     /// Light leak, 0–100. Picture only.
     LightLeak(f32),
+    /// Lens flare, 0–100. Picture only.
+    LensFlare(f32),
     /// Beat pulse, 0–100. Picture only.
     BeatPulse(f32),
     /// Mirrored halves, four-way or a kaleidoscope. Video only, not animated.
@@ -1052,6 +1055,7 @@ impl ClipProperty {
             | Self::Tone(_)
             | Self::Curves(_)
             | Self::LightLeak(_)
+            | Self::LensFlare(_)
             | Self::BeatPulse(_)
             | Self::Reflection(_)
             | Self::Denoise(_)
@@ -1195,6 +1199,7 @@ impl ClipProperty {
         | Self::Glow(amount)
         | Self::OldFilm(amount)
         | Self::LightLeak(amount)
+        | Self::LensFlare(amount)
         | Self::BeatPulse(amount)
         | Self::Denoise(amount)
         | Self::Gate(amount) = self
@@ -1289,6 +1294,7 @@ impl ClipProperty {
             Self::Tone(_) => "Tone",
             Self::Curves(_) => "Curves",
             Self::LightLeak(_) => "Light leak",
+            Self::LensFlare(_) => "Lens flare",
             Self::BeatPulse(_) => "Beat pulse",
             Self::Reflection(_) => "Mirror",
             Self::Denoise(_) => "Voice clean-up",

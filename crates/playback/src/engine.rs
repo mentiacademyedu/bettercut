@@ -302,6 +302,7 @@ pub(crate) fn plan(
                     }
                 }
                 push_light_leak(&mut requests, track.id, clip, position);
+                push_lens_flare(&mut requests, track.id, clip, position);
             }
         }
     }
@@ -1953,6 +1954,144 @@ fn push_light_leak(
         reveal: None,
         angle: None,
     });
+}
+
+/// One piece of a lens flare: its colour, centre and half size in frame
+/// units, strength, and how far it is turned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlarePiece {
+    pub rgb: [u8; 3],
+    pub centre: [f32; 2],
+    pub size: [f32; 2],
+    pub opacity: f32,
+    pub rotation_degrees: f32,
+}
+
+/// A lens flare `seconds` into a clip with `amount` (0–100), as the ovals it
+/// is drawn from, back to front. Empty for no flare.
+///
+/// The source sits near the top left and drifts on slow cycles; the ghosts
+/// lie on the line from it through the centre of the frame, as the
+/// reflections inside a real lens do, so they swing across as it moves. A
+/// function of time alone, so preview and export agree (§46).
+pub fn lens_flare_at(amount: f32, seconds: f64) -> Vec<FlarePiece> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return Vec::new();
+    }
+    let share = (amount / 100.0).min(1.0);
+    let t = seconds as f32;
+    let source = [
+        0.24 + 0.08 * (t * 0.21).sin(),
+        0.2 + 0.05 * (t * 0.17 + 1.3).sin(),
+    ];
+    // Along the line through the centre: 0 at the source, 1 at its mirror.
+    let along = |k: f32| {
+        [
+            source[0] + (1.0 - 2.0 * source[0]) * k,
+            source[1] + (1.0 - 2.0 * source[1]) * k,
+        ]
+    };
+    let twinkle = 0.85 + 0.15 * (t * 2.3).sin().abs();
+    let mut pieces = vec![
+        // The wide warm halo, then the streak through the source, then the
+        // hot core on top.
+        FlarePiece {
+            rgb: [255, 196, 120],
+            centre: source,
+            size: [0.22, 0.36],
+            opacity: 0.3 * share,
+            rotation_degrees: 0.0,
+        },
+        FlarePiece {
+            rgb: [150, 200, 255],
+            centre: source,
+            size: [0.6, 0.012],
+            opacity: 0.7 * share * twinkle,
+            rotation_degrees: 0.0,
+        },
+        FlarePiece {
+            rgb: [255, 250, 235],
+            centre: source,
+            size: [0.045, 0.08],
+            opacity: 0.9 * share * twinkle,
+            rotation_degrees: 0.0,
+        },
+    ];
+    for (k, radius, rgb, strength) in [
+        (0.55, 0.03, [120, 255, 170], 0.22),
+        (0.8, 0.06, [140, 170, 255], 0.16),
+        (1.15, 0.1, [255, 150, 200], 0.12),
+    ] {
+        pieces.push(FlarePiece {
+            rgb,
+            centre: along(k),
+            size: [radius, radius * 16.0 / 9.0],
+            opacity: strength * share,
+            rotation_degrees: 0.0,
+        });
+    }
+    pieces
+}
+
+/// A lens flare over `clip`: each piece a warm or tinted solid cut to a soft
+/// oval, screened so it only ever brightens.
+fn push_lens_flare(
+    requests: &mut Vec<LayerRequest>,
+    track: TrackId,
+    clip: &VideoClip,
+    position: TimelineTime,
+) {
+    let seconds = (position.ticks() - clip.timeline.start.ticks()) as f64
+        / bettercut_foundation::TICKS_PER_SECOND as f64;
+    for piece in lens_flare_at(clip.lens_flare, seconds) {
+        requests.push(LayerRequest {
+            clip: clip.id,
+            track,
+            source: LayerSource::Solid { rgb: piece.rgb },
+            source_time: MediaTime::ZERO,
+            look: bettercut_timeline::ClipLook {
+                corner_pin: Default::default(),
+                old_film: 0.0,
+                glow: 0.0,
+                shadow: Default::default(),
+                border: Default::default(),
+                sharpen: 0.0,
+                lut: None,
+                rgb_split: 0.0,
+                glitch: 0.0,
+                pixelate: 0.0,
+                zoom_blur: 0.0,
+                lens: 0.0,
+                tilt_band: 0.0,
+                tilt_centre: 0.5,
+                posterise: 0.0,
+                smooth_skin: 0.0,
+                vignette: 0.0,
+                reflection: bettercut_timeline::Reflection::None,
+                crop: bettercut_timeline::Crop::NONE,
+                transform: Transform::default(),
+                opacity: piece.opacity,
+                color: bettercut_timeline::ColorAdjust::IDENTITY,
+                blur: 0.0,
+                chroma_key: None,
+                luma_key: None,
+                mask: Some(bettercut_timeline::Mask {
+                    shape: bettercut_timeline::MaskShape::Ellipse,
+                    center: piece.centre,
+                    size: piece.size,
+                    // Soft all the way in: a flare has no edge. An ellipse's
+                    // feather is measured in its own radii, so 1.2 fades from
+                    // under half the radius out to past its edge.
+                    feather: 1.2,
+                    rotation_degrees: piece.rotation_degrees,
+                    invert: false,
+                }),
+                blend: bettercut_timeline::BlendMode::Screen,
+            },
+            reveal: None,
+            angle: None,
+        });
+    }
 }
 
 /// The frame a [`LayerSource::Solid`] draws.

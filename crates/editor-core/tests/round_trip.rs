@@ -313,6 +313,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         zoom_blur: 15.0,
         vignette: 0.25,
         light_leak: 30.0,
+        lens_flare: 45.0,
         beat_pulse: 40.0,
         smooth_motion: true,
         curves: bettercut_timeline::curves::ColourCurves {

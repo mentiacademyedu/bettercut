@@ -2025,6 +2025,7 @@ fn draw_lanes(
                     waveform: None,
                     volume: None,
                     filmstrip: None,
+                    colour: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
                     transition: None,
@@ -2089,6 +2090,7 @@ fn draw_lanes(
                     waveform: None,
                     volume: None,
                     filmstrip: None,
+                    colour: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
                     transition: None,
@@ -2153,6 +2155,18 @@ fn draw_lanes(
                         .then(|| strips.get(&clip.media_id))
                         .flatten()
                         .map(|(handle, tiles)| (handle, *tiles, clip.source.start)),
+                    colour: project
+                        .media_asset(clip.media_id)
+                        .and_then(|m| match m.generated {
+                            Some(bettercut_editor_core::media::Generated::Colour {
+                                top,
+                                bottom,
+                            }) => Some((
+                                Color32::from_rgb(top[0], top[1], top[2]),
+                                Color32::from_rgb(bottom[0], bottom[1], bottom[2]),
+                            )),
+                            _ => None,
+                        }),
                     duration_of_media: project
                         .media_asset(clip.media_id)
                         .map_or(MediaTime::ZERO, |m| m.duration),
@@ -2231,6 +2245,7 @@ fn draw_lanes(
                         .get(&clip.media_id)
                         .map(|w| (w.as_ref(), clip.source.start)),
                     filmstrip: None,
+                    colour: None,
                     duration_of_media: MediaTime::ZERO,
                     keyframes: None,
                     volume: clip
@@ -2649,6 +2664,9 @@ struct ClipVisual<'a> {
     /// Filmstrip sheet, its tile count, and where in the media this clip
     /// starts — the same trimming question as the waveform.
     filmstrip: Option<(&'a egui::TextureHandle, u32, MediaTime)>,
+    /// A colour clip's own colours, top and bottom: what it shows in place
+    /// of a filmstrip, so a background is found by its colour.
+    colour: Option<(Color32, Color32)>,
     /// Length of the whole source file, which is what the tiles span.
     duration_of_media: MediaTime,
     /// The clip's animation and where in the media it starts, drawn as marks
@@ -3116,6 +3134,29 @@ fn draw_clip(
         Pos2::new(clip_rect.right(), clip_rect.top() + 4.0),
     );
     painter.rect_filled(cap, theme::CLIP_CORNER_RADIUS, top);
+
+    // A colour clip shows its colours, fading top to bottom as it does in
+    // the frame. Only while it plays and is not being dragged: otherwise the
+    // dimmed body says so, as it does on any clip.
+    if let Some((upper, lower)) = visual.colour
+        && visual.track_enabled
+        && !visual.dragging
+    {
+        let area = Rect::from_min_max(
+            Pos2::new(clip_rect.left() + 1.0, clip_rect.top() + 4.0),
+            Pos2::new(clip_rect.right() - 1.0, clip_rect.bottom() - 1.0),
+        );
+        if area.width() > 0.0 && area.height() > 0.0 {
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(area.left_top(), upper);
+            mesh.colored_vertex(area.right_top(), upper);
+            mesh.colored_vertex(area.right_bottom(), lower);
+            mesh.colored_vertex(area.left_bottom(), lower);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
 
     if let Some((sheet, tiles, source_start)) = visual.filmstrip {
         draw_filmstrip(

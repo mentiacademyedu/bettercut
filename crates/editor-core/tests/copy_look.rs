@@ -270,6 +270,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         zoom_blur: 15.0,
         vignette: 0.25,
         light_leak: 30.0,
+        lens_flare: 45.0,
         beat_pulse: 40.0,
         smooth_motion: false,
         curves: bettercut_timeline::curves::ColourCurves {
