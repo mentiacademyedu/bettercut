@@ -93,6 +93,9 @@ pub struct FfmpegDecoder {
 
     width: u32,
     height: u32,
+    /// The clockwise turn applied to every frame, from the asset: a phone's
+    /// portrait clip, or its proxy, which is encoded from the stored frames.
+    rotation: u16,
     duration: MediaTime,
     /// Resolved once at open, then attached to every frame (§21a.2).
     color: crate::color::ColorMetadata,
@@ -129,6 +132,22 @@ pub struct FfmpegDecoder {
 unsafe impl Send for FfmpegDecoder {}
 
 impl FfmpegDecoder {
+    /// The turn the first frame of `asset` asks for in its own side data:
+    /// a photo's EXIF orientation, which FFmpeg reports only on the decoded
+    /// frame. 0 when it asks for none, or cannot be read.
+    pub(crate) fn first_frame_rotation(asset: &MediaAsset) -> u16 {
+        let Ok(mut decoder) = Self::new(1) else {
+            return 0;
+        };
+        if decoder.open(asset).is_err() {
+            return 0;
+        }
+        match decoder.pump(true, &crate::decoder::NeverCancelled) {
+            Ok(true) => super::frame_rotation(&decoder.frame),
+            _ => 0,
+        }
+    }
+
     /// Create a decoder capped to `threads` FFmpeg threads.
     ///
     /// §15.1: pass 1 on a 4-core machine. `HardwareProfile` computes it.
@@ -147,6 +166,7 @@ impl FfmpegDecoder {
             rgba: Vec::new(),
             width: 0,
             height: 0,
+            rotation: 0,
             duration: MediaTime::ZERO,
             color: crate::color::ColorMetadata::default(),
             drained: false,
@@ -445,6 +465,7 @@ impl MediaDecoder for FfmpegDecoder {
         self.rgba = vec![0; (width * height * 4) as usize];
         self.width = width;
         self.height = height;
+        self.rotation = asset.rotation;
         self.duration = asset.duration;
         self.color = color;
         self.input = Some(input);
@@ -597,15 +618,23 @@ impl MediaDecoder for FfmpegDecoder {
         // seek.
         self.position = Some(timestamp);
 
+        // Turned upright last, after every conversion, so the tone-mapper and
+        // the scaler work on the frame as it is stored.
+        let (data, width, height) = if self.rotation == 0 {
+            (self.rgba.clone(), self.width, self.height)
+        } else {
+            super::rotate_rgba(&self.rgba, self.width, self.height, self.rotation)
+        };
+
         Ok(Some(VideoFrame {
             timestamp,
-            width: self.width,
-            height: self.height,
+            width,
+            height,
             color: self.color,
             // The §5 fallback: pixels in system RAM, to be uploaded.
             storage: FrameStorage::System {
-                data: self.rgba.clone(),
-                stride: self.width * 4,
+                data,
+                stride: width * 4,
             },
         }))
     }
@@ -814,6 +843,55 @@ mod tests {
         assert!(
             decoder.tonemap.is_none(),
             "an SDR source was given a tone-mapping chain"
+        );
+    }
+
+    /// A phone photo with EXIF orientation 6: the left edge (blue) ends up
+    /// along the top.
+    #[test]
+    fn an_exif_rotated_photo_decodes_upright() {
+        let asset = FfmpegProber.probe(&fixture("exif-6.jpg")).expect("probe");
+        let mut decoder = FfmpegDecoder::new(1).expect("decoder");
+        decoder.open(&asset).expect("open");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!((frame.width, frame.height), (32, 64));
+        let FrameStorage::System { data, .. } = &frame.storage else {
+            panic!("system memory expected");
+        };
+        let (r, b) = (data[0], data[2]);
+        assert!(
+            b > 150 && r < 100,
+            "the top left is not the blue edge: r {r} b {b}"
+        );
+    }
+
+    /// A phone's portrait clip: stored landscape with a note to turn it. The
+    /// frames come out turned, pixel for pixel the stored frame rotated.
+    #[test]
+    fn a_rotated_file_decodes_upright() {
+        let mut turned = open("rotated-90.mp4");
+        let mut plain = open("ntsc-2997.mp4");
+        let upright = turned
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        let stored = plain
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!((upright.width, upright.height), (360, 640));
+        let (FrameStorage::System { data: got, .. }, FrameStorage::System { data: raw, .. }) =
+            (&upright.storage, &stored.storage)
+        else {
+            panic!("frames in system memory expected");
+        };
+        let (expected, _, _) = crate::ffmpeg::rotate_rgba(raw, 640, 360, 270);
+        assert!(
+            got == &expected,
+            "the turned frame is not the stored one rotated"
         );
     }
 

@@ -116,6 +116,9 @@ struct App {
     screenshot: Option<std::path::PathBuf>,
     /// Frames drawn, to know when the window has settled.
     frames: u32,
+    /// The running export's job and when it began, to say how long is left.
+    /// Keyed by job, so the next export in the queue starts its own clock.
+    export_began: Option<(u64, std::time::Instant)>,
 }
 
 impl App {
@@ -308,6 +311,7 @@ impl App {
             last_scrub: None,
             screenshot,
             frames: 0,
+            export_began: None,
         }
     }
 }
@@ -540,6 +544,13 @@ impl eframe::App for App {
 
         let export = self.proxies.export_progress();
         self.ui.export_progress = export.map(|(_, fraction)| fraction);
+        self.export_began = export.map(|(job, _)| match self.export_began {
+            Some((running, began)) if running == job.0 => (running, began),
+            _ => (job.0, std::time::Instant::now()),
+        });
+        self.ui.export_elapsed = self
+            .export_began
+            .map(|(_, began)| began.elapsed().as_secs_f64());
         // The queue window's requests, then what it should show next.
         if let Some(index) = self.ui.export_queue.remove.take() {
             self.proxies.remove_waiting_export(index);

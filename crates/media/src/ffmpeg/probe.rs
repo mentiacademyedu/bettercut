@@ -80,8 +80,22 @@ impl MediaProber for FfmpegProber {
         asset.file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
         if let Some(v) = video {
-            asset.width = v.width;
-            asset.height = v.height;
+            // The shown size: a quarter turn swaps the sides.
+            (asset.width, asset.height) = if v.rotation % 180 == 90 {
+                (v.height, v.width)
+            } else {
+                (v.width, v.height)
+            };
+            asset.rotation = v.rotation;
+            // A photo's orientation is not on the stream but on its one
+            // decoded frame (EXIF, as FFmpeg reports it). One small decode.
+            if kind == MediaKind::Image && asset.rotation == 0 {
+                let turn = super::decode::FfmpegDecoder::first_frame_rotation(&asset);
+                if turn % 180 == 90 {
+                    (asset.width, asset.height) = (asset.height, asset.width);
+                }
+                asset.rotation = turn;
+            }
             // A still image has no frame rate; recording the demuxer's
             // synthetic 25 fps would be a lie a later stage might act on.
             asset.frame_rate = if kind == MediaKind::Image {
@@ -154,6 +168,7 @@ fn is_image_demuxer(name: &str) -> bool {
 struct VideoInfo {
     width: u32,
     height: u32,
+    rotation: u16,
     frame_rate: Option<FrameRate>,
     codec: Option<String>,
     color: ColorMetadata,
@@ -172,6 +187,7 @@ fn read_video(
 ) -> VideoInfo {
     let width = par.width.max(0) as u32;
     let height = par.height.max(0) as u32;
+    let rotation = super::display_rotation(par);
 
     // `avg_frame_rate` is authoritative when present. Fall back to
     // `r_frame_rate` (the "real base" rate), which containers fill in more
@@ -186,6 +202,7 @@ fn read_video(
     VideoInfo {
         width,
         height,
+        rotation,
         frame_rate,
         codec,
         color: read_color(par, height),
@@ -321,6 +338,24 @@ mod tests {
         FfmpegProber
             .probe(&fixture(name))
             .unwrap_or_else(|e| panic!("probing {name} failed: {e}"))
+    }
+
+    /// A phone photo's EXIF orientation is read from its frame.
+    #[test]
+    fn an_exif_rotated_photo_probes_as_portrait() {
+        let asset = probe("exif-6.jpg");
+        assert_eq!(asset.rotation, 90);
+        assert_eq!((asset.width, asset.height), (32, 64));
+        assert_eq!(probe("still.png").rotation, 0);
+    }
+
+    /// The display rotation is read, and the size is the size as shown.
+    #[test]
+    fn a_rotated_file_probes_as_portrait() {
+        let asset = probe("rotated-90.mp4");
+        assert_eq!(asset.rotation, 270, "FFmpeg's +90 is anticlockwise");
+        assert_eq!((asset.width, asset.height), (360, 640));
+        assert_eq!(probe("ntsc-2997.mp4").rotation, 0);
     }
 
     #[test]

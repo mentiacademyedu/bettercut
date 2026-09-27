@@ -3873,6 +3873,34 @@ fn draw_meter(ui: &mut egui::Ui, (left, right): (f32, f32), clipping: bool) {
     ));
 }
 
+/// How long an export has left, from how long it has run and how far it has
+/// got: "about 40 s left", "about 3 min left". `None` in its first seconds,
+/// when the guess would swing wildly.
+///
+/// Rounded coarsely on purpose — to 5 seconds, then whole minutes — so the
+/// number settles rather than flickering every frame.
+pub fn export_time_left(elapsed: f64, fraction: f32) -> Option<String> {
+    let fraction = f64::from(fraction);
+    if !(elapsed.is_finite() && fraction.is_finite()) || elapsed < 3.0 || fraction < 0.03 {
+        return None;
+    }
+    if fraction >= 1.0 {
+        return Some("finishing".to_owned());
+    }
+    let left = elapsed * (1.0 - fraction) / fraction;
+    Some(if left < 60.0 {
+        format!(
+            "about {} s left",
+            ((left / 5.0).ceil() * 5.0).max(5.0) as u64
+        )
+    } else if left < 3600.0 {
+        format!("about {} min left", (left / 60.0).round().max(1.0) as u64)
+    } else {
+        let minutes = (left / 60.0).round() as u64;
+        format!("about {} h {} min left", minutes / 60, minutes % 60)
+    })
+}
+
 /// One asset's poster image, or a placeholder of the same size.
 ///
 /// The placeholder matters: without it the row height changes the moment a
@@ -10947,12 +10975,18 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
         // gets its own bar and a way to stop it (§42, §48).
         if let Some(fraction) = state.export_progress {
             ui.separator();
+            let left = state
+                .export_elapsed
+                .and_then(|elapsed| export_time_left(elapsed, fraction));
             ui.add(
                 egui::ProgressBar::new(fraction)
                     .desired_width(140.0)
                     .text(format!("Exporting {:.0}%", fraction * 100.0)),
             )
             .on_hover_text("Rendering your timeline to a video file.");
+            if let Some(left) = left {
+                ui.label(egui::RichText::new(left).color(theme::ruler_text()));
+            }
             if ui
                 .button("Stop")
                 .on_hover_text("Cancel the export. The partial file is removed.")

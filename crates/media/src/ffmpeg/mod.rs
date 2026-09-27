@@ -349,3 +349,119 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// Turn an RGBA picture `width` by `height` clockwise by `degrees` (0, 90, 180
+/// or 270; anything else is treated as 0). Returns the pixels and the turned
+/// size.
+pub(crate) fn rotate_rgba(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    degrees: u16,
+) -> (Vec<u8>, u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    if pixels.len() < w * h * 4 {
+        return (pixels.to_vec(), width, height);
+    }
+    let pixel = |x: usize, y: usize| {
+        let at = (y * w + x) * 4;
+        [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
+    };
+    let (out_w, out_h) = match degrees {
+        90 | 270 => (h, w),
+        180 => (w, h),
+        _ => return (pixels[..w * h * 4].to_vec(), width, height),
+    };
+    let mut out = Vec::with_capacity(out_w * out_h * 4);
+    for y in 0..out_h {
+        for x in 0..out_w {
+            // Where the shown pixel (x, y) was in the stored frame.
+            let from = match degrees {
+                90 => pixel(y, h - 1 - x),
+                180 => pixel(w - 1 - x, h - 1 - y),
+                _ => pixel(w - 1 - y, x),
+            };
+            out.extend_from_slice(&from);
+        }
+    }
+    (out, out_w as u32, out_h as u32)
+}
+
+/// The clockwise turn a display matrix asks for, snapped to a quarter.
+///
+/// # Safety
+/// `matrix` must point at nine 32-bit values.
+unsafe fn matrix_rotation(matrix: *const i32) -> u16 {
+    // SAFETY: the caller's promise.
+    let angle = unsafe { ffi::av_display_rotation_get(matrix) };
+    if !angle.is_finite() {
+        return 0;
+    }
+    // FFmpeg's angle is anticlockwise; the turn to show it is the opposite.
+    let quarters = (-angle / 90.0).round() as i64;
+    (quarters.rem_euclid(4) * 90) as u16
+}
+
+/// The clockwise turn a decoded frame's own display matrix asks for — how
+/// FFmpeg reports a photo's EXIF orientation.
+pub(crate) fn frame_rotation(frame: &raii::Frame) -> u16 {
+    // SAFETY: the frame is valid; FFmpeg returns null without a matrix, and a
+    // display matrix is always nine 32-bit values.
+    unsafe {
+        let side = ffi::av_frame_get_side_data(frame.as_ptr(), ffi::AV_FRAME_DATA_DISPLAYMATRIX);
+        if side.is_null() || (*side).data.is_null() || (*side).size < 36 {
+            return 0;
+        }
+        matrix_rotation((*side).data as *const i32)
+    }
+}
+
+/// The clockwise turn a stream's display matrix asks for, snapped to a
+/// quarter: 0, 90, 180 or 270.
+pub(crate) fn display_rotation(par: &ffi::AVCodecParameters) -> u16 {
+    // SAFETY: the side-data array and its count come from the same
+    // parameters; FFmpeg returns null when there is no matrix, and a display
+    // matrix is always nine 32-bit values.
+    unsafe {
+        let side = ffi::av_packet_side_data_get(
+            par.coded_side_data,
+            par.nb_coded_side_data,
+            ffi::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        if side.is_null() || (*side).data.is_null() || (*side).size < 36 {
+            return 0;
+        }
+        matrix_rotation((*side).data as *const i32)
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::rotate_rgba;
+
+    /// A 2x1 picture: red then green.
+    fn two() -> Vec<u8> {
+        vec![255, 0, 0, 255, 0, 255, 0, 255]
+    }
+
+    #[test]
+    fn a_quarter_turn_clockwise_puts_the_left_on_top() {
+        let (out, w, h) = rotate_rgba(&two(), 2, 1, 90);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(&out[..4], &[255, 0, 0, 255], "the left pixel is not on top");
+    }
+
+    #[test]
+    fn three_quarters_puts_the_right_on_top() {
+        let (out, w, h) = rotate_rgba(&two(), 2, 1, 270);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(&out[..4], &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn a_half_turn_swaps_the_ends_and_none_changes_nothing() {
+        let (out, _, _) = rotate_rgba(&two(), 2, 1, 180);
+        assert_eq!(&out[..4], &[0, 255, 0, 255]);
+        assert_eq!(rotate_rgba(&two(), 2, 1, 0).0, two());
+    }
+}

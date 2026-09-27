@@ -68,8 +68,15 @@ pub struct MediaAsset {
     pub file_name: String,
     pub file_size: u64,
 
+    /// The picture's size as it is *shown* — already turned by
+    /// [`Self::rotation`], so a phone's portrait clip is taller than wide.
     pub width: u32,
     pub height: u32,
+    /// How far the stored frames are turned clockwise to show them upright:
+    /// 0, 90, 180 or 270. Phones record portrait video as landscape frames
+    /// with a note saying "turn this"; ignoring the note shows it sideways.
+    #[serde(default)]
+    pub rotation: u16,
     pub duration: MediaTime,
     pub frame_rate: Option<FrameRate>,
 
@@ -163,6 +170,7 @@ impl MediaAsset {
             file_size: 0,
             width: 0,
             height: 0,
+            rotation: 0,
             duration,
             frame_rate: None,
             video_codec: None,

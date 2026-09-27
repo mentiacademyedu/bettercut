@@ -1003,6 +1003,8 @@ pub struct UiState {
     /// stop. The shell owns the scheduler, so the button sets a flag here and
     /// the shell acts on it.
     pub export_progress: Option<f32>,
+    /// Seconds since the running export began, for the time left.
+    pub export_elapsed: Option<f64>,
     pub export_stop_requested: bool,
     /// The export queue window and what it shows.
     pub export_queue: crate::export_queue::ExportQueueState,
@@ -1161,6 +1163,7 @@ impl Default for UiState {
             gpu: None,
             proxy_progress: None,
             export_progress: None,
+            export_elapsed: None,
             export_stop_requested: false,
             export_queue: crate::export_queue::ExportQueueState::default(),
         }
