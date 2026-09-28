@@ -3,6 +3,8 @@
 A free, open-source desktop video editor with CapCut-style convenience, built
 in Rust to stay quick on ordinary laptops.
 
+**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.1.0)
+
 ![bettercut editing its sample project](docs/images/screenshot.png)
 
 > **Public beta — expect bugs.** This is the first public release. It has been
