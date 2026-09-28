@@ -1,7 +1,11 @@
 # Build output.
 /target
-# Packaged test builds from `docs/package.ps1`: the zip and the installer.
-/dist
+# Packaged test builds from `docs/package.ps1`: the staging folder and the
+# zip are ignored, but the installer is committed, so the newest build is
+# always one click away for someone who only wants the .exe. (At ~50 MB each,
+# every version kept adds to the clone; GitHub Releases is the lighter home.)
+/dist/*
+!/dist/*-setup.exe
 # The Milestone 0 spike is outside the workspace, so it has its own target dir.
 /spike/*/target
 
