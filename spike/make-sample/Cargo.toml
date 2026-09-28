@@ -1,0 +1,13 @@
+[package]
+name = "make-sample"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Throwaway tool (website work): probes a few real media files and writes a
+# sample .vproj so the site's screenshots show a populated editor.
+[dependencies]
+bettercut-foundation = { path = "../../crates/foundation" }
+bettercut-media = { path = "../../crates/media" }
+bettercut-timeline = { path = "../../crates/timeline" }
+bettercut-project-format = { path = "../../crates/project-format" }

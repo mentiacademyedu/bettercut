@@ -711,6 +711,8 @@ pub struct UiState {
     /// Text to put on the clipboard at the end of the frame, for actions
     /// that run where there is no `egui::Context` to hand.
     pub copy_out: Option<String>,
+    /// A web page to open at the end of the frame, in the person's browser.
+    pub open_url: Option<String>,
     /// What is waiting on "Save changes?" (`crate::save_prompt`).
     pub pending_switch: Option<crate::save_prompt::Switch>,
     /// Set while going on after "Don't Save": the unsaved-work check passes.
@@ -1061,6 +1063,7 @@ impl Default for UiState {
             media_stars: 0,
             media_unused_only: false,
             copy_out: None,
+            open_url: None,
             pending_switch: None,
             discard_ok: false,
             quit_now: false,

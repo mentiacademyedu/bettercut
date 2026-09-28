@@ -1,0 +1,27 @@
+# cargo-about: which licences the Rust dependencies may carry, for the
+# third-party notices shipped with every build (docs/package.ps1).
+# A dependency under any other licence stops the build of the notices, so a
+# new one is looked at before it ships.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "CDLA-Permissive-2.0",
+    "MIT-0",
+    "0BSD",
+]
+# Only what ships: the app and what it links, not test-only helpers.
+targets = ["x86_64-pc-windows-msvc"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true

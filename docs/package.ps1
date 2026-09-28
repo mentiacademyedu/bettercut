@@ -61,6 +61,18 @@ if ($Dlls -ne 7) { throw "Expected 7 FFmpeg DLLs, staged $Dlls" }
 
 New-Item -ItemType Directory -Force "$Stage\licences" | Out-Null
 Copy-Item "$Repo\vendor\ffmpeg\LICENSE.txt" "$Stage\licences\FFmpeg-LICENSE.txt"
+Copy-Item "$Repo\LICENSE-MIT", "$Repo\LICENSE-APACHE" "$Stage\licences"
+# The notices every Rust library bettercut is built from asks to be shipped
+# with it. Generated fresh, so a new dependency is never left out; a build
+# without them is not one to hand out.
+$Notices = "$Stage\licences\THIRD-PARTY-NOTICES.txt"
+Push-Location $Repo
+cargo about generate -c docs\about.toml docs\about.hbs -o $Notices
+$AboutExit = $LASTEXITCODE
+Pop-Location
+if ($AboutExit -ne 0 -or -not (Test-Path $Notices)) {
+    throw "Could not generate the third-party notices: cargo install cargo-about --locked --features cli"
+}
 @"
 bettercut $Version
 
@@ -77,14 +89,17 @@ FFmpeg-LICENSE.txt.
 "@ | Set-Content -Encoding ascii "$Stage\licences\NOTICE.txt"
 
 @"
-bettercut $Version - test build
+bettercut $Version - public beta
 
 Run bettercut.exe. Keep the .dll files in the same folder: the program needs
 them to read and write video.
 
-If bettercut crashes, it saves a report and shows it the next time it starts,
-with a button to copy it. Please send that report along with what you were
-doing. Ctrl+K in bettercut finds any action by name.
+This is a beta and will have bugs. Report them at
+https://github.com/mentiacademyedu/bettercut/issues - in bettercut, Ctrl+K
+then "Report a Bug on GitHub" fills in your version and system. If bettercut
+crashes, it shows the saved report the next time it starts.
+
+Licences: see the licences folder.
 "@ | Set-Content -Encoding ascii "$Stage\README.txt"
 
 # The portable zip: works everywhere, nothing to install.

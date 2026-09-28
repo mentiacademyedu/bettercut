@@ -1,0 +1,17 @@
+Third-party notices for bettercut
+=================================
+
+bettercut is built from its own code (MIT OR Apache-2.0) and the open-source
+Rust libraries below. Each licence is given once, followed by the libraries it
+covers. FFmpeg, which bettercut uses as separate DLLs, has its own notice in
+NOTICE.txt and FFmpeg-LICENSE.txt.
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{name}} ({{id}})
+Used by:
+{{#each used_by}}  - {{crate.name}} {{crate.version}}
+{{/each}}
+{{text}}
+
+{{/each}}

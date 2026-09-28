@@ -137,6 +137,25 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                     state.copy_out = Some(text.clone());
                     state.info("Crash report copied");
                 }
+                // The report goes on the clipboard, not into the link: it
+                // holds log lines, which may name files, and what is posted
+                // publicly is the person's to choose.
+                if ui
+                    .button("Report on GitHub")
+                    .on_hover_text(
+                        "Copies the report and opens a new issue; paste it in, \
+                         and read it over before you submit",
+                    )
+                    .clicked()
+                {
+                    state.copy_out = Some(text.clone());
+                    state.open_url = Some(crate::bug_report::new_issue_url(
+                        "Crash: ",
+                        "**What you were doing**\n\n\n**Crash report** \
+                         (on your clipboard - paste it here, and remove anything private)\n\n",
+                    ));
+                    state.info("Report copied — paste it into the issue that opened");
+                }
                 if ui.button("Open Folder").clicked()
                     && let Err(err) = crate::reveal::show_in_folder(&path)
                 {

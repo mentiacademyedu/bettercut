@@ -66,6 +66,15 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     .small()
                     .color(theme::disabled()),
             );
+            // A beta says so up front, with where to send what breaks.
+            ui.label(
+                egui::RichText::new(
+                    "This is a beta: save often, and when something breaks, Ctrl+K then \
+                     \u{201c}Report a Bug on GitHub\u{201d} tells us about it.",
+                )
+                .small()
+                .color(theme::accent_text()),
+            );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Start editing").clicked() {

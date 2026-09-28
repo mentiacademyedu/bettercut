@@ -184,6 +184,9 @@ pub fn draw(
     if let Some(text) = state.copy_out.take() {
         ui.ctx().copy_text(text);
     }
+    if let Some(url) = state.open_url.take() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
     caption_list::show(ui.ctx(), editor, state);
     marker_list::show(ui.ctx(), editor, state);
     export_queue::show(ui.ctx(), state);

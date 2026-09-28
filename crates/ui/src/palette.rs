@@ -400,6 +400,15 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.welcome_open = true,
     },
     Action {
+        name: "Report a Bug on GitHub",
+        hint: "opens a new issue with the version and system filled in",
+        run: |e, s| {
+            let body = crate::bug_report::issue_body(&crate::bug_report::details(e));
+            s.open_url = Some(crate::bug_report::new_issue_url("", &body));
+            s.info("Opening a new issue in your browser — nothing is sent until you submit it");
+        },
+    },
+    Action {
         name: "Copy Details for a Bug Report",
         hint: "version, system and project shape — no file names",
         run: |e, s| {
