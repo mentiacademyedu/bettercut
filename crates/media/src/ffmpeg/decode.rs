@@ -96,6 +96,10 @@ pub struct FfmpegDecoder {
     /// The clockwise turn applied to every frame, from the asset: a phone's
     /// portrait clip, or its proxy, which is encoded from the stored frames.
     rotation: u16,
+    /// Where the file's own clock starts. Camera transport streams begin at
+    /// a second or more; every timestamp is read relative to this, and every
+    /// seek is made from it, so media time zero is the file's first moment.
+    origin: MediaTime,
     duration: MediaTime,
     /// Resolved once at open, then attached to every frame (§21a.2).
     color: crate::color::ColorMetadata,
@@ -112,6 +116,11 @@ pub struct FfmpegDecoder {
     /// and why all-intra proxies (§13.1) matter: with GOP=1 this skips nothing,
     /// with a 250-frame GOP it skips up to 249 decodes.
     skip_until: Option<MediaTime>,
+    /// Where the last container seek aimed, until its first frame is read,
+    /// and how many times it has stepped back since. A file with no seek
+    /// index — a camera's transport stream — can land past its keyframe and
+    /// decode nothing; stepping back and trying again finds one.
+    seeked: Option<(MediaTime, u8)>,
 
     /// Timestamp of the last frame handed out, which is where the demuxer now
     /// stands. `None` until something has been decoded.
@@ -148,6 +157,84 @@ impl FfmpegDecoder {
         }
     }
 
+    /// Move the demuxer to the keyframe at or before `timestamp`, and flush
+    /// the decoders so nothing from before the seek comes out after it.
+    fn seek_container(&mut self, timestamp: MediaTime) -> Result<(), MediaError> {
+        let input = self.input()?;
+
+        // Seek against the video stream where there is one: the container is
+        // indexed by its keyframes.
+        let (stream_index, timebase) = match (&self.video, &self.audio) {
+            (Some(v), _) => (v.index, v.timebase),
+            (None, Some(a)) => (a.index, a.timebase),
+            (None, None) => return Err(MediaError::NotOpen),
+        };
+
+        // On the file's own clock, which may not start at zero.
+        let target = MediaTime::from_ticks(timestamp.ticks() + self.origin.ticks())
+            .to_timebase(timebase)
+            .ok_or_else(|| MediaError::SeekFailed {
+                timestamp: format!("{} ticks", timestamp.ticks()),
+                reason: "outside the stream's timebase".to_owned(),
+            })?;
+
+        // Always seek backwards to a keyframe and decode forward from there.
+        // Seeking forward lands *after* the target and shows the wrong picture.
+        // §47a.1 is why all-intra proxies matter so much: with GOP=1 the
+        // decode-forward step is one frame instead of up to 250.
+        let flags = ffi::AVSEEK_FLAG_BACKWARD as i32;
+
+        // SAFETY: `input` is open and the index came from its own stream list.
+        let code = unsafe { ffi::av_seek_frame(input.as_mut_ptr(), stream_index, target, flags) };
+        if code < 0 {
+            return Err(MediaError::SeekFailed {
+                timestamp: format!("{} ticks", timestamp.ticks()),
+                reason: error_string(code),
+            });
+        }
+
+        // Without flushing, the decoder keeps emitting pre-seek frames and the
+        // picture appears to jump backwards before settling.
+        if let Some(v) = &mut self.video {
+            v.codec.flush();
+        }
+        if let Some(a) = &mut self.audio {
+            a.codec.flush();
+        }
+        self.drained = false;
+        // The demuxer moved and the codec was flushed, so nothing has been
+        // decoded from here yet. Leaving a stale position would let the next
+        // request mistake a fresh seek for sequential reading.
+        self.position = None;
+        Ok(())
+    }
+
+    /// After a precise seek that found nothing to decode, or only frames past
+    /// its target: seek again further back. Returns whether it did.
+    fn step_back(&mut self, target: MediaTime) -> Result<bool, MediaError> {
+        let Some((aimed, tries)) = self.seeked else {
+            return Ok(false);
+        };
+        // Past the end there is nothing to find by looking earlier.
+        if tries >= 3 || (!self.duration.is_zero() && target >= self.duration) {
+            return Ok(false);
+        }
+        let back = [1, 5, 20][usize::from(tries)];
+        let earlier =
+            MediaTime::from_ticks((aimed.ticks() - MediaTime::from_seconds(back).ticks()).max(0));
+        if earlier >= aimed {
+            return Ok(false);
+        }
+        self.seek_container(earlier)?;
+        self.seeked = Some((earlier, tries + 1));
+        self.skip_until = Some(target);
+        tracing::debug!(
+            tries = tries + 1,
+            "seek landed past its target; stepping back"
+        );
+        Ok(true)
+    }
+
     /// Create a decoder capped to `threads` FFmpeg threads.
     ///
     /// §15.1: pass 1 on a 4-core machine. `HardwareProfile` computes it.
@@ -167,10 +254,12 @@ impl FfmpegDecoder {
             width: 0,
             height: 0,
             rotation: 0,
+            origin: MediaTime::ZERO,
             duration: MediaTime::ZERO,
             color: crate::color::ColorMetadata::default(),
             drained: false,
             skip_until: None,
+            seeked: None,
             position: None,
         })
     }
@@ -285,7 +374,8 @@ impl FfmpegDecoder {
         if pts == ffi::AV_NOPTS_VALUE {
             return MediaTime::ZERO;
         }
-        MediaTime::from_timebase(pts, timebase).unwrap_or(MediaTime::ZERO)
+        let at = MediaTime::from_timebase(pts, timebase).unwrap_or(MediaTime::ZERO);
+        MediaTime::from_ticks((at.ticks() - self.origin.ticks()).max(0))
     }
 }
 
@@ -466,6 +556,20 @@ impl MediaDecoder for FfmpegDecoder {
         self.width = width;
         self.height = height;
         self.rotation = asset.rotation;
+        // Only a clock that starts late is moved back. A slightly negative
+        // start — an MP4's edit list priming the audio — is left alone, as
+        // every other player leaves it.
+        // SAFETY: the context is open; `start_time` is a plain field.
+        let start = unsafe { (*input.as_mut_ptr()).start_time };
+        self.origin = if start != ffi::AV_NOPTS_VALUE && start > 0 {
+            MediaTime::from_timebase(
+                start,
+                Rational::new(1, i64::from(ffi::AV_TIME_BASE)).unwrap_or_else(unit_timebase),
+            )
+            .unwrap_or(MediaTime::ZERO)
+        } else {
+            MediaTime::ZERO
+        };
         self.duration = asset.duration;
         self.color = color;
         self.input = Some(input);
@@ -491,51 +595,8 @@ impl MediaDecoder for FfmpegDecoder {
     }
 
     fn seek(&mut self, timestamp: MediaTime, mode: SeekMode) -> Result<(), MediaError> {
-        let input = self.input()?;
-
-        // Seek against the video stream where there is one: the container is
-        // indexed by its keyframes.
-        let (stream_index, timebase) = match (&self.video, &self.audio) {
-            (Some(v), _) => (v.index, v.timebase),
-            (None, Some(a)) => (a.index, a.timebase),
-            (None, None) => return Err(MediaError::NotOpen),
-        };
-
-        let target = timestamp
-            .to_timebase(timebase)
-            .ok_or_else(|| MediaError::SeekFailed {
-                timestamp: format!("{} ticks", timestamp.ticks()),
-                reason: "outside the stream's timebase".to_owned(),
-            })?;
-
-        // Always seek backwards to a keyframe and decode forward from there.
-        // Seeking forward lands *after* the target and shows the wrong picture.
-        // §47a.1 is why all-intra proxies matter so much: with GOP=1 the
-        // decode-forward step is one frame instead of up to 250.
-        let flags = ffi::AVSEEK_FLAG_BACKWARD as i32;
-
-        // SAFETY: `input` is open and the index came from its own stream list.
-        let code = unsafe { ffi::av_seek_frame(input.as_mut_ptr(), stream_index, target, flags) };
-        if code < 0 {
-            return Err(MediaError::SeekFailed {
-                timestamp: format!("{} ticks", timestamp.ticks()),
-                reason: error_string(code),
-            });
-        }
-
-        // Without flushing, the decoder keeps emitting pre-seek frames and the
-        // picture appears to jump backwards before settling.
-        if let Some(v) = &mut self.video {
-            v.codec.flush();
-        }
-        if let Some(a) = &mut self.audio {
-            a.codec.flush();
-        }
-        self.drained = false;
-        // The demuxer moved and the codec was flushed, so nothing has been
-        // decoded from here yet. Leaving a stale position would let the next
-        // request mistake a fresh seek for sequential reading.
-        self.position = None;
+        self.seek_container(timestamp)?;
+        self.seeked = matches!(mode, SeekMode::Precise).then_some((timestamp, 0));
 
         // §47a.2 distinguishes the three seek kinds by what they optimise for.
         // Only `Precise` pays to decode forward; `Scrub` wants the lowest
@@ -546,7 +607,7 @@ impl MediaDecoder for FfmpegDecoder {
             SeekMode::Scrub | SeekMode::Playback => None,
         };
 
-        tracing::trace!(?mode, target, "seeked");
+        tracing::trace!(?mode, ticks = timestamp.ticks(), "seeked");
         Ok(())
     }
 
@@ -574,12 +635,30 @@ impl MediaDecoder for FfmpegDecoder {
         let timestamp = loop {
             self.frame.unref();
             if !self.pump(true, cancel)? {
-                // Ran out before reaching the target: the request was past the
-                // end of the stream. Clear the skip so the decoder is reusable.
+                // Ran out before reaching the target. Usually the request was
+                // past the end; but a seek into a file without an index can
+                // land beyond its keyframe and decode nothing at all.
+                if let Some(target) = self.skip_until
+                    && self.step_back(target)?
+                {
+                    continue;
+                }
+                // Clear the skip so the decoder is reusable.
                 self.skip_until = None;
+                self.seeked = None;
                 return Ok(None);
             }
             let timestamp = self.frame_timestamp(timebase);
+            // The first frame after a seek already past the target: the seek
+            // overshot, and the frame wanted is behind it.
+            if self.seeked.is_some()
+                && let Some(target) = self.skip_until
+                && timestamp > target
+                && self.step_back(target)?
+            {
+                continue;
+            }
+            self.seeked = None;
 
             match self.skip_until {
                 Some(target) if timestamp + frame_duration <= target => continue,
@@ -843,6 +922,44 @@ mod tests {
         assert!(
             decoder.tonemap.is_none(),
             "an SDR source was given a tone-mapping chain"
+        );
+    }
+
+    /// A camera's transport stream whose clock starts at 11 s: its first
+    /// frame is still at the start of the clip, and a seek into it lands
+    /// where asked rather than past the end.
+    #[test]
+    fn a_file_whose_clock_starts_late_is_read_from_zero() {
+        let mut decoder = open("late-start.ts");
+        let first = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert!(
+            first.timestamp < MediaTime::from_millis(100),
+            "the first frame is at {:?}, not the start",
+            first.timestamp
+        );
+        let half = MediaTime::from_millis(500);
+        decoder.seek(half, SeekMode::Precise).expect("seek");
+        let there = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame at half a second");
+        let off = (there.timestamp.ticks() - half.ticks()).abs();
+        assert!(
+            off < MediaTime::from_millis(60).ticks(),
+            "the seek landed at {:?}",
+            there.timestamp
+        );
+        let sound = decoder
+            .decode_audio(&NeverCancelled)
+            .expect("decode audio")
+            .expect("some sound");
+        assert!(
+            sound.timestamp < MediaTime::from_seconds(2),
+            "the sound is timed on the file's clock: {:?}",
+            sound.timestamp
         );
     }
 
