@@ -3,7 +3,8 @@
 ## 0.1.0 — first public beta
 
 The first release anyone can download. It is a beta, and it will have bugs:
-it has been tested on one Windows PC, mostly with generated test footage.
+it has been tested on two Windows PCs, a desktop and a laptop, mostly with
+generated test footage.
 Please [report what breaks](https://github.com/mentiacademyedu/bettercut/issues)
 (Ctrl+K → *Report a Bug on GitHub* fills in the details for you).
 
@@ -31,8 +32,9 @@ Please [report what breaks](https://github.com/mentiacademyedu/bettercut/issues)
 - **Windows only.** macOS and Linux builds are planned.
 - **The installer is not code-signed**, so SmartScreen asks you to confirm:
   *More info → Run anyway*.
-- **Tested on one machine** (desktop, NVIDIA GPU). Laptops with integrated
-  graphics are the target and have not been measured yet.
+- **Tested on two machines** (a desktop with an NVIDIA GPU, and a laptop).
+  Performance on low-end laptops with integrated graphics, the target, has
+  not been measured yet.
 - **HEIC photos** (the iPhone default) do not import yet.
 - **No automatic captions from speech, background removal or auto-reframe**
   yet; they need on-device models.

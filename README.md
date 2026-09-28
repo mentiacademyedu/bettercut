@@ -6,8 +6,9 @@ in Rust to stay quick on ordinary laptops.
 ![bettercut editing its sample project](docs/images/screenshot.png)
 
 > **Public beta — expect bugs.** This is the first public release. It has been
-> tested on one Windows PC, mostly with generated test footage, and real-world
-> files keep turning up problems the tests did not. Save often, and please
+> tested on two Windows PCs, a desktop and a laptop, mostly with generated test
+> footage, and real-world files keep turning up problems the tests did not.
+> Save often, and please
 > [report what breaks](https://github.com/mentiacademyedu/bettercut/issues).
 > Inside the app, **Ctrl+K → "Report a Bug on GitHub"** opens an issue with
 > your version and system filled in.
