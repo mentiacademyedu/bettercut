@@ -11303,7 +11303,7 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
             "media",
             &[
                 "mp4", "mov", "mkv", "webm", "avi", "mp3", "wav", "m4a", "flac", "png", "jpg",
-                "jpeg", "webp", "bmp", "gif", "tif", "tiff",
+                "jpeg", "heic", "heif", "webp", "bmp", "gif", "tif", "tiff",
             ],
         )
         .pick_files()

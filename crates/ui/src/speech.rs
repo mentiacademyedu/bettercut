@@ -1,8 +1,9 @@
-//! Text to speech: a title read aloud by one of the voices built into Windows,
-//! saved as a WAV and put on a sound lane like a recorded voiceover.
+//! Text to speech: a title read aloud by one of the voices built into the
+//! system, saved as a WAV and put on a sound lane like a recorded voiceover.
 //!
-//! Through PowerShell's `System.Speech`, which every Windows install has, so
-//! there is nothing to download and nothing to bundle. The words go in on
+//! On Windows through PowerShell's `System.Speech`, and on a Mac through
+//! `say`; both are on every install, so there is nothing to download and
+//! nothing to bundle. The words go in on
 //! standard input rather than on the command line, so no quote or dollar sign
 //! in a title can break out of the script. Speaking takes a second or two, so
 //! it runs on its own thread and the editor carries on.
@@ -22,6 +23,9 @@ pub const MAX_SPEECH_CHARS: usize = 5_000;
 
 /// The voices installed on this machine, by name.
 pub fn voices() -> Result<Vec<String>, String> {
+    if cfg!(target_os = "macos") {
+        return run("say", &["-v".into(), "?".into()], None).map(|out| say_voices(&out));
+    }
     let output = powershell(
         "Add-Type -AssemblyName System.Speech; \
          $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
@@ -45,6 +49,13 @@ pub fn synthesize(text: &str, voice: Option<&str>, rate: i32, path: &Path) -> Re
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if cfg!(target_os = "macos") {
+        run("say", &say_args(voice, rate, path), Some(&text))?;
+        if !path.exists() {
+            return Err("The voice did not produce a file".to_owned());
+        }
+        return Ok(());
     }
     // The voice name and the path are not typed by the user as free text into
     // the script: the voice comes from `voices()`, and both are passed as
@@ -70,9 +81,73 @@ pub fn synthesize(text: &str, voice: Option<&str>, rate: i32, path: &Path) -> Re
     Ok(())
 }
 
+/// The voice names in the listing `say -v '?'` prints, one voice a line:
+/// `Name   locale    # A sample sentence.` A name can have spaces in it
+/// ("Bad News"), so it is everything before the locale.
+pub fn say_voices(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let before_sample = line.split('#').next()?.trim_end();
+            let (name, _locale) = before_sample.rsplit_once(char::is_whitespace)?;
+            let name = name.trim();
+            (!name.is_empty()).then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// The arguments for `say` to read standard input into a WAV at `path`: the
+/// voice when one is chosen, and `rate` (-10 to 10, as on Windows) as words a
+/// minute around its usual 175. The words themselves never go on the command
+/// line.
+pub fn say_args(voice: Option<&str>, rate: i32, path: &Path) -> Vec<std::ffi::OsString> {
+    let words_a_minute = 175 + rate.clamp(-10, 10) * 12;
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(voice) = voice {
+        args.push("-v".into());
+        args.push(voice.into());
+    }
+    args.push("-r".into());
+    args.push(words_a_minute.to_string().into());
+    args.push("--file-format=WAVE".into());
+    args.push("--data-format=LEI16@48000".into());
+    args.push("-o".into());
+    args.push(path.as_os_str().to_owned());
+    args.push("-f".into());
+    args.push("-".into());
+    args
+}
+
+/// Run `program` with `args`, `input` on its standard input, and return what
+/// it printed.
+fn run(program: &str, args: &[std::ffi::OsString], input: Option<&str>) -> Result<String, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start the speech engine: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.unwrap_or("").as_bytes());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("The speech engine stopped: {e}"))?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let first = message
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("unknown error");
+        return Err(format!("The speech engine failed: {}", first.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn powershell(script: &str, input: Option<&str>) -> Result<String, String> {
     if !cfg!(windows) {
-        return Err("Reading aloud needs the voices built into Windows".to_owned());
+        return Err("Reading aloud needs the voices built into Windows or macOS".to_owned());
     }
     let mut command = Command::new("powershell");
     // A windowed app starting a console program gets a console window flashed
@@ -203,4 +278,33 @@ pub struct SpeechRequest {
     pub rate: i32,
     /// Where the spoken take starts on the timeline.
     pub at: TimelineTime,
+}
+
+#[cfg(test)]
+mod say_tests {
+    use super::*;
+
+    #[test]
+    fn voices_are_read_from_the_say_listing_names_with_spaces_included() {
+        let listing = "Alex                en_US    # Most people recognize me by my voice.\n\
+                       Bad News            en_US    # The light you see at the end of the tunnel.\n\
+                       Amélie              fr_CA    # Bonjour, je m'appelle Amélie.\n";
+        assert_eq!(say_voices(listing), ["Alex", "Bad News", "Amélie"]);
+    }
+
+    #[test]
+    fn say_reads_standard_input_into_a_wav_and_never_takes_the_words() {
+        let args: Vec<String> = say_args(Some("Bad News"), 5, Path::new("/tmp/Speech 1.wav"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&args[..2], ["-v", "Bad News"]);
+        assert!(args.windows(2).any(|w| w == ["-r", "235"]), "{args:?}");
+        assert!(
+            args.windows(2).any(|w| w == ["-o", "/tmp/Speech 1.wav"]),
+            "{args:?}"
+        );
+        assert_eq!(&args[args.len() - 2..], ["-f", "-"]);
+        assert!(args.iter().any(|a| a == "--file-format=WAVE"));
+    }
 }

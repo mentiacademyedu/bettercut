@@ -43,13 +43,7 @@ impl CacheLayout {
     /// Not beside the project: several projects usually share media, and a
     /// per-project cache would regenerate the same proxy once per project.
     pub fn default_location() -> Self {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-            .unwrap_or_else(std::env::temp_dir);
-
-        Self::new(base.join("bettercut").join("cache"))
+        Self::new(bettercut_foundation::places::cache_home())
     }
 
     pub fn root(&self) -> &Path {

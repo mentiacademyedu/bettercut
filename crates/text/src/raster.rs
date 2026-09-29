@@ -384,15 +384,7 @@ impl TextRenderer {
 
 /// Where imported fonts are kept for this user: every renderer loads them.
 pub fn user_fonts_dir() -> std::path::PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| std::path::PathBuf::from(home).join(".local").join("share"))
-        })
-        .unwrap_or_else(std::env::temp_dir)
-        .join("bettercut")
-        .join("fonts")
+    bettercut_foundation::places::local_home().join("fonts")
 }
 
 /// The family names of the faces in a font file's bytes, or why it is not a

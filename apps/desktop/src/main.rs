@@ -16,6 +16,25 @@ use bettercut_editor_core::{Editor, EventReceiver};
 use bettercut_ui::UiState;
 
 fn main() -> eframe::Result {
+    // Packaging: write the app icon as PNGs and stop, so a Mac `.icns` (and
+    // anything else that wants files) is made from the same drawing the
+    // window uses. `docs/package-macos.sh` asks for this.
+    if let Some(folder) = std::env::var_os("BETTERCUT_WRITE_ICONS") {
+        let folder = std::path::PathBuf::from(folder);
+        let _ = std::fs::create_dir_all(&folder);
+        for size in [16u32, 32, 64, 128, 256, 512, 1024] {
+            let path = folder.join(format!("icon_{size}.png"));
+            let size_of = bettercut_editor_core::timeline::Resolution::new(size, size);
+            if let Err(err) =
+                bettercut_export::write_png(&path, size_of, &bettercut_ui::icon::rgba(size))
+            {
+                eprintln!("could not write {}: {err}", path.display());
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     init_logging();
     // A panic leaves a report for the next launch to show (`bettercut_ui::crash`).
     bettercut_ui::crash::install_hook(bettercut_ui::crash::crash_dir());

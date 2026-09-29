@@ -22,12 +22,7 @@ pub fn voiceover_folder(project: Option<&Path>) -> PathBuf {
             );
             project.with_file_name(format!("{stem} voiceovers"))
         }
-        None => std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("bettercut")
-            .join("voiceovers"),
+        None => bettercut_foundation::places::local_home().join("voiceovers"),
     }
 }
 

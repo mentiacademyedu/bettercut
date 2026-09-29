@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **HEIC/HEIF photos**, the iPhone default, now import: tiled photos are
+  stitched, cropped to their shown size and turned upright.
+- **macOS, in progress**: the code now builds for Apple Silicon, settings and
+  caches go where a Mac keeps them (`~/Library`), text-to-speech uses the
+  Mac's own voices, and GitHub builds, tests and packages a `.dmg` on every
+  push. Nobody on the team has a Mac yet: testers welcome.
+
 ## 0.1.0 — first public beta
 
 The first release anyone can download. It is a beta, and it will have bugs:

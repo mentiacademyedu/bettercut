@@ -26,12 +26,7 @@ pub struct Library {
 /// Where the user's templates live: beside the editor's other per-user data,
 /// in a folder of their own.
 pub fn user_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("bettercut").join("templates")
+    bettercut_foundation::places::data_home().join("templates")
 }
 
 /// Read one template file, size-capped before it is read (§64).

@@ -1,0 +1,113 @@
+# bettercut on macOS, without owning a Mac: GitHub's Apple Silicon machines
+# build it, run the tests, package a .dmg and take a screenshot of the app.
+# Free for public repositories.
+#
+# What comes out (under the run's "Artifacts"):
+#   bettercut-macos-dmg   the installer, to try on a real Mac
+#   bettercut-macos-shot  a picture of the interface, taken by the app itself
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      FFMPEG_PREFIX: ${{ github.workspace }}/vendor/ffmpeg-macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools and libraries
+        run: brew install pkg-config openh264 zimg dav1d dylibbundler
+
+      # FFmpeg takes a few minutes to build; it is kept between runs and only
+      # rebuilt when the script that makes it changes.
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/ffmpeg-macos
+          key: ffmpeg-macos-${{ runner.arch }}-${{ hashFiles('docs/fetch-ffmpeg-macos.sh') }}
+
+      - name: Build FFmpeg (LGPL)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: bash docs/fetch-ffmpeg-macos.sh "$FFMPEG_PREFIX"
+
+      - name: Rust
+        run: rustup show
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-macos-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-macos-${{ runner.arch }}-
+
+      - name: Point the build at FFmpeg
+        run: |
+          {
+            echo "FFMPEG_INCLUDE_DIR=$FFMPEG_PREFIX/include"
+            echo "FFMPEG_LIBS_DIR=$FFMPEG_PREFIX/lib"
+            echo "FFMPEG_LINK_MODE=dynamic"
+            echo "BETTERCUT_FFMPEG_BIN=$FFMPEG_PREFIX/lib"
+            # Test binaries are not inside an app bundle, so they are told
+            # where FFmpeg and its Homebrew libraries are.
+            echo "DYLD_LIBRARY_PATH=$FFMPEG_PREFIX/lib:$(brew --prefix)/lib"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace -- --test-threads=2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Licence notices tool
+        run: cargo install cargo-about --locked --features cli
+
+      - name: Package
+        run: bash docs/package-macos.sh
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: bettercut-macos-dmg
+          path: dist/*.dmg
+
+      # The app's own screenshot (BETTERCUT_SCREENSHOT), of the sample project.
+      # These machines may have no GPU the app can use; if so this step
+      # fails on its own and says so, without failing the build.
+      - name: Screenshot
+        continue-on-error: true
+        run: |
+          BETTERCUT_SCREENSHOT="$PWD/dist/macos.png" BETTERCUT_SAMPLE=1 \
+            dist/bettercut.app/Contents/MacOS/bettercut &
+          pid=$!
+          for i in $(seq 1 90); do
+            [ -f dist/macos.png ] && break
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          test -f dist/macos.png
+
+      - name: Upload the screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bettercut-macos-shot
+          path: dist/macos.png
+          if-no-files-found: ignore

@@ -7,6 +7,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod ids;
+pub mod places;
 pub mod rational;
 pub mod time;
 

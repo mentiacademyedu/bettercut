@@ -39,12 +39,7 @@ pub fn render_folder(project: Option<&Path>) -> PathBuf {
             );
             project.with_file_name(format!("{stem} renders"))
         }
-        None => std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("bettercut")
-            .join("renders"),
+        None => bettercut_foundation::places::local_home().join("renders"),
     }
 }
 

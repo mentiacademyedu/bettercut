@@ -96,6 +96,14 @@ pub struct FfmpegDecoder {
     /// The clockwise turn applied to every frame, from the asset: a phone's
     /// portrait clip, or its proxy, which is encoded from the stored frames.
     rotation: u16,
+    /// How much of each decoded picture to trim, `(top, bottom, left, right)`:
+    /// a HEIF photo is coded larger than it is shown.
+    crop: (u32, u32, u32, u32),
+    /// A photo stitched from tiles (`super::heif`), decoded whole at open and
+    /// handed out as the one frame, and whether it has been since the last
+    /// seek.
+    still: Option<(Vec<u8>, u32, u32)>,
+    still_served: bool,
     /// Where the file's own clock starts. Camera transport streams begin at
     /// a second or more; every timestamp is read relative to this, and every
     /// seek is made from it, so media time zero is the file's first moment.
@@ -254,6 +262,9 @@ impl FfmpegDecoder {
             width: 0,
             height: 0,
             rotation: 0,
+            crop: (0, 0, 0, 0),
+            still: None,
+            still_served: false,
             origin: MediaTime::ZERO,
             duration: MediaTime::ZERO,
             color: crate::color::ColorMetadata::default(),
@@ -408,6 +419,7 @@ impl MediaDecoder for FfmpegDecoder {
         let mut audio = None;
         let mut width = 0;
         let mut height = 0;
+        let mut crop = (0, 0, 0, 0);
         let mut color = asset.color;
         let mut hdr_spec: Option<String> = None;
         let mut hdr_input = (0, ffi::AVRational { num: 1, den: 1 });
@@ -429,8 +441,12 @@ impl MediaDecoder for FfmpegDecoder {
 
             if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO && video.is_none() {
                 let codec = CodecContext::open(params, self.threads)?;
-                width = par.width.max(0) as u32;
-                height = par.height.max(0) as u32;
+                // The size as shown: a HEIF photo is coded larger and says
+                // how much to trim, and every frame is trimmed before it is
+                // converted.
+                crop = super::heif::crop_of(par);
+                width = (par.width.max(0) as u32).saturating_sub(crop.2 + crop.3);
+                height = (par.height.max(0) as u32).saturating_sub(crop.0 + crop.1);
                 hdr_spec = super::filter::hdr_to_sdr_spec(
                     par.color_trc,
                     par.color_primaries,
@@ -556,6 +572,21 @@ impl MediaDecoder for FfmpegDecoder {
         self.width = width;
         self.height = height;
         self.rotation = asset.rotation;
+        self.crop = crop;
+        // A photo made of tiles is decoded whole, now: it is one picture, and
+        // every request for it is answered from this.
+        self.still = None;
+        self.still_served = false;
+        if asset.is_still()
+            && let Some(grid) = super::heif::grid_of(&input)
+        {
+            let (pixels, w, h) = super::heif::decode_grid(&input, &grid)?;
+            let (pixels, w, h) = super::heif::fit_rgba(pixels, w, h, crate::MAX_STILL_EDGE)?;
+            self.width = w;
+            self.height = h;
+            self.still = Some((pixels, w, h));
+            tracing::debug!(file = %asset.file_name, tiles = grid.tiles.len(), "stitched a tiled photo");
+        }
         // Only a clock that starts late is moved back. A slightly negative
         // start — an MP4's edit list priming the audio — is left alone, as
         // every other player leaves it.
@@ -595,6 +626,11 @@ impl MediaDecoder for FfmpegDecoder {
     }
 
     fn seek(&mut self, timestamp: MediaTime, mode: SeekMode) -> Result<(), MediaError> {
+        // A stitched photo has nothing to seek in; it is simply offered again.
+        if self.still.is_some() {
+            self.still_served = false;
+            return Ok(());
+        }
         self.seek_container(timestamp)?;
         self.seeked = matches!(mode, SeekMode::Precise).then_some((timestamp, 0));
 
@@ -615,6 +651,29 @@ impl MediaDecoder for FfmpegDecoder {
         &mut self,
         cancel: &dyn CancellationToken,
     ) -> Result<Option<VideoFrame>, MediaError> {
+        // A stitched photo: its one frame, once per seek, like any still.
+        if let Some((pixels, w, h)) = &self.still {
+            if self.still_served {
+                return Ok(None);
+            }
+            self.still_served = true;
+            let (data, width, height) = if self.rotation == 0 {
+                (pixels.clone(), *w, *h)
+            } else {
+                super::rotate_rgba(pixels, *w, *h, self.rotation)
+            };
+            self.position = Some(MediaTime::ZERO);
+            return Ok(Some(VideoFrame {
+                timestamp: MediaTime::ZERO,
+                width,
+                height,
+                color: self.color,
+                storage: FrameStorage::System {
+                    data,
+                    stride: width * 4,
+                },
+            }));
+        }
         if self.video.is_none() || self.drained {
             return Ok(None);
         }
@@ -669,6 +728,21 @@ impl MediaDecoder for FfmpegDecoder {
                 None => break timestamp,
             }
         };
+
+        // Trimmed to the size it is shown at, before anything reads it.
+        if self.crop != (0, 0, 0, 0) {
+            let (top, bottom, left, right) = self.crop;
+            // SAFETY: the frame holds a decoded picture; FFmpeg checks the
+            // crop against its size and adjusts the plane pointers itself.
+            unsafe {
+                let f = self.frame.as_ptr();
+                (*f).crop_top = top as usize;
+                (*f).crop_bottom = bottom as usize;
+                (*f).crop_left = left as usize;
+                (*f).crop_right = right as usize;
+                ffi::av_frame_apply_cropping(f, ffi::AV_FRAME_CROP_UNALIGNED as i32);
+            }
+        }
 
         // §21a.2: the one conversion, at the boundary — preceded by §21a.1's
         // tone-map when the source is HDR.
@@ -961,6 +1035,140 @@ mod tests {
             "the sound is timed on the file's clock: {:?}",
             sound.timestamp
         );
+    }
+
+    /// The colour at (x, y) of a decoded frame.
+    fn rgb_at(frame: &VideoFrame, x: u32, y: u32) -> [u8; 3] {
+        let FrameStorage::System { data, stride } = &frame.storage else {
+            panic!("system memory expected");
+        };
+        let at = (y * stride + x * 4) as usize;
+        [data[at], data[at + 1], data[at + 2]]
+    }
+
+    fn close(got: [u8; 3], want: [u8; 3]) -> bool {
+        got.iter()
+            .zip(want)
+            .all(|(g, w)| (i16::from(*g) - i16::from(w)).abs() < 40)
+    }
+
+    fn decode_still(name: &str) -> VideoFrame {
+        let asset = FfmpegProber.probe(&fixture(name)).expect("probe");
+        let mut decoder = FfmpegDecoder::new(1).expect("decoder");
+        decoder.open(&asset).expect("open");
+        decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame")
+    }
+
+    /// A HEIC coded larger than it is shown comes out trimmed, with its
+    /// picture intact: blue on the left, red on the right.
+    #[test]
+    fn a_cropped_heic_decodes_at_its_shown_size() {
+        let frame = decode_still("cropped-64x32.heic");
+        assert_eq!((frame.width, frame.height), (64, 32));
+        assert!(
+            close(rgb_at(&frame, 4, 16), [0, 0, 255]),
+            "{:?}",
+            rgb_at(&frame, 4, 16)
+        );
+        assert!(
+            close(rgb_at(&frame, 50, 16), [255, 0, 0]),
+            "{:?}",
+            rgb_at(&frame, 50, 16)
+        );
+    }
+
+    /// A tiled HEIC, the way a phone writes one, is stitched with every tile
+    /// in its place and the canvas's spare edge cut away; asking again after
+    /// a seek gives the same photo.
+    #[test]
+    fn a_tiled_heic_is_stitched_in_place() {
+        let asset = FfmpegProber
+            .probe(&fixture("tiled-200x120.heic"))
+            .expect("probe");
+        let mut decoder = FfmpegDecoder::new(1).expect("decoder");
+        decoder.open(&asset).expect("open");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!((frame.width, frame.height), (200, 120));
+        for ((x, y), want) in [
+            ((10, 10), [230, 30, 30]),
+            ((190, 10), [30, 200, 40]),
+            ((10, 110), [30, 60, 230]),
+            ((190, 110), [240, 220, 30]),
+            // Just past tile seams (tiles are 64 px), still the right quarter.
+            ((66, 62), [30, 60, 230]),
+            ((130, 66), [240, 220, 30]),
+        ] {
+            let got = rgb_at(&frame, x, y);
+            assert!(close(got, want), "at {x},{y}: {got:?}, wanted {want:?}");
+        }
+        assert!(
+            decoder
+                .decode_frame(&NeverCancelled)
+                .expect("decode")
+                .is_none()
+        );
+        decoder
+            .seek(MediaTime::ZERO, SeekMode::Precise)
+            .expect("seek");
+        assert!(
+            decoder
+                .decode_frame(&NeverCancelled)
+                .expect("decode")
+                .is_some()
+        );
+    }
+
+    /// A portrait phone photo: stored sideways as tiles, with a note to turn
+    /// it. It comes out upright, its blue left edge along the top.
+    #[test]
+    fn a_turned_tiled_heic_comes_out_upright() {
+        let asset = FfmpegProber
+            .probe(&fixture("tiled-portrait.heic"))
+            .expect("probe");
+        assert_eq!(
+            (asset.width, asset.height),
+            (120, 200),
+            "rotation {}",
+            asset.rotation
+        );
+        let frame = decode_still("tiled-portrait.heic");
+        assert_eq!((frame.width, frame.height), (120, 200));
+        assert!(
+            close(rgb_at(&frame, 60, 10), [30, 60, 230]),
+            "{:?}",
+            rgb_at(&frame, 60, 10)
+        );
+        assert!(
+            close(rgb_at(&frame, 60, 190), [230, 30, 30]),
+            "{:?}",
+            rgb_at(&frame, 60, 190)
+        );
+    }
+
+    /// A 48-megapixel phone photo (8064x6048, 192 tiles) is stitched and
+    /// brought down to the largest size a still is held at.
+    #[test]
+    fn a_48_megapixel_heic_is_stitched_and_fitted() {
+        let started = std::time::Instant::now();
+        let frame = decode_still("tiled-48mp.heic");
+        eprintln!("48 MP HEIC decoded in {:?}", started.elapsed());
+        assert_eq!(
+            (frame.width, frame.height),
+            crate::fit_within(8064, 6048, crate::MAX_STILL_EDGE)
+        );
+        assert!(
+            close(rgb_at(&frame, 100, 100), [30, 60, 230]),
+            "{:?}",
+            rgb_at(&frame, 100, 100)
+        );
+        let (w, h) = (frame.width, frame.height);
+        assert!(close(rgb_at(&frame, w - 100, h - 100), [230, 30, 30]));
     }
 
     /// A phone photo with EXIF orientation 6: the left edge (blue) ends up

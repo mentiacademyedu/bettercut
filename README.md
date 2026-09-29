@@ -91,7 +91,22 @@ cargo test --workspace                      # the tests
 .\docs\package.ps1                          # a zip and an installer in dist\
 ```
 
-`.\setup.cmd check` names whatever prerequisite is missing. More detail — the
+`.\setup.cmd check` names whatever prerequisite is missing.
+
+**On a Mac** (work in progress — nobody on the team has one yet, so it is
+built and tested on GitHub's Apple Silicon machines by
+[`.github/workflows/macos.yml`](.github/workflows/macos.yml)):
+
+```bash
+brew install pkg-config openh264 zimg dav1d dylibbundler
+bash docs/fetch-ffmpeg-macos.sh     # builds the pinned LGPL FFmpeg, once
+export FFMPEG_INCLUDE_DIR=$PWD/vendor/ffmpeg-macos/include        FFMPEG_LIBS_DIR=$PWD/vendor/ffmpeg-macos/lib FFMPEG_LINK_MODE=dynamic        BETTERCUT_FFMPEG_BIN=$PWD/vendor/ffmpeg-macos/lib        DYLD_LIBRARY_PATH=$PWD/vendor/ffmpeg-macos/lib:$(brew --prefix)/lib
+cargo run -p bettercut-desktop
+bash docs/package-macos.sh          # dist/bettercut.app and a .dmg
+```
+
+If you have a Mac and can try it, an issue saying what happened is very
+welcome. More detail — the
 crate layout, the design rules, and what each part of the editor does and why —
 is in [docs/status.md](docs/status.md), with architecture decisions in
 [docs/adr](docs/adr).

@@ -28,6 +28,7 @@ mod encode;
 mod encoders;
 mod export;
 mod filter;
+mod heif;
 mod probe;
 mod raii;
 

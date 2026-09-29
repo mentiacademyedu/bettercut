@@ -70,7 +70,9 @@ impl MediaProber for FfmpegProber {
             // A still image is not a one-frame movie. FFmpeg's image demuxers
             // report a synthetic 25 fps rate, so the demuxer name is the
             // reliable signal, not the frame rate.
-            (Some(_), _) if is_image_container => MediaKind::Image,
+            (Some(_), _) if is_image_container || super::heif::is_heif_path(path) => {
+                MediaKind::Image
+            }
             (Some(_), _) => MediaKind::Video,
             (None, Some(_)) => MediaKind::Audio,
             (None, None) => return Err(MediaError::NoStream(path.to_path_buf())),
@@ -87,9 +89,24 @@ impl MediaProber for FfmpegProber {
                 (v.width, v.height)
             };
             asset.rotation = v.rotation;
+            // A phone photo made of tiles: its size and turn are the grid's,
+            // not the first tile's.
+            if kind == MediaKind::Image
+                && let Some(grid) = super::heif::grid_of(&ctx)
+            {
+                let (_, _, w, h) = grid.shown;
+                let turn = if grid.rotation != 0 {
+                    grid.rotation
+                } else {
+                    v.rotation
+                };
+                (asset.width, asset.height) = if turn % 180 == 90 { (h, w) } else { (w, h) };
+                asset.rotation = turn;
+            }
             // A photo's orientation is not on the stream but on its one
             // decoded frame (EXIF, as FFmpeg reports it). One small decode.
-            if kind == MediaKind::Image && asset.rotation == 0 {
+            // Not for HEIF, which carries its turn in the file, not EXIF.
+            if kind == MediaKind::Image && asset.rotation == 0 && !super::heif::is_heif_path(path) {
                 let turn = super::decode::FfmpegDecoder::first_frame_rotation(&asset);
                 if turn % 180 == 90 {
                     (asset.width, asset.height) = (asset.height, asset.width);
@@ -185,8 +202,10 @@ fn read_video(
     avg_frame_rate: ffi::AVRational,
     r_frame_rate: ffi::AVRational,
 ) -> VideoInfo {
-    let width = par.width.max(0) as u32;
-    let height = par.height.max(0) as u32;
+    // The size as shown, after the crop a HEIF photo carries.
+    let (top, bottom, left, right) = super::heif::crop_of(par);
+    let width = (par.width.max(0) as u32).saturating_sub(left + right);
+    let height = (par.height.max(0) as u32).saturating_sub(top + bottom);
     let rotation = super::display_rotation(par);
 
     // `avg_frame_rate` is authoritative when present. Fall back to
@@ -338,6 +357,18 @@ mod tests {
         FfmpegProber
             .probe(&fixture(name))
             .unwrap_or_else(|e| panic!("probing {name} failed: {e}"))
+    }
+
+    /// HEIC photos are photos, at the size they are shown: after the crop a
+    /// single picture carries, and the grid a tiled one is stitched from.
+    #[test]
+    fn heic_photos_probe_at_their_shown_size() {
+        let cropped = probe("cropped-64x32.heic");
+        assert_eq!(cropped.kind, MediaKind::Image);
+        assert_eq!((cropped.width, cropped.height), (64, 32));
+        let tiled = probe("tiled-200x120.heic");
+        assert_eq!(tiled.kind, MediaKind::Image);
+        assert_eq!((tiled.width, tiled.height), (200, 120));
     }
 
     /// A phone photo's EXIF orientation is read from its frame.
