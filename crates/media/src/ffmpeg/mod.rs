@@ -104,6 +104,33 @@ use crate::error::MediaError;
 ///
 /// §74: "Silently ignore FFmpeg failures" is prohibited. A bare `-22` in a log
 /// is barely better than silence, so every error carries FFmpeg's own text.
+/// FFmpeg's "no output yet, send more input" — `AVERROR(EAGAIN)` — which is
+/// routine, not a failure.
+///
+/// Not `ffi::EAGAIN`: the committed binding was generated on Linux, where
+/// EAGAIN is 11, and the number belongs to the C library of the platform
+/// running. It is 11 on Windows and Linux but 35 on macOS and the BSDs, and
+/// with the Linux number every encoder and decoder on a Mac stopped at its
+/// first "try again" as if it had failed.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) const AVERROR_EAGAIN: i32 = -35;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
+pub(crate) const AVERROR_EAGAIN: i32 = -11;
+
 pub(crate) fn error_string(code: i32) -> String {
     let mut buffer = [0_i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
 
@@ -465,5 +492,19 @@ mod rotation_tests {
         let (out, _, _) = rotate_rgba(&two(), 2, 1, 180);
         assert_eq!(&out[..4], &[0, 255, 0, 255]);
         assert_eq!(rotate_rgba(&two(), 2, 1, 0).0, two());
+    }
+}
+
+#[cfg(test)]
+mod eagain_tests {
+    /// FFmpeg itself reads the code as "try again" on the platform running,
+    /// which is what the loops that wait on it depend on.
+    #[test]
+    fn eagain_is_this_platforms_try_again() {
+        let text = super::error_string(super::AVERROR_EAGAIN).to_lowercase();
+        assert!(
+            text.contains("temporarily unavailable") || text.contains("try again"),
+            "{text}"
+        );
     }
 }

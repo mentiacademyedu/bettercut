@@ -274,7 +274,7 @@ impl FilterGraph {
         // SAFETY: both pointers are valid; the frame is filled or an error
         // code explains why not.
         let code = unsafe { ffi::av_buffersink_get_frame(self.sink, out.as_ptr()) };
-        if code == -(ffi::EAGAIN as i32) || code == super::decode::averror_eof_code() {
+        if code == super::AVERROR_EAGAIN || code == super::decode::averror_eof_code() {
             return Ok(false);
         }
         if code < 0 {

@@ -622,7 +622,7 @@ fn send_packet(
 ) -> Result<(), MediaError> {
     // SAFETY: both pointers are valid and owned by the caller.
     let code = unsafe { ffi::avcodec_send_packet(codec, packet) };
-    if code < 0 && code != -(ffi::EAGAIN as i32) {
+    if code < 0 && code != super::AVERROR_EAGAIN {
         return Err(MediaError::DecodeFailed(format!(
             "avcodec_send_packet: {}",
             error_string(code)
@@ -638,7 +638,7 @@ fn receive_frame(codec: *mut ffi::AVCodecContext, into: &mut Frame) -> Result<bo
     if code == 0 {
         return Ok(true);
     }
-    if code == -(ffi::EAGAIN as i32) || code == super::decode::averror_eof_code() {
+    if code == super::AVERROR_EAGAIN || code == super::decode::averror_eof_code() {
         return Ok(false);
     }
     Err(MediaError::DecodeFailed(format!(
@@ -661,7 +661,7 @@ pub(super) fn drain_encoder(
 
     // SAFETY: the encoder is open; a null frame is the documented flush.
     let code = unsafe { ffi::avcodec_send_frame(encoder, frame.unwrap_or(std::ptr::null_mut())) };
-    if code < 0 && code != -(ffi::EAGAIN as i32) && code != super::decode::averror_eof_code() {
+    if code < 0 && code != super::AVERROR_EAGAIN && code != super::decode::averror_eof_code() {
         return Err(MediaError::DecodeFailed(format!(
             "avcodec_send_frame: {}",
             error_string(code)
@@ -673,7 +673,7 @@ pub(super) fn drain_encoder(
         packet.unref();
         // SAFETY: both pointers are valid.
         let code = unsafe { ffi::avcodec_receive_packet(encoder, packet.as_ptr()) };
-        if code == -(ffi::EAGAIN as i32) || code == super::decode::averror_eof_code() {
+        if code == super::AVERROR_EAGAIN || code == super::decode::averror_eof_code() {
             return Ok(());
         }
         if code < 0 {

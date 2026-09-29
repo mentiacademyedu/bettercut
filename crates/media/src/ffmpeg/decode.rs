@@ -874,7 +874,7 @@ impl MediaDecoder for FfmpegDecoder {
 
 /// `AVERROR(EAGAIN)` - "send more input".
 fn averror_again() -> i32 {
-    -(ffi::EAGAIN as i32)
+    super::AVERROR_EAGAIN
 }
 
 /// `AVERROR_EOF`. FFmpeg defines it as a negated FourCC, and the binding does
