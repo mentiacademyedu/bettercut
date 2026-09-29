@@ -28,13 +28,16 @@ impl MediaProber for FfmpegProber {
 
         let mut video: Option<VideoInfo> = None;
         let mut audio: Option<AudioInfo> = None;
+        // The picture and sound that are the file's own, not its cover art,
+        // a sound nothing can decode, or a depth map (`super::streams`).
+        let (chosen_video, chosen_audio) = super::streams::chosen(&ctx);
 
         for stream in ctx.streams() {
             // SAFETY: `streams()` filtered out nulls, and the stream lives as
             // long as `ctx`.
-            let (codecpar, avg_frame_rate, r_frame_rate) = unsafe {
+            let (codecpar, avg_frame_rate, r_frame_rate, index) = unsafe {
                 let s = &*stream;
-                (s.codecpar, s.avg_frame_rate, s.r_frame_rate)
+                (s.codecpar, s.avg_frame_rate, s.r_frame_rate, s.index)
             };
             if codecpar.is_null() {
                 continue;
@@ -43,9 +46,9 @@ impl MediaProber for FfmpegProber {
             // SAFETY: non-null, and owned by the stream which outlives this loop.
             let par = unsafe { &*codecpar };
 
-            if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO && video.is_none() {
+            if Some(index) == chosen_video {
                 video = Some(read_video(par, avg_frame_rate, r_frame_rate));
-            } else if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO && audio.is_none() {
+            } else if Some(index) == chosen_audio {
                 audio = Some(read_audio(par));
             }
         }
@@ -357,6 +360,17 @@ mod tests {
         FfmpegProber
             .probe(&fixture(name))
             .unwrap_or_else(|e| panic!("probing {name} failed: {e}"))
+    }
+
+    /// A song with its cover art is a sound, not a picture: the cover is
+    /// stored as a video stream, and taking it would bring music in as a
+    /// still.
+    #[test]
+    fn a_song_with_cover_art_is_audio() {
+        let song = probe("song-with-cover.m4a");
+        assert_eq!(song.kind, MediaKind::Audio);
+        assert_eq!(song.audio_codec.as_deref(), Some("aac"));
+        assert_eq!((song.width, song.height), (0, 0));
     }
 
     /// HEIC photos are photos, at the size they are shown: after the crop a

@@ -590,6 +590,16 @@ fn find_stream(
     ffi::AVRational,
     ffi::AVRational,
 )> {
+    // The same picture and sound the player uses (`super::streams`), so a
+    // proxy is never made of a file's cover art or its unplayable audio.
+    let (chosen_video, chosen_audio) = super::streams::chosen(input);
+    let wanted = if kind == ffi::AVMEDIA_TYPE_VIDEO {
+        chosen_video
+    } else if kind == ffi::AVMEDIA_TYPE_AUDIO {
+        chosen_audio
+    } else {
+        None
+    }?;
     for stream in input.streams() {
         // SAFETY: `streams()` filtered nulls.
         let (params, timebase, index, rate) = unsafe {
@@ -599,8 +609,7 @@ fn find_stream(
         if params.is_null() {
             continue;
         }
-        // SAFETY: non-null, owned by the stream.
-        if unsafe { (*params).codec_type } == kind {
+        if index == wanted {
             return Some((index, params, timebase, rate));
         }
     }

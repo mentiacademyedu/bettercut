@@ -379,6 +379,16 @@ impl FfmpegDecoder {
         }
     }
 
+    /// How long the frame currently held is shown, from the file's own
+    /// record of it. `None` when the file does not say.
+    fn held_for(&self, timebase: Rational) -> Option<MediaTime> {
+        let duration = self.frame.as_ref().duration;
+        (duration > 0)
+            .then(|| MediaTime::from_timebase(duration, timebase))
+            .flatten()
+            .filter(|d| !d.is_zero())
+    }
+
     /// Presentation timestamp of the frame currently held, as `MediaTime`.
     fn frame_timestamp(&self, timebase: Rational) -> MediaTime {
         let pts = self.frame.as_ref().best_effort_timestamp;
@@ -424,6 +434,8 @@ impl MediaDecoder for FfmpegDecoder {
         let mut hdr_spec: Option<String> = None;
         let mut hdr_input = (0, ffi::AVRational { num: 1, den: 1 });
 
+        // The same choice the probe made (`super::streams`).
+        let (chosen_video, chosen_audio) = super::streams::chosen(&input);
         for stream in input.streams() {
             // SAFETY: `streams()` filtered nulls; the stream outlives this loop.
             let (params, time_base, index, avg_frame_rate) = unsafe {
@@ -439,7 +451,7 @@ impl MediaDecoder for FfmpegDecoder {
             // SAFETY: non-null, owned by the stream.
             let par = unsafe { &*params };
 
-            if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO && video.is_none() {
+            if Some(index) == chosen_video && video.is_none() {
                 let codec = CodecContext::open(params, self.threads)?;
                 // The size as shown: a HEIF photo is coded larger and says
                 // how much to trim, and every frame is trimmed before it is
@@ -466,7 +478,7 @@ impl MediaDecoder for FfmpegDecoder {
                     colorspace: sws_colorspace(par.color_space),
                     frame_duration: frame_duration(avg_frame_rate),
                 });
-            } else if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO && audio.is_none() {
+            } else if Some(index) == chosen_audio && audio.is_none() {
                 let codec = CodecContext::open(params, self.threads)?;
                 let channels = par.ch_layout.nb_channels.max(1) as usize;
                 self.resampler = Some(Resampler::to_internal_format(
@@ -708,6 +720,10 @@ impl MediaDecoder for FfmpegDecoder {
                 return Ok(None);
             }
             let timestamp = self.frame_timestamp(timebase);
+            // How long this frame is on screen: its own length where the file
+            // records one (phone video holds some frames longer than others),
+            // the average otherwise.
+            let frame_duration = self.held_for(timebase).unwrap_or(frame_duration);
             // The first frame after a seek already past the target: the seek
             // overshot, and the frame wanted is behind it.
             if self.seeked.is_some()
@@ -996,6 +1012,26 @@ mod tests {
         assert!(
             decoder.tonemap.is_none(),
             "an SDR source was given a tone-mapping chain"
+        );
+    }
+
+    /// Phone video holds some frames longer than others. A seek into a long
+    /// frame shows that frame, not the one after it: the frame's own length
+    /// decides, not the file's average rate.
+    #[test]
+    fn a_seek_into_a_long_held_frame_shows_that_frame() {
+        let mut decoder = open("variable-rate.mp4");
+        let target = MediaTime::from_millis(400);
+        decoder.seek(target, SeekMode::Precise).expect("seek");
+        let frame = decoder
+            .decode_frame(&NeverCancelled)
+            .expect("decode")
+            .expect("a frame");
+        // The long frame starts at 0.3003 s and lasts until 0.4338 s.
+        let starts = frame.timestamp.ticks() as f64 / MediaTime::from_seconds(1).ticks() as f64;
+        assert!(
+            (starts - 0.3003).abs() < 0.002,
+            "shows the frame at {starts:.4} s"
         );
     }
 

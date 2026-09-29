@@ -31,6 +31,7 @@ mod filter;
 mod heif;
 mod probe;
 mod raii;
+pub mod streams;
 
 pub use decode::FfmpegDecoder;
 pub use encode::generate_proxy;
