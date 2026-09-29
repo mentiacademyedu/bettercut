@@ -7,7 +7,13 @@
 - **macOS, in progress**: the code now builds for Apple Silicon, settings and
   caches go where a Mac keeps them (`~/Library`), text-to-speech uses the
   Mac's own voices, and GitHub builds, tests and packages a `.dmg` on every
-  push. Nobody on the team has a Mac yet: testers welcome.
+  push. Nobody on the team has a Mac yet: testers welcome. Shortcuts show
+  as ⌘ and Option there.
+- **iPhone video**: Spatial Audio recordings no longer import silent (the
+  playable AAC track is used), songs with cover art import as sound, and
+  jumps into variable-frame-rate video land on the right frame.
+- **Live Photos**: a photo's short video is found beside it and offered.
+- **Fixed**: exports made without a hardware encoder were one frame short.
 
 ## 0.1.0 — first public beta
 

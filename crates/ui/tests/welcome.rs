@@ -41,7 +41,9 @@ fn the_welcome_shows_its_steps_only_when_open() {
     for (title, _) in bettercut_ui::welcome::STEPS {
         assert!(shown.contains(title), "missing {title}: {shown}");
     }
-    assert!(shown.contains("Ctrl+K"));
+    // Written the way this platform writes it: ⌘K on a Mac.
+    let palette_key = bettercut_ui::keys::keys("Ctrl+K");
+    assert!(shown.contains(&*palette_key), "no {palette_key} in {shown}");
     assert!(bettercut_ui::palette::run(
         &mut bettercut_editor_core::Editor::new_project("W").0,
         &mut state,
