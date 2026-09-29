@@ -5,13 +5,14 @@
 #
 # There is no ready-made LGPL macOS build to pin the way BtbN's is pinned for
 # Windows, so this builds one from the released source, checked against its
-# SHA-256. It needs Homebrew for three BSD-licensed libraries:
+# SHA-256. It needs Homebrew for four libraries, all BSD-style licensed:
 #
-#   brew install pkg-config openh264 zimg dav1d
+#   brew install pkg-config openh264 zimg dav1d libvpx
 #
 #   openh264  the H.264 encoder proxies are made with (BSD)
 #   zimg      the zscale filter HDR footage is tone-mapped through (WTFPL)
 #   dav1d     AV1 decoding (BSD)
+#   libvpx    VP9, the codec of transparent (alpha) exports (BSD)
 #
 # H.264/H.265 export on a Mac goes through Apple's VideoToolbox, which is part
 # of the system: nothing to build or ship.
@@ -43,7 +44,7 @@ cd "$WORK/ffmpeg-$VERSION"
   --enable-shared --disable-static \
   --disable-programs --disable-doc --disable-debug \
   --enable-videotoolbox --enable-audiotoolbox \
-  --enable-libopenh264 --enable-libzimg --enable-libdav1d \
+  --enable-libopenh264 --enable-libzimg --enable-libdav1d --enable-libvpx \
   --disable-libx264 --disable-libx265 --disable-libfdk-aac
 
 make -j"$(sysctl -n hw.ncpu)"

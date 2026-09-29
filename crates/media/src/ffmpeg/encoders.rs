@@ -691,6 +691,14 @@ fn set_rate_control(context: &CodecContext, choice: EncoderChoice, mode: RateCon
         ("h264_amf" | "hevc_amf" | "av1_amf", Variable) => &[("rc", "vbr_peak")],
         ("h264_mf" | "hevc_mf" | "av1_mf", Constant) => &[("rate_control", "cbr")],
         ("h264_mf" | "hevc_mf" | "av1_mf", Variable) => &[("rate_control", "u_vbr")],
+        // A Mac without the media engine (and GitHub's Mac machines) has no
+        // hardware session to open; `allow_sw` lets Apple's own software
+        // encoder stand in rather than dropping to openh264. Constant rate is
+        // its own switch, honoured on macOS 13 and later.
+        ("h264_videotoolbox" | "hevc_videotoolbox", Constant) => {
+            &[("allow_sw", "1"), ("constant_bit_rate", "1")]
+        }
+        ("h264_videotoolbox" | "hevc_videotoolbox", Variable) => &[("allow_sw", "1")],
         // Quick Sync picks its mode from which rate fields are set, which the
         // caller has already done; there is no name to set here.
         _ => &[],

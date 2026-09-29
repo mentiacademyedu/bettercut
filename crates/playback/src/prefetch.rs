@@ -87,6 +87,8 @@ pub struct PrefetchBuffer {
     /// Signalled when space is freed or the generation changes, so a blocked
     /// producer wakes rather than polling.
     space: Condvar,
+    /// How long a producer waits for room before making room itself.
+    patience: std::time::Duration,
 }
 
 impl PrefetchBuffer {
@@ -103,6 +105,7 @@ impl PrefetchBuffer {
                 closed: false,
             }),
             space: Condvar::new(),
+            patience: std::time::Duration::from_millis(100),
         }
     }
 
@@ -184,7 +187,7 @@ impl PrefetchBuffer {
 
             let (guard, timeout) = self
                 .space
-                .wait_timeout(inner, std::time::Duration::from_millis(100))
+                .wait_timeout(inner, self.patience)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             inner = guard;
 
@@ -208,6 +211,13 @@ impl PrefetchBuffer {
     }
 
     /// Stop accepting frames and wake anything blocked (§48).
+    /// The same buffer, with a producer waiting `patience` for room before it
+    /// drops the oldest frame itself.
+    pub fn with_patience(mut self, patience: std::time::Duration) -> Self {
+        self.patience = patience;
+        self
+    }
+
     pub fn close(&self) {
         let mut inner = self.lock();
         inner.closed = true;
@@ -386,7 +396,12 @@ mod tests {
 
     #[test]
     fn closing_releases_a_blocked_producer() {
-        let buffer = Arc::new(PrefetchBuffer::new(8 * 1024 * 1024));
+        // Patient enough that only the close can release it: with the usual
+        // 100 ms, a slow machine's 30 ms sleep ran past it and the producer
+        // made room itself (seen on GitHub's Macs).
+        let buffer = Arc::new(
+            PrefetchBuffer::new(8 * 1024 * 1024).with_patience(std::time::Duration::from_secs(10)),
+        );
         buffer.push(0, key(1), frame(6 * 1024 * 1024));
 
         let buffer2 = Arc::clone(&buffer);

@@ -98,7 +98,7 @@ built and tested on GitHub's Apple Silicon machines by
 [`.github/workflows/macos.yml`](.github/workflows/macos.yml)):
 
 ```bash
-brew install pkg-config openh264 zimg dav1d dylibbundler
+brew install pkg-config openh264 zimg dav1d libvpx dylibbundler
 bash docs/fetch-ffmpeg-macos.sh     # builds the pinned LGPL FFmpeg, once
 export FFMPEG_INCLUDE_DIR=$PWD/vendor/ffmpeg-macos/include        FFMPEG_LIBS_DIR=$PWD/vendor/ffmpeg-macos/lib FFMPEG_LINK_MODE=dynamic        BETTERCUT_FFMPEG_BIN=$PWD/vendor/ffmpeg-macos/lib        DYLD_LIBRARY_PATH=$PWD/vendor/ffmpeg-macos/lib:$(brew --prefix)/lib
 cargo run -p bettercut-desktop

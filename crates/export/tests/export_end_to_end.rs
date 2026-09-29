@@ -1044,7 +1044,14 @@ fn constant_rate_control_produces_a_larger_file_than_variable() {
     let mut cbr = settings(cbr_file.path(), one_second());
     cbr.bitrate = Some(8_000_000);
     cbr.rate_control = bettercut_export::RateControl::Constant;
-    run(&project, &cbr);
+    let summary = run(&project, &cbr);
+    // The software fallback (openh264) has no constant-rate mode to check —
+    // which is what a machine without a hardware encoder, like GitHub's Macs,
+    // ends up with.
+    if !summary.hardware {
+        eprintln!("{} has no constant-rate mode; skipping", summary.encoder);
+        return;
+    }
 
     let vbr_bytes = std::fs::metadata(vbr_file.path()).expect("vbr").len();
     let cbr_bytes = std::fs::metadata(cbr_file.path()).expect("cbr").len();

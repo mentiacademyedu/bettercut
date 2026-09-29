@@ -682,6 +682,27 @@ pub(super) fn drain_encoder(
                 error_string(code)
             )));
         }
+        // A picture lasts one frame. Some encoders (openh264) leave the
+        // packet's duration unset, and then the file has nothing to record
+        // for the last frame: the video came out a frame short, and anything
+        // placed from its stated end — a reversed clip's first instant — showed
+        // the frame before the last.
+        // SAFETY: the encoder is open and the packet was just filled by it.
+        unsafe {
+            let ctx = &*encoder;
+            let p = packet.as_ptr();
+            if (*p).duration <= 0
+                && ctx.codec_type == ffi::AVMEDIA_TYPE_VIDEO
+                && ctx.framerate.num > 0
+                && ctx.framerate.den > 0
+            {
+                let frame = ffi::AVRational {
+                    num: ctx.framerate.den,
+                    den: ctx.framerate.num,
+                };
+                (*p).duration = ffi::av_rescale_q(1, frame, source_timebase);
+            }
+        }
         muxer.write(&mut packet, stream_index, source_timebase)?;
     }
 }
