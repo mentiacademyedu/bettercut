@@ -129,6 +129,11 @@ impl MediaProber for FfmpegProber {
             asset.color = v.color;
         }
 
+        // An iPhone Live Photo's short video, if it came along.
+        if kind == MediaKind::Image {
+            asset.live_video = crate::asset::live_photo_video(path);
+        }
+
         if let Some(a) = audio {
             asset.audio_codec = a.codec;
             asset.audio_sample_rate = a.sample_rate;

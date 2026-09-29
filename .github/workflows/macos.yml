@@ -68,21 +68,31 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build
+        id: build
         run: cargo build --workspace --all-targets
 
+      # Every test group runs even after one fails, so a single run shows
+      # everything that breaks on a Mac.
       - name: Test
-        run: cargo test --workspace -- --test-threads=2
+        run: cargo test --workspace --no-fail-fast -- --test-threads=2
 
+      # From here on, a failed test does not stop the rest: the .dmg and the
+      # screenshot are still worth having while a test is being fixed.
       - name: Clippy
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Licence notices tool
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo install cargo-about --locked --features cli
 
       - name: Package
+        id: package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bash docs/package-macos.sh
 
       - name: Upload the disk image
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: bettercut-macos-dmg
@@ -92,6 +102,7 @@ jobs:
       # These machines may have no GPU the app can use; if so this step
       # fails on its own and says so, without failing the build.
       - name: Screenshot
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         continue-on-error: true
         run: |
           BETTERCUT_SCREENSHOT="$PWD/dist/macos.png" BETTERCUT_SAMPLE=1 \

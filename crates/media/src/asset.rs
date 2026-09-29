@@ -148,6 +148,12 @@ pub struct MediaAsset {
     /// and a filter that shows only those is the whole of that job.
     #[serde(default)]
     pub rating: u8,
+
+    /// For a photo taken as an iPhone Live Photo: the short video that came
+    /// with it, a file of the same name beside it (`IMG_1234.HEIC` and
+    /// `IMG_1234.MOV`). Found when the photo is imported; `None` otherwise.
+    #[serde(default)]
+    pub live_video: Option<PathBuf>,
 }
 
 impl MediaAsset {
@@ -188,6 +194,7 @@ impl MediaAsset {
             sequence: None,
             deinterlace: false,
             rating: 0,
+            live_video: None,
         }
     }
 
@@ -338,6 +345,36 @@ impl MediaAsset {
     }
 }
 
+/// The Live Photo video that goes with the photo at `path`: a `.mov` (any
+/// case) of the same name in the same folder, as an iPhone writes them.
+/// `None` for anything that is not a photo, or has no such file beside it.
+pub fn live_photo_video(path: &std::path::Path) -> Option<PathBuf> {
+    let is_photo = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "heic" | "heif" | "jpg" | "jpeg"
+        )
+    });
+    if !is_photo {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?.to_lowercase();
+    std::fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|candidate| {
+            candidate
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("mov"))
+                && candidate
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.to_lowercase() == stem)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +482,27 @@ mod tests {
             serde_json::from_str::<MediaAsset>(&json).expect("deserialize"),
             a
         );
+    }
+}
+
+#[cfg(test)]
+mod live_photo_tests {
+    use super::live_photo_video;
+
+    #[test]
+    fn a_photo_with_a_mov_of_the_same_name_is_a_live_photo() {
+        let dir = std::env::temp_dir().join(format!("bettercut-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("IMG_1234.HEIC");
+        let video = dir.join("IMG_1234.MOV");
+        let lone = dir.join("IMG_9999.JPG");
+        for file in [&photo, &video, &lone] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        assert_eq!(live_photo_video(&photo).as_deref(), Some(video.as_path()));
+        assert_eq!(live_photo_video(&lone), None);
+        // A video is not a photo with a video.
+        assert_eq!(live_photo_video(&video), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

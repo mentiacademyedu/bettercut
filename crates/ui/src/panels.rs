@@ -1353,6 +1353,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     let mut reveal: Option<MediaId> = None;
     let mut show_uses: Option<MediaId> = None;
     let mut deinterlace: Option<(MediaId, bool)> = None;
+    let mut live_video: Option<std::path::PathBuf> = None;
     let mut remove: Option<MediaId> = None;
     let mut rename: Option<(MediaId, String)> = None;
     let mut refile: Option<(MediaId, String)> = None;
@@ -1594,9 +1595,13 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
                 stars_row(ui, editor, state, *id);
 
+                let live = editor
+                    .project()
+                    .media_asset(*id)
+                    .and_then(|a| a.live_video.clone());
                 if *still {
                     ui.label(
-                        egui::RichText::new("Photo")
+                        egui::RichText::new(if live.is_some() { "Live Photo" } else { "Photo" })
                             .small()
                             .color(theme::disabled()),
                     );
@@ -1656,6 +1661,16 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     // One action on show, the one most reached for; the rest
                     // wait behind More so a long list of cards stays quiet.
                     ui.menu_button("More", |ui| {
+                        // A Live Photo's moment, as video: the file that came
+                        // with it, imported beside the photo.
+                        if let Some(video) = &live
+                            && ui
+                                .button("Use the Live Photo Video")
+                                .on_hover_text("Import the few seconds of video taken with this photo")
+                                .clicked()
+                        {
+                            live_video = Some(video.clone());
+                        }
                         // Three-point editing: the marked part, at the playhead,
                         // either replacing what is there or pushing it along
                         // (`editor_core::three_point`).
@@ -1773,6 +1788,9 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             n => format!("{n} clips use this file — all selected"),
         });
         state.needs_repaint = true;
+    }
+    if let Some(video) = live_video {
+        import_paths(editor, state, &[video]);
     }
     if let Some(id) = reveal
         && let Some(path) = editor.project().media_asset(id).map(|a| a.path.clone())
