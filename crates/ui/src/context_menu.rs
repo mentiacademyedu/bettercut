@@ -47,10 +47,9 @@ pub fn show(response: &egui::Response, editor: &mut Editor, state: &mut UiState)
 /// One menu row: label on the left, shortcut greyed on the right.
 fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
     let clicked = ui
-        .add(
-            egui::Button::new(label)
-                .shortcut_text(egui::RichText::new(shortcut).color(crate::theme::disabled())),
-        )
+        .add(egui::Button::new(label).shortcut_text(
+            egui::RichText::new(crate::keys::keys(shortcut)).color(crate::theme::disabled()),
+        ))
         .clicked();
     if clicked {
         ui.close();

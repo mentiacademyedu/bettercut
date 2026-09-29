@@ -90,13 +90,15 @@ pub fn toolbar(
         })
         .response
         .on_hover_text("Open a project, or one you worked on recently");
-        if ui.button("Save").on_hover_text("Ctrl+S").clicked() {
+        if ui.button("Save").on_hover_text(crate::keys::keys("Ctrl+S")).clicked() {
             save_project(editor, state);
         }
         ui.menu_button("Save…", |ui| {
             if ui
                 .button("Save As…")
-                .on_hover_text("Save under a new name and keep working in that file (Ctrl+Shift+S)")
+                .on_hover_text(crate::keys::keys(
+                    "Save under a new name and keep working in that file (Ctrl+Shift+S)",
+                ))
                 .clicked()
             {
                 ui.close();
@@ -777,7 +779,9 @@ pub fn toolbar(
                 }
                 if ui
                     .button("History")
-                    .on_hover_text("Every step of the edit; click one to go back to it (Ctrl+H)")
+                    .on_hover_text(crate::keys::keys(
+                        "Every step of the edit; click one to go back to it (Ctrl+H)",
+                    ))
                     .clicked()
                 {
                     state.history_open = !state.history_open;
@@ -795,7 +799,7 @@ pub fn toolbar(
             // The palette, findable without knowing its key.
             if ui
                 .button("Actions")
-                .on_hover_text("Find any action by typing its name (Ctrl+K)")
+                .on_hover_text(crate::keys::keys("Find any action by typing its name (Ctrl+K)"))
                 .clicked()
             {
                 state.palette_open = !state.palette_open;
@@ -3523,10 +3527,10 @@ pub fn transport(
         ui.menu_button("Preview", |ui| {
             if ui
                 .selectable_label(looping, "Loop")
-                .on_hover_text(
+                .on_hover_text(crate::keys::keys(
                     "Play the stretch between the in and out marks over and over — \
                      or the whole timeline when there are none (Ctrl+L)",
-                )
+                ))
                 .clicked()
             {
                 toggle_loop = true;
@@ -10892,7 +10896,7 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                     && let Some(label) = editor.undo_label()
                     && ui
                         .small_button("Undo")
-                        .on_hover_text(format!("Undo {label} (Ctrl+Z)"))
+                        .on_hover_text(crate::keys::keys(&format!("Undo {label} (Ctrl+Z)")).into_owned())
                         .clicked()
                 {
                     state.undo_request = true;
@@ -10900,10 +10904,10 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
             }
             None => {
                 ui.label(
-                    egui::RichText::new(
+                    egui::RichText::new(crate::keys::keys(
                         "S split · Del delete · Shift+Del ripple · Ctrl+D duplicate · \
                          N snap · drag edges to trim · Ctrl+K any action",
-                    )
+                    ))
                     .color(theme::disabled()),
                 );
             }

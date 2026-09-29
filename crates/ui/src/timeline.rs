@@ -387,7 +387,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     rect.top() + theme::RULER_HEIGHT + 56.0,
                 ),
                 Align2::CENTER_CENTER,
-                "Ctrl+K finds any action by name",
+                crate::keys::keys("Ctrl+K finds any action by name"),
                 FontId::proportional(12.0),
                 theme::disabled(),
             );

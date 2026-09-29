@@ -760,7 +760,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                                 );
                             }
                             ui.label(
-                                egui::RichText::new(action.hint)
+                                egui::RichText::new(crate::keys::keys(action.hint))
                                     .small()
                                     .color(theme::disabled()),
                             );

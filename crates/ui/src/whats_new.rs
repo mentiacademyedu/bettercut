@@ -44,14 +44,16 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
             for change in CHANGES {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("•");
-                    ui.label(*change);
+                    ui.label(crate::keys::keys(change));
                 });
             }
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Ctrl+K, then What's New, shows this again.")
-                    .small()
-                    .color(theme::disabled()),
+                egui::RichText::new(crate::keys::keys(
+                    "Ctrl+K, then What's New, shows this again.",
+                ))
+                .small()
+                .color(theme::disabled()),
             );
             if ui.button("Got it").clicked() {
                 close = true;

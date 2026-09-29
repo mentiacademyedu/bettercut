@@ -30,7 +30,7 @@ pub fn build(editor: &mut Editor) -> Result<(), EditorError> {
     for (words, top, bottom) in SCENES {
         editor.set_playhead(at);
         let scene = editor.add_colour_clip(Generated::Colour { top, bottom })?;
-        let title = editor.add_text(words)?;
+        let title = editor.add_text(crate::keys::keys(words).into_owned())?;
         editor.set_text_property(
             title,
             TextProperty::Style(Box::new(TextStyle::title(TitleLook::Headline))),

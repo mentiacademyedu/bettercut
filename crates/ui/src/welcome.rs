@@ -55,23 +55,23 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     ui.label(egui::RichText::new(format!("{}", number + 1)).strong().size(18.0));
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(*title).strong());
-                        ui.label(egui::RichText::new(*how).small());
+                        ui.label(egui::RichText::new(crate::keys::keys(how)).small());
                     });
                 });
                 ui.add_space(4.0);
             }
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("Right-click anything for what can be done to it. Everything can be undone with Ctrl+Z.")
+                egui::RichText::new(crate::keys::keys("Right-click anything for what can be done to it. Everything can be undone with Ctrl+Z."))
                     .small()
                     .color(theme::disabled()),
             );
             // A beta says so up front, with where to send what breaks.
             ui.label(
-                egui::RichText::new(
+                egui::RichText::new(crate::keys::keys(
                     "This is a beta: save often, and when something breaks, Ctrl+K then \
                      \u{201c}Report a Bug on GitHub\u{201d} tells us about it.",
-                )
+                ))
                 .small()
                 .color(theme::accent_text()),
             );
@@ -89,7 +89,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 }
                 if ui
                     .button("Don't show this again")
-                    .on_hover_text("Ctrl+K, then Welcome, brings it back")
+                    .on_hover_text(crate::keys::keys("Ctrl+K, then Welcome, brings it back"))
                     .clicked()
                 {
                     dismiss_for_good = true;

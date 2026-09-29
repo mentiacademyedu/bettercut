@@ -19,6 +19,7 @@ pub mod highlight_dialog;
 pub mod history_panel;
 pub mod icon;
 pub mod keymap;
+pub mod keys;
 pub mod looks;
 pub mod loudness;
 pub mod marker_list;

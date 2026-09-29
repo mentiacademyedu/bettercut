@@ -1076,7 +1076,9 @@ pub(crate) fn copy_look(editor: &mut Editor, state: &mut UiState) {
 /// Put the copied look onto everything selected.
 pub(crate) fn paste_look(editor: &mut Editor, state: &mut UiState) {
     let Some(look) = state.copied_look.clone() else {
-        state.error("No look copied yet — Ctrl+Alt+C takes one off a clip");
+        state.error(crate::keys::keys(
+            "No look copied yet — Ctrl+Alt+C takes one off a clip",
+        ));
         return;
     };
     let onto: Vec<_> = state.selected_clips.iter().copied().collect();
