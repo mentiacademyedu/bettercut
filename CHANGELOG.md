@@ -1,19 +1,47 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — Mac beta, and iPhone media
 
-- **HEIC/HEIF photos**, the iPhone default, now import: tiled photos are
-  stitched, cropped to their shown size and turned upright.
-- **macOS, in progress**: the code now builds for Apple Silicon, settings and
-  caches go where a Mac keeps them (`~/Library`), text-to-speech uses the
-  Mac's own voices, and GitHub builds, tests and packages a `.dmg` on every
-  push. Nobody on the team has a Mac yet: testers welcome. Shortcuts show
-  as ⌘ and Option there.
-- **iPhone video**: Spatial Audio recordings no longer import silent (the
-  playable AAC track is used), songs with cover art import as sound, and
-  jumps into variable-frame-rate video land on the right frame.
-- **Live Photos**: a photo's short video is found beside it and offered.
-- **Fixed**: exports made without a hardware encoder were one frame short.
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
+
+### New
+
+- **macOS (Apple Silicon), first beta.** A `.dmg` beside the Windows
+  installer. Settings and caches go where a Mac keeps them (`~/Library`),
+  text-to-speech uses the Mac's own voices, export uses Apple's VideoToolbox,
+  and shortcuts show as ⌘ and Option. Built and tested on GitHub's Mac
+  machines; **nobody on the team owns a Mac yet**, so Mac testers are very
+  welcome.
+- **iPhone photos (HEIC/HEIF)** import: the tiles a phone stores a photo in are
+  stitched, cropped to the shown size and turned upright, up to 48 megapixels.
+- **Live Photos**: a photo's short video is found beside it and offered in the
+  card's More menu.
+- **iPhone video**: recordings with Spatial Audio no longer come in silent (the
+  playable AAC track is used), and jumps into variable-frame-rate video land on
+  the right frame.
+- **Phone and camera files**: portrait video and EXIF-rotated photos import
+  upright; camera `.ts`/`.mts` files whose clock starts late play from their
+  start.
+- The export bar says how much time is left; songs with cover art import as
+  sound rather than as a still.
+
+### Fixed
+
+- Exports made without a hardware encoder were one frame short, so a reversed
+  clip started a frame early.
+
+### Known limitations
+
+- **The Mac app is not signed by Apple.** On first open macOS refuses it: open
+  System Settings → Privacy & Security and choose **Open Anyway**. Apple
+  Silicon only; Intel Macs are not built yet.
+- **The Windows installer is not code-signed**: SmartScreen asks you to
+  confirm (*More info → Run anyway*).
+- **No automatic captions from speech, background removal or auto-reframe**
+  yet; they need on-device models.
+- **No auto-update**: install a new version over the old one.
+
 
 ## 0.1.0 — first public beta
 
@@ -44,13 +72,14 @@ Please [report what breaks](https://github.com/mentiacademyedu/bettercut/issues)
 
 ### Known limitations
 
-- **Windows only.** macOS and Linux builds are planned.
+- **Windows only.** (A Mac beta followed in 0.2.0.)
 - **The installer is not code-signed**, so SmartScreen asks you to confirm:
   *More info → Run anyway*.
 - **Tested on two machines** (a desktop with an NVIDIA GPU, and a laptop).
   Performance on low-end laptops with integrated graphics, the target, has
   not been measured yet.
-- **HEIC photos** (the iPhone default) do not import yet.
+- **HEIC photos** (the iPhone default) do not import yet. (They do from
+  0.2.0.)
 - **No automatic captions from speech, background removal or auto-reframe**
   yet; they need on-device models.
 - **No auto-update**: install new versions over the old one.

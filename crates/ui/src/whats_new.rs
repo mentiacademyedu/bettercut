@@ -13,13 +13,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "The first public beta: report what breaks with Ctrl+K, then Report a Bug on GitHub",
-    "A calmer look: one accent colour, grouped toolbar menus, and sliders read label, slider, value",
-    "Enhance Voice cleans up speech in one click; Robot and Megaphone voices",
-    "Lens flare, a photo behind a shot that does not fill the frame, a Bounce entrance and a Mirror mask",
-    "Portrait phone videos and rotated photos now come in upright",
+    "iPhone photos (HEIC) import, stitched and turned upright",
+    "Live Photos: a photo's short video is offered in the card's More menu",
+    "iPhone videos with Spatial Audio no longer come in silent",
+    "Portrait phone videos and rotated photos come in upright",
     "Camera .ts and .mts files play from their start",
-    "The export bar says how long is left",
+    "bettercut now runs on Macs too (Apple Silicon, beta)",
+    "Exports made without a hardware encoder are no longer a frame short",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
