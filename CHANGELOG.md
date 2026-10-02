@@ -1,17 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — Edit with an AI assistant, and Intel Macs
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
+
+### New
 
 - **MCP server (`bettercut-mcp`)**: AI assistants such as Claude can create
   and open projects, import media, place, move, trim, split and delete clips,
   add titles and captions, set volume, opacity, speed, fades, transitions and
   filters, undo and export, through the editor's own undoable commands — and
-  see any frame of the edit as an image (`preview_frame`) to check its work. Installed
-  beside the app on Windows and Mac; setup in the README.
+  see any frame of the edit as an image (`preview_frame`) to check their work.
+  Installed beside the app on Windows and Mac; setup in the README.
 - **The app notices when its open project is saved by another program** — an
   assistant, a sync folder — and offers to load the new version (or keep the
   one on screen), warning first if that would discard unsaved work.
-- **Intel Macs** are built and tested too, as `bettercut-…-macos-intel.dmg`.
+- **Intel Macs**: a `macos-intel` disk image beside the Apple Silicon one.
+- **Linux**: bettercut now builds and passes its tests on Ubuntu in CI;
+  ready-made Linux packages are next. It can be built from source today.
+
+### Known limitations
+
+- **The Mac app is not signed by Apple.** On first open macOS refuses it: open
+  System Settings → Privacy & Security and choose **Open Anyway**.
+- **The Windows installer is not code-signed**: SmartScreen asks you to
+  confirm (*More info → Run anyway*).
+- **The MCP server edits project files**, not the open window: the app offers
+  to load what an assistant saved.
+- **No automatic captions from speech, background removal or auto-reframe**
+  yet; they need on-device models.
+- **No auto-update**: install a new version over the old one.
 
 ## 0.2.0 — Mac beta, and iPhone media
 

@@ -3,7 +3,7 @@
 A free, open-source desktop video editor with CapCut-style convenience, built
 in Rust to stay quick on ordinary laptops.
 
-**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.2.0)
+**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.3.0)
 
 ![bettercut editing its sample project](docs/images/screenshot.png)
 
@@ -18,12 +18,13 @@ in Rust to stay quick on ordinary laptops.
 ## Download
 
 **Windows 10/11, 64-bit:**
-[bettercut-0.2.0-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.2.0/bettercut-0.2.0-setup.exe)
+[bettercut-0.3.0-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.3.0/bettercut-0.3.0-setup.exe)
 (about 50 MB).
 
-**macOS 12 or later, Apple Silicon (beta):**
-[bettercut-0.2.0-macos.dmg](https://github.com/mentiacademyedu/bettercut/releases/download/v0.2.0/bettercut-0.2.0-macos.dmg)
-(about 25 MB). Not signed by Apple yet: the first time, macOS refuses to open
+**macOS 12 or later (beta):**
+[Apple Silicon](https://github.com/mentiacademyedu/bettercut/releases/download/v0.3.0/bettercut-0.3.0-macos.dmg)
+or [Intel](https://github.com/mentiacademyedu/bettercut/releases/download/v0.3.0/bettercut-0.3.0-macos-intel.dmg)
+(about 30 MB). Not signed by Apple yet: the first time, macOS refuses to open
 it — open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
 Every version is on the [Releases](https://github.com/mentiacademyedu/bettercut/releases) page.
@@ -33,8 +34,8 @@ protected your PC"*. Click **More info → Run anyway**. It installs for your
 user only (no administrator rights needed) and removes itself cleanly from
 *Settings → Apps*.
 
-Linux is not built yet, and neither are Intel Macs; the code is portable, so
-both are a packaging job rather than a port.
+**Linux:** bettercut builds and passes its tests on Ubuntu; ready-made
+packages are next. Until then, build it from source (below).
 
 ## What it does
 
@@ -119,7 +120,7 @@ saves, the app notices and offers to load the new version.
   sound — and working alongside the open window.
 - Automatic captions from speech, background removal and auto-reframe (these
   need on-device models, and will be optional downloads).
-- Code-signed installers, auto-update, Linux and Intel Mac builds.
+- Code-signed installers, auto-update, and Linux packages.
 
 ## Building from source
 

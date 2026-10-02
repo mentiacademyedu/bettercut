@@ -40,6 +40,9 @@ impl Server {
     /// Answer one line of JSON-RPC. `None` for a notification, which takes
     /// no reply.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {
+        // A byte-order mark is not JSON, but Windows PowerShell puts one in
+        // front of anything piped to a program; tolerate it.
+        let line = line.trim_start_matches('\u{feff}');
         let message: Value = match serde_json::from_str(line) {
             Ok(message) => message,
             Err(err) => {
@@ -157,6 +160,15 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_byte_order_mark_is_not_a_parse_error() {
+        let mut server = super::Server::new();
+        let reply = server
+            .handle_line("\u{feff}{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}")
+            .unwrap_or_default();
+        assert!(reply.contains("\"result\""), "{reply}");
+    }
+
     #[test]
     fn base64_matches_the_standard() {
         assert_eq!(super::base64(b""), "");

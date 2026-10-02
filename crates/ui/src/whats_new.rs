@@ -13,13 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "iPhone photos (HEIC) import, stitched and turned upright",
-    "Live Photos: a photo's short video is offered in the card's More menu",
-    "iPhone videos with Spatial Audio no longer come in silent",
-    "Portrait phone videos and rotated photos come in upright",
-    "Camera .ts and .mts files play from their start",
-    "bettercut now runs on Macs too (Apple Silicon, beta)",
-    "Exports made without a hardware encoder are no longer a frame short",
+    "Edit with an AI assistant: bettercut-mcp lets Claude and other MCP clients build, cut and export projects",
+    "When an assistant (or anything else) saves the open project, bettercut offers to load it",
+    "Intel Macs get their own download",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
