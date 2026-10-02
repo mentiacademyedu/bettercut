@@ -53,7 +53,11 @@ fn without_the_flag_the_line_wraps() {
     let wrapped = renderer
         .rasterize(LONG, &style(48.0, Some(300.0), false))
         .unwrap();
-    assert!(wrapped.width <= 302);
+    assert!(
+        wrapped.width <= 302,
+        "the wrapped title is {} wide, more than the 300 it was given",
+        wrapped.width
+    );
     assert!(
         wrapped.height > natural.height * 3 / 2,
         "it did not wrap: {} against {}",

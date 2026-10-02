@@ -1,6 +1,7 @@
 # bettercut on Linux: GitHub's Ubuntu machines build it and run the tests.
-# The machines have no GPU, so the tests that need one skip themselves.
-# Free for public repositories.
+# The machines have no GPU; Mesa's software Vulkan driver (lavapipe) stands
+# in, because its OpenGL one is a reduced device without the texture views the
+# compositor needs. Free for public repositories.
 name: Linux
 
 on:
@@ -30,7 +31,8 @@ jobs:
           sudo apt-get install -y build-essential nasm pkg-config \
             libopenh264-dev libzimg-dev libdav1d-dev libvpx-dev libva-dev \
             libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
-            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev \
+            mesa-vulkan-drivers libvulkan1
 
       - name: Cache FFmpeg
         id: ffmpeg-cache
@@ -64,6 +66,8 @@ jobs:
             echo "FFMPEG_LINK_MODE=dynamic"
             echo "BETTERCUT_FFMPEG_BIN=$FFMPEG_PREFIX/lib"
             echo "LD_LIBRARY_PATH=$FFMPEG_PREFIX/lib"
+            # The software Vulkan driver, not the reduced OpenGL device.
+            echo "WGPU_BACKEND=vulkan"
           } >> "$GITHUB_ENV"
 
       - name: Build
