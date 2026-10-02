@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — An assistant in the open window
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
@@ -15,9 +18,10 @@
   behind), `adjust_colour` (brightness, contrast, saturation, warmth) and
   `add_marker`, `set_movement` (a slow zoom or pan over a photo) and
   `animate_title` (how a title arrives, leaves and moves in between), and
-  `add_captions` (subtitles written straight from a list of timed lines). Each is
-  one undo step; `describe_project` now reports where
-  clips sit, title sizes and colours, and the markers.
+  `add_captions` (subtitles written straight from a list of timed lines).
+  Each is one undo step; `describe_project` now reports where clips sit,
+  title sizes and colours, and the markers.
+- **The status bar says when an attached assistant changes something.**
 
 ## 0.3.0 — Edit with an AI assistant, and Intel Macs
 

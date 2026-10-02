@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Edit with an AI assistant: bettercut-mcp lets Claude and other MCP clients build, cut and export projects",
-    "When an assistant (or anything else) saves the open project, bettercut offers to load it",
-    "Intel Macs get their own download",
+    "An AI assistant can now edit the project open in this window, live: ask it to attach_to_app",
+    "Its edits are on your undo history, and the status bar says what it did",
+    "Assistants can also place and style titles, correct colour, add markers, captions and photo moves",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
