@@ -19,6 +19,18 @@ pub struct Session {
     open: Option<(Editor, EventReceiver)>,
 }
 
+/// What a tool hands back: words, or a picture with a line about it.
+pub enum Reply {
+    Text(String),
+    Image { png: Vec<u8>, caption: String },
+}
+
+impl From<String> for Reply {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
 /// One tool: its name, what it is for, and the arguments it takes.
 struct Tool {
     name: &'static str,
@@ -230,6 +242,18 @@ const TOOLS: &[Tool] = &[
         schema: || object(json!({ "path": { "type": "string" } }), &["path"]),
     },
     Tool {
+        name: "preview_frame",
+        description: "See the edit: the frame at `at` seconds, rendered exactly as it will be \
+                      exported, as a PNG image (at most `max_width` pixels wide, default 960).",
+        schema: || {
+            object(
+                json!({ "at": { "type": "number", "minimum": 0 },
+                        "max_width": { "type": "integer", "minimum": 64, "maximum": 3840 } }),
+                &["at"],
+            )
+        },
+    },
+    Tool {
         name: "undo",
         description: "Undo the last edit.",
         schema: || object(json!({}), &[]),
@@ -281,7 +305,14 @@ pub fn exists(name: &str) -> bool {
 impl Session {
     /// Run tool `name`. The text is what the assistant reads back: JSON for
     /// anything with structure, a sentence otherwise.
-    pub fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
+    pub fn call(&mut self, name: &str, args: &Value) -> Result<Reply, String> {
+        if name == "preview_frame" {
+            return self.preview_frame(args);
+        }
+        self.call_text(name, args).map(Reply::Text)
+    }
+
+    fn call_text(&mut self, name: &str, args: &Value) -> Result<String, String> {
         match name {
             "new_project" => self.new_project(args),
             "open_project" => {
@@ -553,6 +584,45 @@ impl Session {
         }
         .map_err(|e| e.to_string())?;
         Ok("Deleted".to_owned())
+    }
+
+    fn preview_frame(&mut self, args: &Value) -> Result<Reply, String> {
+        let at = time_arg(args, "at")?;
+        let max_width = u32_arg(args, "max_width")?.unwrap_or(960);
+        let editor = self.editor()?;
+        let sequence = editor
+            .active_sequence()
+            .ok_or("the project has no sequence")?;
+        let (size, rgba) = bettercut_export::render_still(
+            editor.project(),
+            sequence,
+            at,
+            &bettercut_editor_core::media::NeverCancelled,
+        )
+        .map_err(|e| format!("could not render that frame: {e}"))?;
+        // Smaller for the assistant, keeping the shape.
+        let (size, rgba) = if size.width > max_width {
+            let height = (u64::from(size.height) * u64::from(max_width) / u64::from(size.width))
+                .max(1) as u32;
+            let to = bettercut_editor_core::timeline::Resolution::new(max_width, height);
+            (to, bettercut_export::shrink(&rgba, size, to))
+        } else {
+            (size, rgba)
+        };
+        let file =
+            std::env::temp_dir().join(format!("bettercut-mcp-frame-{}.png", std::process::id()));
+        bettercut_export::write_png(&file, size, &rgba).map_err(|e| e.to_string())?;
+        let png = std::fs::read(&file).map_err(|e| e.to_string());
+        let _ = std::fs::remove_file(&file);
+        Ok(Reply::Image {
+            png: png?,
+            caption: format!(
+                "The frame at {:.3} s, {}x{}",
+                at.as_seconds_f64(),
+                size.width,
+                size.height
+            ),
+        })
     }
 
     fn export(&mut self, args: &Value) -> Result<String, String> {

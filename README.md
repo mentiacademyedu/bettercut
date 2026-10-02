@@ -106,8 +106,10 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `import_media`, `add_to_timeline`, `add_title`, `split_clip`, `delete_clip`,
 `move_clip`, `trim_clip`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
-`import_captions`, `undo`, `redo` and `export`. More of the editor's actions
-are coming. It edits project files rather than driving the open window: save
+`import_captions`, `preview_frame`, `undo`, `redo` and `export`.
+`preview_frame` hands the assistant a picture of any moment of the edit, rendered
+exactly as it will export, so it can check its own work. More of the editor's
+actions are coming. It edits project files rather than driving the open window: save
 in the app before an assistant opens the same project, and when the assistant
 saves, the app notices and offers to load the new version.
 

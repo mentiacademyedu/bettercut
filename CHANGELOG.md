@@ -5,7 +5,8 @@
 - **MCP server (`bettercut-mcp`)**: AI assistants such as Claude can create
   and open projects, import media, place, move, trim, split and delete clips,
   add titles and captions, set volume, opacity, speed, fades, transitions and
-  filters, undo and export, through the editor's own undoable commands. Installed
+  filters, undo and export, through the editor's own undoable commands — and
+  see any frame of the edit as an image (`preview_frame`) to check its work. Installed
   beside the app on Windows and Mac; setup in the README.
 - **The app notices when its open project is saved by another program** — an
   assistant, a sync folder — and offers to load the new version (or keep the

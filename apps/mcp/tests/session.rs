@@ -351,3 +351,53 @@ fn an_assistant_uses_the_everyday_controls() {
     assert!(text.starts_with('2'), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An assistant can look at its edit: the frame comes back as a PNG image,
+/// at most as wide as asked.
+#[test]
+fn an_assistant_sees_a_frame() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+
+    let reply = client.request(
+        "tools/call",
+        json!({ "name": "preview_frame", "arguments": { "at": 0.5, "max_width": 320 } }),
+    );
+    let result = &reply["result"];
+    if result["isError"] == true {
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("adapter") || text.to_lowercase().contains("gpu"),
+            "{text}"
+        );
+        eprintln!("no GPU here; skipping: {text}");
+        return;
+    }
+    assert_eq!(result["content"][0]["type"], "image");
+    assert_eq!(result["content"][0]["mimeType"], "image/png");
+    let data = result["content"][0]["data"].as_str().unwrap();
+    // A PNG's signature, base64-encoded, begins "iVBORw0KGgo".
+    assert!(
+        data.starts_with("iVBORw0KGgo"),
+        "{}",
+        &data[..16.min(data.len())]
+    );
+    let caption = result["content"][1]["text"].as_str().unwrap();
+    assert!(caption.contains("320x180"), "{caption}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
