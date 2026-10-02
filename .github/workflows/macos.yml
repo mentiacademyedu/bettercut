@@ -1,10 +1,10 @@
-# bettercut on macOS, without owning a Mac: GitHub's Apple Silicon machines
-# build it, run the tests, package a .dmg and take a screenshot of the app.
-# Free for public repositories.
+# bettercut on macOS, without owning a Mac: GitHub's Mac machines build it,
+# run the tests, package a .dmg and take a screenshot of the app — once on
+# Apple Silicon and once on Intel. Free for public repositories.
 #
-# What comes out (under the run's "Artifacts"):
-#   bettercut-macos-dmg   the installer, to try on a real Mac
-#   bettercut-macos-shot  a picture of the interface, taken by the app itself
+# What comes out (under the run's "Artifacts"), for each kind of Mac:
+#   bettercut-macos-dmg / bettercut-macos-intel-dmg     the installer
+#   bettercut-macos-shot / bettercut-macos-intel-shot   the app's own screenshot
 name: macOS
 
 on:
@@ -19,8 +19,17 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 90
+    strategy:
+      # One kind of Mac failing should not hide what the other found.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            artifact: macos
+          - runner: macos-15-intel
+            artifact: macos-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     env:
       FFMPEG_PREFIX: ${{ github.workspace }}/vendor/ffmpeg-macos
     steps:
@@ -95,7 +104,7 @@ jobs:
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: bettercut-macos-dmg
+          name: bettercut-${{ matrix.artifact }}-dmg
           path: dist/*.dmg
 
       # The app's own screenshot (BETTERCUT_SCREENSHOT), of the sample project.
@@ -119,6 +128,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bettercut-macos-shot
+          name: bettercut-${{ matrix.artifact }}-shot
           path: dist/macos.png
           if-no-files-found: ignore

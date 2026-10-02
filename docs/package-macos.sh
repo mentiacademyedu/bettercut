@@ -103,7 +103,12 @@ codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
 # The disk image: the app and a shortcut to Applications to drag it onto.
-DMG="$DIST/bettercut-${VERSION}-macos.dmg"
+# Apple Silicon keeps the plain name; an Intel build says so.
+case "$(uname -m)" in
+  x86_64) KIND="macos-intel" ;;
+  *) KIND="macos" ;;
+esac
+DMG="$DIST/bettercut-${VERSION}-${KIND}.dmg"
 STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
