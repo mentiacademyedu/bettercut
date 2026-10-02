@@ -376,7 +376,9 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "add_captions",
-        description: "Put captions (subtitles) on the caption lane from a list of lines, each                       `{start, end, text}` in seconds, replacing any captions already there.                       Overlaps are shortened, not moved. One undo step.",
+        description: "Put captions (subtitles) on the caption lane from a list of lines, each \
+                      `{start, end, text}` in seconds, replacing any captions already there. \
+                      Overlaps are shortened, not moved. One undo step.",
         schema: || {
             object(
                 json!({
