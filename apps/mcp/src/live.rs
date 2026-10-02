@@ -80,12 +80,15 @@ impl Listener {
         })
     }
 
-    /// Run every call that has arrived on `editor`. True when one ran, so
-    /// the window knows to draw again.
-    pub fn serve(&self, editor: &mut Editor) -> bool {
-        let mut ran = false;
+    /// Run every call that has arrived on `editor`. Returns what happened,
+    /// for the window to redraw and to say so.
+    pub fn serve(&self, editor: &mut Editor) -> Served {
+        let mut served = Served::default();
         while let Ok(request) = self.requests.try_recv() {
-            ran = true;
+            served.any = true;
+            if !matches!(request.tool.as_str(), "describe_project" | "preview_frame") {
+                served.last_change = Some(request.tool.replace('_', " "));
+            }
             if request.tool == "export" {
                 // Rendered off the window's thread, from a copy of the
                 // project as it is now: a minute-long export must not freeze
@@ -100,8 +103,18 @@ impl Listener {
             let done = tools::run_on(editor, &request.tool, &request.args);
             let _ = request.answer.send(done);
         }
-        ran
+        served
     }
+}
+
+/// What one [`Listener::serve`] did.
+#[derive(Debug, Default)]
+pub struct Served {
+    /// Whether any call ran, so the window draws again.
+    pub any: bool,
+    /// The last tool that changes something, in words ("add title"); looking
+    /// at the project is not news.
+    pub last_change: Option<String>,
 }
 
 impl Drop for Listener {

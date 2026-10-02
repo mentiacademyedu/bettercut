@@ -57,11 +57,12 @@ fn an_assistant_edits_the_open_window() {
             let (mut editor, _events) = Editor::new_project("In The Window");
             let listener = Listener::start(file, || {}).unwrap();
             ready.send(()).unwrap();
+            let mut said = Vec::new();
             while !stop.load(Ordering::Relaxed) {
-                listener.serve(&mut editor);
+                said.extend(listener.serve(&mut editor).last_change);
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            editor.project().clone()
+            (editor.project().clone(), said)
         })
     };
     started.recv().unwrap();
@@ -118,7 +119,10 @@ fn an_assistant_edits_the_open_window() {
     assert!(is_error, "detached, there is no project of its own: {text}");
 
     stop.store(true, Ordering::Relaxed);
-    let project = window.join().unwrap();
+    let (project, said) = window.join().unwrap();
+    // The window says what changed, not what was only looked at.
+    assert!(said.iter().any(|s| s == "add title"), "{said:?}");
+    assert!(!said.iter().any(|s| s.contains("describe")), "{said:?}");
     let seen = serde_json::to_string(&project).unwrap();
     assert!(seen.contains("Hello") && !seen.contains("Again"));
     // The window closing takes its file with it.

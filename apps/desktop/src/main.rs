@@ -361,10 +361,14 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // An attached assistant's edits, run here between frames so they are
         // on the history like any other.
-        if let Some(live) = &self.live
-            && live.serve(&mut self.editor)
-        {
-            self.ui.needs_repaint = true;
+        if let Some(live) = &self.live {
+            let served = live.serve(&mut self.editor);
+            if served.any {
+                self.ui.needs_repaint = true;
+            }
+            if let Some(tool) = served.last_change {
+                self.ui.info(format!("An assistant: {tool}"));
+            }
         }
 
         // §56: drain the whole queue once per frame, never per event.
