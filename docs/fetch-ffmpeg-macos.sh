@@ -37,6 +37,11 @@ cd "$WORK/ffmpeg-$VERSION"
 
 # LGPL v3, shared, no programs. Never --enable-gpl or --enable-nonfree: the
 # check after the build refuses the result if either slipped in.
+# No X11 or SDL: bettercut never uses them, and where Homebrew happens to
+# have them (it does on GitHub's Intel Macs) FFmpeg would link them in and
+# drag libX11 and libxcb into the app. headerpad_max_install_names leaves room
+# in each library to rewrite where it finds the others, which packaging does;
+# without it the longer paths do not fit.
 # install_name_dir @rpath: each library names itself relative to whatever
 # loads it, so the same files work from the build folder and inside the app.
 ./configure \
@@ -47,7 +52,9 @@ cd "$WORK/ffmpeg-$VERSION"
   --disable-programs --disable-doc --disable-debug \
   --enable-videotoolbox --enable-audiotoolbox \
   --enable-libopenh264 --enable-libzimg --enable-libdav1d --enable-libvpx \
-  --disable-libx264 --disable-libx265 --disable-libfdk-aac
+  --disable-libx264 --disable-libx265 --disable-libfdk-aac \
+  --disable-xlib --disable-libxcb --disable-sdl2 \
+  --extra-ldflags=-Wl,-headerpad_max_install_names
 
 make -j"$(sysctl -n hw.ncpu)"
 rm -rf "$PREFIX"
