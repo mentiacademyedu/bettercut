@@ -46,6 +46,7 @@ bettercut-text = { path = "crates/text" }
 bettercut-captions = { path = "crates/captions" }
 bettercut-templates = { path = "crates/templates" }
 bettercut-ui = { path = "crates/ui" }
+bettercut-mcp = { path = "apps/mcp" }
 
 # Kept deliberately short. §74: "Add large dependencies without justification."
 serde = { version = "1", features = ["derive"] }

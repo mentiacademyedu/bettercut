@@ -12,6 +12,7 @@
 //! change an assistant makes is a command on the history, undoable like a
 //! click, saved in the same project file the app opens.
 
+pub mod live;
 mod tools;
 
 use serde_json::{Value, json};
@@ -23,8 +24,9 @@ pub const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-2
 /// What a client is told the server is for, once, at the start.
 const INSTRUCTIONS: &str = "bettercut is a desktop video editor. Open or create a project \
 (open_project / new_project), import media, place it on the timeline, cut and title it, \
-then export. Times are in seconds. Every edit can be undone (undo), and nothing is \
-written to the project file until save_project.";
+then export. If the person has the bettercut app open, attach_to_app edits the project \
+in its window instead, live. Times are in seconds. Every edit can be undone (undo), and \
+nothing is written to the project file until save_project.";
 
 /// One assistant's session: at most one open project.
 #[derive(Default)]
@@ -35,6 +37,14 @@ pub struct Server {
 impl Server {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A server that looks for the app's window in `file` (see [`live`])
+    /// rather than the usual place: for tests.
+    pub fn with_live_file(file: std::path::PathBuf) -> Self {
+        Self {
+            session: tools::Session::with_live_file(file),
+        }
     }
 
     /// Answer one line of JSON-RPC. `None` for a notification, which takes

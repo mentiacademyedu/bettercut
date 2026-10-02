@@ -109,17 +109,25 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `import_media`, `add_to_timeline`, `add_title`, `split_clip`, `delete_clip`,
 `move_clip`, `trim_clip`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
-`import_captions`, `preview_frame`, `undo`, `redo` and `export`.
+`import_captions`, `preview_frame`, `undo`, `redo`, `export`, and
+`attach_to_app` / `detach_from_app`.
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered
 exactly as it will export, so it can check its own work. More of the editor's
-actions are coming. It edits project files rather than driving the open window: save
-in the app before an assistant opens the same project, and when the assistant
-saves, the app notices and offers to load the new version.
+actions are coming.
+
+**Live, in the open window:** with the app running, `attach_to_app` makes
+every tool act on the project in its window instead: the edits appear as they
+are made, and are on the app's own undo history (Ctrl+Z undoes an assistant's
+edit like your own). The app listens only on this computer (127.0.0.1), and
+only for a program that has the random key it writes, each time it starts, to
+`live.json` in its settings folder. Unattached, the assistant edits project
+files; when it saves one the app has open, the app offers to load the new
+version.
 
 ## Coming next
 
-- **More of the editor through MCP:** looks, transitions, speed, captions,
-  sound — and working alongside the open window.
+- **More of the editor through MCP:** looks, keyframes, sound and the rest
+  of the editor's actions.
 - Automatic captions from speech, background removal and auto-reframe (these
   need on-device models, and will be optional downloads).
 - Code-signed installers, auto-update, and Linux distribution packages.

@@ -9,14 +9,21 @@ use std::path::{Path, PathBuf};
 
 use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
+use bettercut_editor_core::project_format::Project;
 use bettercut_editor_core::timeline::TransitionKind;
 use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TrimEdge};
 use serde_json::{Value, json};
+
+use crate::live;
 
 /// The open project, if there is one.
 #[derive(Default)]
 pub struct Session {
     open: Option<(Editor, EventReceiver)>,
+    /// The app's window, while attached: then edits go there instead.
+    app: Option<live::Link>,
+    /// Where to look for the window; `None` for the usual place.
+    live_file: Option<PathBuf>,
 }
 
 /// What a tool hands back: words, or a picture with a line about it.
@@ -39,6 +46,20 @@ struct Tool {
 }
 
 const TOOLS: &[Tool] = &[
+    Tool {
+        name: "attach_to_app",
+        description: "Edit the project open in the bettercut app's window instead of one of \
+                      this session's own: every tool after this acts there, live, on screen and \
+                      in the app's undo history (export renders a copy, so the window stays \
+                      usable). The app must be running. detach_from_app to stop.",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
+        name: "detach_from_app",
+        description: "Stop editing in the app's window; tools act on this session's own \
+                      project again.",
+        schema: || object(json!({}), &[]),
+    },
     Tool {
         name: "new_project",
         description: "Create a new, empty project and save it at `path` (a .vproj file). \
@@ -306,189 +327,55 @@ impl Session {
     /// Run tool `name`. The text is what the assistant reads back: JSON for
     /// anything with structure, a sentence otherwise.
     pub fn call(&mut self, name: &str, args: &Value) -> Result<Reply, String> {
-        if name == "preview_frame" {
-            return self.preview_frame(args);
-        }
-        self.call_text(name, args).map(Reply::Text)
-    }
-
-    fn call_text(&mut self, name: &str, args: &Value) -> Result<String, String> {
         match name {
-            "new_project" => self.new_project(args),
+            "attach_to_app" => {
+                let file = self.live_file.clone().unwrap_or_else(live::live_file);
+                let link = live::Link::connect(&file)?;
+                let described = link.call("describe_project", &json!({}))?;
+                self.app = Some(link);
+                let name = match described {
+                    Reply::Text(text) => serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|v| v["project"].as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    Reply::Image { .. } => String::new(),
+                };
+                Ok(Reply::Text(format!(
+                    "Attached to the bettercut window (project \"{name}\"): edits now happen \
+                     there, live, in its undo history. detach_from_app to stop."
+                )))
+            }
+            "detach_from_app" => Ok(Reply::Text(if self.app.take().is_some() {
+                "Detached: edits go to this session's own project again".to_owned()
+            } else {
+                "Not attached".to_owned()
+            })),
+            _ if self.app.is_some() => match name {
+                "new_project" | "open_project" => Err(
+                    "Attached to the app's window: open projects there, or detach_from_app first"
+                        .to_owned(),
+                ),
+                _ => self.app.as_ref().map_or_else(
+                    || Err("not attached".to_owned()),
+                    |app| app.call(name, args),
+                ),
+            },
+            "new_project" => self.new_project(args).map(Reply::Text),
             "open_project" => {
                 let path = path_arg(args, "path")?;
                 let opened = Editor::open(&path).map_err(|e| format!("could not open: {e}"))?;
                 self.open = Some(opened);
-                Ok(format!("Opened {}", path.display()))
+                Ok(Reply::Text(format!("Opened {}", path.display())))
             }
-            "save_project" => {
-                let editor = self.editor()?;
-                match args.get("path").and_then(Value::as_str) {
-                    Some(path) => editor.save_as(path),
-                    None => editor.save(),
-                }
-                .map_err(|e| format!("could not save: {e}"))?;
-                Ok("Saved".to_owned())
-            }
-            "describe_project" => Ok(describe(self.editor()?).to_string()),
-            "import_media" => self.import_media(args),
-            "add_to_timeline" => self.add_to_timeline(args),
-            "add_title" => {
-                let text = str_arg(args, "text")?.to_owned();
-                let at = time_arg(args, "at")?;
-                let editor = self.editor()?;
-                editor.set_playhead(at);
-                let clip = editor.add_text(text).map_err(|e| e.to_string())?;
-                Ok(json!({ "clip_id": clip.to_string() }).to_string())
-            }
-            "split_clip" => {
-                let clip = clip_arg(args)?;
-                let at = time_arg(args, "at")?;
-                let made = self
-                    .editor()?
-                    .split_clip_at(clip, &[at])
-                    .map_err(|e| e.to_string())?;
-                if made == 0 {
-                    return Err("that time is not inside the clip".to_owned());
-                }
-                Ok("Split".to_owned())
-            }
-            "delete_clip" => self.delete_clip(args),
-            "set_volume" => {
-                let clip = clip_arg(args)?;
-                let volume = number(args, "volume")?;
-                let editor = self.editor()?;
-                if editor.audio_clip(clip).is_none() {
-                    return Err("that is not a sound clip: use an id from sound_lanes".to_owned());
-                }
-                editor
-                    .set_clip_property(clip, ClipProperty::Gain(volume as f32), false)
-                    .map_err(|e| e.to_string())?;
-                Ok(format!("Volume {volume}"))
-            }
-            "set_opacity" => {
-                let clip = clip_arg(args)?;
-                let opacity = number(args, "opacity")?;
-                self.editor()?
-                    .set_clip_property(clip, ClipProperty::Opacity(opacity as f32), false)
-                    .map_err(|e| e.to_string())?;
-                Ok(format!("Opacity {opacity}"))
-            }
-            "set_speed" => {
-                let clip = clip_arg(args)?;
-                let speed = number(args, "speed")?;
-                let rate = bettercut_editor_core::foundation::Rational::new(
-                    (speed * 100.0).round() as i64,
-                    100,
-                )
-                .filter(|_| speed > 0.0)
-                .ok_or("speed must be more than 0")?;
-                self.editor()?
-                    .set_clip_speed(clip, rate, false)
-                    .map_err(|e| e.to_string())?;
-                Ok(format!("Speed {speed}x"))
-            }
-            "reverse_clip" => {
-                let clip = clip_arg(args)?;
-                let on = args
-                    .get("reversed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
-                self.editor()?
-                    .set_reversed(clip, on)
-                    .map_err(|e| e.to_string())?;
-                Ok(if on { "Reversed" } else { "Forwards" }.to_owned())
-            }
-            "set_fades" => {
-                let clip = clip_arg(args)?;
-                let fade_in = seconds(args, "fade_in")?.unwrap_or(0.0);
-                let fade_out = seconds(args, "fade_out")?.unwrap_or(0.0);
-                self.editor()?
-                    .set_clip_fades(clip, timeline_time(fade_in), timeline_time(fade_out), false)
-                    .map_err(|e| e.to_string())?;
-                Ok("Fades set".to_owned())
-            }
-            "add_transition" => {
-                let clip = clip_arg(args)?;
-                let kind = transition_named(str_arg(args, "kind")?)?;
-                let duration = seconds(args, "duration")?;
-                let editor = self.editor()?;
-                editor
-                    .set_transition(clip, kind)
-                    .map_err(|e| e.to_string())?;
-                if let Some(duration) = duration {
-                    editor
-                        .set_transition_duration(clip, timeline_time(duration))
-                        .map_err(|e| e.to_string())?;
-                }
-                Ok(format!("{} added", kind.label()))
-            }
-            "apply_filter" => {
-                let filter = filter_named(str_arg(args, "filter")?)?;
-                let clips = args
-                    .get("clip_ids")
-                    .and_then(Value::as_array)
-                    .ok_or("clip_ids must be a list")?
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .and_then(|t| uuid::Uuid::parse_str(t).ok())
-                            .map(ClipId::from_uuid)
-                            .ok_or_else(|| "clip_ids holds something that is not an id".to_owned())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let took = self
-                    .editor()?
-                    .apply_filter(filter, clips)
-                    .map_err(|e| e.to_string())?;
-                if took == 0 {
-                    return Err("none of those are picture clips".to_owned());
-                }
-                Ok(format!("{} on {took} clip(s)", filter.label()))
-            }
-            "move_clip" => {
-                let clip = clip_arg(args)?;
-                let start = time_arg(args, "start")?;
-                let editor = self.editor()?;
-                let track = editor.track_of(clip).ok_or("no clip with that id")?;
-                editor
-                    .move_clip(track, track, clip, start)
-                    .map_err(|e| e.to_string())?;
-                Ok("Moved".to_owned())
-            }
-            "trim_clip" => {
-                let clip = clip_arg(args)?;
-                let edge = match str_arg(args, "edge")? {
-                    "start" => TrimEdge::Start,
-                    "end" => TrimEdge::End,
-                    _ => return Err("edge is start or end".to_owned()),
-                };
-                let to = time_arg(args, "to")?;
-                let editor = self.editor()?;
-                let track = editor.track_of(clip).ok_or("no clip with that id")?;
-                editor
-                    .trim_clip(track, clip, edge, to)
-                    .map_err(|e| e.to_string())?;
-                Ok("Trimmed".to_owned())
-            }
-            "import_captions" => {
-                let path = path_arg(args, "path")?;
-                let count = self
-                    .editor()?
-                    .import_captions(&path)
-                    .map_err(|e| e.to_string())?;
-                Ok(format!("{count} captions imported"))
-            }
-            "undo" => {
-                self.editor()?.undo().map_err(|e| e.to_string())?;
-                Ok("Undone".to_owned())
-            }
-            "redo" => {
-                self.editor()?.redo().map_err(|e| e.to_string())?;
-                Ok("Redone".to_owned())
-            }
-            "export" => self.export(args),
-            other => Err(format!("no tool {other}")),
+            _ => run_on(self.editor()?, name, args),
+        }
+    }
+
+    /// Look for the app's window in `file` rather than the usual place.
+    pub fn with_live_file(file: PathBuf) -> Self {
+        Self {
+            live_file: Some(file),
+            ..Self::default()
         }
     }
 
@@ -527,135 +414,298 @@ impl Session {
             path.display()
         ))
     }
+}
 
-    fn import_media(&mut self, args: &Value) -> Result<String, String> {
-        let paths = args
-            .get("paths")
-            .and_then(Value::as_array)
-            .ok_or("paths must be a list of files")?;
-        let editor = self.editor()?;
-        let results: Vec<Value> = paths
-            .iter()
-            .map(|path| {
-                let Some(path) = path.as_str() else {
-                    return json!({ "error": "not a path" });
-                };
-                match editor.import_file(Path::new(path)) {
-                    Ok(id) => json!({ "path": path, "media_id": id.to_string() }),
-                    Err(err) => json!({ "path": path, "error": err.to_string() }),
-                }
-            })
-            .collect();
-        Ok(Value::Array(results).to_string())
+/// Run an editing tool on `editor`: the MCP server's own project, or the
+/// project open in the app's window. Everything but new_project and
+/// open_project.
+pub fn run_on(editor: &mut Editor, name: &str, args: &Value) -> Result<Reply, String> {
+    if name == "preview_frame" {
+        return preview_frame(editor, args);
     }
+    run_text(editor, name, args).map(Reply::Text)
+}
 
-    fn add_to_timeline(&mut self, args: &Value) -> Result<String, String> {
-        let media = id_arg(args, "media_id").map(MediaId::from_uuid)?;
-        let range = match (seconds(args, "from")?, seconds(args, "to")?) {
-            (None, None) => None,
-            (from, to) => Some((
-                media_time(from.unwrap_or(0.0)),
-                media_time(to.unwrap_or(f64::MAX / 2.0)),
-            )),
-        };
-        let clips = self
-            .editor()?
-            .place_media_range(media, range)
-            .map_err(|e| e.to_string())?;
-        Ok(
-            json!({ "clip_ids": clips.iter().map(ToString::to_string).collect::<Vec<_>>() })
-                .to_string(),
-        )
+fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, String> {
+    match name {
+        "save_project" => {
+            match args.get("path").and_then(Value::as_str) {
+                Some(path) => editor.save_as(path),
+                None => editor.save(),
+            }
+            .map_err(|e| format!("could not save: {e}"))?;
+            Ok("Saved".to_owned())
+        }
+        "describe_project" => Ok(describe(editor).to_string()),
+        "import_media" => import_media(editor, args),
+        "add_to_timeline" => add_to_timeline(editor, args),
+        "add_title" => {
+            let text = str_arg(args, "text")?.to_owned();
+            let at = time_arg(args, "at")?;
+            editor.set_playhead(at);
+            let clip = editor.add_text(text).map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
+        }
+        "split_clip" => {
+            let clip = clip_arg(args)?;
+            let at = time_arg(args, "at")?;
+            let made = editor
+                .split_clip_at(clip, &[at])
+                .map_err(|e| e.to_string())?;
+            if made == 0 {
+                return Err("that time is not inside the clip".to_owned());
+            }
+            Ok("Split".to_owned())
+        }
+        "delete_clip" => delete_clip(editor, args),
+        "set_volume" => {
+            let clip = clip_arg(args)?;
+            let volume = number(args, "volume")?;
+            if editor.audio_clip(clip).is_none() {
+                return Err("that is not a sound clip: use an id from sound_lanes".to_owned());
+            }
+            editor
+                .set_clip_property(clip, ClipProperty::Gain(volume as f32), false)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Volume {volume}"))
+        }
+        "set_opacity" => {
+            let clip = clip_arg(args)?;
+            let opacity = number(args, "opacity")?;
+            editor
+                .set_clip_property(clip, ClipProperty::Opacity(opacity as f32), false)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Opacity {opacity}"))
+        }
+        "set_speed" => {
+            let clip = clip_arg(args)?;
+            let speed = number(args, "speed")?;
+            let rate = bettercut_editor_core::foundation::Rational::new(
+                (speed * 100.0).round() as i64,
+                100,
+            )
+            .filter(|_| speed > 0.0)
+            .ok_or("speed must be more than 0")?;
+            editor
+                .set_clip_speed(clip, rate, false)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Speed {speed}x"))
+        }
+        "reverse_clip" => {
+            let clip = clip_arg(args)?;
+            let on = args
+                .get("reversed")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            editor.set_reversed(clip, on).map_err(|e| e.to_string())?;
+            Ok(if on { "Reversed" } else { "Forwards" }.to_owned())
+        }
+        "set_fades" => {
+            let clip = clip_arg(args)?;
+            let fade_in = seconds(args, "fade_in")?.unwrap_or(0.0);
+            let fade_out = seconds(args, "fade_out")?.unwrap_or(0.0);
+            editor
+                .set_clip_fades(clip, timeline_time(fade_in), timeline_time(fade_out), false)
+                .map_err(|e| e.to_string())?;
+            Ok("Fades set".to_owned())
+        }
+        "add_transition" => {
+            let clip = clip_arg(args)?;
+            let kind = transition_named(str_arg(args, "kind")?)?;
+            let duration = seconds(args, "duration")?;
+            editor
+                .set_transition(clip, kind)
+                .map_err(|e| e.to_string())?;
+            if let Some(duration) = duration {
+                editor
+                    .set_transition_duration(clip, timeline_time(duration))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(format!("{} added", kind.label()))
+        }
+        "apply_filter" => {
+            let filter = filter_named(str_arg(args, "filter")?)?;
+            let clips = args
+                .get("clip_ids")
+                .and_then(Value::as_array)
+                .ok_or("clip_ids must be a list")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .and_then(|t| uuid::Uuid::parse_str(t).ok())
+                        .map(ClipId::from_uuid)
+                        .ok_or_else(|| "clip_ids holds something that is not an id".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let took = editor
+                .apply_filter(filter, clips)
+                .map_err(|e| e.to_string())?;
+            if took == 0 {
+                return Err("none of those are picture clips".to_owned());
+            }
+            Ok(format!("{} on {took} clip(s)", filter.label()))
+        }
+        "move_clip" => {
+            let clip = clip_arg(args)?;
+            let start = time_arg(args, "start")?;
+            let track = editor.track_of(clip).ok_or("no clip with that id")?;
+            editor
+                .move_clip(track, track, clip, start)
+                .map_err(|e| e.to_string())?;
+            Ok("Moved".to_owned())
+        }
+        "trim_clip" => {
+            let clip = clip_arg(args)?;
+            let edge = match str_arg(args, "edge")? {
+                "start" => TrimEdge::Start,
+                "end" => TrimEdge::End,
+                _ => return Err("edge is start or end".to_owned()),
+            };
+            let to = time_arg(args, "to")?;
+            let track = editor.track_of(clip).ok_or("no clip with that id")?;
+            editor
+                .trim_clip(track, clip, edge, to)
+                .map_err(|e| e.to_string())?;
+            Ok("Trimmed".to_owned())
+        }
+        "import_captions" => {
+            let path = path_arg(args, "path")?;
+            let count = editor.import_captions(&path).map_err(|e| e.to_string())?;
+            Ok(format!("{count} captions imported"))
+        }
+        "undo" => {
+            editor.undo().map_err(|e| e.to_string())?;
+            Ok("Undone".to_owned())
+        }
+        "redo" => {
+            editor.redo().map_err(|e| e.to_string())?;
+            Ok("Redone".to_owned())
+        }
+        "export" => export_project(editor.project(), args),
+        other => Err(format!("no tool {other}")),
     }
+}
 
-    fn delete_clip(&mut self, args: &Value) -> Result<String, String> {
-        let clip = clip_arg(args)?;
-        let ripple = args.get("ripple").and_then(Value::as_bool).unwrap_or(false);
-        let editor = self.editor()?;
-        if editor.text_clip(clip).is_some() {
-            editor.remove_text(clip).map_err(|e| e.to_string())?;
-            return Ok("Deleted the title".to_owned());
-        }
-        let track = editor.track_of(clip).ok_or("no clip with that id")?;
-        if ripple {
-            editor.ripple_delete(track, clip)
-        } else {
-            editor.remove_clip(track, clip)
-        }
+fn import_media(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let paths = args
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or("paths must be a list of files")?;
+    let results: Vec<Value> = paths
+        .iter()
+        .map(|path| {
+            let Some(path) = path.as_str() else {
+                return json!({ "error": "not a path" });
+            };
+            match editor.import_file(Path::new(path)) {
+                Ok(id) => json!({ "path": path, "media_id": id.to_string() }),
+                Err(err) => json!({ "path": path, "error": err.to_string() }),
+            }
+        })
+        .collect();
+    Ok(Value::Array(results).to_string())
+}
+
+fn add_to_timeline(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let media = id_arg(args, "media_id").map(MediaId::from_uuid)?;
+    let range = match (seconds(args, "from")?, seconds(args, "to")?) {
+        (None, None) => None,
+        (from, to) => Some((
+            media_time(from.unwrap_or(0.0)),
+            media_time(to.unwrap_or(f64::MAX / 2.0)),
+        )),
+    };
+    let clips = editor
+        .place_media_range(media, range)
         .map_err(|e| e.to_string())?;
-        Ok("Deleted".to_owned())
-    }
+    Ok(
+        json!({ "clip_ids": clips.iter().map(ToString::to_string).collect::<Vec<_>>() })
+            .to_string(),
+    )
+}
 
-    fn preview_frame(&mut self, args: &Value) -> Result<Reply, String> {
-        let at = time_arg(args, "at")?;
-        let max_width = u32_arg(args, "max_width")?.unwrap_or(960);
-        let editor = self.editor()?;
-        let sequence = editor
-            .active_sequence()
-            .ok_or("the project has no sequence")?;
-        let (size, rgba) = bettercut_export::render_still(
-            editor.project(),
-            sequence,
-            at,
-            &bettercut_editor_core::media::NeverCancelled,
-        )
-        .map_err(|e| format!("could not render that frame: {e}"))?;
-        // Smaller for the assistant, keeping the shape.
-        let (size, rgba) = if size.width > max_width {
-            let height = (u64::from(size.height) * u64::from(max_width) / u64::from(size.width))
-                .max(1) as u32;
-            let to = bettercut_editor_core::timeline::Resolution::new(max_width, height);
-            (to, bettercut_export::shrink(&rgba, size, to))
-        } else {
-            (size, rgba)
-        };
-        let file =
-            std::env::temp_dir().join(format!("bettercut-mcp-frame-{}.png", std::process::id()));
-        bettercut_export::write_png(&file, size, &rgba).map_err(|e| e.to_string())?;
-        let png = std::fs::read(&file).map_err(|e| e.to_string());
-        let _ = std::fs::remove_file(&file);
-        Ok(Reply::Image {
-            png: png?,
-            caption: format!(
-                "The frame at {:.3} s, {}x{}",
-                at.as_seconds_f64(),
-                size.width,
-                size.height
-            ),
-        })
+fn delete_clip(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let clip = clip_arg(args)?;
+    let ripple = args.get("ripple").and_then(Value::as_bool).unwrap_or(false);
+    if editor.text_clip(clip).is_some() {
+        editor.remove_text(clip).map_err(|e| e.to_string())?;
+        return Ok("Deleted the title".to_owned());
     }
+    let track = editor.track_of(clip).ok_or("no clip with that id")?;
+    if ripple {
+        editor.ripple_delete(track, clip)
+    } else {
+        editor.remove_clip(track, clip)
+    }
+    .map_err(|e| e.to_string())?;
+    Ok("Deleted".to_owned())
+}
 
-    fn export(&mut self, args: &Value) -> Result<String, String> {
-        let path = path_arg(args, "path")?;
-        let width = u32_arg(args, "width")?;
-        let height = u32_arg(args, "height")?;
-        let editor = self.editor()?;
-        let project = editor.project();
-        let sequence = editor
-            .active_sequence()
-            .ok_or("the project has no sequence")?;
-        if sequence.duration().ticks() <= 0 {
-            return Err("The timeline is empty: there is nothing to export".to_owned());
-        }
-        let mut settings = bettercut_export::ExportSettings::for_sequence(path.clone(), sequence);
-        if let (Some(w), Some(h)) = (width, height) {
-            settings.resolution = bettercut_editor_core::timeline::Resolution::new(w, h);
-        }
-        let summary = bettercut_export::export(
-            project,
-            sequence,
-            &settings,
-            &mut |_| {},
-            &bettercut_editor_core::media::NeverCancelled,
-        )
-        .map_err(|e| format!("export failed: {e}"))?;
-        Ok(json!({
-            "path": summary.path.display().to_string(),
-            "frames": summary.frames,
-            "encoder": summary.encoder,
-        })
-        .to_string())
+fn preview_frame(editor: &mut Editor, args: &Value) -> Result<Reply, String> {
+    let at = time_arg(args, "at")?;
+    let max_width = u32_arg(args, "max_width")?.unwrap_or(960);
+    let sequence = editor
+        .active_sequence()
+        .ok_or("the project has no sequence")?;
+    let (size, rgba) = bettercut_export::render_still(
+        editor.project(),
+        sequence,
+        at,
+        &bettercut_editor_core::media::NeverCancelled,
+    )
+    .map_err(|e| format!("could not render that frame: {e}"))?;
+    // Smaller for the assistant, keeping the shape.
+    let (size, rgba) = if size.width > max_width {
+        let height =
+            (u64::from(size.height) * u64::from(max_width) / u64::from(size.width)).max(1) as u32;
+        let to = bettercut_editor_core::timeline::Resolution::new(max_width, height);
+        (to, bettercut_export::shrink(&rgba, size, to))
+    } else {
+        (size, rgba)
+    };
+    let file = std::env::temp_dir().join(format!("bettercut-mcp-frame-{}.png", std::process::id()));
+    bettercut_export::write_png(&file, size, &rgba).map_err(|e| e.to_string())?;
+    let png = std::fs::read(&file).map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&file);
+    Ok(Reply::Image {
+        png: png?,
+        caption: format!(
+            "The frame at {:.3} s, {}x{}",
+            at.as_seconds_f64(),
+            size.width,
+            size.height
+        ),
+    })
+}
+
+/// Render `project`'s timeline as the export tool asks. Takes the project
+/// alone so the app can export a copy away from its window's thread.
+pub fn export_project(project: &Project, args: &Value) -> Result<String, String> {
+    let path = path_arg(args, "path")?;
+    let width = u32_arg(args, "width")?;
+    let height = u32_arg(args, "height")?;
+    let sequence = project.active().ok_or("the project has no sequence")?;
+    if sequence.duration().ticks() <= 0 {
+        return Err("The timeline is empty: there is nothing to export".to_owned());
     }
+    let mut settings = bettercut_export::ExportSettings::for_sequence(path.clone(), sequence);
+    if let (Some(w), Some(h)) = (width, height) {
+        settings.resolution = bettercut_editor_core::timeline::Resolution::new(w, h);
+    }
+    let summary = bettercut_export::export(
+        project,
+        sequence,
+        &settings,
+        &mut |_| {},
+        &bettercut_editor_core::media::NeverCancelled,
+    )
+    .map_err(|e| format!("export failed: {e}"))?;
+    Ok(json!({
+        "path": summary.path.display().to_string(),
+        "frames": summary.frames,
+        "encoder": summary.encoder,
+    })
+    .to_string())
 }
 
 /// The project as an assistant needs to see it to edit it.
@@ -676,7 +726,7 @@ fn describe(editor: &Editor) -> Value {
         })
         .collect();
     let Some(sequence) = editor.active_sequence() else {
-        return json!({ "media": media, "sequence": null });
+        return json!({ "project": project.name, "media": media, "sequence": null });
     };
     let name_of = |id: MediaId| {
         project
@@ -738,6 +788,7 @@ fn describe(editor: &Editor) -> Value {
         .collect();
     let rate = sequence.frame_rate.as_rational();
     json!({
+        "project": project.name,
         "path": editor.path().map(|p| p.display().to_string()),
         "sequence": {
             "name": sequence.name,

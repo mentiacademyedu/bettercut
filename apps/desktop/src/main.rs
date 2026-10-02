@@ -138,6 +138,9 @@ struct App {
     /// The running export's job and when it began, to say how long is left.
     /// Keyed by job, so the next export in the queue starts its own clock.
     export_began: Option<(u64, std::time::Instant)>,
+    /// The live link: an assistant using bettercut-mcp, attached to this
+    /// window, edits this project. `None` if it could not listen.
+    live: Option<bettercut_mcp::live::Listener>,
 }
 
 impl App {
@@ -317,6 +320,24 @@ impl App {
         }
         let screenshot = std::env::var_os("BETTERCUT_SCREENSHOT").map(std::path::PathBuf::from);
 
+        // Not for a screenshot run, which must not take over the live file
+        // of a window the person has open.
+        let live = if screenshot.is_none() {
+            let ctx = cc.egui_ctx.clone();
+            match bettercut_mcp::live::Listener::start(
+                bettercut_mcp::live::live_file(),
+                move || ctx.request_repaint(),
+            ) {
+                Ok(live) => Some(live),
+                Err(err) => {
+                    tracing::warn!(%err, "no live link for assistants");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let last_title = editor.window_title();
         Self {
             editor,
@@ -331,12 +352,21 @@ impl App {
             screenshot,
             frames: 0,
             export_began: None,
+            live,
         }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // An attached assistant's edits, run here between frames so they are
+        // on the history like any other.
+        if let Some(live) = &self.live
+            && live.serve(&mut self.editor)
+        {
+            self.ui.needs_repaint = true;
+        }
+
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
 

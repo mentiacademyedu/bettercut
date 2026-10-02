@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **An assistant can edit the project open in the window, live**:
+  `attach_to_app` connects `bettercut-mcp` to the running app, and every tool
+  after it acts there — on screen as it happens, on the app's own undo
+  history. It listens on this computer only, guarded by a random key the app
+  writes to its settings folder; exports render a copy, so the window stays
+  usable while they run.
+
 ## 0.3.0 — Edit with an AI assistant, and Intel Macs
 
 Still a beta: expect bugs, and please

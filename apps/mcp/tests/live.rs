@@ -1,0 +1,127 @@
+//! The live link: an assistant attaches to an open window and edits the
+//! project there. The "window" here is a thread holding an editor and
+//! serving the link the way the app does between frames.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::io::{BufRead, BufReader, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use bettercut_editor_core::Editor;
+use bettercut_mcp::Server;
+use bettercut_mcp::live::Listener;
+use serde_json::{Value, json};
+
+fn call(server: &mut Server, name: &str, arguments: Value) -> (String, bool) {
+    let line = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": arguments } });
+    let reply: Value =
+        serde_json::from_str(&server.handle_line(&line.to_string()).unwrap()).unwrap();
+    let result = &reply["result"];
+    (
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned(),
+        result["isError"].as_bool().unwrap_or(true),
+    )
+}
+
+fn ok(server: &mut Server, name: &str, arguments: Value) -> String {
+    let (text, is_error) = call(server, name, arguments);
+    assert!(!is_error, "{name} failed: {text}");
+    text
+}
+
+#[test]
+fn an_assistant_edits_the_open_window() {
+    let dir = std::env::temp_dir().join(format!("bettercut-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("live.json");
+    let mut server = Server::with_live_file(file.clone());
+
+    // No window yet.
+    let (text, is_error) = call(&mut server, "attach_to_app", json!({}));
+    assert!(is_error);
+    assert!(text.contains("not open"), "{text}");
+
+    // The window: an editor, serving calls between "frames".
+    let stop = Arc::new(AtomicBool::new(false));
+    let (ready, started) = std::sync::mpsc::channel();
+    let window = {
+        let stop = stop.clone();
+        let file = file.clone();
+        std::thread::spawn(move || {
+            let (mut editor, _events) = Editor::new_project("In The Window");
+            let listener = Listener::start(file, || {}).unwrap();
+            ready.send(()).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                listener.serve(&mut editor);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            editor.project().clone()
+        })
+    };
+    started.recv().unwrap();
+
+    // Someone else on the machine, without the token, is turned away.
+    let said: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let mut stranger =
+        std::net::TcpStream::connect(("127.0.0.1", said["port"].as_u64().unwrap() as u16)).unwrap();
+    writeln!(stranger, r#"{{"token":"guess","tool":"undo","args":{{}}}}"#).unwrap();
+    let mut answer = String::new();
+    BufReader::new(stranger).read_line(&mut answer).unwrap();
+    assert!(answer.contains("wrong token"), "{answer}");
+
+    let attached = ok(&mut server, "attach_to_app", json!({}));
+    assert!(attached.contains("In The Window"), "{attached}");
+
+    // Opening another project while attached is refused, not done quietly.
+    let (_, is_error) = call(
+        &mut server,
+        "new_project",
+        json!({ "path": dir.join("x.vproj").display().to_string() }),
+    );
+    assert!(is_error);
+
+    // Edits land in the window's editor, and undo there.
+    ok(
+        &mut server,
+        "add_title",
+        json!({ "text": "Hello", "at": 0 }),
+    );
+    ok(
+        &mut server,
+        "add_title",
+        json!({ "text": "Again", "at": 5 }),
+    );
+    ok(&mut server, "undo", json!({}));
+    let described: Value =
+        serde_json::from_str(&ok(&mut server, "describe_project", json!({}))).unwrap();
+    assert!(described.to_string().contains("Hello"), "{described}");
+    assert!(!described.to_string().contains("Again"), "{described}");
+
+    // Export renders a copy, away from the window's thread.
+    let out = dir.join("out.mp4");
+    let exported = ok(
+        &mut server,
+        "export",
+        json!({ "path": out.display().to_string(), "width": 320, "height": 180 }),
+    );
+    assert!(exported.contains("frames"), "{exported}");
+    assert!(std::fs::metadata(&out).unwrap().len() > 0);
+
+    ok(&mut server, "detach_from_app", json!({}));
+    let (text, is_error) = call(&mut server, "describe_project", json!({}));
+    assert!(is_error, "detached, there is no project of its own: {text}");
+
+    stop.store(true, Ordering::Relaxed);
+    let project = window.join().unwrap();
+    let seen = serde_json::to_string(&project).unwrap();
+    assert!(seen.contains("Hello") && !seen.contains("Again"));
+    // The window closing takes its file with it.
+    assert!(!file.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

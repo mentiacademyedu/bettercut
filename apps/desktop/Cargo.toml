@@ -15,6 +15,7 @@ bettercut-editor-core.workspace = true
 bettercut-ui.workspace = true
 bettercut-export.workspace = true
 bettercut-cache.workspace = true
+bettercut-mcp.workspace = true
 eframe.workspace = true
 egui.workspace = true
 tracing.workspace = true
