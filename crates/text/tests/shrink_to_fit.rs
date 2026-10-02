@@ -53,8 +53,13 @@ fn without_the_flag_the_line_wraps() {
     let wrapped = renderer
         .rasterize(LONG, &style(48.0, Some(300.0), false))
         .unwrap();
+    // Lines are wrapped by the advance widths of their letters, but the
+    // picture holds each letter's whole ink, which can overhang its advance
+    // by a few pixels: how many depends on the font (2 with Windows' default,
+    // 7 with Linux's DejaVu Sans). A quarter of the size is room for that and
+    // still far short of a line that did not wrap.
     assert!(
-        wrapped.width <= 302,
+        wrapped.width <= 300 + 48 / 4,
         "the wrapped title is {} wide, more than the 300 it was given",
         wrapped.width
     );
