@@ -599,6 +599,52 @@ impl Editor {
         )
     }
 
+    /// Several properties of one clip as one undo step called `label`: "move
+    /// it, size it and turn it" asked for at once is one change, not three.
+    pub fn set_clip_properties(
+        &mut self,
+        clip: ClipId,
+        properties: Vec<crate::command::ClipProperty>,
+        label: &str,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let commands = properties
+            .into_iter()
+            .map(|property| Command::SetClipProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            })
+            .collect();
+        self.dispatch_group(label, commands)
+    }
+
+    /// [`Self::set_clip_properties`] for a title.
+    pub fn set_text_properties(
+        &mut self,
+        clip: ClipId,
+        properties: Vec<crate::command::TextProperty>,
+        label: &str,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self
+            .active_sequence()
+            .and_then(|s| s.text_track_of(clip))
+            .ok_or(EditorError::ClipNotFound(clip))?;
+        let commands = properties
+            .into_iter()
+            .map(|property| Command::SetTextProperty {
+                sequence,
+                track,
+                clip,
+                property,
+            })
+            .collect();
+        self.dispatch_group(label, commands)
+    }
+
     /// Enhance Voice: the clean-up a spoken recording usually wants, in one
     /// click and one undo step — the room's hiss down, rumble cut below
     /// 80 Hz, a little presence, loud and quiet words brought closer, and
@@ -4023,6 +4069,31 @@ impl Editor {
             self.replace_markers(markers)?;
         }
         Ok(added)
+    }
+
+    /// One marker at `at` (snapped to a frame, as [`Self::add_markers`] does)
+    /// with a name, in one undo step; a marker already there is renamed.
+    /// Returns where it landed.
+    pub fn add_named_marker(
+        &mut self,
+        at: TimelineTime,
+        label: &str,
+    ) -> Result<TimelineTime, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let at = self.snap_to_frame(sequence, at);
+        let label: String = label.trim().chars().take(Self::MAX_MARKER_LABEL).collect();
+        let mut markers = self.markers().to_vec();
+        match markers.iter_mut().find(|m| m.time == at) {
+            Some(marker) if marker.label == label => return Ok(at),
+            Some(marker) => marker.label = label,
+            None => {
+                let mut marker = bettercut_timeline::Marker::at(at);
+                marker.label = label;
+                markers.push(marker);
+            }
+        }
+        self.replace_markers(bettercut_timeline::marker::normalized(markers))?;
+        Ok(at)
     }
 
     /// A marker every `interval`, from the marked in-point (or the start)

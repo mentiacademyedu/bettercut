@@ -11,7 +11,7 @@ use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
 use bettercut_editor_core::project_format::Project;
 use bettercut_editor_core::timeline::TransitionKind;
-use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TrimEdge};
+use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TextProperty, TrimEdge};
 use serde_json::{Value, json};
 
 use crate::live;
@@ -129,6 +129,81 @@ const TOOLS: &[Tool] = &[
                     "at": { "type": "number", "minimum": 0 }
                 }),
                 &["text", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "set_transform",
+        description: "Move, size or turn a picture clip or a title. `x`/`y` place its centre as \
+                      an offset from the middle of the frame, in fractions of the frame: 0.5 is \
+                      the right (x) or bottom (y) edge, -0.5 the left or top. `scale` 1 is its \
+                      normal size; `rotation` is in degrees, clockwise. Leave out what should \
+                      stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "scale": { "type": "number", "exclusiveMinimum": 0 },
+                    "rotation": { "type": "number" }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "style_title",
+        description: "Change a title's words or look: `text`, `size` (pixels at the project's \
+                      height), `color` (\"#rrggbb\"), `bold`, `italic`, an `outline` colour \
+                      (\"none\" removes it) and a `background` box colour (\"none\" removes \
+                      it). Leave out what should stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "text": { "type": "string", "minLength": 1 },
+                    "size": { "type": "number", "minimum": 4, "maximum": 1000 },
+                    "color": { "type": "string" },
+                    "bold": { "type": "boolean" },
+                    "italic": { "type": "boolean" },
+                    "outline": { "type": "string" },
+                    "background": { "type": "string" }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "adjust_colour",
+        description: "Correct a picture clip's colour. `brightness`, `contrast` and \
+                      `saturation` are 1 for unchanged (0–2; saturation 0 is black and \
+                      white); `temperature` is 0 for unchanged, -1 cooler to 1 warmer. Leave \
+                      out what should stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "brightness": { "type": "number", "minimum": 0, "maximum": 2 },
+                    "contrast": { "type": "number", "minimum": 0, "maximum": 2 },
+                    "saturation": { "type": "number", "minimum": 0, "maximum": 2 },
+                    "temperature": { "type": "number", "minimum": -1, "maximum": 1 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "add_marker",
+        description: "Put a marker on the timeline at `at` seconds, optionally named with \
+                      `label` — to note a beat, a chapter or a cut to make.",
+        schema: || {
+            object(
+                json!({
+                    "at": { "type": "number", "minimum": 0 },
+                    "label": { "type": "string" }
+                }),
+                &["at"],
             )
         },
     },
@@ -439,6 +514,16 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "describe_project" => Ok(describe(editor).to_string()),
         "import_media" => import_media(editor, args),
         "add_to_timeline" => add_to_timeline(editor, args),
+        "set_transform" => set_transform(editor, args),
+        "style_title" => style_title(editor, args),
+        "adjust_colour" => adjust_colour(editor, args),
+        "add_marker" => {
+            let label = args.get("label").and_then(Value::as_str).unwrap_or("");
+            let at = editor
+                .add_named_marker(time_arg(args, "at")?, label)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Marker at {:.3} s", at.as_seconds_f64()))
+        }
         "add_title" => {
             let text = str_arg(args, "text")?.to_owned();
             let at = time_arg(args, "at")?;
@@ -708,6 +793,205 @@ pub fn export_project(project: &Project, args: &Value) -> Result<String, String>
     .to_string())
 }
 
+/// A number argument that may be left out; when given, it must be finite.
+fn optional_number(args: &Value, name: &str) -> Result<Option<f32>, String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| Some(v as f32))
+            .ok_or_else(|| format!("{name} must be a number")),
+    }
+}
+
+/// "#rrggbb" (or "rrggbb", or "#rrggbbaa") as a colour.
+fn colour_arg(text: &str) -> Result<bettercut_editor_core::text::Rgba, String> {
+    let hex = text.trim().trim_start_matches('#');
+    let byte = |at: usize| {
+        hex.get(at..at + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+    };
+    let bad = || format!("{text:?} is not a colour: write it as \"#rrggbb\"");
+    match hex.len() {
+        6 | 8 => Ok(bettercut_editor_core::text::Rgba {
+            r: byte(0).ok_or_else(bad)?,
+            g: byte(2).ok_or_else(bad)?,
+            b: byte(4).ok_or_else(bad)?,
+            a: if hex.len() == 8 {
+                byte(6).ok_or_else(bad)?
+            } else {
+                255
+            },
+        }),
+        _ => Err(bad()),
+    }
+}
+
+fn set_transform(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let clip = clip_arg(args)?;
+    let x = optional_number(args, "x")?;
+    let y = optional_number(args, "y")?;
+    let scale = optional_number(args, "scale")?;
+    let rotation = optional_number(args, "rotation")?;
+    if scale.is_some_and(|s| s <= 0.0) {
+        return Err("scale must be more than 0".to_owned());
+    }
+    let changed;
+    if let Some(title) = editor.text_clip(clip) {
+        let now = title.transform;
+        let mut changes = Vec::new();
+        if x.is_some() || y.is_some() {
+            changes.push(TextProperty::Position {
+                x: x.unwrap_or(now.position.x),
+                y: y.unwrap_or(now.position.y),
+            });
+        }
+        if let Some(scale) = scale {
+            changes.push(TextProperty::Scale { x: scale, y: scale });
+        }
+        if let Some(rotation) = rotation {
+            changes.push(TextProperty::Rotation(rotation));
+        }
+        changed = !changes.is_empty();
+        editor
+            .set_text_properties(clip, changes, "Place Title")
+            .map_err(|e| e.to_string())?;
+    } else {
+        let now = editor
+            .video_clip(clip)
+            .ok_or("that is not a picture clip or a title: sound has no place on screen")?
+            .transform;
+        let mut changes = Vec::new();
+        if x.is_some() || y.is_some() {
+            changes.push(ClipProperty::Position {
+                x: x.unwrap_or(now.position.x),
+                y: y.unwrap_or(now.position.y),
+            });
+        }
+        if let Some(scale) = scale {
+            changes.push(ClipProperty::Scale { x: scale, y: scale });
+        }
+        if let Some(rotation) = rotation {
+            changes.push(ClipProperty::Rotation(rotation));
+        }
+        changed = !changes.is_empty();
+        editor
+            .set_clip_properties(clip, changes, "Place Clip")
+            .map_err(|e| e.to_string())?;
+    }
+    if !changed {
+        return Err("nothing to change: give x, y, scale or rotation".to_owned());
+    }
+    Ok("Placed".to_owned())
+}
+
+fn style_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::text::{Background, FontWeight, Stroke};
+    let clip = clip_arg(args)?;
+    let title = editor
+        .text_clip(clip)
+        .ok_or("that is not a title: use an id from title_lanes")?;
+    let mut style = title.style.clone();
+    let before = style.clone();
+    if let Some(size) = optional_number(args, "size")? {
+        style.size = size.clamp(4.0, 1000.0);
+    }
+    if let Some(color) = args.get("color").and_then(Value::as_str) {
+        style.color = colour_arg(color)?;
+    }
+    if let Some(bold) = args.get("bold").and_then(Value::as_bool) {
+        style.weight = if bold {
+            FontWeight::Bold
+        } else {
+            FontWeight::Regular
+        };
+    }
+    if let Some(italic) = args.get("italic").and_then(Value::as_bool) {
+        style.italic = italic;
+    }
+    if let Some(outline) = args.get("outline").and_then(Value::as_str) {
+        style.stroke = if outline.eq_ignore_ascii_case("none") {
+            None
+        } else {
+            let color = colour_arg(outline)?;
+            Some(Stroke {
+                color,
+                ..style.stroke.unwrap_or_default()
+            })
+        };
+    }
+    if let Some(background) = args.get("background").and_then(Value::as_str) {
+        style.background = if background.eq_ignore_ascii_case("none") {
+            None
+        } else {
+            let color = colour_arg(background)?;
+            Some(Background {
+                color,
+                ..style.background.unwrap_or_default()
+            })
+        };
+    }
+    let mut changes = Vec::new();
+    if let Some(text) = args.get("text").and_then(Value::as_str) {
+        changes.push(TextProperty::Content(text.to_owned()));
+    }
+    if style != before {
+        changes.push(TextProperty::Style(Box::new(style)));
+    }
+    if changes.is_empty() {
+        return Err("nothing to change".to_owned());
+    }
+    editor
+        .set_text_properties(clip, changes, "Style Title")
+        .map_err(|e| e.to_string())?;
+    Ok("Styled".to_owned())
+}
+
+fn adjust_colour(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let clip = clip_arg(args)?;
+    if editor.video_clip(clip).is_none() {
+        return Err("that is not a picture clip".to_owned());
+    }
+    let changes: Vec<ClipProperty> = [
+        (
+            "brightness",
+            ClipProperty::Brightness as fn(f32) -> ClipProperty,
+            0.0,
+            2.0,
+        ),
+        ("contrast", ClipProperty::Contrast, 0.0, 2.0),
+        ("saturation", ClipProperty::Saturation, 0.0, 2.0),
+        ("temperature", ClipProperty::Temperature, -1.0, 1.0),
+    ]
+    .into_iter()
+    .filter_map(|(name, make, low, high)| {
+        optional_number(args, name)
+            .map(|v| v.map(|v| make(v.clamp(low, high))))
+            .transpose()
+    })
+    .collect::<Result<_, _>>()?;
+    if changes.is_empty() {
+        return Err(
+            "nothing to change: give brightness, contrast, saturation or temperature".to_owned(),
+        );
+    }
+    editor
+        .set_clip_properties(clip, changes, "Adjust Colour")
+        .map_err(|e| e.to_string())?;
+    Ok("Colour adjusted".to_owned())
+}
+
+/// Where a clip sits, in `set_transform`'s terms.
+fn place(transform: &bettercut_editor_core::timeline::Transform) -> Value {
+    json!({
+        "x": transform.position.x,
+        "y": transform.position.y,
+        "scale": transform.scale.x,
+        "rotation": transform.rotation_degrees,
+    })
+}
+
 /// The project as an assistant needs to see it to edit it.
 fn describe(editor: &Editor) -> Value {
     let project = editor.project();
@@ -747,7 +1031,7 @@ fn describe(editor: &Editor) -> Value {
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
                             "media": name_of(c.media_id),
                             "speed": c.speed.as_f64(), "reversed": c.reversed,
-                            "opacity": c.opacity,
+                            "opacity": c.opacity, "place": place(&c.transform),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
                             "transition": c.transition_out.map(|t| json!({
                                 "kind": t.kind.label(),
@@ -781,7 +1065,10 @@ fn describe(editor: &Editor) -> Value {
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
-                            "text": c.text })
+                            "text": c.text, "place": place(&c.transform),
+                            "size": c.style.size,
+                            "color": format!("#{:02x}{:02x}{:02x}",
+                                c.style.color.r, c.style.color.g, c.style.color.b) })
                 }).collect::<Vec<_>>(),
             })
         })
@@ -801,6 +1088,9 @@ fn describe(editor: &Editor) -> Value {
         "picture_lanes": video,
         "sound_lanes": audio,
         "title_lanes": titles,
+        "markers": sequence.markers.iter().map(|m| json!({
+            "at": seconds_of(m.time.ticks()), "label": m.label,
+        })).collect::<Vec<_>>(),
     })
 }
 

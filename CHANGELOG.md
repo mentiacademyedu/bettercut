@@ -10,6 +10,11 @@
   history. It listens on this computer only, guarded by a random key the app
   writes to its settings folder; exports render a copy, so the window stays
   usable while they run.
+- **More for assistants**: `set_transform` (place, size and turn a clip or
+  title), `style_title` (words, size, colour, bold, italic, outline, a box
+  behind), `adjust_colour` (brightness, contrast, saturation, warmth) and
+  `add_marker`. Each is one undo step; `describe_project` now reports where
+  clips sit, title sizes and colours, and the markers.
 
 ## 0.3.0 — Edit with an AI assistant, and Intel Macs
 

@@ -401,3 +401,88 @@ fn an_assistant_sees_a_frame() {
     assert!(caption.contains("320x180"), "{caption}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_places_styles_and_marks() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let picture = placed["clip_ids"][0].clone();
+    let title: Value =
+        serde_json::from_str(&client.ok("add_title", json!({ "text": "Hi", "at": 0 }))).unwrap();
+    let title = title["clip_id"].clone();
+
+    client.ok(
+        "set_transform",
+        json!({ "clip_id": picture, "x": 0.25, "scale": 0.5, "rotation": 10 }),
+    );
+    client.ok("set_transform", json!({ "clip_id": title, "y": 0.3 }));
+    client.ok(
+        "style_title",
+        json!({ "clip_id": title, "text": "Hello", "size": 120, "color": "#ff8800",
+                "bold": true, "outline": "#000000", "background": "#00000080" }),
+    );
+    client.ok(
+        "adjust_colour",
+        json!({ "clip_id": picture, "brightness": 1.2, "saturation": 0 }),
+    );
+    // Between two frames: it lands on one, named.
+    client.ok("add_marker", json!({ "at": 1.51, "label": "drop" }));
+
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let shot = &described["picture_lanes"][0]["clips"][0];
+    assert_eq!(shot["place"]["x"], 0.25, "{shot}");
+    assert_eq!(shot["place"]["y"], 0.0, "y was left as it was: {shot}");
+    assert_eq!(shot["place"]["scale"], 0.5);
+    assert_eq!(shot["place"]["rotation"], 10.0);
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert_eq!(words["text"], "Hello", "{words}");
+    assert_eq!(words["size"], 120.0);
+    assert_eq!(words["color"], "#ff8800");
+    assert!((words["place"]["y"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+    assert_eq!(described["markers"][0]["label"], "drop");
+    assert!((described["markers"][0]["at"].as_f64().unwrap() - 1.5).abs() < 1e-3);
+
+    // Each tool is one undo step: the named marker, then the colour as a
+    // whole, then the title's words and look together.
+    client.ok("undo", json!({}));
+    client.ok("undo", json!({}));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert!(described["markers"].as_array().unwrap().is_empty());
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert_eq!(words["text"], "Hello", "the style is still there: {words}");
+    client.ok("undo", json!({}));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert_eq!(
+        words["text"], "Hi",
+        "words and style were one step: {words}"
+    );
+
+    // Mistakes are explained.
+    let (text, is_error) = client.tool("style_title", json!({ "clip_id": picture }));
+    assert!(is_error && text.contains("not a title"), "{text}");
+    let (text, is_error) = client.tool(
+        "style_title",
+        json!({ "clip_id": title, "color": "orange" }),
+    );
+    assert!(is_error && text.contains("#rrggbb"), "{text}");
+    let (text, is_error) = client.tool("set_transform", json!({ "clip_id": picture }));
+    assert!(is_error && text.contains("nothing"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
