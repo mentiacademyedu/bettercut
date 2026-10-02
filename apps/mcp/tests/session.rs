@@ -245,3 +245,109 @@ fn an_assistant_makes_an_edit_and_exports_it() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The everyday controls: volume, opacity, speed, reverse, fades, a
+/// transition, a filter, moving, trimming and captions.
+#[test]
+fn an_assistant_uses_the_everyday_controls() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let media = imported[0]["media_id"].as_str().unwrap().to_owned();
+    for _ in 0..2 {
+        client.ok(
+            "add_to_timeline",
+            json!({ "media_id": media, "from": 0.0, "to": 2.0 }),
+        );
+    }
+    let state = |client: &mut Client| -> Value {
+        serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap()
+    };
+    let before = state(&mut client);
+    let first = before["picture_lanes"][0]["clips"][0]["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = before["picture_lanes"][0]["clips"][1]["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sound = before["sound_lanes"][0]["clips"][0]["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    client.ok("set_volume", json!({ "clip_id": sound, "volume": 0.5 }));
+    let (_, wrong_lane) = client.tool("set_volume", json!({ "clip_id": first, "volume": 0.5 }));
+    assert!(wrong_lane, "a picture clip has no volume");
+    client.ok("set_opacity", json!({ "clip_id": first, "opacity": 0.25 }));
+    client.ok("set_fades", json!({ "clip_id": first, "fade_in": 0.5 }));
+    client.ok(
+        "add_transition",
+        json!({ "clip_id": first, "kind": "fade through black", "duration": 0.5 }),
+    );
+    let (unknown, bad_kind) = client.tool(
+        "add_transition",
+        json!({ "clip_id": first, "kind": "teleport" }),
+    );
+    assert!(bad_kind && unknown.contains("Crossfade"), "{unknown}");
+    client.ok(
+        "apply_filter",
+        json!({ "clip_ids": [second], "filter": "black and white" }),
+    );
+    client.ok("reverse_clip", json!({ "clip_id": second }));
+
+    let after = state(&mut client);
+    let pictures = &after["picture_lanes"][0]["clips"];
+    assert_eq!(after["sound_lanes"][0]["clips"][0]["volume"], 0.5);
+    assert_eq!(pictures[0]["opacity"], 0.25);
+    assert_eq!(pictures[0]["transition"]["kind"], "Fade through black");
+    assert!((pictures[0]["transition"]["duration"].as_f64().unwrap() - 0.5).abs() < 0.05);
+    assert_eq!(pictures[1]["filter"], "B&W");
+    assert_eq!(pictures[1]["reversed"], true);
+
+    // Twice as fast is half as long.
+    client.ok("set_speed", json!({ "clip_id": second, "speed": 2.0 }));
+    let fast = state(&mut client);
+    let clip = &fast["picture_lanes"][0]["clips"][1];
+    let length = clip["end"].as_f64().unwrap() - clip["start"].as_f64().unwrap();
+    assert!(
+        (length - 1.0).abs() < 0.05,
+        "a 2 s clip at 2x lasts {length} s"
+    );
+    assert_eq!(clip["speed"], 2.0);
+
+    // Trim the first clip's end in, then move the second later along.
+    client.ok(
+        "trim_clip",
+        json!({ "clip_id": first, "edge": "end", "to": 1.5 }),
+    );
+    client.ok("move_clip", json!({ "clip_id": second, "start": 6.0 }));
+    let moved = state(&mut client);
+    let pictures = &moved["picture_lanes"][0]["clips"];
+    assert!((pictures[0]["end"].as_f64().unwrap() - 1.5).abs() < 0.05);
+    assert!((pictures[1]["start"].as_f64().unwrap() - 6.0).abs() < 0.05);
+
+    let srt = dir.join("words.srt");
+    std::fs::write(
+        &srt,
+        "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n2\n00:00:01,000 --> 00:00:02,000\nThere\n",
+    )
+    .unwrap();
+    let text = client.ok(
+        "import_captions",
+        json!({ "path": srt.display().to_string() }),
+    );
+    assert!(text.starts_with('2'), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

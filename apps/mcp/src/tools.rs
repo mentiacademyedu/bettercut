@@ -7,8 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
+use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
-use bettercut_editor_core::{Editor, EventReceiver};
+use bettercut_editor_core::timeline::TransitionKind;
+use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TrimEdge};
 use serde_json::{Value, json};
 
 /// The open project, if there is one.
@@ -119,6 +121,115 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "set_volume",
+        description: "Set a sound clip's volume: 1 is as recorded, 0 silent, up to 4. Use a \
+                      clip id from the sound lanes.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "volume": { "type": "number", "minimum": 0, "maximum": 4 } }),
+                &["clip_id", "volume"],
+            )
+        },
+    },
+    Tool {
+        name: "set_opacity",
+        description: "Set a picture clip's opacity: 1 solid, 0 invisible.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "opacity": { "type": "number", "minimum": 0, "maximum": 1 } }),
+                &["clip_id", "opacity"],
+            )
+        },
+    },
+    Tool {
+        name: "set_speed",
+        description: "Play a clip faster or slower: 2 is twice as fast (half as long), 0.5 half \
+                      speed. Its linked sound follows.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "speed": { "type": "number", "minimum": 0.1, "maximum": 10 } }),
+                &["clip_id", "speed"],
+            )
+        },
+    },
+    Tool {
+        name: "reverse_clip",
+        description: "Play a clip backwards (or forwards again with `reversed: false`).",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "reversed": { "type": "boolean" } }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "set_fades",
+        description: "Fade a clip in from its start and out to its end, in seconds (0 for none).",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "fade_in": { "type": "number", "minimum": 0 },
+                        "fade_out": { "type": "number", "minimum": 0 } }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "add_transition",
+        description: "Put a transition at the end of a picture clip, into the next one. \
+                      Optionally its length in seconds.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "kind": { "type": "string", "enum": transition_names() },
+                        "duration": { "type": "number", "minimum": 0.1 } }),
+                &["clip_id", "kind"],
+            )
+        },
+    },
+    Tool {
+        name: "apply_filter",
+        description: "Give picture clips a filter's look (\"Original\" takes it off again).",
+        schema: || {
+            object(
+                json!({ "clip_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                        "filter": { "type": "string", "enum": filter_names() } }),
+                &["clip_ids", "filter"],
+            )
+        },
+    },
+    Tool {
+        name: "move_clip",
+        description: "Move a clip along its lane so it starts at `start` seconds.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "start": { "type": "number", "minimum": 0 } }),
+                &["clip_id", "start"],
+            )
+        },
+    },
+    Tool {
+        name: "trim_clip",
+        description: "Move a clip's start or end edge to `to` seconds on the timeline, showing \
+                      more or less of the file.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "edge": { "type": "string", "enum": ["start", "end"] },
+                        "to": { "type": "number", "minimum": 0 } }),
+                &["clip_id", "edge", "to"],
+            )
+        },
+    },
+    Tool {
+        name: "import_captions",
+        description: "Import captions from an .srt or .vtt file onto the caption lane.",
+        schema: || object(json!({ "path": { "type": "string" } }), &["path"]),
+    },
+    Tool {
         name: "undo",
         description: "Undo the last edit.",
         schema: || object(json!({}), &[]),
@@ -212,6 +323,131 @@ impl Session {
                 Ok("Split".to_owned())
             }
             "delete_clip" => self.delete_clip(args),
+            "set_volume" => {
+                let clip = clip_arg(args)?;
+                let volume = number(args, "volume")?;
+                let editor = self.editor()?;
+                if editor.audio_clip(clip).is_none() {
+                    return Err("that is not a sound clip: use an id from sound_lanes".to_owned());
+                }
+                editor
+                    .set_clip_property(clip, ClipProperty::Gain(volume as f32), false)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("Volume {volume}"))
+            }
+            "set_opacity" => {
+                let clip = clip_arg(args)?;
+                let opacity = number(args, "opacity")?;
+                self.editor()?
+                    .set_clip_property(clip, ClipProperty::Opacity(opacity as f32), false)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("Opacity {opacity}"))
+            }
+            "set_speed" => {
+                let clip = clip_arg(args)?;
+                let speed = number(args, "speed")?;
+                let rate = bettercut_editor_core::foundation::Rational::new(
+                    (speed * 100.0).round() as i64,
+                    100,
+                )
+                .filter(|_| speed > 0.0)
+                .ok_or("speed must be more than 0")?;
+                self.editor()?
+                    .set_clip_speed(clip, rate, false)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("Speed {speed}x"))
+            }
+            "reverse_clip" => {
+                let clip = clip_arg(args)?;
+                let on = args
+                    .get("reversed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                self.editor()?
+                    .set_reversed(clip, on)
+                    .map_err(|e| e.to_string())?;
+                Ok(if on { "Reversed" } else { "Forwards" }.to_owned())
+            }
+            "set_fades" => {
+                let clip = clip_arg(args)?;
+                let fade_in = seconds(args, "fade_in")?.unwrap_or(0.0);
+                let fade_out = seconds(args, "fade_out")?.unwrap_or(0.0);
+                self.editor()?
+                    .set_clip_fades(clip, timeline_time(fade_in), timeline_time(fade_out), false)
+                    .map_err(|e| e.to_string())?;
+                Ok("Fades set".to_owned())
+            }
+            "add_transition" => {
+                let clip = clip_arg(args)?;
+                let kind = transition_named(str_arg(args, "kind")?)?;
+                let duration = seconds(args, "duration")?;
+                let editor = self.editor()?;
+                editor
+                    .set_transition(clip, kind)
+                    .map_err(|e| e.to_string())?;
+                if let Some(duration) = duration {
+                    editor
+                        .set_transition_duration(clip, timeline_time(duration))
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(format!("{} added", kind.label()))
+            }
+            "apply_filter" => {
+                let filter = filter_named(str_arg(args, "filter")?)?;
+                let clips = args
+                    .get("clip_ids")
+                    .and_then(Value::as_array)
+                    .ok_or("clip_ids must be a list")?
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .and_then(|t| uuid::Uuid::parse_str(t).ok())
+                            .map(ClipId::from_uuid)
+                            .ok_or_else(|| "clip_ids holds something that is not an id".to_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let took = self
+                    .editor()?
+                    .apply_filter(filter, clips)
+                    .map_err(|e| e.to_string())?;
+                if took == 0 {
+                    return Err("none of those are picture clips".to_owned());
+                }
+                Ok(format!("{} on {took} clip(s)", filter.label()))
+            }
+            "move_clip" => {
+                let clip = clip_arg(args)?;
+                let start = time_arg(args, "start")?;
+                let editor = self.editor()?;
+                let track = editor.track_of(clip).ok_or("no clip with that id")?;
+                editor
+                    .move_clip(track, track, clip, start)
+                    .map_err(|e| e.to_string())?;
+                Ok("Moved".to_owned())
+            }
+            "trim_clip" => {
+                let clip = clip_arg(args)?;
+                let edge = match str_arg(args, "edge")? {
+                    "start" => TrimEdge::Start,
+                    "end" => TrimEdge::End,
+                    _ => return Err("edge is start or end".to_owned()),
+                };
+                let to = time_arg(args, "to")?;
+                let editor = self.editor()?;
+                let track = editor.track_of(clip).ok_or("no clip with that id")?;
+                editor
+                    .trim_clip(track, clip, edge, to)
+                    .map_err(|e| e.to_string())?;
+                Ok("Trimmed".to_owned())
+            }
+            "import_captions" => {
+                let path = path_arg(args, "path")?;
+                let count = self
+                    .editor()?
+                    .import_captions(&path)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("{count} captions imported"))
+            }
             "undo" => {
                 self.editor()?.undo().map_err(|e| e.to_string())?;
                 Ok("Undone".to_owned())
@@ -389,7 +625,14 @@ fn describe(editor: &Editor) -> Value {
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
-                            "media": name_of(c.media_id) })
+                            "media": name_of(c.media_id),
+                            "speed": c.speed.as_f64(), "reversed": c.reversed,
+                            "opacity": c.opacity,
+                            "filter": editor.filter_of(c.id).map(|f| f.label()),
+                            "transition": c.transition_out.map(|t| json!({
+                                "kind": t.kind.label(),
+                                "duration": seconds_of(t.duration.ticks()),
+                            })) })
                 }).collect::<Vec<_>>(),
             })
         })
@@ -403,7 +646,8 @@ fn describe(editor: &Editor) -> Value {
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
-                            "media": name_of(c.media_id) })
+                            "media": name_of(c.media_id),
+                            "volume": c.gain, "speed": c.speed.as_f64(), "reversed": c.reversed })
                 }).collect::<Vec<_>>(),
             })
         })
@@ -482,6 +726,52 @@ fn time_arg(args: &Value, name: &str) -> Result<TimelineTime, String> {
 
 fn media_time(s: f64) -> MediaTime {
     MediaTime::from_millis((s.min(1e9) * 1000.0).round() as i64)
+}
+
+fn number(args: &Value, name: &str) -> Result<f64, String> {
+    seconds(args, name)?.ok_or_else(|| format!("{name} is required"))
+}
+
+fn timeline_time(s: f64) -> TimelineTime {
+    TimelineTime::from_millis((s.min(1e9) * 1000.0).round() as i64)
+}
+
+/// A name as an assistant might write it — "Black and white", "B&W",
+/// "fade-through-black" — reduced to letters and digits for matching.
+fn plain(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+fn transition_names() -> Vec<&'static str> {
+    TransitionKind::ALL.iter().map(|k| k.label()).collect()
+}
+
+fn filter_names() -> Vec<&'static str> {
+    Filter::ALL.iter().map(|f| f.label()).collect()
+}
+
+fn transition_named(name: &str) -> Result<TransitionKind, String> {
+    let wanted = plain(name);
+    TransitionKind::ALL
+        .into_iter()
+        .find(|k| plain(k.label()) == wanted || plain(&format!("{k:?}")) == wanted)
+        .ok_or_else(|| {
+            format!(
+                "no transition {name}; one of {}",
+                transition_names().join(", ")
+            )
+        })
+}
+
+fn filter_named(name: &str) -> Result<Filter, String> {
+    let wanted = plain(name);
+    Filter::ALL
+        .into_iter()
+        .find(|f| plain(f.label()) == wanted || plain(&format!("{f:?}")) == wanted)
+        .ok_or_else(|| format!("no filter {name}; one of {}", filter_names().join(", ")))
 }
 
 fn id_arg(args: &Value, name: &str) -> Result<uuid::Uuid, String> {

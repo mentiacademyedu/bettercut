@@ -104,8 +104,10 @@ list, for example in `claude_desktop_config.json`:
 
 The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `import_media`, `add_to_timeline`, `add_title`, `split_clip`, `delete_clip`,
-`undo`, `redo` and `export`. This is a first set; looks, transitions, captions
-and the rest of the editor's actions are next. It edits project files rather
+`move_clip`, `trim_clip`, `set_volume`, `set_opacity`, `set_speed`,
+`reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
+`import_captions`, `undo`, `redo` and `export`. More of the editor's actions
+are coming. It edits project files rather
 than driving the open window, so save in the app before an assistant opens the
 same project.
 
