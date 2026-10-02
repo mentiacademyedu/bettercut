@@ -61,7 +61,17 @@ for size in 16 32 128 256 512; do
   double=$((size * 2))
   cp "$ICONS/png/icon_${double}.png" "$SET/icon_${size}x${size}@2x.png"
 done
-iconutil -c icns "$SET" -o "$APP/Contents/Resources/bettercut.icns"
+# iconutil makes the proper multi-size icon. It has been seen to crash outright
+# (a segmentation fault on GitHub's Intel Mac image), so sips stands in with the
+# largest size alone, and a missing icon is a warning rather than no package.
+ICNS="$APP/Contents/Resources/bettercut.icns"
+if ! iconutil -c icns "$SET" -o "$ICNS"; then
+  echo "iconutil failed; making the icon with sips instead" >&2
+  if ! sips -s format icns "$ICONS/png/icon_1024.png" --out "$ICNS" >/dev/null; then
+    echo "warning: no app icon could be made; the app keeps the default one" >&2
+    rm -f "$ICNS"
+  fi
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
