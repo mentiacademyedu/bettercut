@@ -14,7 +14,8 @@
   title), `style_title` (words, size, colour, bold, italic, outline, a box
   behind), `adjust_colour` (brightness, contrast, saturation, warmth) and
   `add_marker`, `set_movement` (a slow zoom or pan over a photo) and
-  `animate_title` (how a title arrives, leaves and moves in between). Each is
+  `animate_title` (how a title arrives, leaves and moves in between), and
+  `add_captions` (subtitles written straight from a list of timed lines). Each is
   one undo step; `describe_project` now reports where
   clips sit, title sizes and colours, and the markers.
 

@@ -375,6 +375,30 @@ const TOOLS: &[Tool] = &[
         schema: || object(json!({ "path": { "type": "string" } }), &["path"]),
     },
     Tool {
+        name: "add_captions",
+        description: "Put captions (subtitles) on the caption lane from a list of lines, each                       `{start, end, text}` in seconds, replacing any captions already there.                       Overlaps are shortened, not moved. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "lines": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": { "type": "number", "minimum": 0 },
+                                "end": { "type": "number", "minimum": 0 },
+                                "text": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["start", "end", "text"]
+                        }
+                    }
+                }),
+                &["lines"],
+            )
+        },
+    },
+    Tool {
         name: "preview_frame",
         description: "See the edit: the frame at `at` seconds, rendered exactly as it will be \
                       exported, as a PNG image (at most `max_width` pixels wide, default 960).",
@@ -716,6 +740,48 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 .trim_clip(track, clip, edge, to)
                 .map_err(|e| e.to_string())?;
             Ok("Trimmed".to_owned())
+        }
+        "add_captions" => {
+            use bettercut_editor_core::captions::{CaptionSegment, tidy};
+            let lines = args
+                .get("lines")
+                .and_then(Value::as_array)
+                .ok_or("lines must be a list of {start, end, text}")?;
+            let segments = lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let text = line
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("line {} has no text", i + 1))?;
+                    Ok(CaptionSegment {
+                        start: time_arg(line, "start")?,
+                        end: time_arg(line, "end")?,
+                        text: text.to_owned(),
+                        words: Vec::new(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let given = segments.len();
+            let segments = tidy(segments);
+            if segments.is_empty() {
+                return Err(
+                    "none of those lines can be shown: each needs words and an end after its start"
+                        .to_owned(),
+                );
+            }
+            let count = editor
+                .replace_captions(segments, format!("Add {given} Captions"))
+                .map_err(|e| e.to_string())?;
+            Ok(if count < given {
+                format!(
+                    "{count} captions added; {} could not be shown",
+                    given - count
+                )
+            } else {
+                format!("{count} captions added")
+            })
         }
         "import_captions" => {
             let path = path_arg(args, "path")?;

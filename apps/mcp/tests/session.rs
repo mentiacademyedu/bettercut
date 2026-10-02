@@ -553,3 +553,45 @@ fn an_assistant_moves_photos_and_animates_titles() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_writes_captions() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp6-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let said = client.ok(
+        "add_captions",
+        json!({ "lines": [
+            { "start": 2, "end": 4, "text": "Second" },
+            { "start": 0, "end": 2.5, "text": "First" },
+            { "start": 5, "end": 4.5, "text": "Backwards" }
+        ] }),
+    );
+    assert!(
+        said.contains("2 captions added") && said.contains("1 could not"),
+        "{said}"
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let all = described["title_lanes"].to_string();
+    let first = all.find("First").expect("first is there");
+    let second = all.find("Second").expect("second is there");
+    assert!(first < second, "sorted by time: {all}");
+    assert!(!all.contains("Backwards"));
+
+    // One undo takes the lot.
+    client.ok("undo", json!({}));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert!(!described["title_lanes"].to_string().contains("First"));
+
+    let (text, is_error) = client.tool(
+        "add_captions",
+        json!({ "lines": [{ "start": 1, "end": 2 }] }),
+    );
+    assert!(is_error && text.contains("no text"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -110,7 +110,7 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `delete_clip`, `move_clip`, `trim_clip`, `set_transform`, `adjust_colour`,
 `add_marker`, `set_movement`, `animate_title`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
-`import_captions`, `preview_frame`, `undo`, `redo`, `export`, and
+`import_captions`, `add_captions`, `preview_frame`, `undo`, `redo`, `export`, and
 `attach_to_app` / `detach_from_app`.
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered
 exactly as it will export, so it can check its own work. More of the editor's
