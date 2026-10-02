@@ -34,8 +34,10 @@ protected your PC"*. Click **More info → Run anyway**. It installs for your
 user only (no administrator rights needed) and removes itself cleanly from
 *Settings → Apps*.
 
-**Linux:** bettercut builds and passes its tests on Ubuntu; ready-made
-packages are next. Until then, build it from source (below).
+**Linux, x86-64 (beta):**
+[bettercut-0.3.0-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.3.0/bettercut-0.3.0-x86_64.AppImage)
+(about 30 MB): download it, `chmod +x` it and run it. It uses your system's own
+graphics driver (Vulkan) and sound.
 
 ## What it does
 
@@ -120,7 +122,7 @@ saves, the app notices and offers to load the new version.
   sound — and working alongside the open window.
 - Automatic captions from speech, background removal and auto-reframe (these
   need on-device models, and will be optional downloads).
-- Code-signed installers, auto-update, and Linux packages.
+- Code-signed installers, auto-update, and Linux distribution packages.
 
 ## Building from source
 

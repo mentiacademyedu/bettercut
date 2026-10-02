@@ -17,8 +17,9 @@ Still a beta: expect bugs, and please
   assistant, a sync folder — and offers to load the new version (or keep the
   one on screen), warning first if that would discard unsaved work.
 - **Intel Macs**: a `macos-intel` disk image beside the Apple Silicon one.
-- **Linux**: bettercut now builds and passes its tests on Ubuntu in CI;
-  ready-made Linux packages are next. It can be built from source today.
+- **Linux (beta)**: an AppImage, `bettercut-0.3.0-x86_64.AppImage` — download,
+  `chmod +x`, run. Built and tested on Ubuntu; it needs the system's own
+  graphics driver (Vulkan) and sound.
 
 ### Known limitations
 
