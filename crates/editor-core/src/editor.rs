@@ -69,6 +69,9 @@ pub struct Editor {
     /// Where the playhead was left in each sequence that is not on screen, so
     /// coming back to one finds it as it was.
     sequence_playheads: std::collections::HashMap<SequenceId, TimelineTime>,
+    /// When the project file was last written or read by this editor, to
+    /// notice another program saving it (`changed_on_disk`).
+    disk_stamp: Option<std::time::SystemTime>,
 
     events: EventSender,
 }
@@ -113,6 +116,7 @@ impl Editor {
             clipboard: Vec::new(),
             journal,
             sequence_playheads: std::collections::HashMap::new(),
+            disk_stamp: None,
             events,
         };
         editor.events.emit(Event::ProjectLoaded);
@@ -137,8 +141,9 @@ impl Editor {
         }
 
         let journal = Journal::new(RecoveryPaths::for_project(Some(&path), &session_id()));
+        let stamp = modified(&path);
 
-        let editor = Self {
+        let mut editor = Self {
             project,
             path: Some(path),
             history: History::new(),
@@ -150,8 +155,10 @@ impl Editor {
             clipboard: Vec::new(),
             journal,
             sequence_playheads: std::collections::HashMap::new(),
+            disk_stamp: None,
             events,
         };
+        editor.disk_stamp = stamp;
         editor.events.emit(Event::ProjectLoaded);
         Ok((editor, receiver))
     }
@@ -5046,10 +5053,29 @@ impl Editor {
         self.journal.discard();
         self.journal = Journal::new(RecoveryPaths::for_project(Some(&path), &session_id()));
 
+        self.disk_stamp = modified(&path);
         self.path = Some(path);
         self.dirty = false;
         self.events.emit(Event::ProjectSaved);
         Ok(())
+    }
+
+    /// Whether the project file has been written by something else since this
+    /// editor last opened or saved it: an assistant through `bettercut-mcp`,
+    /// a sync folder, another copy of the app. One metadata read.
+    pub fn changed_on_disk(&self) -> bool {
+        match (&self.path, self.disk_stamp) {
+            (Some(path), Some(seen)) => modified(path).is_some_and(|now| now > seen),
+            _ => false,
+        }
+    }
+
+    /// Take the file on disk as seen without loading it ("Keep Mine"), so
+    /// the same change is not raised again.
+    pub fn accept_disk_state(&mut self) {
+        if let Some(path) = &self.path {
+            self.disk_stamp = modified(path);
+        }
     }
 
     /// Write the project to `path` and carry on editing the original.
@@ -7658,6 +7684,11 @@ pub(crate) fn at_placed_framing(clip: &bettercut_timeline::VideoClip) -> bool {
 
 pub(crate) fn aspect_of(width: u32, height: u32) -> Option<f32> {
     (width > 0 && height > 0).then(|| width as f32 / height as f32)
+}
+
+/// When `path` was last written, if it can be read.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]

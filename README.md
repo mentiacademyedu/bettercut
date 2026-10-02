@@ -107,9 +107,9 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `move_clip`, `trim_clip`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
 `import_captions`, `undo`, `redo` and `export`. More of the editor's actions
-are coming. It edits project files rather
-than driving the open window, so save in the app before an assistant opens the
-same project.
+are coming. It edits project files rather than driving the open window: save
+in the app before an assistant opens the same project, and when the assistant
+saves, the app notices and offers to load the new version.
 
 ## Coming next
 

@@ -7,6 +7,10 @@
   add titles and captions, set volume, opacity, speed, fades, transitions and
   filters, undo and export, through the editor's own undoable commands. Installed
   beside the app on Windows and Mac; setup in the README.
+- **The app notices when its open project is saved by another program** — an
+  assistant, a sync folder — and offers to load the new version (or keep the
+  one on screen), warning first if that would discard unsaved work.
+- **Intel Macs** are built and tested too, as `bettercut-…-macos-intel.dmg`.
 
 ## 0.2.0 — Mac beta, and iPhone media
 

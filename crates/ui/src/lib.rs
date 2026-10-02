@@ -9,6 +9,7 @@ pub mod bug_report;
 pub mod caption_list;
 pub mod context_menu;
 pub mod crash;
+pub mod disk_change;
 pub mod effects;
 pub mod export_dialog;
 pub mod export_presets;
@@ -180,6 +181,9 @@ pub fn draw(
     welcome::show(ui.ctx(), editor, state);
     crash::show(ui.ctx(), state);
     save_prompt::show(ui.ctx(), editor, state);
+    // Saved by something else — an assistant through bettercut-mcp, say.
+    disk_change::check(editor, state);
+    disk_change::show(ui.ctx(), editor, state);
     whats_new::show(ui.ctx(), state);
     // Text an action asked to have put on the clipboard.
     if let Some(text) = state.copy_out.take() {

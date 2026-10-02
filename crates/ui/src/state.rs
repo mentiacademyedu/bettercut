@@ -717,6 +717,11 @@ pub struct UiState {
     pub pending_switch: Option<crate::save_prompt::Switch>,
     /// Set while going on after "Don't Save": the unsaved-work check passes.
     pub discard_ok: bool,
+    /// When the project file was last looked at for changes made by another
+    /// program, and whether one is waiting for an answer
+    /// (`crate::disk_change`).
+    pub disk_checked: Option<std::time::Instant>,
+    pub disk_changed: bool,
     /// The question was answered for closing the window: close it now.
     pub quit_now: bool,
     /// The status bar's Undo was pressed.
@@ -1066,6 +1071,8 @@ impl Default for UiState {
             open_url: None,
             pending_switch: None,
             discard_ok: false,
+            disk_checked: None,
+            disk_changed: false,
             quit_now: false,
             undo_request: false,
             screen_width: 1280.0,
