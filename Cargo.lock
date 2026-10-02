@@ -592,6 +592,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bettercut-mcp"
+version = "0.2.0"
+dependencies = [
+ "bettercut-editor-core",
+ "bettercut-export",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "bettercut-media"
 version = "0.2.0"
 dependencies = [

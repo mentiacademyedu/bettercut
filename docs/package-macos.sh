@@ -29,18 +29,21 @@ export FFMPEG_INCLUDE_DIR="$FFMPEG/include"
 export FFMPEG_LIBS_DIR="$FFMPEG/lib"
 export FFMPEG_LINK_MODE=dynamic
 export BETTERCUT_FFMPEG_BIN="$FFMPEG/lib"
-(cd "$REPO" && cargo build --release -p bettercut-desktop)
+(cd "$REPO" && cargo build --release -p bettercut-desktop -p bettercut-mcp)
 BIN="$REPO/target/release/bettercut"
 
 # The bundle.
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/bettercut"
+# The MCP server, for AI assistants, beside the app and sharing its libraries.
+cp "$REPO/target/release/bettercut-mcp" "$APP/Contents/MacOS/bettercut-mcp"
 
 # Every library it loads that is not part of macOS: FFmpeg's, and the
 # Homebrew ones FFmpeg uses in turn.
 dylibbundler -od -b \
   -x "$APP/Contents/MacOS/bettercut" \
+  -x "$APP/Contents/MacOS/bettercut-mcp" \
   -d "$APP/Contents/Frameworks" \
   -p @executable_path/../Frameworks/ \
   -s "$FFMPEG/lib"

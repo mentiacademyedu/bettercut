@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "apps/desktop",
+    "apps/mcp",
     "crates/foundation",
     "crates/timeline",
     "crates/media",

@@ -71,13 +71,48 @@ and rotated photos come in upright, HDR (HLG/PQ) is tone-mapped, interlaced
 video can be deinterlaced, and large files get lightweight proxies
 automatically so scrubbing stays smooth.
 
+## Editing with an AI assistant (MCP)
+
+bettercut includes an [MCP](https://modelcontextprotocol.io) server,
+`bettercut-mcp`, installed beside the app. An assistant that speaks MCP —
+Claude, or any other client — can create and open projects, import media,
+place clips, add titles, split, delete, undo and export, through the same
+undoable edit commands the interface uses. Projects it saves open in the app
+like any other; nothing is written until it calls `save_project`.
+
+**Claude Code:**
+
+```bash
+# Windows, in Command Prompt (the installer's default folder)
+claude mcp add bettercut -- "%LOCALAPPDATA%\Programs\bettercut\bettercut-mcp.exe"
+# macOS
+claude mcp add bettercut -- /Applications/bettercut.app/Contents/MacOS/bettercut-mcp
+```
+
+**Claude Desktop and other clients** take the same program in their server
+list, for example in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "bettercut": {
+      "command": "C:\\Users\\you\\AppData\\Local\\Programs\\bettercut\\bettercut-mcp.exe"
+    }
+  }
+}
+```
+
+The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
+`import_media`, `add_to_timeline`, `add_title`, `split_clip`, `delete_clip`,
+`undo`, `redo` and `export`. This is a first set; looks, transitions, captions
+and the rest of the editor's actions are next. It edits project files rather
+than driving the open window, so save in the app before an assistant opens the
+same project.
+
 ## Coming next
 
-- **MCP integration.** An [MCP](https://modelcontextprotocol.io) server so AI
-  assistants can drive the editor: import, cut, add titles, apply looks and
-  export, through the same undoable edit commands the interface uses. Every
-  edit in bettercut is already a command object, which is what makes this a
-  natural fit.
+- **More of the editor through MCP:** looks, transitions, speed, captions,
+  sound — and working alongside the open window.
 - Automatic captions from speech, background removal and auto-reframe (these
   need on-device models, and will be optional downloads).
 - Code-signed installers, auto-update, Linux and Intel Mac builds.

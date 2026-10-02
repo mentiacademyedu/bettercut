@@ -37,7 +37,7 @@ if (-not $SkipBuild) {
     $env:RUSTFLAGS = '-C target-feature=+crt-static'
     # Two jobs: a release build with LTO is heavy, and this machine has run
     # out of memory on wider builds before.
-    cargo build --release -p bettercut-desktop -j 2
+    cargo build --release -p bettercut-desktop -p bettercut-mcp -j 2
     if ($LASTEXITCODE -ne 0) { throw "The release build failed" }
 }
 $Exe = "$Repo\target\release\bettercut.exe"
@@ -55,6 +55,8 @@ $Stage = "$Dist\bettercut-$Version"
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force $Stage | Out-Null
 Copy-Item $Exe $Stage
+# The MCP server, for AI assistants: beside the app, sharing its FFmpeg DLLs.
+Copy-Item "$Repo\target\release\bettercut-mcp.exe" $Stage
 Get-ChildItem "$FfmpegBin\*.dll" | Copy-Item -Destination $Stage
 $Dlls = (Get-ChildItem "$Stage\*.dll").Count
 if ($Dlls -ne 7) { throw "Expected 7 FFmpeg DLLs, staged $Dlls" }
