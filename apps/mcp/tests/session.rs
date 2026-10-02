@@ -486,3 +486,70 @@ fn an_assistant_places_styles_and_marks() {
     assert!(is_error && text.contains("nothing"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_moves_photos_and_animates_titles() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp5-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let picture = placed["clip_ids"][0].clone();
+    let title: Value =
+        serde_json::from_str(&client.ok("add_title", json!({ "text": "Hi", "at": 0 }))).unwrap();
+    let title = title["clip_id"].clone();
+
+    client.ok(
+        "set_movement",
+        json!({ "clip_id": picture, "movement": "Zoom in", "strength": "gentle" }),
+    );
+    client.ok(
+        "animate_title",
+        json!({ "clip_id": title, "intro": "slide-up", "outro": "fade", "looping": "pulse" }),
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let shot = &described["picture_lanes"][0]["clips"][0];
+    assert_eq!(shot["movement"], "Zoom in", "{shot}");
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert_eq!(words["intro"], "Slide up", "{words}");
+    assert_eq!(words["outro"], "Fade");
+    assert_eq!(words["looping"], "Pulse");
+
+    // "none" takes them off again; the rest stays.
+    client.ok(
+        "animate_title",
+        json!({ "clip_id": title, "outro": "none" }),
+    );
+    client.ok(
+        "set_movement",
+        json!({ "clip_id": picture, "movement": "none" }),
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert!(described["picture_lanes"][0]["clips"][0]["movement"].is_null());
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert!(words["outro"].is_null(), "{words}");
+    assert_eq!(words["intro"], "Slide up");
+
+    let (text, is_error) = client.tool(
+        "set_movement",
+        json!({ "clip_id": picture, "movement": "barrel roll" }),
+    );
+    assert!(
+        is_error && text.contains("Pan left"),
+        "the choices are listed: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

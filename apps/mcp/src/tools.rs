@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
 use bettercut_editor_core::project_format::Project;
-use bettercut_editor_core::timeline::TransitionKind;
+use bettercut_editor_core::timeline::{Movement, TransitionKind};
 use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TextProperty, TrimEdge};
 use serde_json::{Value, json};
 
@@ -188,6 +188,43 @@ const TOOLS: &[Tool] = &[
                     "contrast": { "type": "number", "minimum": 0, "maximum": 2 },
                     "saturation": { "type": "number", "minimum": 0, "maximum": 2 },
                     "temperature": { "type": "number", "minimum": -1, "maximum": 1 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "set_movement",
+        description: "Give a picture clip a slow camera move over its length — the \"Ken \
+                      Burns\" look for photos: `movement` is zoom in, zoom out, pan left, pan \
+                      right, pan up, pan down, or none to take it off. `strength` is gentle, \
+                      normal (default) or strong.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "movement": { "type": "string" },
+                    "strength": { "type": "string", "enum": ["gentle", "normal", "strong"] }
+                }),
+                &["clip_id", "movement"],
+            )
+        },
+    },
+    Tool {
+        name: "animate_title",
+        description: "How a title arrives and leaves: `intro` and `outro` are fade, slide up, \
+                      slide down, slide right, slide left, pop, bounce, spin, typewriter, or \
+                      none; `duration` is each one's length in seconds (default 0.5). \
+                      `looping` keeps it moving in between: pulse, wiggle, spin, float, or \
+                      none. Leave out what should stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "intro": { "type": "string" },
+                    "outro": { "type": "string" },
+                    "duration": { "type": "number", "exclusiveMinimum": 0 },
+                    "looping": { "type": "string" }
                 }),
                 &["clip_id"],
             )
@@ -517,6 +554,33 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "set_transform" => set_transform(editor, args),
         "style_title" => style_title(editor, args),
         "adjust_colour" => adjust_colour(editor, args),
+        "set_movement" => {
+            use bettercut_editor_core::timeline::MovementStrength;
+            let clip = clip_arg(args)?;
+            let movement = one_of(
+                &Movement::ALL,
+                Movement::label,
+                str_arg(args, "movement")?,
+                "movement",
+            )?;
+            let strength = match args.get("strength").and_then(Value::as_str) {
+                None => MovementStrength::Normal,
+                Some(name) => one_of(
+                    &MovementStrength::ALL,
+                    MovementStrength::label,
+                    name,
+                    "strength",
+                )?,
+            };
+            if editor.video_clip(clip).is_none() {
+                return Err("that is not a picture clip".to_owned());
+            }
+            editor
+                .set_movement_at(clip, movement, strength)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("{} ({})", movement.label(), strength.label()))
+        }
+        "animate_title" => animate_title(editor, args),
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
             let at = editor
@@ -982,6 +1046,62 @@ fn adjust_colour(editor: &mut Editor, args: &Value) -> Result<String, String> {
     Ok("Colour adjusted".to_owned())
 }
 
+/// `name` as one of `all`, matched the forgiving way names are here; "none"
+/// is left to the caller.
+fn one_of<T: Copy + std::fmt::Debug>(
+    all: &[T],
+    label: fn(T) -> &'static str,
+    name: &str,
+    what: &str,
+) -> Result<T, String> {
+    let wanted = plain(name);
+    all.iter()
+        .copied()
+        .find(|v| plain(label(*v)) == wanted || plain(&format!("{v:?}")) == wanted)
+        .ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|v| label(*v)).collect();
+            format!("no {what} {name:?}; one of {}", names.join(", "))
+        })
+}
+
+fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::{LoopMotion, Motion, MotionKind};
+    let clip = clip_arg(args)?;
+    let mut animation = editor
+        .text_clip(clip)
+        .ok_or("that is not a title: use an id from title_lanes")?
+        .animation;
+    let before = animation;
+    let duration = timeline_time(seconds(args, "duration")?.unwrap_or(0.5).max(0.05));
+    let motion = |name: &str| -> Result<Option<Motion>, String> {
+        if plain(name) == "none" {
+            return Ok(None);
+        }
+        one_of(&MotionKind::FOR_TEXT, MotionKind::label, name, "animation")
+            .map(|kind| Some(Motion::new(kind, duration)))
+    };
+    if let Some(name) = args.get("intro").and_then(Value::as_str) {
+        animation.intro = motion(name)?;
+    }
+    if let Some(name) = args.get("outro").and_then(Value::as_str) {
+        animation.outro = motion(name)?;
+    }
+    if let Some(name) = args.get("looping").and_then(Value::as_str) {
+        animation.looping = if plain(name) == "none" {
+            None
+        } else {
+            Some(one_of(&LoopMotion::ALL, LoopMotion::label, name, "loop")?)
+        };
+    }
+    if animation == before {
+        return Err("nothing to change: give intro, outro or looping".to_owned());
+    }
+    editor
+        .set_text_property(clip, TextProperty::Animation(animation), false)
+        .map_err(|e| e.to_string())?;
+    Ok("Animated".to_owned())
+}
+
 /// Where a clip sits, in `set_transform`'s terms.
 fn place(transform: &bettercut_editor_core::timeline::Transform) -> Value {
     json!({
@@ -1032,6 +1152,8 @@ fn describe(editor: &Editor) -> Value {
                             "media": name_of(c.media_id),
                             "speed": c.speed.as_f64(), "reversed": c.reversed,
                             "opacity": c.opacity, "place": place(&c.transform),
+                            "movement": editor.movement_of(c.id)
+                                .filter(|m| *m != Movement::None).map(Movement::label),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
                             "transition": c.transition_out.map(|t| json!({
                                 "kind": t.kind.label(),
@@ -1067,6 +1189,9 @@ fn describe(editor: &Editor) -> Value {
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
                             "text": c.text, "place": place(&c.transform),
                             "size": c.style.size,
+                            "intro": c.animation.intro.map(|m| m.kind.label()),
+                            "outro": c.animation.outro.map(|m| m.kind.label()),
+                            "looping": c.animation.looping.map(|m| m.label()),
                             "color": format!("#{:02x}{:02x}{:02x}",
                                 c.style.color.r, c.style.color.g, c.style.color.b) })
                 }).collect::<Vec<_>>(),
