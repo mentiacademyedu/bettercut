@@ -46,3 +46,6 @@ recovery/
 *.rs.bk
 .DS_Store
 Thumbs.db
+
+# The AppImage tool docs/package-linux.sh downloads; not ours to commit.
+/linuxdeploy
