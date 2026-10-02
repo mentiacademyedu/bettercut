@@ -33,7 +33,7 @@ jobs:
             libopenh264-dev libzimg-dev libdav1d-dev libvpx-dev libva-dev \
             libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev \
-            mesa-vulkan-drivers libvulkan1 xvfb
+            mesa-vulkan-drivers libvulkan1 xvfb libxkbcommon-x11-0
 
       - name: Cache FFmpeg
         id: ffmpeg-cache

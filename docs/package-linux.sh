@@ -65,7 +65,16 @@ cp "$FFMPEG"/LICENSE.md "$FFMPEG"/COPYING.LGPLv3 "$APPDIR/usr/share/licenses/bet
 
 # linuxdeploy copies FFmpeg and everything it and the app need (but not the
 # graphics and sound drivers, which must be the system's own), and sets each
-# binary to look beside itself first.
+# binary to look beside itself first. The window library loads
+# libxkbcommon-x11 at run time rather than linking it, so linuxdeploy cannot
+# see it: it is named here, or a system without it fails at the first window.
+EXTRA=()
+XKB_X11="$(ldconfig -p | awk '/libxkbcommon-x11\.so\.0 /{print $NF; exit}')"
+if [ -n "$XKB_X11" ]; then
+  EXTRA+=(--library "$XKB_X11")
+else
+  echo "warning: libxkbcommon-x11 not found; the AppImage will need the system's" >&2
+fi
 OUTPUT="$DIST/bettercut-${VERSION}-x86_64.AppImage"
 rm -f "$OUTPUT"
 LD_LIBRARY_PATH="$FFMPEG/lib:${LD_LIBRARY_PATH:-}" \
@@ -74,6 +83,7 @@ LD_LIBRARY_PATH="$FFMPEG/lib:${LD_LIBRARY_PATH:-}" \
   "$LINUXDEPLOY" --appdir "$APPDIR" \
     --executable "$APPDIR/usr/bin/bettercut" \
     --executable "$APPDIR/usr/bin/bettercut-mcp" \
+    "${EXTRA[@]}" \
     --desktop-file "$APPDIR/usr/share/applications/bettercut.desktop" \
     --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/bettercut.png" \
     --output appimage
