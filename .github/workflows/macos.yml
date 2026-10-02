@@ -36,7 +36,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tools and libraries
-        run: brew install pkg-config openh264 zimg dav1d libvpx dylibbundler
+        # nasm: FFmpeg's x86 assembly, for the Intel build.
+        run: brew install pkg-config nasm openh264 zimg dav1d libvpx dylibbundler
 
       # FFmpeg takes a few minutes to build; it is kept between runs and only
       # rebuilt when the script that makes it changes.

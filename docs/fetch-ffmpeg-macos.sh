@@ -7,7 +7,9 @@
 # Windows, so this builds one from the released source, checked against its
 # SHA-256. It needs Homebrew for four libraries, all BSD-style licensed:
 #
-#   brew install pkg-config openh264 zimg dav1d libvpx
+#   brew install pkg-config nasm openh264 zimg dav1d libvpx
+#
+#   nasm      the assembler for FFmpeg's x86 code (Intel Macs only)
 #
 #   openh264  the H.264 encoder proxies are made with (BSD)
 #   zimg      the zscale filter HDR footage is tone-mapped through (WTFPL)
