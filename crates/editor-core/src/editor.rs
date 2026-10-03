@@ -387,6 +387,14 @@ impl Editor {
         Ok(())
     }
 
+    /// Fold the last `steps` undo steps into one called `label` — several
+    /// edits asked for as one, taken back by one undo. Returns how many were
+    /// folded. The journal is untouched: its commands replay the same either
+    /// way.
+    pub fn merge_last_steps(&mut self, steps: usize, label: &str) -> usize {
+        self.history.merge_top(steps, label)
+    }
+
     pub fn redo(&mut self) -> Result<(), EditorError> {
         self.history.redo(&mut self.project)?;
         self.mark_changed();

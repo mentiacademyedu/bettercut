@@ -121,7 +121,7 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `add_lower_third`, `add_shape`, `add_sticker`, `add_timer`, `set_effect`, `green_screen`, `crop`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
 `import_captions`, `add_captions`, `preview_frame`, `contact_sheet`, `undo`, `redo`, `export`,
-`export_status`, `history`, and
+`export_status`, `history`, `batch`, and
 `attach_to_app` / `detach_from_app`, and — attached — `get_selection` and
 `select_clips`.
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered

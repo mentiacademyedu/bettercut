@@ -584,6 +584,35 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "batch",
+        description: "Make several edits as one: `calls` is a list of `{tool, args}`, run in \
+                      order, and everything they change becomes ONE undo step named `label` — \
+                      so the person takes your whole change back with one undo. Stops at the \
+                      first that fails, keeping (as one step) what was done before it. Each \
+                      call's answer comes back in order. Not for export, preview_frame, \
+                      contact_sheet or another batch.",
+        schema: || {
+            object(
+                json!({
+                    "label": { "type": "string" },
+                    "calls": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": { "type": "string" },
+                                "args": { "type": "object" }
+                            },
+                            "required": ["tool"]
+                        }
+                    }
+                }),
+                &["calls"],
+            )
+        },
+    },
+    Tool {
         name: "history",
         description: "The steps undo would take back, newest first (the last 20), and the \
                       steps redo would bring back — attached to the window, the person's own \
@@ -1109,6 +1138,9 @@ pub fn run_on(editor: &mut Editor, name: &str, args: &Value) -> Result<Reply, St
     }
     if name == "contact_sheet" {
         return contact_sheet(editor, args);
+    }
+    if name == "batch" {
+        return batch(editor, args).map(Reply::Text);
     }
     run_text(editor, name, args).map(Reply::Text)
 }
@@ -1866,6 +1898,65 @@ fn preview_frame(editor: &mut Editor, args: &Value) -> Result<Reply, String> {
             size.height
         ),
     })
+}
+
+/// Several edits run in order and folded into one undo step.
+fn batch(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let label = args
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or("Assistant's changes")
+        .to_owned();
+    let calls = args
+        .get("calls")
+        .and_then(Value::as_array)
+        .ok_or("calls must be a list of {tool, args}")?;
+    let depth = editor.undo_depth();
+    let mut answers = Vec::new();
+    let mut failed = None;
+    for (i, call) in calls.iter().enumerate() {
+        let tool = call.get("tool").and_then(Value::as_str).unwrap_or("");
+        let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
+        let refused = match tool {
+            "batch" | "export" | "preview_frame" | "contact_sheet" => {
+                Some(format!("{tool} cannot be part of a batch"))
+            }
+            _ if !exists(tool) => Some(format!("no tool {tool:?}")),
+            // Session-level tools, which do not act on an open project.
+            "new_project" | "open_project" | "attach_to_app" | "detach_from_app"
+            | "export_status" | "get_selection" | "select_clips" => {
+                Some(format!("{tool} cannot be part of a batch"))
+            }
+            _ => None,
+        };
+        let answer = match refused {
+            Some(reason) => Err(reason),
+            None => run_text(editor, tool, &call_args),
+        };
+        match answer {
+            Ok(text) => answers.push(json!({ "tool": tool, "ok": true, "answer": text })),
+            Err(err) => {
+                answers.push(json!({ "tool": tool, "ok": false, "error": err }));
+                failed = Some(i);
+                break;
+            }
+        }
+    }
+    let steps = editor.undo_depth().saturating_sub(depth);
+    editor.merge_last_steps(steps, &label);
+    let summary = json!({
+        "undo_step": if steps > 0 { Value::String(label) } else { Value::Null },
+        "results": answers,
+    });
+    match failed {
+        Some(i) => Err(format!(
+            "call {} of {} failed; the ones before it were kept as one step: {summary}",
+            i + 1,
+            calls.len()
+        )),
+        None => Ok(summary.to_string()),
+    }
 }
 
 /// Frames spread through the edit, tiled into one picture: the export's own

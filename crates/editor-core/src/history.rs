@@ -91,6 +91,24 @@ impl History {
         Ok(())
     }
 
+    /// Fold the top `steps` entries into one called `label`, oldest first, so
+    /// one undo takes them all back in reverse — several edits made as one
+    /// request. Fewer than two on the stack, or `steps` under two, is no
+    /// change. Returns how many were folded.
+    pub fn merge_top(&mut self, steps: usize, label: &str) -> usize {
+        let steps = steps.min(self.undo.len());
+        if steps < 2 {
+            return 0;
+        }
+        let at = self.undo.len() - steps;
+        let entries: Vec<Box<dyn EditorCommand>> = self.undo.drain(at..).collect();
+        self.undo
+            .push_back(Box::new(crate::command::CommandGroup::already_run(
+                label, entries,
+            )));
+        steps
+    }
+
     /// Execute a command that continues the gesture already on top of the
     /// stack, replacing that entry instead of adding one (§11).
     ///
@@ -290,6 +308,29 @@ mod tests {
 
         history.undo(&mut project).expect("ok");
         assert_eq!(history.redo_label().as_deref(), Some("Rename Project"));
+    }
+
+    #[test]
+    fn merged_steps_undo_and_redo_as_one() {
+        let mut project = Project::new("Before");
+        let mut history = History::new();
+        history.execute(rename("One"), &mut project).unwrap();
+        history.execute(rename("Two"), &mut project).unwrap();
+        history.execute(rename("Three"), &mut project).unwrap();
+
+        assert_eq!(history.merge_top(2, "Both"), 2);
+        assert_eq!(history.undo_depth(), 2);
+        assert_eq!(history.undo_label().as_deref(), Some("Both"));
+
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.name, "One", "one undo took both back");
+        history.redo(&mut project).unwrap();
+        assert_eq!(project.name, "Three", "one redo brought both back");
+
+        assert_eq!(history.merge_top(1, "Alone"), 0, "nothing to fold");
+        assert_eq!(history.merge_top(9, "All"), 2, "only what is there");
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.name, "Before");
     }
 
     #[test]

@@ -1485,3 +1485,77 @@ fn an_assistant_sees_the_whole_edit_at_a_glance() {
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_batch_is_one_undo_step() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp19-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let before: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    let steps_before = before["undo"].as_array().unwrap().len();
+
+    let done: Value = serde_json::from_str(&client.ok(
+        "batch",
+        json!({ "label": "Opening titles", "calls": [
+            { "tool": "add_title", "args": { "text": "One", "at": 0 } },
+            { "tool": "add_title", "args": { "text": "Two", "at": 4 } },
+            { "tool": "add_marker", "args": { "at": 2, "label": "beat" } }
+        ] }),
+    ))
+    .unwrap();
+    assert_eq!(done["undo_step"], "Opening titles", "{done}");
+    assert_eq!(done["results"].as_array().unwrap().len(), 3);
+    let after: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(
+        after["undo"].as_array().unwrap().len(),
+        steps_before + 1,
+        "{after}"
+    );
+    assert_eq!(after["undo"][0], "Opening titles");
+
+    // One undo takes all three back.
+    client.ok("undo", json!({}));
+    let described = client.ok("describe_project", json!({}));
+    assert!(
+        !described.contains("\"One\"") && !described.contains("beat"),
+        "{described}"
+    );
+    client.ok("redo", json!({}));
+    let described = client.ok("describe_project", json!({}));
+    assert!(
+        described.contains("\"Two\"") && described.contains("beat"),
+        "{described}"
+    );
+
+    // A failure stops it, and what went before is kept, as one step.
+    let (text, is_error) = client.tool(
+        "batch",
+        json!({ "calls": [
+            { "tool": "add_title", "args": { "text": "Kept", "at": 8 } },
+            { "tool": "split_clip", "args": { "clip_id": "not-an-id", "at": 1 } },
+            { "tool": "add_title", "args": { "text": "Never", "at": 9 } }
+        ] }),
+    );
+    assert!(is_error && text.contains("call 2 of 3"), "{text}");
+    let described = client.ok("describe_project", json!({}));
+    assert!(
+        described.contains("Kept") && !described.contains("Never"),
+        "{described}"
+    );
+
+    let (text, is_error) = client.tool(
+        "batch",
+        json!({ "calls": [{ "tool": "export", "args": { "path": "x.mp4" } }] }),
+    );
+    assert!(
+        is_error && text.contains("cannot be part of a batch"),
+        "{text}"
+    );
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}

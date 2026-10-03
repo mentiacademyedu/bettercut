@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **`batch`**: an assistant makes several edits as one undo step, so its
+  whole change comes back with one Ctrl+Z.
+
 ## 0.6.2 — Many cuts at once are fast
 
 Still a beta: expect bugs, and please
