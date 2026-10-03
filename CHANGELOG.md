@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### New
+
+- **"assistant connected"** in the status bar while an AI assistant is
+  working in the window; a click shows how it is connected.
+
 ### For developers
 
 - Tests no longer leave unsaved "recovered work" in the machine's temp

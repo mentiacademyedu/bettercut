@@ -11050,6 +11050,25 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                         .color(theme::selection()),
                 );
             }
+            // An assistant working in this window, so its edits are no
+            // surprise; a click opens how it is connected.
+            if crate::assistant::is_connected(state.assistant_seen, std::time::Instant::now()) {
+                ui.separator();
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new("assistant connected")
+                                .small()
+                                .color(theme::accent_text()),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("An AI assistant is editing in this window. Click for details.")
+                    .clicked()
+                {
+                    state.assistant_open = true;
+                }
+            }
 
             // §38: autosave is mandatory, and an autosave that has quietly
             // stopped working is worse than none — the user believes they are

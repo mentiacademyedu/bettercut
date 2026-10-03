@@ -457,6 +457,10 @@ impl eframe::App for App {
             if served.any {
                 self.ui.needs_repaint = true;
                 self.ui.assistant_seen = Some(std::time::Instant::now());
+                // One more frame once it counts as quiet, so the status
+                // bar's "assistant connected" goes when it should.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(121));
             }
             if let Some(tool) = served.last_change {
                 self.ui.info(format!("An assistant: {tool}"));

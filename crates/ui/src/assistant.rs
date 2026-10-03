@@ -169,6 +169,11 @@ pub fn add_to_claude_code(server: &Server) -> String {
     "Claude Code was not found. Install it, or run the command below in a terminal.".to_owned()
 }
 
+/// Whether an assistant has called lately enough to count as connected.
+pub fn is_connected(last_heard: Option<Instant>, now: Instant) -> bool {
+    last_heard.is_some_and(|at| now.saturating_duration_since(at) <= CONNECTED_FOR)
+}
+
 /// What to say about the connection, given when an assistant last called.
 pub fn connection(last_heard: Option<Instant>, now: Instant) -> &'static str {
     match last_heard {
