@@ -746,6 +746,8 @@ pub struct UiState {
     pub assistant_seen: Option<std::time::Instant>,
     /// How adding bettercut to Claude went, written by the thread that did it.
     pub assistant_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// A newer bettercut, once the day's check has found one (`crate::updates`).
+    pub update_found: crate::updates::Found,
     /// The command palette (Ctrl+K): open, what is typed, and which row is
     /// highlighted.
     pub palette_open: bool,
@@ -1092,6 +1094,7 @@ impl Default for UiState {
             assistant_open: false,
             assistant_seen: None,
             assistant_note: Default::default(),
+            update_found: Default::default(),
             palette_open: false,
             palette_query: String::new(),
             palette_pick: 0,

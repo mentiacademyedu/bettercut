@@ -30,6 +30,11 @@ pub struct UserPrefs {
     pub seen_welcome: bool,
     /// The build that last ran here, for "what's new" (`crate::whats_new`).
     pub last_version: String,
+    /// Ask GitHub, once a day, whether a newer version is out
+    /// (`crate::updates`). On unless turned off.
+    pub check_updates: bool,
+    /// When that was last asked, in seconds since 1970.
+    pub last_update_check: u64,
     file: Option<PathBuf>,
 }
 
@@ -71,7 +76,7 @@ fn render(prefs: &UserPrefs) -> String {
         .map(|[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"))
         .collect();
     format!(
-        "# bettercut interface\nlight_theme={}\nrecent_colours={}\ninterface_scale={:.2}\nautosave_seconds={}\npalette_recent={}\nseen_welcome={}\nlast_version={}\n",
+        "# bettercut interface\nlight_theme={}\nrecent_colours={}\ninterface_scale={:.2}\nautosave_seconds={}\npalette_recent={}\nseen_welcome={}\nlast_version={}\ncheck_updates={}\nlast_update_check={}\n",
         prefs.light_theme,
         colours.join(","),
         prefs.interface_scale,
@@ -79,7 +84,9 @@ fn render(prefs: &UserPrefs) -> String {
         // Names never hold a comma or a line break: they are the palette's own.
         prefs.palette_recent.join(","),
         prefs.seen_welcome,
-        prefs.last_version
+        prefs.last_version,
+        prefs.check_updates,
+        prefs.last_update_check
     )
 }
 
@@ -103,6 +110,8 @@ impl Default for UserPrefs {
             palette_recent: Vec::new(),
             seen_welcome: false,
             last_version: String::new(),
+            check_updates: true,
+            last_update_check: 0,
             file: None,
         }
     }
@@ -134,6 +143,8 @@ fn parse(text: &str) -> UserPrefs {
             }
             "seen_welcome" => prefs.seen_welcome = value.trim() == "true",
             "last_version" => prefs.last_version = value.trim().to_owned(),
+            "check_updates" => prefs.check_updates = value.trim() != "false",
+            "last_update_check" => prefs.last_update_check = value.trim().parse().unwrap_or(0),
             "palette_recent" => {
                 prefs.palette_recent = value
                     .split(',')
@@ -170,8 +181,13 @@ mod tests {
             palette_recent: vec!["Undo".to_owned(), "Select All".to_owned()],
             seen_welcome: true,
             last_version: "0.0.9".to_owned(),
+            check_updates: false,
+            last_update_check: 1_700_000_000,
             file: None,
         };
+        assert!(!parse(&render(&prefs)).check_updates);
+        assert_eq!(parse(&render(&prefs)).last_update_check, 1_700_000_000);
+        assert!(parse("").check_updates, "on unless turned off");
         assert_eq!(parse(&render(&prefs)).last_version, "0.0.9");
         assert!(parse(&render(&prefs)).seen_welcome);
         assert!(!parse("").seen_welcome, "a new install shows the welcome");

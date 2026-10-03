@@ -138,6 +138,15 @@ only for a program that has the random key it writes, each time it starts, to
 files; when it saves one the app has open, the app offers to load the new
 version.
 
+## What bettercut sends over the network
+
+Nothing, except one thing you can turn off: once a day, at start, it asks
+GitHub's public list of releases whether a newer version is out, and if one
+is, says so in the status bar with a link. Nothing is sent but the request
+itself — no account, no identifier, no usage data. Turn it off in Settings
+(*Check for new versions*). An AI assistant's live link to the window
+listens on this computer only.
+
 ## Coming next
 
 - **More of the editor through MCP:** looks, keyframes, sound and the rest

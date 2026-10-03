@@ -55,6 +55,7 @@ pub mod timeline;
 pub mod title_styles;
 pub mod tracking;
 pub mod trim_view;
+pub mod updates;
 pub mod version_changes;
 pub mod voiceover;
 pub mod waveform_view;

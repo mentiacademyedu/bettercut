@@ -374,6 +374,26 @@ impl App {
             count: 0,
         });
 
+        // Once a day, whether a newer bettercut is out (`bettercut_ui::updates`).
+        // Not for a screenshot or a recording, which want the app as it is.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if ui.prefs.check_updates
+            && screenshot.is_none()
+            && record.is_none()
+            && bettercut_ui::updates::due(ui.prefs.last_update_check, now)
+        {
+            ui.prefs.last_update_check = now;
+            let _ = ui.prefs.save();
+            let ctx = cc.egui_ctx.clone();
+            bettercut_ui::updates::check(
+                bettercut_ui::whats_new::VERSION,
+                ui.update_found.clone(),
+                move || ctx.request_repaint(),
+            );
+        }
+
         let last_title = editor.window_title();
         Self {
             editor,

@@ -3303,6 +3303,14 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 state.error(format!("Could not remember the interval: {err}"));
             }
         });
+        if ui
+            .checkbox(&mut state.prefs.check_updates, "Check for new versions")
+            .on_hover_text("Once a day, ask GitHub whether a newer bettercut is out, and say so in the status bar. Nothing is sent but the request.")
+            .changed()
+            && let Err(err) = state.prefs.save()
+        {
+            state.error(format!("Could not remember that: {err}"));
+        }
         ui.separator();
 
         // §44: the editor configures itself for the machine. Showing what it
@@ -11049,6 +11057,25 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                         .small()
                         .color(theme::selection()),
                 );
+            }
+            // A newer version, found by the day's check (`crate::updates`).
+            let update = state.update_found.lock().ok().and_then(|u| u.clone());
+            if let Some(update) = update {
+                ui.separator();
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("bettercut {} is out", update.version))
+                                .small()
+                                .color(theme::accent_text()),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Open its download page")
+                    .clicked()
+                {
+                    state.open_url = Some(update.url);
+                }
             }
             // An assistant working in this window, so its edits are no
             // surprise; a click opens how it is connected.

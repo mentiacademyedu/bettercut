@@ -4,6 +4,9 @@
 
 ### New
 
+- **New versions are announced**: once a day the app asks GitHub whether a
+  newer bettercut is out and, if so, says so in the status bar with a link.
+  Nothing is sent but the request; Settings turns it off.
 - **"assistant connected"** in the status bar while an AI assistant is
   working in the window; a click shows how it is connected.
 
