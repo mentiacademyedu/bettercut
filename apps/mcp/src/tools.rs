@@ -1024,6 +1024,27 @@ impl Session {
         first_difference(&now, &back, "")
     }
 
+    /// Undo every step, redo every step, and say where the project then
+    /// differs from before — `None` when it is the same. For tests, at the
+    /// end of a session: every command's undo must be its exact opposite,
+    /// in any company.
+    pub fn undo_redo_all_differs(&mut self) -> Option<String> {
+        let (editor, _) = self.open.as_mut()?;
+        let before = serde_json::to_value(editor.project()).ok()?;
+        let mut steps = 0;
+        while editor.undo().is_ok() {
+            steps += 1;
+        }
+        for step in 0..steps {
+            if let Err(err) = editor.redo() {
+                return Some(format!("redo {} of {steps} failed: {err}", step + 1));
+            }
+        }
+        let after = serde_json::to_value(editor.project()).ok()?;
+        first_difference(&before, &after, "")
+            .map(|d| format!("after undoing and redoing {steps} steps: {d}"))
+    }
+
     fn editor(&mut self) -> Result<&mut Editor, String> {
         self.open
             .as_mut()

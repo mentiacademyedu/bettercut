@@ -95,6 +95,11 @@ impl Server {
         self.session.file_round_trip_differs()
     }
 
+    /// See `tools::Session::undo_redo_all_differs`. For tests.
+    pub fn undo_redo_all_differs(&mut self) -> Option<String> {
+        self.session.undo_redo_all_differs()
+    }
+
     /// Answer one line of JSON-RPC. `None` for a notification, which takes
     /// no reply.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {

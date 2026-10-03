@@ -39,6 +39,10 @@ impl Drop for Client {
             if let Some(difference) = self.server.file_round_trip_differs() {
                 panic!("saving and opening the project changes it: {difference}");
             }
+            // Last, since it rewrites history: undo it all, redo it all.
+            if let Some(difference) = self.server.undo_redo_all_differs() {
+                panic!("undo and redo do not come back to the same project: {difference}");
+            }
         }
     }
 }
