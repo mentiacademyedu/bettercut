@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Many cuts at once are fast.** Splitting a clip into a thousand pieces
+  (split every few seconds, at every marker or scene) took forty-five
+  seconds: the crash-recovery journal went to the disk after every one.
+  It writes each step once now — a quarter of a second.
+
 ## 0.6.1 — Fits small screens; light theme fixes
 
 Still a beta: expect bugs, and please

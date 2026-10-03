@@ -5357,9 +5357,8 @@ impl Editor {
     /// through would hold the rest of the group too — and replay would then
     /// apply those commands a second time on top of it.
     fn journal_commands(&mut self, commands: impl IntoIterator<Item = Command>) {
-        for command in commands {
-            self.journal.append(&command);
-        }
+        let commands: Vec<Command> = commands.into_iter().collect();
+        self.journal.append_all(&commands);
 
         if self.journal.snapshot_is_due()
             && let Err(err) = self.journal.snapshot(&self.project)

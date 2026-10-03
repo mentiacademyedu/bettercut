@@ -171,15 +171,31 @@ impl Journal {
     /// user editing (§50) — but it must not silently pretend to be protecting
     /// their work either, which is what `write_failures` is for.
     pub fn append(&mut self, command: &Command) {
-        if let Err(err) = self.try_append(command) {
+        self.append_all(std::slice::from_ref(command));
+    }
+
+    /// Record several commands that executed together — one undo step's
+    /// worth — with one trip to the disk. A sync per command made a split
+    /// into a thousand pieces take forty-five seconds; the step is the unit
+    /// worth making durable, not its parts.
+    pub fn append_all(&mut self, commands: &[Command]) {
+        if commands.is_empty() {
+            return;
+        }
+        if let Err(err) = self.try_append(commands) {
             self.write_failures += 1;
             tracing::error!(%err, "could not append to the autosave journal");
         }
     }
 
-    fn try_append(&mut self, command: &Command) -> std::io::Result<()> {
-        let line = serde_json::to_string(command)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fn try_append(&mut self, commands: &[Command]) -> std::io::Result<()> {
+        let mut lines = String::new();
+        for command in commands {
+            let line = serde_json::to_string(command)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            lines.push_str(&line);
+            lines.push('\n');
+        }
 
         let file = match &mut self.file {
             Some(file) => file,
@@ -194,13 +210,13 @@ impl Journal {
         };
 
         // One command per line, so a torn write at the end of the file costs
-        // exactly that command rather than the whole journal.
-        writeln!(file, "{line}")?;
+        // exactly the commands it cut rather than the whole journal.
+        file.write_all(lines.as_bytes())?;
         // Without this the journal is only as durable as the OS cache, which
         // defeats the point of journalling at all.
         file.sync_data()?;
 
-        self.since_snapshot += 1;
+        self.since_snapshot += u32::try_from(commands.len()).unwrap_or(u32::MAX);
         Ok(())
     }
 
