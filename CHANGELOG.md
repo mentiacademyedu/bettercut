@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Undo and redo are kept for crash recovery.** They were never written
+  down: after a crash, edits you had undone came back, and ones you had
+  redone were lost. Every assistant session in the tests now checks that
+  recovery brings the project back exactly.
+
 ## 0.5.1 — Title edits survive a crash; more for assistants
 
 Still a beta: expect bugs, and please

@@ -383,13 +383,27 @@ impl Editor {
     pub fn undo(&mut self) -> Result<(), EditorError> {
         self.history.undo(&mut self.project)?;
         self.mark_changed();
+        self.snapshot_after_history_step();
         Ok(())
     }
 
     pub fn redo(&mut self) -> Result<(), EditorError> {
         self.history.redo(&mut self.project)?;
         self.mark_changed();
+        self.snapshot_after_history_step();
         Ok(())
+    }
+
+    /// Undo and redo are not commands, so the journal never hears of them:
+    /// replay after a crash brought back every edit the person had undone,
+    /// and lost what they redid. A fresh snapshot (which starts an empty
+    /// journal) makes recovery the project as it is now.
+    fn snapshot_after_history_step(&mut self) {
+        if !self.journal.needs_baseline()
+            && let Err(err) = self.journal.snapshot(&self.project)
+        {
+            tracing::error!(%err, "could not snapshot after undo or redo");
+        }
     }
 
     /// The history as the panel lists it: the steps done, oldest first, and

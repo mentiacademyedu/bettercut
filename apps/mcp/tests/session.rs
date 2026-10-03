@@ -31,6 +31,10 @@ impl Drop for Client {
                 0,
                 "an edit could not be written to the autosave journal"
             );
+            // And what was written brings the project back as it is.
+            if let Some(difference) = self.server.recovery_differs() {
+                panic!("crash recovery would not bring the edit back: {difference}");
+            }
         }
     }
 }
@@ -277,6 +281,9 @@ fn an_assistant_makes_an_edit_and_exports_it() {
         assert!(exported["frames"].as_u64().unwrap() >= 55, "{text}");
         assert!(std::fs::metadata(&output).unwrap().len() > 10_000);
     }
+    // Checked while the recovery data is still on disk.
+    drop(again);
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -383,6 +390,8 @@ fn an_assistant_uses_the_everyday_controls() {
         json!({ "path": srt.display().to_string() }),
     );
     assert!(text.starts_with('2'), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -433,6 +442,8 @@ fn an_assistant_sees_a_frame() {
     );
     let caption = result["content"][1]["text"].as_str().unwrap();
     assert!(caption.contains("320x180"), "{caption}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -524,6 +535,8 @@ fn an_assistant_places_styles_and_marks() {
     assert!(is_error && text.contains("#rrggbb"), "{text}");
     let (text, is_error) = client.tool("set_transform", json!({ "clip_id": picture }));
     assert!(is_error && text.contains("nothing"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -591,6 +604,8 @@ fn an_assistant_moves_photos_and_animates_titles() {
         is_error && text.contains("Pan left"),
         "the choices are listed: {text}"
     );
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -633,6 +648,8 @@ fn an_assistant_writes_captions() {
         json!({ "lines": [{ "start": 1, "end": 2 }] }),
     );
     assert!(is_error && text.contains("no text"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -710,6 +727,8 @@ fn an_assistant_animates_with_keyframes() {
         is_error && text.contains("rotation"),
         "the choices are listed: {text}"
     );
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -770,6 +789,8 @@ fn an_assistant_builds_from_a_template() {
     );
     let (text, is_error) = client.tool("apply_template", json!({ "template_id": "no-such" }));
     assert!(is_error && text.contains("list_templates"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -830,6 +851,8 @@ fn an_assistant_fixes_the_sound() {
         json!({ "clip_id": photo["clip_ids"][0] }),
     );
     assert!(is_error && text.contains("no sound"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -926,6 +949,8 @@ fn an_assistant_cuts_the_pauses() {
     );
     client.ok("undo", json!({}));
     assert!((length(&mut client) - before).abs() < 1e-6, "one undo step");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1024,6 +1049,8 @@ fn an_assistant_splits_scenes_and_marks_beats() {
         described["markers"].as_array().unwrap().len() >= 10,
         "{said}"
     );
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1105,6 +1132,8 @@ fn an_assistant_lays_out_and_reshapes() {
 
     let (text, is_error) = client.tool("copy_as_shape", json!({ "shape": "triangle" }));
     assert!(is_error && text.contains("9:16"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1148,6 +1177,8 @@ fn an_assistant_adds_graphics() {
     assert!(is_error && text.contains("Football"), "{text}");
     let (text, is_error) = client.tool("add_lower_third", json!({ "name": " ", "at": 0 }));
     assert!(is_error, "a lower third needs a name: {text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1207,6 +1238,8 @@ fn an_assistant_sets_effects() {
         json!({ "clip_id": sound, "effect": "glow", "amount": 10 }),
     );
     assert!(is_error && text.contains("picture"), "{text}");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1255,6 +1288,8 @@ fn an_assistant_exports_in_the_background() {
     assert_eq!(done["state"], "finished", "{done}");
     assert!(done["summary"]["frames"].as_u64().unwrap() > 0, "{done}");
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1335,5 +1370,7 @@ fn an_assistant_keys_a_green_screen() {
     );
     assert_eq!(said, "Crop off");
     assert!(keyed(&mut client).is_null(), "the key is off");
+    // Checked while the recovery data is still on disk.
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -979,6 +979,29 @@ impl Session {
             .map_or(0, |(editor, _)| editor.autosave_failures())
     }
 
+    /// Rebuild the open project from its crash-recovery data, as the app
+    /// would after a crash, and say where it differs from the project as it
+    /// is — `None` when they agree or nothing is open. For tests: every edit
+    /// must come back.
+    pub fn recovery_differs(&self) -> Option<String> {
+        let (editor, _) = self.open.as_ref()?;
+        // Saved since the last edit: the work is on disk, not in recovery
+        // (whose folder beside a saved project another session may use).
+        if !editor.is_dirty() {
+            return None;
+        }
+        let Some(recovered) = bettercut_editor_core::recover(editor.recovery_paths().clone())
+        else {
+            return Some("unsaved edits, but nothing to recover".to_owned());
+        };
+        if recovered.failed > 0 {
+            return Some(format!("{} edit(s) would not replay", recovered.failed));
+        }
+        let now = serde_json::to_value(editor.project()).ok()?;
+        let back = serde_json::to_value(&recovered.project).ok()?;
+        first_difference(&now, &back, "")
+    }
+
     fn editor(&mut self) -> Result<&mut Editor, String> {
         self.open
             .as_mut()
@@ -1818,6 +1841,32 @@ fn export_project_with(
         "encoder": summary.encoder,
     })
     .to_string())
+}
+
+/// Where two JSON values first differ, as a path, with both sides.
+fn first_difference(a: &Value, b: &Value, at: &str) -> Option<String> {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for key in x.keys().chain(y.keys()) {
+                let (l, r) = (x.get(key), y.get(key));
+                if l != r {
+                    return first_difference(
+                        l.unwrap_or(&Value::Null),
+                        r.unwrap_or(&Value::Null),
+                        &format!("{at}/{key}"),
+                    );
+                }
+            }
+            None
+        }
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => x
+            .iter()
+            .zip(y)
+            .enumerate()
+            .find_map(|(i, (l, r))| first_difference(l, r, &format!("{at}/{i}"))),
+        _ if a == b => None,
+        _ => Some(format!("{at}: now {a}, recovered {b}")),
+    }
 }
 
 /// A number argument that may be left out; when given, it must be finite.

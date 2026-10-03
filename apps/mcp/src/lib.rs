@@ -83,6 +83,12 @@ impl Server {
         self.session.autosave_failures()
     }
 
+    /// Where the open project, rebuilt from its crash-recovery data, differs
+    /// from the project as it is; see `tools::Session::recovery_differs`.
+    pub fn recovery_differs(&self) -> Option<String> {
+        self.session.recovery_differs()
+    }
+
     /// Answer one line of JSON-RPC. `None` for a notification, which takes
     /// no reply.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {
