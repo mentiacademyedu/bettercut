@@ -13,6 +13,9 @@
 - **The Colours tab fits the inspector.** The sliders under the colour
   wheels made it twice as wide, so the preview covered the inspector's left
   edge — its tabs and filter names cut off.
+- **A long file name no longer widens the media panel.** Camera names have
+  no spaces to wrap at, so one pushed the panel wide; it is cut short with
+  "…" now, and shown whole on hover.
 
 ### New
 

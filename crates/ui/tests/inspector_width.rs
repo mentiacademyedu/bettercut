@@ -109,3 +109,39 @@ fn titles_sound_and_the_sequence_fit_too() {
         "wider than the inspector: {too_wide:?}"
     );
 }
+
+/// The media panel at its narrowest (its `min_size`), with a long name in it.
+#[test]
+fn the_media_panel_fits_at_its_narrowest() {
+    let (mut editor, _events) = Editor::new_project("Widths");
+    let mut long = MediaAsset::new(
+        MediaKind::Video,
+        "C:/media/a-very-long-file-name-from-a-camera-that-names-things-badly-0001.mp4",
+        MediaTime::from_seconds(20),
+    );
+    long.width = 1920;
+    long.height = 1080;
+    editor.import_media(long);
+    let mut state = UiState::default();
+    let narrowest = 160.0;
+    let ctx = egui::Context::default();
+    let mut used = 0.0;
+    for _ in 0..2 {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 3000.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let response = ui.scope(|ui| {
+                ui.set_max_width(narrowest);
+                bettercut_ui::panels::media_browser(ui, &mut editor, &mut state);
+            });
+            used = response.response.rect.width();
+        });
+        output.textures_delta.clear();
+    }
+    assert!(
+        used <= narrowest + 0.5,
+        "the media panel is {used:.0} wide at {narrowest}"
+    );
+}

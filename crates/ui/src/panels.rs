@@ -1487,8 +1487,12 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                                 .color(theme::disabled()),
                         );
                     }
-                    ui.label(name)
-                        .on_hover_text("Switch to Cards for the thumbnail, renaming and the rest");
+                    // Cut short rather than stretch the panel: a camera's
+                    // name has no spaces to wrap at. Whole on hover.
+                    ui.add(egui::Label::new(name.as_str()).truncate())
+                        .on_hover_text(format!(
+                            "{name}\n\nSwitch to Cards for the thumbnail, renaming and the rest"
+                        ));
                 });
                 mark_revealed(ui, state, *id, row.response.rect);
             }
@@ -1516,10 +1520,12 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                         .media_asset(*id)
                         .map(crate::file_details::details)
                         .unwrap_or_default();
+                    // Cut short rather than stretch the panel (a camera's
+                    // file name has no spaces to wrap at); whole on hover.
                     let label = ui
-                        .label(egui::RichText::new(name).strong())
+                        .add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
                         .on_hover_text(format!(
-                            "{about}\n\nRight-click to rename it in the project"
+                            "{name}\n{about}\n\nRight-click to rename it in the project"
                         ));
                     // A name of its own, typed in a menu and applied when the
                     // menu closes, as a track's is.
