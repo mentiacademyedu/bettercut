@@ -31,6 +31,10 @@ cargo test --workspace
 
 The GPU tests skip themselves on machines without a usable adapter.
 
+[docs/developing.md](docs/developing.md) has the rest: what the broad checks
+guard, the switches for photographing the app's own windows at any size, and
+driving the MCP server by hand.
+
 A few rules the code relies on — [docs/status.md](docs/status.md) explains each:
 
 - **Time is integer ticks, never floats.** 960,000 a second, which divides
