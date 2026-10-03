@@ -103,6 +103,46 @@ impl Editor {
         })
     }
 
+    /// Replace the whole animation of `parameters` on `clip` with `keys`
+    /// (each value held to its parameter's limits), as one undo step called
+    /// `label`. Several parameters take the same keys — a scale is two. No
+    /// keys at all takes the animation off.
+    pub fn replace_keyframes(
+        &mut self,
+        clip: ClipId,
+        parameters: &[AnimatedParameter],
+        keys: &[Keyframe],
+        label: &str,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        let mut commands = Vec::new();
+        for &parameter in parameters {
+            for old in self.keyframes_of(clip, parameter) {
+                commands.push(Command::RemoveKeyframe {
+                    sequence,
+                    track,
+                    clip,
+                    parameter,
+                    time: old.time,
+                });
+            }
+            for key in keys {
+                commands.push(Command::SetKeyframe {
+                    sequence,
+                    track,
+                    clip,
+                    parameter,
+                    key: Keyframe::new(key.time, parameter.clamp(key.value), key.interpolation),
+                });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(());
+        }
+        self.dispatch_group(label, commands)
+    }
+
     /// How a key leaves for the next one. Set on the key at `at`.
     pub fn set_keyframe_interpolation(
         &mut self,

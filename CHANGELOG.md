@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Keyframes for assistants**: `animate` sets a clip's opacity, position,
+  scale, rotation, colour, blur — or a sound's volume and pan — changing over
+  time, with easing, replacing what was there in one undo step.
+  `describe_project` lists what each clip has animated.
+
 ## 0.4.0 — An assistant in the open window
 
 Still a beta: expect bugs, and please

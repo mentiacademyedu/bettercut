@@ -595,3 +595,80 @@ fn an_assistant_writes_captions() {
     assert!(is_error && text.contains("no text"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_animates_with_keyframes() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp7-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let picture = placed["clip_ids"][0].clone();
+    let animated = |client: &mut Client| -> Value {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["picture_lanes"][0]["clips"][0]["animated"].clone()
+    };
+
+    let said = client.ok(
+        "animate",
+        json!({ "clip_id": picture, "property": "opacity",
+                "keys": [{ "at": 0, "value": 0 }, { "at": 0.5, "value": 1, "easing": "ease out" }] }),
+    );
+    assert!(said.contains("2 keys"), "{said}");
+    client.ok(
+        "animate",
+        json!({ "clip_id": picture, "property": "Scale",
+                "keys": [{ "at": 0, "value": 1 }, { "at": 0.9, "value": 1.3, "easing": "ease in-out" }] }),
+    );
+    assert_eq!(animated(&mut client), json!(["opacity", "scale"]));
+
+    // Replacing: three keys now, not five.
+    client.ok(
+        "animate",
+        json!({ "clip_id": picture, "property": "opacity",
+                "keys": [{ "at": 0, "value": 1 }, { "at": 0.3, "value": 0.2 }, { "at": 0.6, "value": 1 }] }),
+    );
+    // One undo per call: back to the two-key fade, still animated.
+    client.ok("undo", json!({}));
+    assert_eq!(animated(&mut client), json!(["opacity", "scale"]));
+    // An empty list takes it off.
+    client.ok(
+        "animate",
+        json!({ "clip_id": picture, "property": "opacity", "keys": [] }),
+    );
+    assert_eq!(animated(&mut client), json!(["scale"]));
+
+    let (text, is_error) = client.tool(
+        "animate",
+        json!({ "clip_id": picture, "property": "opacity", "keys": [{ "at": 60, "value": 1 }] }),
+    );
+    assert!(is_error && text.contains("outside the clip"), "{text}");
+    let (text, is_error) = client.tool(
+        "animate",
+        json!({ "clip_id": picture, "property": "volume", "keys": [] }),
+    );
+    assert!(is_error && text.contains("sound_lanes"), "{text}");
+    let (text, is_error) = client.tool(
+        "animate",
+        json!({ "clip_id": picture, "property": "wobble", "keys": [] }),
+    );
+    assert!(
+        is_error && text.contains("rotation"),
+        "the choices are listed: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
 use bettercut_editor_core::project_format::Project;
-use bettercut_editor_core::timeline::{Movement, TransitionKind};
+use bettercut_editor_core::timeline::{AnimatedParameter, Movement, TransitionKind};
 use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TextProperty, TrimEdge};
 use serde_json::{Value, json};
 
@@ -227,6 +227,38 @@ const TOOLS: &[Tool] = &[
                     "looping": { "type": "string" }
                 }),
                 &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "animate",
+        description: "Animate one property of a clip over time with keyframes, replacing any \
+                      animation it had. `property` is opacity, x, y, scale, rotation, \
+                      brightness, contrast, saturation, temperature or blur for a picture clip \
+                      (x/y/scale/rotation as in set_transform), or volume or pan for a sound \
+                      clip. `keys` are `{at, value, easing?}` with `at` in timeline seconds \
+                      inside the clip; easing is linear (default), hold, ease in, ease out or \
+                      ease in-out, and shapes the way to the next key. An empty `keys` list \
+                      takes the animation off. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "property": { "type": "string" },
+                    "keys": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "at": { "type": "number", "minimum": 0 },
+                                "value": { "type": "number" },
+                                "easing": { "type": "string" }
+                            },
+                            "required": ["at", "value"]
+                        }
+                    }
+                }),
+                &["clip_id", "property", "keys"],
             )
         },
     },
@@ -607,6 +639,7 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             Ok(format!("{} ({})", movement.label(), strength.label()))
         }
         "animate_title" => animate_title(editor, args),
+        "animate" => animate(editor, args),
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
             let at = editor
@@ -1170,6 +1203,117 @@ fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
     Ok("Animated".to_owned())
 }
 
+/// The properties `animate` takes, by name: what each drives, and whether it
+/// is a sound clip's.
+const ANIMATED: &[(&str, &[AnimatedParameter], bool)] = &[
+    ("opacity", &[AnimatedParameter::Opacity], false),
+    ("x", &[AnimatedParameter::PositionX], false),
+    ("y", &[AnimatedParameter::PositionY], false),
+    (
+        "scale",
+        &[AnimatedParameter::ScaleX, AnimatedParameter::ScaleY],
+        false,
+    ),
+    ("rotation", &[AnimatedParameter::Rotation], false),
+    ("brightness", &[AnimatedParameter::Brightness], false),
+    ("contrast", &[AnimatedParameter::Contrast], false),
+    ("saturation", &[AnimatedParameter::Saturation], false),
+    ("temperature", &[AnimatedParameter::Temperature], false),
+    ("blur", &[AnimatedParameter::Blur], false),
+    ("volume", &[AnimatedParameter::Gain], true),
+    ("pan", &[AnimatedParameter::Pan], true),
+];
+
+fn animate(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::{Interpolation, Keyframe};
+    let clip = clip_arg(args)?;
+    let name = str_arg(args, "property")?;
+    let wanted = plain(name);
+    let (label, parameters, sound) = ANIMATED
+        .iter()
+        .find(|(label, _, _)| *label == wanted)
+        .ok_or_else(|| {
+            let names: Vec<&str> = ANIMATED.iter().map(|(label, _, _)| *label).collect();
+            format!(
+                "no property {name:?} to animate; one of {}",
+                names.join(", ")
+            )
+        })?;
+    // Where the clip is, and how its timeline maps to the source time keys
+    // are kept in.
+    let (range, to_source): (_, Box<dyn Fn(TimelineTime) -> MediaTime>) = if *sound {
+        let sound = editor
+            .audio_clip(clip)
+            .ok_or_else(|| format!("{label} is a sound clip's: use an id from sound_lanes"))?
+            .clone();
+        (sound.timeline, Box::new(move |t| sound.source_time_at(t)))
+    } else {
+        let picture = editor
+            .video_clip(clip)
+            .ok_or_else(|| format!("{label} is a picture clip's: use an id from picture_lanes"))?
+            .clone();
+        (
+            picture.timeline,
+            Box::new(move |t| picture.source_time_at(t)),
+        )
+    };
+    let easings = [
+        Interpolation::Linear,
+        Interpolation::Hold,
+        Interpolation::EaseIn,
+        Interpolation::EaseOut,
+        Interpolation::EaseInOut,
+    ];
+    let keys = args
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or("keys must be a list of {at, value}")?
+        .iter()
+        .map(|key| {
+            let at = time_arg(key, "at")?;
+            if !range.contains(at) {
+                return Err(format!(
+                    "a key at {:.3} s is outside the clip, which runs {:.3}–{:.3} s",
+                    at.as_seconds_f64(),
+                    range.start.as_seconds_f64(),
+                    range.end.as_seconds_f64()
+                ));
+            }
+            let value = key
+                .get("value")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or("each key needs a number value")? as f32;
+            let easing = match key.get("easing").and_then(Value::as_str) {
+                None => Interpolation::Linear,
+                Some(easing) => one_of(&easings, Interpolation::label, easing, "easing")?,
+            };
+            Ok(Keyframe::new(to_source(at), value, easing))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    editor
+        .replace_keyframes(clip, parameters, &keys, &format!("Animate {label}"))
+        .map_err(|e| e.to_string())?;
+    Ok(if keys.is_empty() {
+        format!("{label} no longer animated")
+    } else {
+        format!("{label} animated with {} keys", keys.len())
+    })
+}
+
+/// Which of `animate`'s properties have keys on `clip`.
+fn animated_names(editor: &Editor, clip: ClipId) -> Vec<&'static str> {
+    ANIMATED
+        .iter()
+        .filter(|(_, parameters, _)| {
+            parameters
+                .iter()
+                .any(|p| !editor.keyframes_of(clip, *p).is_empty())
+        })
+        .map(|(label, _, _)| *label)
+        .collect()
+}
+
 /// Where a clip sits, in `set_transform`'s terms.
 fn place(transform: &bettercut_editor_core::timeline::Transform) -> Value {
     json!({
@@ -1220,6 +1364,7 @@ fn describe(editor: &Editor) -> Value {
                             "media": name_of(c.media_id),
                             "speed": c.speed.as_f64(), "reversed": c.reversed,
                             "opacity": c.opacity, "place": place(&c.transform),
+                            "animated": animated_names(editor, c.id),
                             "movement": editor.movement_of(c.id)
                                 .filter(|m| *m != Movement::None).map(Movement::label),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
@@ -1241,7 +1386,8 @@ fn describe(editor: &Editor) -> Value {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
                             "media": name_of(c.media_id),
-                            "volume": c.gain, "speed": c.speed.as_f64(), "reversed": c.reversed })
+                            "volume": c.gain, "speed": c.speed.as_f64(), "reversed": c.reversed,
+                            "animated": animated_names(editor, c.id) })
                 }).collect::<Vec<_>>(),
             })
         })
