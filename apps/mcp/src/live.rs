@@ -90,7 +90,11 @@ impl Listener {
             served.any = true;
             if !matches!(
                 request.tool.as_str(),
-                "describe_project" | "preview_frame" | "get_selection" | "select_clips"
+                "describe_project"
+                    | "preview_frame"
+                    | "get_selection"
+                    | "select_clips"
+                    | "_project"
             ) {
                 served.last_change = Some(request.tool.replace('_', " "));
             }
@@ -99,6 +103,13 @@ impl Listener {
                     let _ = request.answer.send(Ok(Reply::Text(
                         tools::selection(editor, selected).to_string(),
                     )));
+                    continue;
+                }
+                "_project" => {
+                    let done = serde_json::to_string(editor.project())
+                        .map(Reply::Text)
+                        .map_err(|e| e.to_string());
+                    let _ = request.answer.send(done);
                     continue;
                 }
                 "select_clips" => {

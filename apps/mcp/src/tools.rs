@@ -24,6 +24,16 @@ pub struct Session {
     app: Option<live::Link>,
     /// Where to look for the window; `None` for the usual place.
     live_file: Option<PathBuf>,
+    /// Exports running (or run) in the background, oldest first.
+    exports: Vec<(String, std::sync::Arc<std::sync::Mutex<ExportState>>)>,
+}
+
+/// How a background export is going.
+#[derive(Debug, Clone)]
+enum ExportState {
+    Running { done: u64, total: u64 },
+    Finished(String),
+    Failed(String),
 }
 
 /// What a tool hands back: words, or a picture with a line about it.
@@ -726,17 +736,27 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "export",
         description: "Render the whole timeline to a video file at `path` (.mp4 recommended), at \
-                      the project's size unless `width`/`height` are given. Waits until done.",
+                      the project's size unless `width`/`height` are given. Waits until done — \
+                      or, with `wait` false, starts it in the background and answers at once \
+                      (export_status says how far it has got; keep this session open until it \
+                      finishes).",
         schema: || {
             object(
                 json!({
                     "path": { "type": "string" },
                     "width": { "type": "integer", "minimum": 16 },
-                    "height": { "type": "integer", "minimum": 16 }
+                    "height": { "type": "integer", "minimum": 16 },
+                    "wait": { "type": "boolean" }
                 }),
                 &["path"],
             )
         },
+    },
+    Tool {
+        name: "export_status",
+        description: "How the exports started with `wait` false are going: each one's file, \
+                      and how far along it is, or that it finished (or why it failed).",
+        schema: || object(json!({}), &[]),
     },
 ];
 
@@ -789,6 +809,12 @@ impl Session {
             } else {
                 "Not attached".to_owned()
             })),
+            // Background exports run here, attached or not: the window only
+            // hands over a copy of its project.
+            "export" if args.get("wait").and_then(Value::as_bool) == Some(false) => {
+                self.export_in_background(args)
+            }
+            "export_status" => Ok(Reply::Text(self.export_status())),
             _ if self.app.is_some() => match name {
                 "new_project" | "open_project" => Err(
                     "Attached to the app's window: open projects there, or detach_from_app first"
@@ -811,6 +837,80 @@ impl Session {
             }
             _ => run_on(self.editor()?, name, args),
         }
+    }
+
+    /// Start an export on its own thread, from a copy of the project as it is
+    /// now — the window's, when attached.
+    fn export_in_background(&mut self, args: &Value) -> Result<Reply, String> {
+        let path = path_arg(args, "path")?.display().to_string();
+        let project: Project = match &self.app {
+            Some(app) => match app.call("_project", &json!({}))? {
+                Reply::Text(text) => serde_json::from_str(&text)
+                    .map_err(|e| format!("could not read the window's project: {e}"))?,
+                Reply::Image { .. } => return Err("the window sent a picture".to_owned()),
+            },
+            None => self.editor()?.project().clone(),
+        };
+        let sequence = project.active().ok_or("the project has no sequence")?;
+        if sequence.duration().ticks() <= 0 {
+            return Err("The timeline is empty: there is nothing to export".to_owned());
+        }
+        let state = std::sync::Arc::new(std::sync::Mutex::new(ExportState::Running {
+            done: 0,
+            total: 0,
+        }));
+        let progress = std::sync::Arc::clone(&state);
+        let args = args.clone();
+        std::thread::spawn(move || {
+            let result = export_project_with(&project, &args, &mut |p| {
+                if let Ok(mut state) = progress.lock() {
+                    *state = ExportState::Running {
+                        done: p.frames_done,
+                        total: p.frames_total,
+                    };
+                }
+            });
+            if let Ok(mut state) = progress.lock() {
+                *state = match result {
+                    Ok(summary) => ExportState::Finished(summary),
+                    Err(err) => ExportState::Failed(err),
+                };
+            }
+        });
+        self.exports.push((path.clone(), state));
+        Ok(Reply::Text(format!(
+            "Exporting {path} in the background: export_status says how far it has got"
+        )))
+    }
+
+    fn export_status(&self) -> String {
+        let all: Vec<Value> = self
+            .exports
+            .iter()
+            .map(|(path, state)| {
+                let state = state
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or(ExportState::Failed("the export thread stopped".to_owned()));
+                match state {
+                    ExportState::Running { done, total } => json!({
+                        "path": path,
+                        "state": "running",
+                        "frames_done": done,
+                        "frames_total": total,
+                    }),
+                    ExportState::Finished(summary) => json!({
+                        "path": path,
+                        "state": "finished",
+                        "summary": serde_json::from_str::<Value>(&summary).unwrap_or(Value::Null),
+                    }),
+                    ExportState::Failed(err) => {
+                        json!({ "path": path, "state": "failed", "error": err })
+                    }
+                }
+            })
+            .collect();
+        Value::Array(all).to_string()
     }
 
     /// Look for the app's window in `file` rather than the usual place.
@@ -1558,6 +1658,15 @@ fn preview_frame(editor: &mut Editor, args: &Value) -> Result<Reply, String> {
 /// Render `project`'s timeline as the export tool asks. Takes the project
 /// alone so the app can export a copy away from its window's thread.
 pub fn export_project(project: &Project, args: &Value) -> Result<String, String> {
+    export_project_with(project, args, &mut |_| {})
+}
+
+/// [`export_project`], telling `on_progress` how far it has got.
+fn export_project_with(
+    project: &Project,
+    args: &Value,
+    on_progress: &mut dyn FnMut(bettercut_export::ExportProgress),
+) -> Result<String, String> {
     let path = path_arg(args, "path")?;
     let width = u32_arg(args, "width")?;
     let height = u32_arg(args, "height")?;
@@ -1573,7 +1682,7 @@ pub fn export_project(project: &Project, args: &Value) -> Result<String, String>
         project,
         sequence,
         &settings,
-        &mut |_| {},
+        on_progress,
         &bettercut_editor_core::media::NeverCancelled,
     )
     .map_err(|e| format!("export failed: {e}"))?;

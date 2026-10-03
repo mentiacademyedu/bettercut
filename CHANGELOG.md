@@ -7,6 +7,9 @@
 - **Ready-made requests**: the MCP server offers prompts — tighten an
   interview, make a Short, cut to the beat, a title card — which Claude Code
   shows as slash commands (`/bettercut:make_short` and so on).
+- **Background exports for assistants**: `export` with `wait` false starts
+  the render and answers at once — no client timeout on a long export — and
+  `export_status` follows it.
 
 ## 0.5.0 — Connect an assistant in one click; 55 tools
 

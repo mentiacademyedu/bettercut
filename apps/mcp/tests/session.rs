@@ -1188,3 +1188,51 @@ fn an_assistant_sets_effects() {
     assert!(is_error && text.contains("picture"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Ask export_status until `path` is no longer running; its last word.
+fn finished_export(client: &mut Client, path: &str) -> Value {
+    for _ in 0..600 {
+        let all: Value = serde_json::from_str(&client.ok("export_status", json!({}))).unwrap();
+        if let Some(one) = all.as_array().unwrap().iter().find(|e| e["path"] == path)
+            && one["state"] != "running"
+        {
+            return one.clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("the export of {path} never finished");
+}
+
+#[test]
+fn an_assistant_exports_in_the_background() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp15-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+    let out = dir.join("later.mp4").display().to_string();
+    let said = client.ok(
+        "export",
+        json!({ "path": out, "width": 320, "height": 180, "wait": false }),
+    );
+    assert!(said.contains("background"), "{said}");
+    // The session goes on being usable while it renders.
+    client.ok("add_title", json!({ "text": "Meanwhile", "at": 0 }));
+    let done = finished_export(&mut client, &out);
+    assert_eq!(done["state"], "finished", "{done}");
+    assert!(done["summary"]["frames"].as_u64().unwrap() > 0, "{done}");
+    assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

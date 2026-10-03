@@ -136,6 +136,25 @@ fn an_assistant_edits_the_open_window() {
     assert!(exported.contains("frames"), "{exported}");
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
 
+    // In the background, from a copy the window hands over.
+    let later = dir.join("later.mp4").display().to_string();
+    ok(
+        &mut server,
+        "export",
+        json!({ "path": later, "width": 320, "height": 180, "wait": false }),
+    );
+    let mut state = Value::Null;
+    for _ in 0..600 {
+        let all: Value =
+            serde_json::from_str(&ok(&mut server, "export_status", json!({}))).unwrap();
+        state = all[0].clone();
+        if state["state"] != "running" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(state["state"], "finished", "{state}");
+
     ok(&mut server, "detach_from_app", json!({}));
     let (text, is_error) = call(&mut server, "describe_project", json!({}));
     assert!(is_error, "detached, there is no project of its own: {text}");
