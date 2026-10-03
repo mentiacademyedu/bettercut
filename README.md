@@ -109,10 +109,11 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `import_media`, `add_to_timeline`, `add_title`, `style_title`, `split_clip`,
 `delete_clip`, `move_clip`, `trim_clip`, `set_transform`, `adjust_colour`,
 `add_marker`, `set_movement`, `animate_title`, `animate`, `list_templates`, `apply_template`, `normalise_volume`, `duck_under_voice`,
-`enhance_voice`, `mute_clip`, `remove_silences`, `split_at_scenes`, `mark_beats`, `set_volume`, `set_opacity`, `set_speed`,
+`enhance_voice`, `mute_clip`, `remove_silences`, `split_at_scenes`, `mark_beats`, `set_playhead`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
 `import_captions`, `add_captions`, `preview_frame`, `undo`, `redo`, `export`, and
-`attach_to_app` / `detach_from_app`.
+`attach_to_app` / `detach_from_app`, and — attached — `get_selection` and
+`select_clips`.
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered
 exactly as it will export, so it can check its own work. More of the editor's
 actions are coming.

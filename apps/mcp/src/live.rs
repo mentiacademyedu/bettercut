@@ -20,6 +20,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use bettercut_editor_core::Editor;
+use bettercut_editor_core::foundation::ClipId;
 use serde_json::{Value, json};
 
 use crate::tools::{self, Reply};
@@ -80,14 +81,36 @@ impl Listener {
         })
     }
 
-    /// Run every call that has arrived on `editor`. Returns what happened,
-    /// for the window to redraw and to say so.
-    pub fn serve(&self, editor: &mut Editor) -> Served {
+    /// Run every call that has arrived on `editor`. `selected` is what the
+    /// person has selected in the window. Returns what happened, for the
+    /// window to redraw, say so, and select what the assistant pointed at.
+    pub fn serve(&self, editor: &mut Editor, selected: &[ClipId]) -> Served {
         let mut served = Served::default();
         while let Ok(request) = self.requests.try_recv() {
             served.any = true;
-            if !matches!(request.tool.as_str(), "describe_project" | "preview_frame") {
+            if !matches!(
+                request.tool.as_str(),
+                "describe_project" | "preview_frame" | "get_selection" | "select_clips"
+            ) {
                 served.last_change = Some(request.tool.replace('_', " "));
+            }
+            match request.tool.as_str() {
+                "get_selection" => {
+                    let _ = request.answer.send(Ok(Reply::Text(
+                        tools::selection(editor, selected).to_string(),
+                    )));
+                    continue;
+                }
+                "select_clips" => {
+                    let done = tools::clip_ids(&request.args).map(|clips| {
+                        let count = clips.len();
+                        served.select = Some(clips);
+                        Reply::Text(format!("{count} clip(s) selected in the window"))
+                    });
+                    let _ = request.answer.send(done);
+                    continue;
+                }
+                _ => {}
             }
             if request.tool == "export" {
                 // Rendered off the window's thread, from a copy of the
@@ -115,6 +138,8 @@ pub struct Served {
     /// The last tool that changes something, in words ("add title"); looking
     /// at the project is not news.
     pub last_change: Option<String>,
+    /// Clips the assistant asked the window to select.
+    pub select: Option<Vec<ClipId>>,
 }
 
 impl Drop for Listener {

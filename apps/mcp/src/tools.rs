@@ -362,6 +362,30 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "get_selection",
+        description: "When attached to the app's window: the clips the person has selected \
+                      there, and where the playhead is — what \"this clip\" and \"here\" mean \
+                      when they ask.",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
+        name: "select_clips",
+        description: "When attached to the app's window: select these clips there, to show \
+                      the person which ones you mean (an empty list clears the selection).",
+        schema: || {
+            object(
+                json!({ "clip_ids": { "type": "array", "items": { "type": "string" } } }),
+                &["clip_ids"],
+            )
+        },
+    },
+    Tool {
+        name: "set_playhead",
+        description: "Move the playhead to `at` seconds — in the app's window, where the \
+                      person is looking, when attached.",
+        schema: || object(json!({ "at": { "type": "number", "minimum": 0 } }), &["at"]),
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -635,6 +659,9 @@ impl Session {
                 let opened = Editor::open(&path).map_err(|e| format!("could not open: {e}"))?;
                 self.open = Some(opened);
                 Ok(Reply::Text(format!("Opened {}", path.display())))
+            }
+            "get_selection" | "select_clips" => {
+                Err("only the app's window has a selection: attach_to_app first".to_owned())
             }
             _ => run_on(self.editor()?, name, args),
         }
@@ -916,6 +943,17 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 return Err("that clip has no sound to mute, or is already so".to_owned());
             }
             Ok(if muted { "Muted" } else { "Unmuted" }.to_owned())
+        }
+        "set_playhead" => {
+            let at = time_arg(args, "at")?;
+            editor.set_playhead(at);
+            Ok(format!(
+                "Playhead at {:.3} s",
+                editor.playhead().as_seconds_f64()
+            ))
+        }
+        "get_selection" | "select_clips" => {
+            Err("only the app's window has a selection: attach_to_app first".to_owned())
         }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
@@ -1669,6 +1707,53 @@ fn waveform_of(editor: &Editor, media: MediaId) -> Result<bettercut_cache::Wavef
         .ok_or("a clip's file is not in the project")?;
     bettercut_playback::analyse_waveform(asset, 2)
         .map_err(|e| format!("could not read the sound of {}: {e}", asset.file_name))
+}
+
+/// What is selected in the window, for `get_selection`.
+pub fn selection(editor: &Editor, selected: &[ClipId]) -> Value {
+    let clips: Vec<Value> = selected
+        .iter()
+        .map(|id| {
+            let (kind, name) = if let Some(c) = editor.video_clip(*id) {
+                ("picture", media_name(editor, c.media_id))
+            } else if let Some(c) = editor.audio_clip(*id) {
+                ("sound", media_name(editor, c.media_id))
+            } else if let Some(c) = editor.text_clip(*id) {
+                ("title", c.text.clone())
+            } else {
+                ("other", String::new())
+            };
+            json!({ "clip_id": id.to_string(), "kind": kind, "name": name })
+        })
+        .collect();
+    json!({
+        "selected": clips,
+        "playhead": editor.playhead().as_seconds_f64(),
+    })
+}
+
+fn media_name(editor: &Editor, media: MediaId) -> String {
+    editor
+        .project()
+        .media
+        .iter()
+        .find(|m| m.id == media)
+        .map_or_else(String::new, |m| m.display_name().to_owned())
+}
+
+/// `clip_ids` as ids, for `select_clips` and `apply_filter`.
+pub fn clip_ids(args: &Value) -> Result<Vec<ClipId>, String> {
+    args.get("clip_ids")
+        .and_then(Value::as_array)
+        .ok_or("clip_ids must be a list")?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .and_then(|t| uuid::Uuid::parse_str(t).ok())
+                .map(ClipId::from_uuid)
+                .ok_or_else(|| "clip_ids holds something that is not an id".to_owned())
+        })
+        .collect()
 }
 
 /// Which of `animate`'s properties have keys on `clip`.

@@ -362,7 +362,11 @@ impl eframe::App for App {
         // An attached assistant's edits, run here between frames so they are
         // on the history like any other.
         if let Some(live) = &self.live {
-            let served = live.serve(&mut self.editor);
+            let selected: Vec<_> = self.ui.selected_clips.iter().copied().collect();
+            let served = live.serve(&mut self.editor, &selected);
+            if let Some(clips) = served.select {
+                self.ui.selected_clips = clips.into_iter().collect();
+            }
             if served.any {
                 self.ui.needs_repaint = true;
             }

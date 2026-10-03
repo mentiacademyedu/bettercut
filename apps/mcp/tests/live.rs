@@ -58,8 +58,14 @@ fn an_assistant_edits_the_open_window() {
             let listener = Listener::start(file, || {}).unwrap();
             ready.send(()).unwrap();
             let mut said = Vec::new();
+            // What the person has selected, kept as the app keeps it.
+            let mut selected = Vec::new();
             while !stop.load(Ordering::Relaxed) {
-                said.extend(listener.serve(&mut editor).last_change);
+                let served = listener.serve(&mut editor, &selected);
+                said.extend(served.last_change);
+                if let Some(clips) = served.select {
+                    selected = clips;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             (editor.project().clone(), said)
@@ -104,6 +110,22 @@ fn an_assistant_edits_the_open_window() {
     assert!(described.to_string().contains("Hello"), "{described}");
     assert!(!described.to_string().contains("Again"), "{described}");
 
+    // Pointing at a clip in the window, and reading back what is selected.
+    let hello = described["title_lanes"][0]["clips"][0]["clip_id"].clone();
+    let (text, is_error) = call(&mut server, "get_selection", json!({}));
+    assert!(!is_error, "{text}");
+    let nothing: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(nothing["selected"], json!([]), "{nothing}");
+    ok(&mut server, "select_clips", json!({ "clip_ids": [hello] }));
+    ok(&mut server, "set_playhead", json!({ "at": 1.25 }));
+    let now: Value = serde_json::from_str(&ok(&mut server, "get_selection", json!({}))).unwrap();
+    assert_eq!(now["selected"][0]["kind"], "title", "{now}");
+    assert_eq!(now["selected"][0]["name"], "Hello", "{now}");
+    assert!(
+        (now["playhead"].as_f64().unwrap() - 1.25).abs() < 0.05,
+        "{now}"
+    );
+
     // Export renders a copy, away from the window's thread.
     let out = dir.join("out.mp4");
     let exported = ok(
@@ -117,6 +139,8 @@ fn an_assistant_edits_the_open_window() {
     ok(&mut server, "detach_from_app", json!({}));
     let (text, is_error) = call(&mut server, "describe_project", json!({}));
     assert!(is_error, "detached, there is no project of its own: {text}");
+    let (text, is_error) = call(&mut server, "get_selection", json!({}));
+    assert!(is_error && text.contains("attach_to_app"), "{text}");
 
     stop.store(true, Ordering::Relaxed);
     let (project, said) = window.join().unwrap();

@@ -15,6 +15,10 @@
   dips wherever someone speaks over it), `enhance_voice` and `mute_clip`.
 - **`remove_silences`**: an assistant cuts the pauses out of someone talking
   and closes the gaps — or, with `preview`, just lists them first.
+- **"This clip"**: attached to the window, an assistant can ask what you
+  have selected and where the playhead is (`get_selection`), and select clips
+  itself to show you which ones it means (`select_clips`); `set_playhead`
+  moves the playhead.
 - **`split_at_scenes`** cuts a long recording into its shots, and
   **`mark_beats`** puts a marker on every beat of a song, with its tempo.
 
