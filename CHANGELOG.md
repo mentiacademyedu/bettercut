@@ -17,6 +17,7 @@
 - **Ready-made requests**: the MCP server offers prompts — tighten an
   interview, make a Short, cut to the beat, a title card — which Claude Code
   shows as slash commands (`/bettercut:make_short` and so on).
+- **`green_screen`**: an assistant keys out a green or blue backdrop.
 - **Background exports for assistants**: `export` with `wait` false starts
   the render and answers at once — no client timeout on a long export — and
   `export_status` follows it.

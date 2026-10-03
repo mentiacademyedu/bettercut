@@ -1242,3 +1242,58 @@ fn an_assistant_exports_in_the_background() {
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_keys_a_green_screen() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp16-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = dir.join("p.vproj");
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": project.display().to_string() }),
+    );
+    let screen: Value =
+        serde_json::from_str(&client.ok("add_colour", json!({ "color": "#00ff00", "at": 0 })))
+            .unwrap();
+    let screen = screen["clip_id"].clone();
+    let keyed = |client: &mut Client| -> Value {
+        client.ok("save_project", json!({}));
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+        // The one picture clip's key, wherever the file keeps it.
+        fn find(v: &Value) -> Option<Value> {
+            match v {
+                Value::Object(map) => map
+                    .get("chroma_key")
+                    .cloned()
+                    .or_else(|| map.values().find_map(find)),
+                Value::Array(items) => items.iter().find_map(find),
+                _ => None,
+            }
+        }
+        find(&saved).expect("a clip with a chroma_key field")
+    };
+
+    client.ok(
+        "green_screen",
+        json!({ "clip_id": screen, "tolerance": 0.2 }),
+    );
+    let key = keyed(&mut client);
+    assert!(
+        (key["tolerance"].as_f64().unwrap() - 0.2).abs() < 1e-6,
+        "{key}"
+    );
+    assert_eq!(key["color"], json!([0.0, 1.0, 0.0]), "{key}");
+
+    client.ok(
+        "green_screen",
+        json!({ "clip_id": screen, "color": "#0000ff" }),
+    );
+    assert_eq!(keyed(&mut client)["color"], json!([0.0, 0.0, 1.0]));
+
+    client.ok("green_screen", json!({ "clip_id": screen, "off": true }));
+    assert!(keyed(&mut client).is_null(), "the key is off");
+    let _ = std::fs::remove_dir_all(&dir);
+}

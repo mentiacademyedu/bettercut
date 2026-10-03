@@ -542,6 +542,29 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "green_screen",
+        description: "Make a coloured backdrop see-through on a picture clip — a green (or \
+                      blue) screen — so what is on the lane beneath shows instead. `color` is \
+                      the screen's colour (\"#rrggbb\", green by default); `tolerance` (0–1, \
+                      default 0.12) how far from it still counts; `softness` (0–1, default \
+                      0.08) the edge; `spill` (0–1, default 0.6) how much green cast is taken \
+                      off the subject. `off` true takes the key away. Check with \
+                      preview_frame.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "color": { "type": "string" },
+                    "tolerance": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "softness": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "spill": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "off": { "type": "boolean" }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "history",
         description: "The steps undo would take back, newest first (the last 20), and the \
                       steps redo would bring back — attached to the window, the person's own \
@@ -1373,6 +1396,41 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             } else {
                 format!("{label} at {amount}")
             })
+        }
+        "green_screen" => {
+            use bettercut_editor_core::timeline::ChromaKey;
+            let clip = clip_arg(args)?;
+            if editor.video_clip(clip).is_none() {
+                return Err("that is not a picture clip".to_owned());
+            }
+            if args.get("off").and_then(Value::as_bool) == Some(true) {
+                editor
+                    .set_clip_property(clip, ClipProperty::ChromaKey(None), false)
+                    .map_err(|e| e.to_string())?;
+                return Ok("Key off".to_owned());
+            }
+            let mut key = ChromaKey::default();
+            if let Some(colour) = args.get("color").and_then(Value::as_str) {
+                let c = colour_arg(colour)?;
+                key.color = [
+                    f32::from(c.r) / 255.0,
+                    f32::from(c.g) / 255.0,
+                    f32::from(c.b) / 255.0,
+                ];
+            }
+            if let Some(v) = optional_number(args, "tolerance")? {
+                key.tolerance = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = optional_number(args, "softness")? {
+                key.softness = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = optional_number(args, "spill")? {
+                key.spill = v.clamp(0.0, 1.0);
+            }
+            editor
+                .set_clip_property(clip, ClipProperty::ChromaKey(Some(key)), false)
+                .map_err(|e| e.to_string())?;
+            Ok("Keyed: put what should show through on the lane beneath".to_owned())
         }
         "history" => {
             let (done, undone) = editor.history_steps();
