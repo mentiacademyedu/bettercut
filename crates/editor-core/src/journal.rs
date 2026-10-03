@@ -65,14 +65,30 @@ pub struct RecoveryPaths {
 
 impl RecoveryPaths {
     pub fn for_project(project_path: Option<&Path>, session: &str) -> Self {
-        let dir = match project_path.and_then(Path::parent) {
-            Some(parent) => parent.join(RECOVERY_DIR),
-            None => std::env::temp_dir()
+        // One folder per project file. The whole `recovery` folder used to
+        // be the project's, so two projects saved side by side wrote over
+        // each other's crash data — and opening one could offer the other's.
+        let dir = match (
+            project_path.and_then(Path::parent),
+            project_path.and_then(Path::file_name),
+        ) {
+            (Some(parent), Some(name)) => parent.join(RECOVERY_DIR).join(name),
+            _ => std::env::temp_dir()
                 .join("bettercut")
                 .join(RECOVERY_DIR)
                 .join(session),
         };
         Self { dir }
+    }
+
+    /// Where a saved project's recovery data lived before it had a folder of
+    /// its own: the shared `recovery` folder beside it. Still read after a
+    /// crash, so work from before the change is not lost — but only accepted
+    /// when the snapshot there is this project's.
+    pub fn shared_beside(project_path: &Path) -> Option<Self> {
+        Some(Self {
+            dir: project_path.parent()?.join(RECOVERY_DIR),
+        })
     }
 
     pub fn snapshot(&self) -> PathBuf {
@@ -453,7 +469,13 @@ mod tests {
     #[test]
     fn recovery_paths_sit_beside_a_saved_project() {
         let paths = RecoveryPaths::for_project(Some(Path::new("C:/films/cut.vproj")), "session");
-        assert_eq!(paths.dir, Path::new("C:/films").join(RECOVERY_DIR));
+        assert_eq!(
+            paths.dir,
+            Path::new("C:/films").join(RECOVERY_DIR).join("cut.vproj")
+        );
+        // Each project in a folder has its own.
+        let other = RecoveryPaths::for_project(Some(Path::new("C:/films/trailer.vproj")), "s");
+        assert_ne!(paths.dir, other.dir);
     }
 
     /// An unsaved project still gets protection: §38 is about not losing work,

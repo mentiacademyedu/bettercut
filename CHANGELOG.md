@@ -8,6 +8,11 @@
   down: after a crash, edits you had undone came back, and ones you had
   redone were lost. Every assistant session in the tests now checks that
   recovery brings the project back exactly.
+- **Projects saved in the same folder keep separate crash data.** They all
+  used one `recovery` folder, so one could overwrite another's — and opening
+  one could offer the other's work. Each now has `recovery/<file name>`;
+  data in the old shared folder is still offered, but only to its own
+  project.
 
 ## 0.5.1 — Title edits survive a crash; more for assistants
 

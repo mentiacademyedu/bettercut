@@ -145,7 +145,7 @@ fn a_clean_quit_removes_its_own_recovery_data() {
 
     // Leftovers from a previous run of this same project, where its journal
     // now points. Saved, so the editor has nothing outstanding.
-    let beside = plant_session(&root, "recovery");
+    let beside = plant_session(&root.join("recovery"), "film.vproj");
     assert!(beside.exists());
     assert!(!editor.is_dirty());
 
@@ -170,7 +170,7 @@ fn quitting_with_unsaved_changes_keeps_the_recovery_data() {
 
     // An edit after the save: journalled, and not on disk anywhere else.
     editor.add_video_track("V2").expect("add track");
-    let beside = root.join("recovery");
+    let beside = root.join("recovery").join("film.vproj");
     assert!(beside.exists(), "the edit was not journalled");
     assert!(editor.is_dirty());
 
@@ -273,4 +273,25 @@ fn recovered_work_survives_its_files_being_pruned_underneath_it() {
         project.name, "Planted",
         "the recovered project did not survive its files going"
     );
+}
+
+/// Two projects saved in the same folder each keep their own crash data: the
+/// whole `recovery` folder used to be shared, so the second wrote over the
+/// first's, and opening either could offer the other's work.
+#[test]
+fn projects_side_by_side_recover_their_own_work() {
+    let root = scratch("side-by-side");
+    let (mut film, _a) = Editor::new_project("Film");
+    film.save_as(root.join("film.vproj")).expect("save");
+    let (mut trailer, _b) = Editor::new_project("Trailer");
+    trailer.save_as(root.join("trailer.vproj")).expect("save");
+
+    film.add_video_track("Film lane").expect("edit");
+    trailer.add_video_track("Trailer lane").expect("edit");
+
+    let film_back = recover(film.recovery_paths().clone()).expect("film recovers");
+    let trailer_back = recover(trailer.recovery_paths().clone()).expect("trailer recovers");
+    assert_eq!(film_back.project.name, "Film");
+    assert_eq!(trailer_back.project.name, "Trailer");
+    assert_ne!(film.recovery_paths().dir, trailer.recovery_paths().dir);
 }

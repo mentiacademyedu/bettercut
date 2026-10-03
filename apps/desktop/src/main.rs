@@ -259,6 +259,14 @@ impl App {
         ui.pending_recovery = bettercut_editor_core::recover(
             bettercut_editor_core::RecoveryPaths::for_project(editor.path(), "previous"),
         )
+        // Where it lived before each project had its own folder — accepted
+        // only when it is this project's, since every project in the folder
+        // shared it.
+        .or_else(|| {
+            let shared = bettercut_editor_core::RecoveryPaths::shared_beside(editor.path()?)?;
+            bettercut_editor_core::recover(shared)
+                .filter(|found| found.project.id == editor.project().id)
+        })
         .or_else(|| bettercut_editor_core::scan_unsaved().into_iter().next());
 
         // Abandoned sessions accumulate — one per editor, and only a clean
