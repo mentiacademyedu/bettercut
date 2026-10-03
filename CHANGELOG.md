@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 — Crash recovery: undo, and projects side by side
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### Fixed
 

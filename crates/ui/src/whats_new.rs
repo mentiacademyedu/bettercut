@@ -13,9 +13,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Changing a title's words is saved for crash recovery again (it was not, in every earlier version)",
-    "A vertical copy of the edit wraps its titles inside the new frame",
-    "Assistants: ready-made requests, background exports, green screen and crop",
+    "Crash recovery keeps your undos and redos: an undone edit stays undone after a crash",
+    "Projects saved in the same folder no longer share, or overwrite, each other's crash data",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
