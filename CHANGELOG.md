@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Windows open below the toolbar.** Storyboard, Notes, Scopes, Exports,
+  Captions, Markers, History, Trim, Sound in Detail, What Changed and Find
+  the Good Bits all opened in the top-left corner, over Play, New and Open.
+
 ### New
 
 - **`contact_sheet`**: an assistant sees the whole edit in one picture —
