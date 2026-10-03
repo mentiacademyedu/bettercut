@@ -67,3 +67,45 @@ fn every_tab_fits_the_narrowest_inspector() {
         "wider than the inspector: {too_wide:?}"
     );
 }
+
+/// The other things the inspector shows: a title, a sound on its own, and the
+/// whole sequence when nothing is chosen.
+#[test]
+fn titles_sound_and_the_sequence_fit_too() {
+    let (mut editor, _events) = Editor::new_project("Widths");
+    let mut song = MediaAsset::new(
+        MediaKind::Audio,
+        "C:/media/song.m4a",
+        MediaTime::from_seconds(20),
+    );
+    song.audio_codec = Some("aac".to_owned());
+    song.audio_channels = Some(2);
+    song.audio_sample_rate = Some(48_000);
+    let song = editor.import_media(song);
+    let sound = editor.place_media(song).unwrap()[0];
+    let title = editor.add_text("A title").unwrap();
+
+    let mut too_wide = Vec::new();
+    for (what, chosen) in [
+        ("title", Some(title)),
+        ("sound", Some(sound)),
+        ("sequence", None),
+    ] {
+        let mut state = UiState::default();
+        if let Some(clip) = chosen {
+            state.select_only(clip);
+        }
+        for tab in InspectorTab::ALL {
+            state.inspector_tab = tab;
+            width_of(&mut editor, &mut state, NARROWEST);
+            let used = width_of(&mut editor, &mut state, NARROWEST);
+            if used > NARROWEST + 0.5 {
+                too_wide.push(format!("{what} {tab:?} {used:.0}"));
+            }
+        }
+    }
+    assert!(
+        too_wide.is_empty(),
+        "wider than the inspector: {too_wide:?}"
+    );
+}
