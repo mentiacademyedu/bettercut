@@ -94,6 +94,20 @@ fn candidates() -> Vec<Value> {
         json!({ "x": 0.21, "y": -0.13 }),
         json!(3.0),
         json!(null),
+        // Names of choices, for the properties that are one: serde takes
+        // only the names a property knows, so a wrong guess just fails to
+        // build and the next one is tried.
+        json!("screen"),
+        json!("multiply"),
+        json!("blur"),
+        json!("left_to_both"),
+        json!("mono"),
+        json!("linear"),
+        json!("fast"),
+        json!("left_right"),
+        json!("sepia"),
+        json!("horizontal"),
+        json!("ellipse"),
     ]
 }
 
