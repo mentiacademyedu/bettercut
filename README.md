@@ -76,6 +76,8 @@ automatically so scrubbing stays smooth.
 
 ## Editing with an AI assistant (MCP)
 
+![An assistant restyling a title, adding a lower third and making a vertical copy, live in the bettercut window](docs/images/assistant-live.gif)
+
 bettercut includes an [MCP](https://modelcontextprotocol.io) server,
 `bettercut-mcp`, installed beside the app. An assistant that speaks MCP —
 Claude, or any other client — can create and open projects, import media,
