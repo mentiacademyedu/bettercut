@@ -1226,6 +1226,13 @@ fn an_assistant_sets_effects() {
         "set_effect",
         json!({ "clip_id": picture, "effect": "vignette", "amount": 50 }),
     );
+    // The assistant can read back what is on.
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let effects = &described["picture_lanes"][0]["clips"][0]["effects"];
+    assert_eq!(effects["glow"], 40.0, "{effects}");
+    assert_eq!(effects["old film"], 70.0, "{effects}");
+    assert_eq!(effects["vignette"], 50.0, "{effects}");
+    assert!(effects.get("blur").is_none(), "only what is on: {effects}");
     client.ok("save_project", json!({}));
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
     let text = saved.to_string();

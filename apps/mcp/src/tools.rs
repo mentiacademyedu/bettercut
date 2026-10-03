@@ -2443,6 +2443,21 @@ pub fn clip_ids(args: &Value) -> Result<Vec<ClipId>, String> {
         .collect()
 }
 
+/// A picture clip's effects in `set_effect`'s names and 0–100 amounts —
+/// only those that are on.
+fn effects_of(clip: &bettercut_editor_core::timeline::VideoClip) -> Value {
+    let fields = serde_json::to_value(clip).unwrap_or(Value::Null);
+    let on: serde_json::Map<String, Value> = EFFECTS
+        .iter()
+        .filter_map(|(name, _, scale)| {
+            let amount = fields.get(name.replace(' ', "_"))?.as_f64()? / f64::from(*scale);
+            (amount.abs() > 1e-6)
+                .then(|| ((*name).to_owned(), json!((amount * 10.0).round() / 10.0)))
+        })
+        .collect();
+    Value::Object(on)
+}
+
 /// Which of `animate`'s properties have keys on `clip`.
 fn animated_names(editor: &Editor, clip: ClipId) -> Vec<&'static str> {
     ANIMATED
@@ -2509,6 +2524,9 @@ fn describe(editor: &Editor) -> Value {
                             "speed": c.speed.as_f64(), "reversed": c.reversed,
                             "opacity": c.opacity, "place": place(&c.transform),
                             "animated": animated_names(editor, c.id),
+                            "effects": effects_of(c),
+                            "green_screen": c.chroma_key.is_some(),
+                            "cropped": !c.crop.is_none(),
                             "movement": editor.movement_of(c.id)
                                 .filter(|m| *m != Movement::None).map(Movement::label),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
