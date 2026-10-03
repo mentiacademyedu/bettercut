@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — Fits small screens; light theme fixes
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### Fixed
 

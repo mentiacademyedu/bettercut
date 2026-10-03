@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "The status bar tells you when a newer bettercut is out (once a day; turn it off in Settings)",
-    "The status bar shows when an AI assistant is connected to this window",
-    "Assistants can export GIFs, sound alone and ProRes masters",
+    "Small screens: the Export window scrolls, the toolbar wraps, the preview keeps its room",
+    "Windows open below the toolbar instead of over it",
+    "Light theme: chosen buttons show their words again",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
