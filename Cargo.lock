@@ -599,6 +599,7 @@ dependencies = [
  "bettercut-cache",
  "bettercut-editor-core",
  "bettercut-export",
+ "bettercut-jobs",
  "bettercut-playback",
  "serde_json",
  "uuid",

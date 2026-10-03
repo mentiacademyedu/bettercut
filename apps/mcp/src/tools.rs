@@ -302,6 +302,26 @@ const TOOLS: &[Tool] = &[
         schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
     },
     Tool {
+        name: "split_at_scenes",
+        description: "Find where the shot changes inside a picture clip — a long recording \
+                      with several scenes — and cut the clip there, so each scene is its own \
+                      clip. With `preview` true nothing is cut: the times are listed. Reads \
+                      the footage, so a long clip takes a while. One undo step.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "preview": { "type": "boolean" } }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "mark_beats",
+        description: "Put a marker on every beat of a music clip, to cut to the rhythm \
+                      (split_clip, move_clip and trim_clip line up with markers). Says the \
+                      tempo it found.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
         name: "remove_silences",
         description: "Cut the pauses out of a clip with someone talking, closing each gap — \
                       the jump-cut edit. Works on a sound clip or a picture clip with sound; \
@@ -794,6 +814,54 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 "Ducked under the voice ({} speaking parts)",
                 speech.len()
             ))
+        }
+        "split_at_scenes" => {
+            use bettercut_jobs::{JobContext, Task};
+            let clip = clip_arg(args)?;
+            let picture = editor
+                .video_clip(clip)
+                .ok_or("that is not a picture clip")?
+                .clone();
+            let asset = editor
+                .project()
+                .media
+                .iter()
+                .find(|m| m.id == picture.media_id)
+                .ok_or("the clip's file is not in the project")?
+                .clone();
+            let (mut job, report) = bettercut_playback::SceneJob::new(
+                &asset,
+                picture.source.start,
+                picture.source.end,
+                bettercut_playback::SceneSettings::default(),
+                2,
+            )
+            .ok_or("only a video clip has scenes to find")?;
+            job.run(&JobContext::detached())
+                .map_err(|e| format!("could not read the footage: {e}"))?;
+            let cuts = report.cuts().unwrap_or_default();
+            let at = bettercut_playback::scene_job::timeline_cuts(&picture, &cuts);
+            let listed: Vec<f64> = at.iter().map(|t| t.as_seconds_f64()).collect();
+            if args
+                .get("preview")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(json!({ "scene_changes": listed }).to_string());
+            }
+            if at.is_empty() {
+                return Err("no change of shot inside this clip".to_owned());
+            }
+            let made = editor.split_clip_at(clip, &at).map_err(|e| e.to_string())?;
+            Ok(json!({ "cuts": made, "scene_changes": listed }).to_string())
+        }
+        "mark_beats" => {
+            let sound = sound_clip(editor, args)?;
+            let waveform = waveform_of(editor, sound.media_id)?;
+            let (beats, bpm) = bettercut_playback::beat_markers(&sound, &waveform)
+                .ok_or("no steady beat found in this clip")?;
+            let added = editor.add_markers(&beats).map_err(|e| e.to_string())?;
+            Ok(format!("{added} beat markers, about {bpm:.0} BPM"))
         }
         "remove_silences" => {
             let sound = sound_clip(editor, args)?;

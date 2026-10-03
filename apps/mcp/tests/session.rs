@@ -888,3 +888,101 @@ fn an_assistant_cuts_the_pauses() {
     assert!((length(&mut client) - before).abs() < 1e-6, "one undo step");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_splits_scenes_and_marks_beats() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp11-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+
+    // Two shots, made into one file by an export: a red photo, then colour
+    // bars.
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("make.vproj").display().to_string(), "width": 320, "height": 180 }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("exif-6.jpg"), fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[1]["media_id"] }),
+    );
+    let made: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let photo_ends = made["picture_lanes"][0]["clips"][0]["end"]
+        .as_f64()
+        .unwrap();
+    let two_shots = dir.join("two-shots.mp4");
+    client.ok("export", json!({ "path": two_shots.display().to_string() }));
+
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [two_shots.display().to_string()] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let clip = placed["clip_ids"][0].clone();
+    let found: Value = serde_json::from_str(&client.ok(
+        "split_at_scenes",
+        json!({ "clip_id": clip, "preview": true }),
+    ))
+    .unwrap();
+    let changes = found["scene_changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "{found}");
+    assert!(
+        (changes[0].as_f64().unwrap() - photo_ends).abs() < 0.1,
+        "{found}, the photo ends at {photo_ends}"
+    );
+    client.ok("split_at_scenes", json!({ "clip_id": clip }));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert_eq!(
+        described["picture_lanes"][0]["clips"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "{described}"
+    );
+
+    // A click track at 120 beats a minute.
+    let wav = dir.join("clicks.wav");
+    let mut pattern = Vec::new();
+    for _ in 0..24 {
+        pattern.push((0.04, true));
+        pattern.push((0.46, false));
+    }
+    talk_and_pauses(&wav, &pattern);
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [wav.display().to_string()] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let said = client.ok("mark_beats", json!({ "clip_id": placed["clip_ids"][0] }));
+    assert!(said.contains("120 BPM"), "{said}");
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert!(
+        described["markers"].as_array().unwrap().len() >= 10,
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

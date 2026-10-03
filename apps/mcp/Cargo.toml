@@ -16,6 +16,7 @@ bettercut-editor-core.workspace = true
 bettercut-export.workspace = true
 bettercut-playback.workspace = true
 bettercut-cache.workspace = true
+bettercut-jobs.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 

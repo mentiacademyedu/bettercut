@@ -62,6 +62,18 @@ pub struct JobContext {
 }
 
 impl JobContext {
+    /// For running a task on the caller's own thread, outside any scheduler —
+    /// for a caller that has to wait for the answer anyway. Never cancelled;
+    /// its progress goes nowhere.
+    pub fn detached() -> Self {
+        let (events, _) = channel();
+        Self {
+            id: JobId(0),
+            cancel: CancelToken::new(),
+            events,
+        }
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
