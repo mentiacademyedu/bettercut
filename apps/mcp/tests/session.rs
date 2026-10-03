@@ -672,3 +672,63 @@ fn an_assistant_animates_with_keyframes() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_builds_from_a_template() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp8-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let listed: Value = serde_json::from_str(&client.ok("list_templates", json!({}))).unwrap();
+    let intro = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["template_id"] == "quick-intro")
+        .expect("the starters are listed");
+    let slots = intro["slots"].to_string();
+    assert!(
+        slots.contains("\"main\"") && slots.contains("\"text\""),
+        "{slots}"
+    );
+
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let applied: Value = serde_json::from_str(&client.ok(
+        "apply_template",
+        json!({ "template_id": "Quick Intro",
+                "fills": { "main": imported[0]["media_id"], "title": "Hello there" } }),
+    ))
+    .unwrap();
+    assert!(
+        !applied["clip_ids"].as_array().unwrap().is_empty(),
+        "{applied}"
+    );
+    assert_eq!(applied["unfilled_slots"], json!(["music"]), "{applied}");
+    let described = client.ok("describe_project", json!({}));
+    assert!(described.contains("Hello there"), "{described}");
+
+    // One undo takes the whole template away.
+    client.ok("undo", json!({}));
+    let described = client.ok("describe_project", json!({}));
+    assert!(!described.contains("Hello there"), "{described}");
+
+    let (text, is_error) = client.tool(
+        "apply_template",
+        json!({ "template_id": "quick-intro", "fills": { "nope": "x" } }),
+    );
+    assert!(
+        is_error && text.contains("main"),
+        "the slots are named: {text}"
+    );
+    let (text, is_error) = client.tool("apply_template", json!({ "template_id": "no-such" }));
+    assert!(is_error && text.contains("list_templates"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -8,6 +8,9 @@
   scale, rotation, colour, blur — or a sound's volume and pan — changing over
   time, with easing, replacing what was there in one undo step.
   `describe_project` lists what each clip has animated.
+- **Templates for assistants**: `list_templates` shows bettercut's starters
+  and your own templates with the shots and words each asks for;
+  `apply_template` builds one on the timeline from your media and words.
 
 ## 0.4.0 — An assistant in the open window
 

@@ -263,6 +263,31 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "list_templates",
+        description: "The templates there are to start an edit from — bettercut's own and the \
+                      person's — each with its slots: the shots, photos, sound and words it \
+                      asks for.",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
+        name: "apply_template",
+        description: "Build a template on the timeline at `at` seconds (default: the end of \
+                      the edit). `fills` maps each slot id to a media_id (for a video, image, \
+                      logo or audio slot) or to the words (for a text slot); a text slot left \
+                      out keeps its default words, a media slot left out is skipped. One undo \
+                      step.",
+        schema: || {
+            object(
+                json!({
+                    "template_id": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 },
+                    "fills": { "type": "object", "additionalProperties": { "type": "string" } }
+                }),
+                &["template_id"],
+            )
+        },
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -640,6 +665,28 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         }
         "animate_title" => animate_title(editor, args),
         "animate" => animate(editor, args),
+        "list_templates" => Ok(Value::Array(
+            templates()
+                .iter()
+                .map(|t| {
+                    json!({
+                        "template_id": t.id,
+                        "name": t.name,
+                        "category": t.category,
+                        "description": t.description,
+                        "duration": seconds_of(t.duration.ticks()),
+                        "slots": t.slots.iter().map(|slot| json!({
+                            "id": slot.id,
+                            "kind": format!("{:?}", slot.kind).to_lowercase(),
+                            "label": slot.label,
+                            "default_text": slot.default_text,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+        .to_string()),
+        "apply_template" => apply_template(editor, args),
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
             let at = editor
@@ -1299,6 +1346,65 @@ fn animate(editor: &mut Editor, args: &Value) -> Result<String, String> {
     } else {
         format!("{label} animated with {} keys", keys.len())
     })
+}
+
+/// bettercut's own templates, then the person's.
+fn templates() -> Vec<bettercut_editor_core::templates::Template> {
+    use bettercut_editor_core::templates::{library, starters};
+    let mut all = starters::starters();
+    all.extend(library::load_dir(&library::user_dir()).templates);
+    all
+}
+
+fn apply_template(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::SlotFill;
+    use bettercut_editor_core::templates::SlotKind;
+    let wanted = str_arg(args, "template_id")?;
+    let template = templates()
+        .into_iter()
+        .find(|t| t.id == wanted || plain(&t.name) == plain(wanted))
+        .ok_or_else(|| format!("no template {wanted:?}: list_templates names them"))?;
+    let at = match seconds(args, "at")? {
+        Some(at) => timeline_time(at),
+        None => editor
+            .active_sequence()
+            .map(|s| s.duration())
+            .unwrap_or_default(),
+    };
+    let mut fills = std::collections::HashMap::new();
+    if let Some(given) = args.get("fills").and_then(Value::as_object) {
+        for (slot_id, value) in given {
+            let slot = template.slot(slot_id).ok_or_else(|| {
+                let ids: Vec<&str> = template.slots.iter().map(|s| s.id.as_str()).collect();
+                format!(
+                    "{} has no slot {slot_id:?}; its slots are {}",
+                    template.name,
+                    ids.join(", ")
+                )
+            })?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| format!("the fill for {slot_id} must be a string"))?;
+            let fill = if slot.kind == SlotKind::Text {
+                SlotFill::Text(value.to_owned())
+            } else {
+                let id = uuid::Uuid::parse_str(value)
+                    .map_err(|_| format!("the fill for {slot_id} must be a media_id"))?;
+                SlotFill::Media(MediaId::from_uuid(id))
+            };
+            fills.insert(slot_id.clone(), fill);
+        }
+    }
+    let applied = editor
+        .apply_template(&template, &fills, at)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "template": template.name,
+        "clip_ids": applied.clips.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "unfilled_slots": applied.unfilled,
+        "shortened_slots": applied.shortened,
+    })
+    .to_string())
 }
 
 /// Which of `animate`'s properties have keys on `clip`.
