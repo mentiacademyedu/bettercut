@@ -525,6 +525,17 @@ impl egui::Widget for Labeled<'_> {
 
 /// A section's heading: small capitals in the accent, as the inspector's
 /// groups are titled, so a long panel reads as a few named parts.
+/// Where a window the person opens first appears: centred, just below the
+/// toolbar. Without it egui puts a window at the very top-left, over Play,
+/// New and Open — which is where seven of them used to open. It is only the
+/// first place: a window moved stays where it was put.
+pub fn placed<'a>(window: egui::Window<'a>, ctx: &egui::Context) -> egui::Window<'a> {
+    let top = ctx.content_rect().center_top();
+    window
+        .pivot(egui::Align2::CENTER_TOP)
+        .default_pos(top + egui::vec2(0.0, 72.0))
+}
+
 pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(6.0);
     ui.label(

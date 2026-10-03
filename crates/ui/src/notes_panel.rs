@@ -21,7 +21,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     }
     let mut open = true;
     let mut left = false;
-    egui::Window::new("Notes")
+    crate::theme::placed(egui::Window::new("Notes"), ctx)
         .open(&mut open)
         .resizable(true)
         .default_size([320.0, 280.0])

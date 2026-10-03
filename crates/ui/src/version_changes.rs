@@ -64,7 +64,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
         return;
     }
     let mut open = true;
-    egui::Window::new("What Changed")
+    crate::theme::placed(egui::Window::new("What Changed"), ctx)
         .open(&mut open)
         .default_width(460.0)
         .default_height(420.0)

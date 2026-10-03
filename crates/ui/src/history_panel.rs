@@ -84,7 +84,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
 
     let mut jump: Option<usize> = None;
     let mut open = true;
-    egui::Window::new("History")
+    crate::theme::placed(egui::Window::new("History"), ctx)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

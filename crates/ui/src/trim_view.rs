@@ -103,7 +103,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         return;
     }
     let mut open = true;
-    egui::Window::new("Trim")
+    crate::theme::placed(egui::Window::new("Trim"), ctx)
         .open(&mut open)
         .default_width(720.0)
         .resizable(true)

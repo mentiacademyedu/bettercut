@@ -342,6 +342,16 @@ impl App {
             ui.pending_recovery = None;
         }
         let screenshot = std::env::var_os("BETTERCUT_SCREENSHOT").map(std::path::PathBuf::from);
+        // `BETTERCUT_PALETTE="Export; Scopes"`: run these command-palette
+        // actions before the first frame — to photograph a window with
+        // BETTERCUT_SCREENSHOT, for one.
+        if let Ok(actions) = std::env::var("BETTERCUT_PALETTE") {
+            for action in actions.split(';').map(str::trim).filter(|a| !a.is_empty()) {
+                if !bettercut_ui::palette::run(&mut editor, &mut ui, action) {
+                    tracing::warn!(action, "BETTERCUT_PALETTE: no such action");
+                }
+            }
+        }
 
         // Not for a screenshot run, which must not take over the live file
         // of a window the person has open.

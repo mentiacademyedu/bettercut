@@ -29,7 +29,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         return;
     }
     let mut open = true;
-    egui::Window::new("Storyboard")
+    crate::theme::placed(egui::Window::new("Storyboard"), ctx)
         .open(&mut open)
         .default_width(680.0)
         .default_height(360.0)

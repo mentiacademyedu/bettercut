@@ -129,7 +129,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     let mut actions: Vec<Action> = Vec::new();
     let mut open = true;
 
-    egui::Window::new("Markers")
+    crate::theme::placed(egui::Window::new("Markers"), ctx)
         .open(&mut open)
         .default_width(320.0)
         .default_height(360.0)

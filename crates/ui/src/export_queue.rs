@@ -34,7 +34,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
     }
     let mut open = true;
     let mut stop = false;
-    egui::Window::new("Exports")
+    crate::theme::placed(egui::Window::new("Exports"), ctx)
         .open(&mut open)
         .default_width(320.0)
         .show(ctx, |ui| {

@@ -86,7 +86,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     let mut mark = false;
     let mut cancelled = false;
 
-    egui::Window::new("Find the good bits")
+    crate::theme::placed(egui::Window::new("Find the good bits"), ctx)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

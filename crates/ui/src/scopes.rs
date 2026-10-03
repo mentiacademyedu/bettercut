@@ -260,7 +260,7 @@ pub fn show(ctx: &egui::Context, editor: &Editor, state: &mut UiState) {
     }
     let mut open = true;
     let mut parade = state.scopes.parade;
-    egui::Window::new("Scopes")
+    crate::theme::placed(egui::Window::new("Scopes"), ctx)
         .open(&mut open)
         .default_width(300.0)
         .resizable(false)

@@ -137,7 +137,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         return;
     }
     let mut open = true;
-    egui::Window::new("Sound in Detail")
+    crate::theme::placed(egui::Window::new("Sound in Detail"), ctx)
         .open(&mut open)
         .default_width(620.0)
         .resizable(true)

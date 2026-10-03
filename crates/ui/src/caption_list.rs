@@ -147,7 +147,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
         .map(|(name, _)| name.clone())
         .collect();
 
-    egui::Window::new("Captions")
+    crate::theme::placed(egui::Window::new("Captions"), ctx)
         .open(&mut open)
         .default_width(380.0)
         .default_height(420.0)
