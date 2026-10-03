@@ -67,6 +67,108 @@ pub fn desktop_config(server: &Server) -> String {
     serde_json::to_string_pretty(&config).unwrap_or_default()
 }
 
+/// Where Claude Desktop keeps its settings, if it is installed here.
+pub fn claude_desktop_config_file() -> Option<PathBuf> {
+    let folder = if cfg!(windows) {
+        PathBuf::from(std::env::var_os("APPDATA")?).join("Claude")
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library")
+            .join("Application Support")
+            .join("Claude")
+    } else {
+        return None;
+    };
+    folder
+        .is_dir()
+        .then(|| folder.join("claude_desktop_config.json"))
+}
+
+/// `existing` settings (or none yet) with bettercut added to their MCP
+/// servers, everything else kept as it was. Refuses settings that are not a
+/// JSON object rather than guess at them.
+pub fn merge_desktop_config(existing: Option<&str>, server: &Server) -> Result<String, String> {
+    let mut config = match existing.map(str::trim) {
+        None | Some("") => serde_json::json!({}),
+        Some(text) => serde_json::from_str::<serde_json::Value>(text).map_err(|err| {
+            format!("Claude Desktop's settings are not valid JSON ({err}); add bettercut by hand")
+        })?,
+    };
+    let Some(settings) = config.as_object_mut() else {
+        return Err(
+            "Claude Desktop's settings are not what was expected; add bettercut by hand".to_owned(),
+        );
+    };
+    let servers = settings
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        return Err(
+            "Claude Desktop's mcpServers is not a list of servers; add bettercut by hand"
+                .to_owned(),
+        );
+    };
+    let added: serde_json::Value =
+        serde_json::from_str(&desktop_config(server)).map_err(|e| e.to_string())?;
+    servers.insert(
+        "bettercut".to_owned(),
+        added["mcpServers"]["bettercut"].clone(),
+    );
+    serde_json::to_string_pretty(&config).map_err(|e| e.to_string())
+}
+
+/// Add bettercut to Claude Desktop's settings, keeping a copy of them first.
+pub fn add_to_claude_desktop(server: &Server) -> Result<String, String> {
+    let file = claude_desktop_config_file().ok_or("Claude Desktop is not installed here")?;
+    let existing = std::fs::read_to_string(&file).ok();
+    let merged = merge_desktop_config(existing.as_deref(), server)?;
+    if existing.is_some() {
+        let backup = file.with_extension("json.before-bettercut");
+        std::fs::copy(&file, &backup).map_err(|e| format!("could not keep a copy: {e}"))?;
+    }
+    std::fs::write(&file, merged).map_err(|e| format!("could not save: {e}"))?;
+    Ok("Added to Claude Desktop. Quit and reopen Claude Desktop to use it.".to_owned())
+}
+
+/// Run `claude mcp add` for every project of this user, and say how it went.
+pub fn add_to_claude_code(server: &Server) -> String {
+    // npm installs `claude.cmd` on Windows, which is not found as `claude`.
+    let names: &[&str] = if cfg!(windows) {
+        &["claude", "claude.cmd"]
+    } else {
+        &["claude"]
+    };
+    for name in names {
+        let mut command = std::process::Command::new(name);
+        command
+            .args(["mcp", "add", "--scope", "user", "bettercut", "--"])
+            .arg(&server.program)
+            .args(&server.args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // No console window flashing up over the editor.
+            command.creation_flags(0x0800_0000);
+        }
+        let Ok(output) = command.output() else {
+            continue;
+        };
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return if output.status.success() {
+            "Added to Claude Code, for every folder you use it in.".to_owned()
+        } else if said.contains("already exists") {
+            "Claude Code already has bettercut.".to_owned()
+        } else {
+            format!("Claude Code said: {}", said.trim())
+        };
+    }
+    "Claude Code was not found. Install it, or run the command below in a terminal.".to_owned()
+}
+
 /// What to say about the connection, given when an assistant last called.
 pub fn connection(last_heard: Option<Instant>, now: Instant) -> &'static str {
     match last_heard {
@@ -115,13 +217,49 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                     .color(theme::disabled()),
                 );
             }
+            if let Some(note) = state.assistant_note.lock().ok().and_then(|n| n.clone()) {
+                ui.label(egui::RichText::new(note).color(theme::accent_text()));
+                ui.add_space(4.0);
+            }
             theme::section(ui, "Claude Code");
+            if ui
+                .button("Add to Claude Code")
+                .on_hover_text("Runs the command below for you")
+                .clicked()
+            {
+                let note = std::sync::Arc::clone(&state.assistant_note);
+                let ctx = ui.ctx().clone();
+                let server = server.clone();
+                if let Ok(mut n) = note.lock() {
+                    *n = Some("Adding to Claude Code…".to_owned());
+                }
+                std::thread::spawn(move || {
+                    let said = add_to_claude_code(&server);
+                    if let Ok(mut n) = note.lock() {
+                        *n = Some(said);
+                    }
+                    ctx.request_repaint();
+                });
+            }
             let command = claude_code_command(&server);
-            ui.label("Run this once in a terminal:");
+            ui.label("Or run this once in a terminal:");
             copyable(ui, state, &command);
             ui.add_space(6.0);
             theme::section(ui, "Claude Desktop and other apps");
-            ui.label("Add this to the app's MCP server settings (claude_desktop_config.json):");
+            if claude_desktop_config_file().is_some()
+                && ui
+                    .button("Add to Claude Desktop")
+                    .on_hover_text(
+                        "Adds bettercut to Claude Desktop's settings, keeping a copy of them",
+                    )
+                    .clicked()
+            {
+                let said = add_to_claude_desktop(&server).unwrap_or_else(|err| err);
+                if let Ok(mut n) = state.assistant_note.lock() {
+                    *n = Some(said);
+                }
+            }
+            ui.label("Or add this to the app's MCP server settings (claude_desktop_config.json):");
             copyable(ui, state, &desktop_config(&server));
             ui.add_space(6.0);
             ui.label(
@@ -192,6 +330,38 @@ mod tests {
             config["mcpServers"]["bettercut"]["args"],
             serde_json::json!(["--mcp"])
         );
+    }
+
+    #[test]
+    fn claude_desktop_settings_keep_what_was_there() {
+        let server = Server {
+            program: PathBuf::from("/Applications/bettercut.app/Contents/MacOS/bettercut-mcp"),
+            args: Vec::new(),
+        };
+        // Nothing yet: made from scratch.
+        let made: serde_json::Value =
+            serde_json::from_str(&merge_desktop_config(None, &server).unwrap_or_default())
+                .unwrap_or_default();
+        assert!(made["mcpServers"]["bettercut"]["command"].is_string());
+
+        // Other servers and settings stay; an old bettercut entry is replaced.
+        let before = r#"{ "theme": "dark", "mcpServers": {
+            "files": { "command": "files-server" },
+            "bettercut": { "command": "/old/place" } } }"#;
+        let merged: serde_json::Value =
+            serde_json::from_str(&merge_desktop_config(Some(before), &server).unwrap_or_default())
+                .unwrap_or_default();
+        assert_eq!(merged["theme"], "dark");
+        assert_eq!(merged["mcpServers"]["files"]["command"], "files-server");
+        assert_eq!(
+            merged["mcpServers"]["bettercut"]["command"],
+            "/Applications/bettercut.app/Contents/MacOS/bettercut-mcp"
+        );
+
+        // Not JSON, or not shaped like settings: refused, never overwritten.
+        assert!(merge_desktop_config(Some("{ not json"), &server).is_err());
+        assert!(merge_desktop_config(Some("[1, 2]"), &server).is_err());
+        assert!(merge_desktop_config(Some(r#"{"mcpServers": 3}"#), &server).is_err());
     }
 
     #[test]

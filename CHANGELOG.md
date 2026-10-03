@@ -6,7 +6,9 @@
 
 - **Connect an AI Assistant** (Windows menu, or Ctrl+K): the exact setup
   command for this install, ready to copy, for Claude Code and Claude Desktop
-  — and whether an assistant is connected to the window right now.
+  — and whether an assistant is connected to the window right now. **Add to
+  Claude Code** and **Add to Claude Desktop** buttons do the setup in one click
+  (Claude Desktop's other settings are kept, with a copy saved first).
 - **MCP on Linux**: the AppImage serves MCP when run with `--mcp`
   (`bettercut --mcp` works everywhere), since an AppImage runs one program.
 - **Keyframes for assistants**: `animate` sets a clip's opacity, position,
