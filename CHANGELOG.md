@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Changing a title's words is saved for crash recovery again.** The
+  autosave journal could not write it (nor a title's rotation, opacity or
+  motion blur), so the status bar said "autosave failed once" and a crash
+  lost those edits.
+
 ### New
 
 - **Ready-made requests**: the MCP server offers prompts — tighten an

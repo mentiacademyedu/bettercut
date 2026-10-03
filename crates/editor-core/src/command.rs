@@ -183,8 +183,12 @@ impl SettingChange {
 /// in the transform controls and nowhere else, and a single enum would mean
 /// every match on a clip property having to say "not for text" for the words
 /// and the font.
+///
+/// Adjacently tagged, like [`ClipProperty`]: an internal tag cannot hold a
+/// variant that carries a bare string, number or flag, and the autosave
+/// journal failed on every change of a title's words until it was.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "property", rename_all = "snake_case")]
+#[serde(tag = "property", content = "value", rename_all = "snake_case")]
 pub enum TextProperty {
     /// The words themselves.
     Content(String),
