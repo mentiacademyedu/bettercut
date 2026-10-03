@@ -31,7 +31,7 @@ describe_project gives the clip ids every edit takes, and preview_frame shows th
 — look before saying it is done. Times are in seconds. Every edit is one undo step \
 (history lists them; attached, the person's own edits are there too). Nothing is written \
 to the project file until save_project. For a long export, pass wait false and follow \
-export_status.";
+export_status. Edits that belong together go in one batch, so one undo takes them back.";
 
 /// Serve one client on standard input and output until it goes away: what
 /// `bettercut-mcp` does, and `bettercut --mcp` (for an AppImage, which has
