@@ -235,9 +235,7 @@ pub fn stale_sessions(
 /// Every unsaved-session directory and when its snapshot was last written,
 /// newest first. Stat only — nothing is parsed.
 pub fn unsaved_sessions() -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
-    let root = std::env::temp_dir()
-        .join("bettercut")
-        .join(crate::journal::RECOVERY_DIR);
+    let root = crate::journal::unsaved_root();
 
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();

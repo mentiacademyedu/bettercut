@@ -21,3 +21,10 @@ BETTERCUT_FFMPEG_BIN = { value = "vendor/ffmpeg/bin", relative = true }
 # produce it, and unsetting this variable makes `rusty_ffmpeg` run bindgen and
 # fail with "Unable to find libclang". See docs/adr/002-ffmpeg-backend.md.
 FFMPEG_BINDING_PATH = { value = "vendor/ffmpeg-binding.rs", relative = true }
+
+# Unsaved projects' crash-recovery data, for everything cargo runs — tests
+# above all. Without it every test that edits an unsaved project left a
+# session in the machine's temp folder, and the real app offered the newest
+# back at its next launch as "your" unsaved work. Packaged builds do not
+# read this file and use the temp folder as before.
+BETTERCUT_RECOVERY_ROOT = { value = "target/recovery", relative = true }

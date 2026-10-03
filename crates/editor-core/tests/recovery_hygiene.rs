@@ -116,7 +116,7 @@ fn sessions_past_the_cutoff_are_pruned_however_few_there_are() {
 #[test]
 fn a_projects_own_recovery_directory_is_never_in_the_temp_root() {
     let beside = RecoveryPaths::for_project(Some(Path::new("D:/work/film.vproj")), "1234-abcd");
-    let temp_root = std::env::temp_dir().join("bettercut").join("recovery");
+    let temp_root = bettercut_editor_core::journal::unsaved_root();
 
     assert!(
         !beside.dir.starts_with(&temp_root),

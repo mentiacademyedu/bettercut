@@ -52,6 +52,18 @@ pub const RECOVERY_DIR: &str = "recovery";
 pub const SNAPSHOT_FILE: &str = "snapshot.vproj";
 pub const JOURNAL_FILE: &str = "journal.log";
 
+/// Where unsaved projects keep their recovery data, one folder per session:
+/// the machine's temp folder — or `BETTERCUT_RECOVERY_ROOT` when set, which
+/// the repository's cargo config does for every build and test, so a test
+/// run never leaves work behind for the real app to offer back at its next
+/// launch.
+pub fn unsaved_root() -> PathBuf {
+    std::env::var_os("BETTERCUT_RECOVERY_ROOT").map_or_else(
+        || std::env::temp_dir().join("bettercut").join(RECOVERY_DIR),
+        PathBuf::from,
+    )
+}
+
 /// Where a project's recovery data lives.
 ///
 /// Beside the project file when it has been saved, so recovery data travels
@@ -73,10 +85,7 @@ impl RecoveryPaths {
             project_path.and_then(Path::file_name),
         ) {
             (Some(parent), Some(name)) => parent.join(RECOVERY_DIR).join(name),
-            _ => std::env::temp_dir()
-                .join("bettercut")
-                .join(RECOVERY_DIR)
-                .join(session),
+            _ => unsaved_root().join(session),
         };
         Self { dir }
     }
@@ -483,7 +492,7 @@ mod tests {
     #[test]
     fn an_unsaved_project_still_gets_a_recovery_location() {
         let paths = RecoveryPaths::for_project(None, "abc123");
-        assert!(paths.dir.starts_with(std::env::temp_dir()));
+        assert!(paths.dir.starts_with(unsaved_root()));
         assert!(paths.dir.ends_with("abc123"));
     }
 }

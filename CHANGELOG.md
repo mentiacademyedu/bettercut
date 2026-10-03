@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### For developers
+
+- Tests no longer leave unsaved "recovered work" in the machine's temp
+  folder for the app to offer at its next launch: the repository's cargo
+  config points `BETTERCUT_RECOVERY_ROOT` at `target/recovery`.
+
 ## 0.5.2 — Crash recovery: undo, and projects side by side
 
 Still a beta: expect bugs, and please
