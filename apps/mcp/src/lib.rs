@@ -28,6 +28,31 @@ then export. If the person has the bettercut app open, attach_to_app edits the p
 in its window instead, live. Times are in seconds. Every edit can be undone (undo), and \
 nothing is written to the project file until save_project.";
 
+/// Serve one client on standard input and output until it goes away: what
+/// `bettercut-mcp` does, and `bettercut --mcp` (for an AppImage, which has
+/// one program to run).
+pub fn serve_stdio() {
+    use std::io::{BufRead, Write};
+    let mut server = Server::new();
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else {
+            break; // the client went away
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(reply) = server.handle_line(&line)
+            && writeln!(stdout, "{reply}")
+                .and_then(|()| stdout.flush())
+                .is_err()
+        {
+            break;
+        }
+    }
+}
+
 /// One assistant's session: at most one open project.
 #[derive(Default)]
 pub struct Server {

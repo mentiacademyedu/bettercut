@@ -90,7 +90,12 @@ like any other; nothing is written until it calls `save_project`.
 claude mcp add bettercut -- "%LOCALAPPDATA%\Programs\bettercut\bettercut-mcp.exe"
 # macOS
 claude mcp add bettercut -- /Applications/bettercut.app/Contents/MacOS/bettercut-mcp
+# Linux: the AppImage itself, with --mcp
+claude mcp add bettercut -- ~/Applications/bettercut-x86_64.AppImage --mcp
 ```
+
+Or, in the app, **Windows → AI Assistant** shows the exact command for your
+install, ready to copy, and whether an assistant is connected.
 
 **Claude Desktop and other clients** take the same program in their server
 list, for example in `claude_desktop_config.json`:

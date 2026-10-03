@@ -101,6 +101,17 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: bash docs/package-linux.sh
 
+      # An assistant reaches the MCP server inside the AppImage as
+      # `bettercut-<version>-x86_64.AppImage --mcp`.
+      - name: MCP from the AppImage
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | dist/bettercut-*.AppImage --mcp > mcp.out
+          grep -q '"attach_to_app"' mcp.out || { cat mcp.out; exit 1; }
+
       - name: Upload the AppImage
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@v4

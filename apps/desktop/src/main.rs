@@ -16,6 +16,14 @@ use bettercut_editor_core::{Editor, EventReceiver};
 use bettercut_ui::UiState;
 
 fn main() -> eframe::Result {
+    // `bettercut --mcp`: be the MCP server instead of the window. An AppImage
+    // runs one program, so this is how an assistant reaches bettercut-mcp
+    // inside one; nothing is logged, since standard output is the protocol.
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        bettercut_mcp::serve_stdio();
+        return Ok(());
+    }
+
     // Packaging: write the app icon as PNGs and stop, so a Mac `.icns` (and
     // anything else that wants files) is made from the same drawing the
     // window uses. `docs/package-macos.sh` asks for this.

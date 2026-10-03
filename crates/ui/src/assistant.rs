@@ -6,7 +6,7 @@
 //! this install, ready to copy, and a line saying whether an assistant has
 //! been heard from.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::state::UiState;
@@ -15,27 +15,55 @@ use crate::theme;
 /// How recently an assistant must have called to count as connected.
 const CONNECTED_FOR: Duration = Duration::from_secs(120);
 
-/// Where `bettercut-mcp` is: beside the app.
-pub fn server_path() -> Option<PathBuf> {
+/// The program an assistant runs, and what to pass it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// Where the MCP server is: `bettercut-mcp` beside the app — or, inside an
+/// AppImage, whose own files are only there while it runs, the AppImage
+/// itself with `--mcp`.
+pub fn server() -> Option<Server> {
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        return Some(Server {
+            program: PathBuf::from(appimage),
+            args: vec!["--mcp".to_owned()],
+        });
+    }
     let app = std::env::current_exe().ok()?;
     let name = if cfg!(windows) {
         "bettercut-mcp.exe"
     } else {
         "bettercut-mcp"
     };
-    Some(app.parent()?.join(name))
+    Some(Server {
+        program: app.parent()?.join(name),
+        args: Vec::new(),
+    })
 }
 
 /// The Claude Code command that adds `server`.
-pub fn claude_code_command(server: &Path) -> String {
-    format!("claude mcp add bettercut -- \"{}\"", server.display())
+pub fn claude_code_command(server: &Server) -> String {
+    let mut command = format!(
+        "claude mcp add bettercut -- \"{}\"",
+        server.program.display()
+    );
+    for arg in &server.args {
+        command.push(' ');
+        command.push_str(arg);
+    }
+    command
 }
 
 /// The block Claude Desktop (and most other clients) take in their settings.
-pub fn desktop_config(server: &Path) -> String {
-    let config = serde_json::json!({
-        "mcpServers": { "bettercut": { "command": server.display().to_string() } }
-    });
+pub fn desktop_config(server: &Server) -> String {
+    let mut entry = serde_json::json!({ "command": server.program.display().to_string() });
+    if !server.args.is_empty() {
+        entry["args"] = serde_json::json!(server.args);
+    }
+    let config = serde_json::json!({ "mcpServers": { "bettercut": entry } });
     serde_json::to_string_pretty(&config).unwrap_or_default()
 }
 
@@ -56,7 +84,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
         return;
     }
     let mut open = true;
-    let server = server_path();
+    let server = server();
     egui::Window::new("Connect an AI Assistant")
         .open(&mut open)
         .collapsible(false)
@@ -77,12 +105,12 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                 ui.label("The assistant program could not be found beside the app.");
                 return;
             };
-            if !server.exists() {
+            if !server.program.exists() {
                 ui.label(
                     egui::RichText::new(format!(
                         "bettercut-mcp is not beside the app ({}). Install bettercut from its \
                          installer to get it.",
-                        server.display()
+                        server.program.display()
                     ))
                     .color(theme::disabled()),
                 );
@@ -130,7 +158,11 @@ mod tests {
 
     #[test]
     fn the_commands_name_the_server_beside_the_app() {
-        let server = Path::new("C:\\Program Files\\bettercut\\bettercut-mcp.exe");
+        let server = Server {
+            program: PathBuf::from("C:\\Program Files\\bettercut\\bettercut-mcp.exe"),
+            args: Vec::new(),
+        };
+        let server = &server;
         assert_eq!(
             claude_code_command(server),
             "claude mcp add bettercut -- \"C:\\Program Files\\bettercut\\bettercut-mcp.exe\""
@@ -140,6 +172,25 @@ mod tests {
         assert_eq!(
             config["mcpServers"]["bettercut"]["command"],
             "C:\\Program Files\\bettercut\\bettercut-mcp.exe"
+        );
+        assert!(config["mcpServers"]["bettercut"]["args"].is_null());
+    }
+
+    #[test]
+    fn an_appimage_is_run_with_the_flag() {
+        let server = Server {
+            program: PathBuf::from("/home/me/bettercut-0.4.0-x86_64.AppImage"),
+            args: vec!["--mcp".to_owned()],
+        };
+        assert_eq!(
+            claude_code_command(&server),
+            "claude mcp add bettercut -- \"/home/me/bettercut-0.4.0-x86_64.AppImage\" --mcp"
+        );
+        let config: serde_json::Value =
+            serde_json::from_str(&desktop_config(&server)).unwrap_or_default();
+        assert_eq!(
+            config["mcpServers"]["bettercut"]["args"],
+            serde_json::json!(["--mcp"])
         );
     }
 
