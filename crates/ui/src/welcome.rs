@@ -76,7 +76,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 .color(theme::accent_text()),
             );
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Start editing").clicked() {
                     close = true;
                 }
@@ -86,6 +86,14 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     .clicked()
                 {
                     sample = true;
+                }
+                if ui
+                    .button("Edit with an AI Assistant")
+                    .on_hover_text("Connect Claude or another assistant to edit with you")
+                    .clicked()
+                {
+                    state.assistant_open = true;
+                    close = true;
                 }
                 if ui
                     .button("Don't show this again")
