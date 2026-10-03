@@ -5834,10 +5834,13 @@ fn colour_wheels(
                 ));
 
                 let mut level = brightness * 100.0;
-                let slider = ui.add(theme::labeled(
-                    "",
-                    egui::Slider::new(&mut level, -100.0..=100.0).show_value(false),
-                ));
+                // As wide as the wheel above it. Through `theme::labeled` it
+                // was a label column and a full slider wide, three of them made
+                // the tab twice the inspector's width, and the preview drew
+                // over the inspector's left edge.
+                ui.spacing_mut().slider_width = side;
+                let slider =
+                    ui.add(egui::Slider::new(&mut level, -100.0..=100.0).show_value(false));
                 if slider.changed() {
                     let (a, d, _) = ColourWheels::position(*offsets);
                     *offsets = ColourWheels::offsets(a, d, level / 100.0);

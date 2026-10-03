@@ -10,9 +10,13 @@
 - **The light theme's chosen buttons show their words** ("All", "Video",
   "Fit" read as empty blue boxes), and names on colour clips read on dark
   colours.
+- **The Colours tab fits the inspector.** The sliders under the colour
+  wheels made it twice as wide, so the preview covered the inspector's left
+  edge — its tabs and filter names cut off.
 
 ### New
 
+- **"Show Effects", "Show Colours"…** in Ctrl+K jump to an inspector tab.
 - **`contact_sheet`**: an assistant sees the whole edit in one picture —
   frames spread through it, in a grid — to check a cut in one look.
 

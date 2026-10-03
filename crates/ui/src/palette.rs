@@ -417,6 +417,36 @@ pub const ACTIONS: &[Action] = &[
         },
     },
     Action {
+        name: "Show Video",
+        hint: "the inspector's Video tab: where the clip is: size, position, opacity",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Video,
+    },
+    Action {
+        name: "Show Effects",
+        hint: "the inspector's Effects tab: blend, mask, keys, blur and the rest",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Effects,
+    },
+    Action {
+        name: "Show Colours",
+        hint: "the inspector's Colours tab: brightness, contrast, wheels, curves",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Colours,
+    },
+    Action {
+        name: "Show Audio",
+        hint: "the inspector's Audio tab: volume, clean-up, EQ",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Audio,
+    },
+    Action {
+        name: "Show Speed",
+        hint: "the inspector's Speed tab: faster, slower, reversed, ramps",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Speed,
+    },
+    Action {
+        name: "Show Animation",
+        hint: "the inspector's Animation tab: the keyframes on the clip",
+        run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Animation,
+    },
+    Action {
         name: "Connect an AI Assistant",
         hint: "Claude or another assistant, editing with you in this window",
         run: |_, s| s.assistant_open = true,
