@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — Title edits survive a crash; more for assistants
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### Fixed
 

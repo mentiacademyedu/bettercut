@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Windows, then AI Assistant: connect Claude to bettercut in one click",
-    "An attached assistant sees what you have selected, so \u{201c}this clip\u{201d} means the one you clicked",
-    "Assistants can now cut pauses, split scenes, mark beats, level sound, add lower thirds, effects and keyframes",
+    "Changing a title's words is saved for crash recovery again (it was not, in every earlier version)",
+    "A vertical copy of the edit wraps its titles inside the new frame",
+    "Assistants: ready-made requests, background exports, green screen and crop",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
