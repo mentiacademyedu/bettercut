@@ -85,3 +85,48 @@ fn a_square_copy_keeps_the_short_edge() {
         Resolution::new(1080, 1080)
     );
 }
+
+#[test]
+fn titles_wrap_inside_a_narrower_frame() {
+    let mut editor = landscape_edit();
+    let long = editor
+        .add_text("A title as wide as a landscape frame allows")
+        .unwrap();
+    let original = editor.active_sequence().unwrap().id;
+    let before = editor.text_clip(long).unwrap().style.wrap_width;
+
+    editor.copy_sequence_as(original, shape("9:16")).unwrap();
+    let copy = editor.active_sequence().unwrap();
+    let title = copy
+        .text_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .next()
+        .unwrap();
+    let wrap = title.style.wrap_width.expect("the copy's title wraps");
+    assert!(wrap <= 1080.0 * 0.9 + 0.5, "{wrap}");
+    assert_eq!(title.text, "A title as wide as a landscape frame allows");
+
+    // The original keeps its own title as it was.
+    editor.switch_sequence(original);
+    let kept = editor
+        .active_sequence()
+        .unwrap()
+        .text_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .next()
+        .unwrap();
+    assert_eq!(kept.style.wrap_width, before);
+
+    // A wider shape leaves titles be.
+    editor.copy_sequence_as(original, shape("21:9")).unwrap();
+    let wide = editor.active_sequence().unwrap();
+    let title = wide
+        .text_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .next()
+        .unwrap();
+    assert_eq!(title.style.wrap_width, before);
+}

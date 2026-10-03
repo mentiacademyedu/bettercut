@@ -189,11 +189,39 @@ fn media_aspects(project: &Project) -> Vec<(MediaId, Option<f32>)> {
 
 /// Give `sequence` the shape `shape`, cropping every shot still at its placed
 /// framing to fill it.
+/// Titles that fitted the old frame's width wrap inside the new one's when it
+/// is narrower: a landscape title copied to 9:16 otherwise runs off both
+/// sides. Kept to nine tenths of the width, through the title's own scale;
+/// one that already wraps narrower is left alone, and shapes are not words.
+fn fit_titles(sequence: &mut Sequence, was_wide: u32) {
+    let wide = sequence.resolution.width;
+    if wide >= was_wide {
+        return;
+    }
+    for track in &mut sequence.text_tracks {
+        let ids: Vec<_> = track.clips().iter().map(|clip| clip.id).collect();
+        for id in ids {
+            let Some(clip) = track.get_mut(id) else {
+                continue;
+            };
+            if clip.shape.is_some() {
+                continue;
+            }
+            let room = wide as f32 * 0.9 / clip.transform.scale.x.abs().max(0.01);
+            if clip.style.wrap_width.is_none_or(|w| w > room) {
+                clip.style.wrap_width = Some(room);
+            }
+        }
+    }
+}
+
 fn reshape(sequence: &mut Sequence, media: &[(MediaId, Option<f32>)], shape: Shape) {
+    let was_wide = sequence.resolution.width;
     sequence.resolution = shape.applied_to(sequence.resolution);
     let Some(output) = aspect_of(sequence.resolution.width, sequence.resolution.height) else {
         return;
     };
+    fit_titles(sequence, was_wide);
 
     for track in &mut sequence.video_tracks {
         // By id: a track hands out its clips mutably one at a time, so its

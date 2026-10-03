@@ -8,6 +8,9 @@
   autosave journal could not write it (nor a title's rotation, opacity or
   motion blur), so the status bar said "autosave failed once" and a crash
   lost those edits.
+- **Titles fit a narrower shape.** A copy of the edit as 9:16 (or another
+  narrower shape, or an export in one) wraps each title inside the new frame
+  instead of letting it run off both sides.
 
 ### New
 
