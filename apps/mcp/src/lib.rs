@@ -89,6 +89,12 @@ impl Server {
         self.session.recovery_differs()
     }
 
+    /// Where the open project, saved and loaded again, differs from itself;
+    /// see `tools::Session::file_round_trip_differs`.
+    pub fn file_round_trip_differs(&self) -> Option<String> {
+        self.session.file_round_trip_differs()
+    }
+
     /// Answer one line of JSON-RPC. `None` for a notification, which takes
     /// no reply.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {

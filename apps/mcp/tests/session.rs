@@ -35,6 +35,10 @@ impl Drop for Client {
             if let Some(difference) = self.server.recovery_differs() {
                 panic!("crash recovery would not bring the edit back: {difference}");
             }
+            // And the project file holds all of it.
+            if let Some(difference) = self.server.file_round_trip_differs() {
+                panic!("saving and opening the project changes it: {difference}");
+            }
         }
     }
 }

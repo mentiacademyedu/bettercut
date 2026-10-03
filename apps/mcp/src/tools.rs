@@ -1002,6 +1002,28 @@ impl Session {
         first_difference(&now, &back, "")
     }
 
+    /// Write the open project to a file and read it back, and say where
+    /// what comes back differs — `None` when it is the same. For tests: a
+    /// project file must hold everything an edit made.
+    pub fn file_round_trip_differs(&self) -> Option<String> {
+        let (editor, _) = self.open.as_ref()?;
+        let file = std::env::temp_dir().join(format!(
+            "bettercut-round-trip-{}-{}.vproj",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let saved = bettercut_editor_core::project_format::save(editor.project(), &file);
+        let loaded = saved.and_then(|()| bettercut_editor_core::project_format::load(&file));
+        let _ = std::fs::remove_file(&file);
+        let loaded = match loaded {
+            Ok(loaded) => loaded,
+            Err(err) => return Some(format!("could not save and load: {err}")),
+        };
+        let now = serde_json::to_value(editor.project()).ok()?;
+        let back = serde_json::to_value(&loaded).ok()?;
+        first_difference(&now, &back, "")
+    }
+
     fn editor(&mut self) -> Result<&mut Editor, String> {
         self.open
             .as_mut()
