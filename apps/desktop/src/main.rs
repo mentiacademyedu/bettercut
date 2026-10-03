@@ -141,6 +141,10 @@ struct App {
     /// has settled, before quitting — for reviewing the interface. The app's
     /// own pixels only.
     screenshot: Option<std::path::PathBuf>,
+    /// `BETTERCUT_RECORD`: save this window as numbered pictures for a
+    /// while, then quit — for a short film of the app at work (an assistant
+    /// editing, say). The app's own pixels only, like the screenshot.
+    record: Option<Recording>,
     /// Frames drawn, to know when the window has settled.
     frames: u32,
     /// The running export's job and when it began, to say how long is left.
@@ -194,7 +198,7 @@ impl App {
 
         // A project that fails to open must not stop the app from starting:
         // §50 says a failure is reported and the session continues.
-        let (editor, events) = match open {
+        let (editor, mut events) = match open {
             Some(path) => match Editor::open(&path) {
                 Ok(loaded) => {
                     tracing::info!(path = %path.display(), "opened project from command line");
@@ -309,9 +313,12 @@ impl App {
         // `BETTERCUT_SAMPLE`: the sample edit, a clip selected, nothing in
         // the way — the interface as it looks mid-edit, for a screenshot.
         if std::env::var_os("BETTERCUT_SAMPLE").is_some() {
-            let (mut sample, _sample_events) = Editor::new_project("Sample");
+            let (mut sample, sample_events) = Editor::new_project("Sample");
             if bettercut_ui::sample::build(&mut sample).is_ok() {
                 editor = sample;
+                // Its events, or nothing done to it would ever redraw the
+                // picture: the old editor's receiver hears the old editor.
+                events = sample_events;
                 if let Some(first) = editor
                     .active_sequence()
                     .and_then(|s| s.video_tracks.first())
@@ -346,6 +353,19 @@ impl App {
             None
         };
 
+        let record = std::env::var_os("BETTERCUT_RECORD").map(|dir| Recording {
+            dir: std::path::PathBuf::from(dir),
+            began: std::time::Instant::now(),
+            length: std::time::Duration::from_secs(
+                std::env::var("BETTERCUT_RECORD_SECONDS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30),
+            ),
+            last: None,
+            count: 0,
+        });
+
         let last_title = editor.window_title();
         Self {
             editor,
@@ -358,10 +378,61 @@ impl App {
             voiceover: Default::default(),
             last_scrub: None,
             screenshot,
+            record,
             frames: 0,
             export_began: None,
             live,
         }
+    }
+}
+
+/// A recording of the window in progress (`BETTERCUT_RECORD`).
+struct Recording {
+    dir: std::path::PathBuf,
+    began: std::time::Instant,
+    length: std::time::Duration,
+    /// When the last picture was asked for.
+    last: Option<std::time::Instant>,
+    count: u32,
+}
+
+impl Recording {
+    /// Five pictures a second: smooth enough to follow, small enough to keep.
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+
+    /// Ask for a picture when one is due, and save any that arrived — on
+    /// their own threads, so encoding never holds up a frame.
+    fn frame(&mut self, ctx: &egui::Context) {
+        if self.last.is_none_or(|at| at.elapsed() >= Self::EVERY) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            self.last = Some(std::time::Instant::now());
+        }
+        let shots: Vec<_> = ctx.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        for image in shots {
+            let path = self.dir.join(format!("frame_{:05}.png", self.count));
+            self.count += 1;
+            std::thread::spawn(move || {
+                let size = bettercut_editor_core::timeline::Resolution::new(
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                );
+                let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Err(err) = bettercut_export::write_png(&path, size, &rgba) {
+                    tracing::error!(%err, "could not save a recorded frame");
+                }
+            });
+        }
+        // Keep drawing while recording: an idle window draws nothing.
+        ctx.request_repaint_after(Self::EVERY / 2);
     }
 }
 
@@ -416,6 +487,14 @@ impl eframe::App for App {
                 self.ui.quit_now = true;
             }
             ui.ctx().request_repaint();
+        }
+
+        if let Some(record) = self.record.as_mut() {
+            record.frame(ui.ctx());
+            if record.began.elapsed() >= record.length {
+                self.record = None;
+                self.ui.quit_now = true;
+            }
         }
 
         // Closing with unsaved work asks first (`save_prompt`); once it is
