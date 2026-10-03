@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 — Many cuts at once are fast
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### Fixed
 

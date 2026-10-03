@@ -13,9 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Small screens: the Export window scrolls, the toolbar wraps, the preview keeps its room",
-    "Windows open below the toolbar instead of over it",
-    "Light theme: chosen buttons show their words again",
+    "Splitting into many pieces at once is fast: a thousand cuts in a quarter of a second, not forty-five",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
