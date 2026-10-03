@@ -113,6 +113,25 @@ fn the_handshake_offers_the_tools() {
         assert_eq!(tool["inputSchema"]["type"], "object", "{}", tool["name"]);
     }
     assert_eq!(client.request("ping", json!({}))["result"], json!({}));
+
+    // Ready-made requests, offered as prompts.
+    assert!(init["result"]["capabilities"]["prompts"].is_object());
+    let prompts = client.request("prompts/list", json!({}));
+    let names = prompts["result"]["prompts"].to_string();
+    assert!(
+        names.contains("tighten_interview") && names.contains("make_short"),
+        "{names}"
+    );
+    let got = client.request(
+        "prompts/get",
+        json!({ "name": "title_card", "arguments": { "title": "Summer" } }),
+    );
+    let text = got["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("\"Summer\""), "{text}");
+    let missing = client.request("prompts/get", json!({ "name": "title_card" }));
+    assert_eq!(missing["error"]["code"], -32602);
 }
 
 #[test]

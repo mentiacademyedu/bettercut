@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Ready-made requests**: the MCP server offers prompts — tighten an
+  interview, make a Short, cut to the beat, a title card — which Claude Code
+  shows as slash commands (`/bettercut:make_short` and so on).
+
 ## 0.5.0 — Connect an assistant in one click; 55 tools
 
 Still a beta: expect bugs, and please

@@ -13,6 +13,7 @@
 //! click, saved in the same project file the app opens.
 
 pub mod live;
+mod prompts;
 mod tools;
 
 use serde_json::{Value, json};
@@ -98,6 +99,12 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools::list() })),
             "tools/call" => self.call(&params),
+            "prompts/list" => Ok(json!({ "prompts": prompts::list() })),
+            "prompts/get" => prompts::get(
+                params.get("name").and_then(Value::as_str).unwrap_or(""),
+                params.get("arguments").unwrap_or(&Value::Null),
+            )
+            .map_err(|message| (-32602, message)),
             other => Err((-32601, format!("no method {other}"))),
         };
         Some(match reply {
@@ -153,7 +160,10 @@ fn initialize(params: &Value) -> Value {
         .unwrap_or(PROTOCOL_VERSIONS[0]);
     json!({
         "protocolVersion": version,
-        "capabilities": { "tools": { "listChanged": false } },
+        "capabilities": {
+            "tools": { "listChanged": false },
+            "prompts": { "listChanged": false },
+        },
         "serverInfo": { "name": "bettercut", "version": env!("CARGO_PKG_VERSION") },
         "instructions": INSTRUCTIONS,
     })
