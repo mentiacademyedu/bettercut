@@ -26,6 +26,8 @@
   background), `freeze_frame`, `picture_in_picture`, and `copy_as_shape` —
   a vertical 9:16 (or square, 4:5, 21:9) copy of the whole edit, every shot
   reframed — with `switch_sequence` to move between them.
+- **Graphics for assistants**: `add_lower_third` (a name and role with a
+  coloured bar), `add_shape`, `add_sticker` and `add_timer`.
 - **`split_at_scenes`** cuts a long recording into its shots, and
   **`mark_beats`** puts a marker on every beat of a song, with its tempo.
 

@@ -110,7 +110,8 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `delete_clip`, `move_clip`, `trim_clip`, `set_transform`, `adjust_colour`,
 `add_marker`, `set_movement`, `animate_title`, `animate`, `list_templates`, `apply_template`, `normalise_volume`, `duck_under_voice`,
 `enhance_voice`, `mute_clip`, `remove_silences`, `split_at_scenes`, `mark_beats`, `set_playhead`, `add_colour`,
-`freeze_frame`, `picture_in_picture`, `copy_as_shape`, `switch_sequence`, `set_volume`, `set_opacity`, `set_speed`,
+`freeze_frame`, `picture_in_picture`, `copy_as_shape`, `switch_sequence`,
+`add_lower_third`, `add_shape`, `add_sticker`, `add_timer`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
 `import_captions`, `add_captions`, `preview_frame`, `undo`, `redo`, `export`, and
 `attach_to_app` / `detach_from_app`, and — attached — `get_selection` and

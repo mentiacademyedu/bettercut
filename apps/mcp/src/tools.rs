@@ -452,6 +452,69 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "add_lower_third",
+        description: "Introduce someone on screen: their `name` large and `role` smaller \
+                      beneath, with a coloured bar, low on the left, for five seconds from \
+                      `at`. `accent` is the bar's colour (\"#rrggbb\", orange by default). \
+                      Returns the bar, name and role clips, which style_title and \
+                      animate_title can change.",
+        schema: || {
+            object(
+                json!({
+                    "name": { "type": "string", "minLength": 1 },
+                    "role": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 },
+                    "accent": { "type": "string" }
+                }),
+                &["name", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "add_shape",
+        description: "Draw a shape over the picture from `at` seconds: rectangle, rounded \
+                      rectangle, ellipse, arrow, star or speech bubble. It is a title-lane \
+                      clip, so set_transform places it and style_title's `color` fills it.",
+        schema: || {
+            object(
+                json!({
+                    "shape": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 }
+                }),
+                &["shape", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "add_sticker",
+        description: "Drop a sticker on the picture from `at` seconds: heart, star, tick, \
+                      cross, smile, frown, sun, cloud, umbrella, snowman, lightning, alarm \
+                      clock, music note, telephone, aeroplane or football.",
+        schema: || {
+            object(
+                json!({
+                    "sticker": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 }
+                }),
+                &["sticker", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "add_timer",
+        description: "A number on screen counting `down` (default) or `up` from `at` seconds, \
+                      for a countdown or a stopwatch.",
+        schema: || {
+            object(
+                json!({
+                    "at": { "type": "number", "minimum": 0 },
+                    "direction": { "type": "string", "enum": ["down", "up"] }
+                }),
+                &["at"],
+            )
+        },
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -1103,6 +1166,66 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 .ok_or("no sequence with that id")?;
             editor.switch_sequence(target.0);
             Ok(format!("Working on {}", target.1))
+        }
+        "add_lower_third" => {
+            let name = str_arg(args, "name")?.to_owned();
+            let role = args
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let accent = match args.get("accent").and_then(Value::as_str) {
+                Some(colour) => {
+                    let c = colour_arg(colour)?;
+                    [c.r, c.g, c.b]
+                }
+                None => bettercut_editor_core::lower_third::LOWER_THIRD_ACCENT,
+            };
+            editor.set_playhead(time_arg(args, "at")?);
+            let clips = editor
+                .add_lower_third(&name, &role, accent)
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "clip_ids": clips.iter().map(ToString::to_string).collect::<Vec<_>>() })
+                    .to_string(),
+            )
+        }
+        "add_shape" => {
+            use bettercut_editor_core::text::ShapeKind;
+            let kind = one_of(
+                &ShapeKind::ALL,
+                ShapeKind::label,
+                str_arg(args, "shape")?,
+                "shape",
+            )?;
+            editor.set_playhead(time_arg(args, "at")?);
+            let clip = editor.add_shape(kind).map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
+        }
+        "add_sticker" => {
+            use bettercut_editor_core::stickers::STICKERS;
+            let wanted = str_arg(args, "sticker")?;
+            let (sticker, _) = STICKERS
+                .iter()
+                .find(|(glyph, name)| *glyph == wanted.trim() || plain(name) == plain(wanted))
+                .ok_or_else(|| {
+                    let names: Vec<&str> = STICKERS.iter().map(|(_, name)| *name).collect();
+                    format!("no sticker {wanted:?}; one of {}", names.join(", "))
+                })?;
+            editor.set_playhead(time_arg(args, "at")?);
+            let clip = editor.add_sticker(sticker).map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
+        }
+        "add_timer" => {
+            use bettercut_editor_core::timeline::CountDirection;
+            let direction = match args.get("direction").and_then(Value::as_str) {
+                None | Some("down") => CountDirection::Down,
+                Some("up") => CountDirection::Up,
+                Some(other) => return Err(format!("direction is down or up, not {other:?}")),
+            };
+            editor.set_playhead(time_arg(args, "at")?);
+            let clip = editor.add_counter(direction).map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
         }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");

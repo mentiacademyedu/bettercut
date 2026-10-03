@@ -1067,3 +1067,46 @@ fn an_assistant_lays_out_and_reshapes() {
     assert!(is_error && text.contains("9:16"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_adds_graphics() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp13-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let third: Value = serde_json::from_str(&client.ok(
+        "add_lower_third",
+        json!({ "name": "Ada Lovelace", "role": "Analyst", "at": 1, "accent": "#3366ff" }),
+    ))
+    .unwrap();
+    assert_eq!(third["clip_ids"].as_array().unwrap().len(), 3, "{third}");
+    let shape: Value = serde_json::from_str(&client.ok(
+        "add_shape",
+        json!({ "shape": "rounded rectangle", "at": 2 }),
+    ))
+    .unwrap();
+    client.ok(
+        "style_title",
+        json!({ "clip_id": shape["clip_id"], "color": "#ff0000" }),
+    );
+    client.ok("add_sticker", json!({ "sticker": "Music note", "at": 0 }));
+    client.ok("add_sticker", json!({ "sticker": "\u{2605}", "at": 3 }));
+    client.ok("add_timer", json!({ "at": 0, "direction": "up" }));
+
+    let described = client.ok("describe_project", json!({}));
+    assert!(
+        described.contains("Ada Lovelace") && described.contains("Analyst"),
+        "{described}"
+    );
+    assert!(described.contains("#ff0000"), "{described}");
+
+    let (text, is_error) = client.tool("add_sticker", json!({ "sticker": "unicorn", "at": 0 }));
+    assert!(is_error && text.contains("Football"), "{text}");
+    let (text, is_error) = client.tool("add_lower_third", json!({ "name": " ", "at": 0 }));
+    assert!(is_error, "a lower third needs a name: {text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
