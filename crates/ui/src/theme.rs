@@ -219,6 +219,19 @@ pub fn audio_clip_top() -> Color32 {
         DARK.audio_clip_top
     }
 }
+/// Text that reads on a fill of `colour`: near-black on a light one, white
+/// on a dark one. For a clip drawn in its own colours, where the theme's text
+/// colour can land dark on dark.
+pub fn text_on(colour: Color32) -> Color32 {
+    let [r, g, b, _] = colour.to_array();
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    if luma > 150.0 {
+        Color32::from_gray(24)
+    } else {
+        Color32::WHITE
+    }
+}
+
 pub fn clip_text() -> Color32 {
     if is_light() {
         LIGHT.clip_text
@@ -414,7 +427,10 @@ pub fn apply(ctx: &egui::Context) {
         // eye has one colour to follow. Everything else stays neutral.
         let accent = accent();
         style.visuals.selection.bg_fill = accent;
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent_text());
+        // The words on a chosen button sit on the accent itself, so white in
+        // either theme: the light theme's dark-blue accent text vanished
+        // into the blue ("All", "Video", "Fit" all read as empty buttons).
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
         style.visuals.hyperlink_color = accent_text();
 
         // Flat controls: a button is a quiet shape until the pointer is on
@@ -550,6 +566,14 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_reads_on_any_fill() {
+        assert_eq!(text_on(Color32::from_rgb(12, 12, 40)), Color32::WHITE);
+        assert_eq!(text_on(Color32::from_rgb(52, 72, 168)), Color32::WHITE);
+        assert_ne!(text_on(Color32::from_rgb(250, 240, 200)), Color32::WHITE);
+        assert_ne!(text_on(Color32::WHITE), Color32::WHITE);
+    }
 
     /// The two palettes are two palettes: light on a light ground, dark on a
     /// dark one, and no role left the same in both by accident.

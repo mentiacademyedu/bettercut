@@ -7,6 +7,9 @@
 - **Windows open below the toolbar.** Storyboard, Notes, Scopes, Exports,
   Captions, Markers, History, Trim, Sound in Detail, What Changed and Find
   the Good Bits all opened in the top-left corner, over Play, New and Open.
+- **The light theme's chosen buttons show their words** ("All", "Video",
+  "Fit" read as empty blue boxes), and names on colour clips read on dark
+  colours.
 
 ### New
 

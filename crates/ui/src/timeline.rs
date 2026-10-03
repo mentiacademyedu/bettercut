@@ -3264,7 +3264,14 @@ fn draw_clip(
             Align2::LEFT_CENTER,
             visual.label,
             FontId::proportional(12.0),
-            theme::clip_text(),
+            // A colour clip is drawn in its own colours: text that reads on
+            // them, not the theme's, which can be dark on dark.
+            match visual.colour {
+                Some((upper, lower)) if visual.track_enabled && !visual.dragging => {
+                    theme::text_on(upper.lerp_to_gamma(lower, 0.5))
+                }
+                _ => theme::clip_text(),
+            },
         );
     }
 }
