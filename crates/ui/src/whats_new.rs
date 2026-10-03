@@ -13,8 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Crash recovery keeps your undos and redos: an undone edit stays undone after a crash",
-    "Projects saved in the same folder no longer share, or overwrite, each other's crash data",
+    "The status bar tells you when a newer bettercut is out (once a day; turn it off in Settings)",
+    "The status bar shows when an AI assistant is connected to this window",
+    "Assistants can export GIFs, sound alone and ProRes masters",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

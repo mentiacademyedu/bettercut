@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — Hear about new versions; assistants export GIFs
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
@@ -12,6 +15,8 @@
   Nothing is sent but the request; Settings turns it off.
 - **"assistant connected"** in the status bar while an AI assistant is
   working in the window; a click shows how it is connected.
+- **Assistants see what is on a clip**: `describe_project` lists each
+  shot's effects, and whether it is keyed or cropped.
 
 ### For developers
 
