@@ -10936,7 +10936,9 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                     state.undo_request = true;
                 }
             }
-            None => {
+            // A reminder, not information: left out of a narrow window, where
+            // it pushed the clip count into the saved state on the right.
+            None if ui.ctx().content_rect().width() >= 1100.0 => {
                 ui.label(
                     egui::RichText::new(crate::keys::keys(
                         "S split · Del delete · Shift+Del ripple · Ctrl+D duplicate · \
@@ -10945,6 +10947,7 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                     .color(theme::disabled()),
                 );
             }
+            None => {}
         }
 
         // How long the cut is, and how many clips are in it: the numbers a

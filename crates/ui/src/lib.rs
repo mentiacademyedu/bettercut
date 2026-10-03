@@ -133,9 +133,12 @@ pub fn draw(
             }
         });
 
+    // Two fifths of the window to start with, at most the 320 it always had:
+    // a fixed 320 left a small window's preview a postage stamp.
+    let timeline_height = (ui.ctx().content_rect().height() * 0.4).clamp(140.0, 320.0);
     let timeline_rect = egui::Panel::bottom("timeline")
         .resizable(true)
-        .default_size(320.0)
+        .default_size(timeline_height)
         .min_size(140.0)
         .show(ui, |ui| {
             panels::sequence_tabs(ui, editor, state);

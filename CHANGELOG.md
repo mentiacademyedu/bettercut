@@ -21,6 +21,9 @@
   now, and the buttons stay.
 - **The toolbar takes a second row in a narrow window** instead of drawing
   the timecode, Actions and Windows over its buttons.
+- **A small window keeps a usable preview**: the timeline starts at two
+  fifths of the window (never more than before), and the status bar's
+  shortcut reminder steps aside rather than crowd the clip count.
 
 ### New
 
