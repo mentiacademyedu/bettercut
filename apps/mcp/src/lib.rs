@@ -26,8 +26,12 @@ pub const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-2
 const INSTRUCTIONS: &str = "bettercut is a desktop video editor. Open or create a project \
 (open_project / new_project), import media, place it on the timeline, cut and title it, \
 then export. If the person has the bettercut app open, attach_to_app edits the project \
-in its window instead, live. Times are in seconds. Every edit can be undone (undo), and \
-nothing is written to the project file until save_project.";
+in its window instead, live; then get_selection says which clips \"this\" means. \
+describe_project gives the clip ids every edit takes, and preview_frame shows the result \
+— look before saying it is done. Times are in seconds. Every edit is one undo step \
+(history lists them; attached, the person's own edits are there too). Nothing is written \
+to the project file until save_project. For a long export, pass wait false and follow \
+export_status.";
 
 /// Serve one client on standard input and output until it goes away: what
 /// `bettercut-mcp` does, and `bettercut --mcp` (for an AppImage, which has
