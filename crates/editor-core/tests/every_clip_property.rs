@@ -128,6 +128,12 @@ fn clip_json(editor: &Editor, clip: ClipId) -> Value {
 /// `value`, so it differs from what it was. False when there was nothing.
 fn nudge(value: &mut Value) -> bool {
     match value {
+        // A whole number stays whole (a colour channel), one step away.
+        Value::Number(n) if n.is_u64() => {
+            let x = n.as_u64().unwrap_or(0);
+            *value = json!(if x > 0 { x - 1 } else { 1 });
+            true
+        }
         Value::Number(n) => {
             let x = n.as_f64().unwrap_or(0.0);
             *value = json!(if x.fract() == 0.0 && x.abs() > 1.5 {
