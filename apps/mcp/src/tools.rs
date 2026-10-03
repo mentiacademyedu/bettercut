@@ -970,6 +970,15 @@ impl Session {
         }
     }
 
+    /// How many edits this session's own project failed to write to its
+    /// autosave journal — what a crash would lose. Zero, or something
+    /// cannot be recovered.
+    pub fn autosave_failures(&self) -> u32 {
+        self.open
+            .as_ref()
+            .map_or(0, |(editor, _)| editor.autosave_failures())
+    }
+
     fn editor(&mut self) -> Result<&mut Editor, String> {
         self.open
             .as_mut()

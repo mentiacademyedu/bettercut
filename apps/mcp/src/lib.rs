@@ -77,6 +77,12 @@ impl Server {
         }
     }
 
+    /// Edits the open project could not write to its autosave journal; see
+    /// `tools::Session::autosave_failures`.
+    pub fn autosave_failures(&self) -> u32 {
+        self.session.autosave_failures()
+    }
+
     /// Answer one line of JSON-RPC. `None` for a notification, which takes
     /// no reply.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {

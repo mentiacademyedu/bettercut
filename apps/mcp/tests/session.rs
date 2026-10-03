@@ -20,6 +20,21 @@ struct Client {
     next: u64,
 }
 
+/// Whatever a test did, every edit reached the autosave journal: an edit that
+/// cannot be written there is lost in a crash, and says only "autosave failed
+/// once". Checked as each test's session ends — and with it, every tool.
+impl Drop for Client {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            assert_eq!(
+                self.server.autosave_failures(),
+                0,
+                "an edit could not be written to the autosave journal"
+            );
+        }
+    }
+}
+
 impl Client {
     fn new() -> Self {
         Self {
