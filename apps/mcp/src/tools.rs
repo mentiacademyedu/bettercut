@@ -515,6 +515,23 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "set_effect",
+        description: "Put an effect on a picture clip at `amount` 0–100 (0 takes it off): \
+                      blur, sharpen, vignette, glow, old film, glitch, rgb split, pixelate, \
+                      zoom blur, light leak, lens flare, beat pulse (a bump on each marker) or \
+                      smooth skin.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "effect": { "type": "string" },
+                    "amount": { "type": "number", "minimum": 0, "maximum": 100 }
+                }),
+                &["clip_id", "effect", "amount"],
+            )
+        },
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -1227,6 +1244,29 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             let clip = editor.add_counter(direction).map_err(|e| e.to_string())?;
             Ok(json!({ "clip_id": clip.to_string() }).to_string())
         }
+        "set_effect" => {
+            let clip = clip_arg(args)?;
+            if editor.video_clip(clip).is_none() {
+                return Err("that is not a picture clip".to_owned());
+            }
+            let wanted = plain(str_arg(args, "effect")?);
+            let (label, make, scale) = EFFECTS
+                .iter()
+                .find(|(label, _, _)| plain(label) == wanted)
+                .ok_or_else(|| {
+                    let names: Vec<&str> = EFFECTS.iter().map(|(label, _, _)| *label).collect();
+                    format!("no effect {wanted:?}; one of {}", names.join(", "))
+                })?;
+            let amount = number(args, "amount")?.clamp(0.0, 100.0) as f32;
+            editor
+                .set_clip_property(clip, make(amount * scale), false)
+                .map_err(|e| e.to_string())?;
+            Ok(if amount == 0.0 {
+                format!("{label} off")
+            } else {
+                format!("{label} at {amount}")
+            })
+        }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
             let at = editor
@@ -1789,6 +1829,27 @@ fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     Ok("Animated".to_owned())
 }
+
+/// Builds a clip property from its amount.
+type MakeProperty = fn(f32) -> ClipProperty;
+
+/// `set_effect`'s effects: the name, the property, and what turns 0–100
+/// into the property's own range.
+const EFFECTS: &[(&str, MakeProperty, f32)] = &[
+    ("blur", ClipProperty::Blur, 1.0),
+    ("sharpen", ClipProperty::Sharpen, 1.0),
+    ("vignette", ClipProperty::Vignette, 0.01),
+    ("glow", ClipProperty::Glow, 1.0),
+    ("old film", ClipProperty::OldFilm, 1.0),
+    ("glitch", ClipProperty::Glitch, 1.0),
+    ("rgb split", ClipProperty::RgbSplit, 1.0),
+    ("pixelate", ClipProperty::Pixelate, 1.0),
+    ("zoom blur", ClipProperty::ZoomBlur, 1.0),
+    ("light leak", ClipProperty::LightLeak, 1.0),
+    ("lens flare", ClipProperty::LensFlare, 1.0),
+    ("beat pulse", ClipProperty::BeatPulse, 1.0),
+    ("smooth skin", ClipProperty::SmoothSkin, 0.01),
+];
 
 /// The properties `animate` takes, by name: what each drives, and whether it
 /// is a sound clip's.

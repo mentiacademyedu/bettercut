@@ -1110,3 +1110,62 @@ fn an_assistant_adds_graphics() {
     assert!(is_error, "a lower third needs a name: {text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_sets_effects() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp14-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = dir.join("p.vproj");
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": project.display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let picture = placed["clip_ids"][0].clone();
+    let sound = placed["clip_ids"][1].clone();
+
+    client.ok(
+        "set_effect",
+        json!({ "clip_id": picture, "effect": "Glow", "amount": 40 }),
+    );
+    client.ok(
+        "set_effect",
+        json!({ "clip_id": picture, "effect": "old-film", "amount": 70 }),
+    );
+    client.ok(
+        "set_effect",
+        json!({ "clip_id": picture, "effect": "vignette", "amount": 50 }),
+    );
+    client.ok("save_project", json!({}));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    let text = saved.to_string();
+    assert!(text.contains("\"glow\":40"), "glow is saved");
+    assert!(text.contains("\"old_film\":70"), "old film is saved");
+    assert!(
+        text.contains("\"vignette\":0.5"),
+        "vignette in its own 0-1 range"
+    );
+
+    let (text, is_error) = client.tool(
+        "set_effect",
+        json!({ "clip_id": picture, "effect": "sparkles", "amount": 10 }),
+    );
+    assert!(is_error && text.contains("pixelate"), "{text}");
+    let (text, is_error) = client.tool(
+        "set_effect",
+        json!({ "clip_id": sound, "effect": "glow", "amount": 10 }),
+    );
+    assert!(is_error && text.contains("picture"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

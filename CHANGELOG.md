@@ -27,7 +27,9 @@
   a vertical 9:16 (or square, 4:5, 21:9) copy of the whole edit, every shot
   reframed — with `switch_sequence` to move between them.
 - **Graphics for assistants**: `add_lower_third` (a name and role with a
-  coloured bar), `add_shape`, `add_sticker` and `add_timer`.
+  coloured bar), `add_shape`, `add_sticker` and `add_timer`; and
+  `set_effect` — blur, sharpen, vignette, glow, old film, glitch, RGB split,
+  pixelate, zoom blur, light leak, lens flare, beat pulse or smooth skin.
 - **`split_at_scenes`** cuts a long recording into its shots, and
   **`mark_beats`** puts a marker on every beat of a song, with its tempo.
 
