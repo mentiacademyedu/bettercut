@@ -4,6 +4,9 @@
 
 ### New
 
+- **Assistants export GIFs, sound and masters**: the file's ending picks
+  the kind — `.gif` (a small looping animation), `.wav`, `.mov` (ProRes),
+  `.webm` (see-through background) — besides `.mp4`.
 - **New versions are announced**: once a day the app asks GitHub whether a
   newer bettercut is out and, if so, says so in the status bar with a link.
   Nothing is sent but the request; Settings turns it off.

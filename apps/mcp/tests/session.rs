@@ -1382,3 +1382,46 @@ fn an_assistant_keys_a_green_screen() {
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_file_ending_picks_what_is_exported() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp17-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"], "to": 0.5 }),
+    );
+
+    let gif = dir.join("loop.gif");
+    let (text, failed) = client.tool("export", json!({ "path": gif.display().to_string() }));
+    if failed && (text.contains("adapter") || text.to_lowercase().contains("gpu")) {
+        eprintln!("no GPU here; skipping: {text}");
+    } else {
+        assert!(!failed, "{text}");
+        let bytes = std::fs::read(&gif).unwrap();
+        assert!(bytes.starts_with(b"GIF89a"), "a GIF");
+        let wide = u16::from_le_bytes([bytes[6], bytes[7]]);
+        assert_eq!(wide, 480, "small by default");
+    }
+
+    let wav = dir.join("sound.wav");
+    let text = client.ok("export", json!({ "path": wav.display().to_string() }));
+    let bytes = std::fs::read(&wav).unwrap();
+    assert!(
+        bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE",
+        "{text}"
+    );
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}

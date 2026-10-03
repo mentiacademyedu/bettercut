@@ -784,8 +784,11 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "export",
-        description: "Render the whole timeline to a video file at `path` (.mp4 recommended), at \
-                      the project's size unless `width`/`height` are given. Waits until done — \
+        description: "Render the whole timeline to a file at `path`; its ending picks the kind: \
+                      .mp4 a video; .gif a looping animation (15 fps, 480 wide unless given); \
+                      .wav the sound alone; .mov a ProRes master for editing elsewhere; .webm a \
+                      video with a see-through background. At the project's size unless \
+                      `width`/`height` are given. Waits until done — \
                       or, with `wait` false, starts it in the background and answers at once \
                       (export_status says how far it has got; keep this session open until it \
                       finishes).",
@@ -1867,6 +1870,30 @@ fn export_project_with(
         return Err("The timeline is empty: there is nothing to export".to_owned());
     }
     let mut settings = bettercut_export::ExportSettings::for_sequence(path.clone(), sequence);
+    let ending = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ending.as_str() {
+        "gif" => {
+            settings.gif = true;
+            if let Some(rate) = bettercut_editor_core::foundation::FrameRate::new(15, 1) {
+                settings.frame_rate = rate;
+            }
+            // Small, unless asked otherwise: a GIF is a preview to share.
+            let full = settings.resolution;
+            let wide = 480.min(full.width.max(2));
+            let high = (u64::from(full.height) * u64::from(wide) / u64::from(full.width.max(1)))
+                .max(2) as u32;
+            settings.resolution =
+                bettercut_editor_core::timeline::Resolution::new(wide & !1, high & !1);
+        }
+        "wav" => settings.sound_only = true,
+        "mov" => settings.prores = true,
+        "webm" => settings.transparent = true,
+        _ => {}
+    }
     if let (Some(w), Some(h)) = (width, height) {
         settings.resolution = bettercut_editor_core::timeline::Resolution::new(w, h);
     }
