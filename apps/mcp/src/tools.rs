@@ -542,6 +542,13 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "history",
+        description: "The steps undo would take back, newest first (the last 20), and the \
+                      steps redo would bring back — attached to the window, the person's own \
+                      edits are in it too, so look before undoing.",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -1366,6 +1373,11 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             } else {
                 format!("{label} at {amount}")
             })
+        }
+        "history" => {
+            let (done, undone) = editor.history_steps();
+            let undo: Vec<&String> = done.iter().rev().take(20).collect();
+            Ok(json!({ "undo": undo, "redo": undone }).to_string())
         }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");

@@ -477,6 +477,12 @@ fn an_assistant_places_styles_and_marks() {
     assert_eq!(described["markers"][0]["label"], "drop");
     assert!((described["markers"][0]["at"].as_f64().unwrap() - 1.5).abs() < 1e-3);
 
+    // The steps are listed, newest first, under the editor's own names.
+    let steps: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(steps["undo"][0], "Change markers", "{steps}");
+    assert_eq!(steps["undo"][1], "Adjust Colour", "{steps}");
+    assert!(steps["redo"].as_array().unwrap().is_empty());
+
     // Each tool is one undo step: the named marker, then the colour as a
     // whole, then the title's words and look together.
     client.ok("undo", json!({}));
