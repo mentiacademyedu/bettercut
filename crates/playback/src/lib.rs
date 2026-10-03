@@ -65,4 +65,4 @@ pub use speech::{SpeechSettings, speech_ranges};
 pub use sync::{FramePlan, SyncDecision, plan_frame};
 pub use text_frames::TextFrames;
 pub use thumbnail_job::ThumbnailJob;
-pub use waveform_job::WaveformJob;
+pub use waveform_job::{WaveformJob, analyse_waveform};

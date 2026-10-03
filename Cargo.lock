@@ -596,8 +596,10 @@ dependencies = [
 name = "bettercut-mcp"
 version = "0.4.0"
 dependencies = [
+ "bettercut-cache",
  "bettercut-editor-core",
  "bettercut-export",
+ "bettercut-playback",
  "serde_json",
  "uuid",
 ]

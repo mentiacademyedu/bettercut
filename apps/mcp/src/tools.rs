@@ -288,6 +288,38 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "normalise_volume",
+        description: "Level a sound clip so its loudest moment sits just under full volume — \
+                      the fix for \"this one is too quiet\" (or too loud). Reads the whole \
+                      sound first, so a long file takes a moment.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "duck_under_voice",
+        description: "Dip a sound clip (music, usually) wherever another sound clip has \
+                      someone speaking over it, and bring it back up between. The dips are \
+                      volume keys on the clip. Reads the other clips' sound first.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "enhance_voice",
+        description: "Clean up a spoken recording in one step: less hiss and rumble, a little \
+                      presence, quiet and loud words brought closer, sharp \"s\" sounds \
+                      softened. For a sound clip.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "mute_clip",
+        description: "Silence a clip's sound (`muted` true, the default) or bring it back \
+                      (false). A picture clip's own sound is muted with it.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "muted": { "type": "boolean" } }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -687,6 +719,74 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         )
         .to_string()),
         "apply_template" => apply_template(editor, args),
+        "normalise_volume" => {
+            let clip = sound_clip(editor, args)?;
+            let waveform = waveform_of(editor, clip.media_id)?;
+            let gain = bettercut_playback::normalise(&clip, &waveform)
+                .ok_or("this clip is already at a good level, or too quiet to raise")?;
+            editor
+                .set_clip_property(clip.id, ClipProperty::Gain(gain), false)
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Level set to {:+.1} dB",
+                20.0 * gain.max(1e-6).log10()
+            ))
+        }
+        "duck_under_voice" => {
+            let music = sound_clip(editor, args)?;
+            let others: Vec<_> = editor
+                .active_sequence()
+                .map(|s| {
+                    s.audio_tracks
+                        .iter()
+                        .flat_map(|t| t.clips().iter())
+                        .filter(|o| o.id != music.id && o.timeline.overlaps(music.timeline))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut speech = Vec::new();
+            for other in &others {
+                let waveform = waveform_of(editor, other.media_id)?;
+                speech.extend(bettercut_playback::speech_ranges(
+                    other,
+                    &waveform,
+                    bettercut_playback::SpeechSettings::default(),
+                ));
+            }
+            if speech.is_empty() {
+                return Err("nothing is speaking over this clip".to_owned());
+            }
+            let points = bettercut_playback::duck_envelope(
+                &music,
+                &speech,
+                bettercut_playback::DuckSettings::default(),
+            );
+            let keys = editor
+                .set_gain_envelope(music.id, &points, false)
+                .map_err(|e| e.to_string())?;
+            if keys == 0 {
+                return Err("nothing to duck under on this clip".to_owned());
+            }
+            Ok(format!(
+                "Ducked under the voice ({} speaking parts)",
+                speech.len()
+            ))
+        }
+        "enhance_voice" => {
+            let clip = sound_clip(editor, args)?;
+            editor.enhance_voice(clip.id).map_err(|e| e.to_string())?;
+            Ok("Voice enhanced".to_owned())
+        }
+        "mute_clip" => {
+            let clip = clip_arg(args)?;
+            let muted = args.get("muted").and_then(Value::as_bool).unwrap_or(true);
+            let changed = editor.set_muted(clip, muted).map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err("that clip has no sound to mute, or is already so".to_owned());
+            }
+            Ok(if muted { "Muted" } else { "Unmuted" }.to_owned())
+        }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
             let at = editor
@@ -1405,6 +1505,40 @@ fn apply_template(editor: &mut Editor, args: &Value) -> Result<String, String> {
         "shortened_slots": applied.shortened,
     })
     .to_string())
+}
+
+/// The sound clip `clip_id` names, or why not. A picture clip's id gives
+/// its linked sound, since that is what an assistant means.
+fn sound_clip(
+    editor: &Editor,
+    args: &Value,
+) -> Result<bettercut_editor_core::timeline::AudioClip, String> {
+    let id = clip_arg(args)?;
+    if let Some(sound) = editor.audio_clip(id) {
+        return Ok(sound.clone());
+    }
+    editor
+        .linked_with(id)
+        .into_iter()
+        .find_map(|other| editor.audio_clip(other).cloned())
+        .ok_or_else(|| "that clip has no sound: use an id from sound_lanes".to_owned())
+}
+
+/// A file's waveform: the app's cached one when it has made it, otherwise
+/// read now. Not written to the app's cache: that is the app's to fill.
+fn waveform_of(editor: &Editor, media: MediaId) -> Result<bettercut_cache::Waveform, String> {
+    let file = bettercut_cache::CacheLayout::default_location().waveform_file(media);
+    if let Ok(waveform) = bettercut_cache::Waveform::read(&file) {
+        return Ok(waveform);
+    }
+    let asset = editor
+        .project()
+        .media
+        .iter()
+        .find(|m| m.id == media)
+        .ok_or("a clip's file is not in the project")?;
+    bettercut_playback::analyse_waveform(asset, 2)
+        .map_err(|e| format!("could not read the sound of {}: {e}", asset.file_name))
 }
 
 /// Which of `animate`'s properties have keys on `clip`.

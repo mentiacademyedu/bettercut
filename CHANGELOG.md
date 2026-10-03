@@ -11,6 +11,8 @@
 - **Templates for assistants**: `list_templates` shows bettercut's starters
   and your own templates with the shots and words each asks for;
   `apply_template` builds one on the timeline from your media and words.
+- **Sound for assistants**: `normalise_volume`, `duck_under_voice` (music
+  dips wherever someone speaks over it), `enhance_voice` and `mute_clip`.
 
 ## 0.4.0 — An assistant in the open window
 

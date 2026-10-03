@@ -732,3 +732,63 @@ fn an_assistant_builds_from_a_template() {
     assert!(is_error && text.contains("list_templates"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_fixes_the_sound() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp9-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("tone-48k.wav"), fixture("still.png")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let tone = placed["clip_ids"][0].clone();
+    let volume = |client: &mut Client| -> f64 {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["sound_lanes"][0]["clips"][0]["volume"]
+            .as_f64()
+            .unwrap()
+    };
+
+    let said = client.ok("normalise_volume", json!({ "clip_id": tone }));
+    assert!(said.contains("dB"), "{said}");
+    assert!(
+        (volume(&mut client) - 1.0).abs() > 1e-3,
+        "the level changed: {said}"
+    );
+
+    client.ok("enhance_voice", json!({ "clip_id": tone }));
+    client.ok("mute_clip", json!({ "clip_id": tone }));
+    let (text, is_error) = client.tool("mute_clip", json!({ "clip_id": tone }));
+    assert!(is_error && text.contains("already"), "{text}");
+    client.ok("mute_clip", json!({ "clip_id": tone, "muted": false }));
+
+    // Nothing else plays over it: nothing to duck under, and it says so.
+    let (text, is_error) = client.tool("duck_under_voice", json!({ "clip_id": tone }));
+    assert!(is_error && text.contains("nothing"), "{text}");
+
+    // A photo has no sound.
+    let photo: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[1]["media_id"] }),
+    ))
+    .unwrap();
+    let (text, is_error) = client.tool(
+        "normalise_volume",
+        json!({ "clip_id": photo["clip_ids"][0] }),
+    );
+    assert!(is_error && text.contains("no sound"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

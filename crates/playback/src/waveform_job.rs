@@ -70,35 +70,9 @@ impl Task for WaveformJob {
     }
 
     fn run(&mut self, ctx: &JobContext) -> Result<(), String> {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let token = JobCancellation {
-            cancelled: Arc::clone(&cancelled),
-        };
-
-        let mut decoder = FfmpegDecoder::new(self.threads).map_err(|e| e.to_string())?;
-        decoder.open(&self.asset).map_err(|e| e.to_string())?;
-
-        let total_seconds = self.asset.duration.as_seconds_f64().max(0.0);
-        let mut builder = PeakBuilder::new(PEAKS_PER_SECOND);
-
-        loop {
-            if ctx.is_cancelled() {
-                cancelled.store(true, Ordering::Release);
-                return Err("cancelled".to_owned());
-            }
-
-            let Some(buffer) = decoder.decode_audio(&token).map_err(|e| e.to_string())? else {
-                break;
-            };
-            builder.push(&buffer);
-
-            if total_seconds > 0.0 {
-                let done = builder.seconds_consumed() / total_seconds;
-                ctx.progress(done.clamp(0.0, 0.99) as f32);
-            }
-        }
-
-        let waveform = builder.finish().map_err(|e| e.to_string())?;
+        let waveform = analyse(&self.asset, self.threads, &|| ctx.is_cancelled(), &|done| {
+            ctx.progress(done)
+        })?;
         waveform.write(&self.output).map_err(|e| e.to_string())?;
         ctx.progress(1.0);
 
@@ -109,6 +83,55 @@ impl Task for WaveformJob {
         );
         Ok(())
     }
+}
+
+/// Analyse `asset`'s sound now, on this thread — what [`WaveformJob`] does,
+/// for a caller that cannot wait for a queue: an assistant asking for the
+/// sound to be levelled. Nothing is cached; that is the caller's choice.
+pub fn analyse_waveform(asset: &MediaAsset, threads: u32) -> Result<Waveform, String> {
+    if asset.missing || asset.audio_channels.unwrap_or(0) == 0 {
+        return Err(format!("{} has no sound", asset.file_name));
+    }
+    analyse(asset, threads.max(1), &|| false, &|_| {})
+}
+
+/// Decode the whole sound stream into peaks, asking `stop` between packets
+/// and reporting the share done.
+fn analyse(
+    asset: &MediaAsset,
+    threads: u32,
+    stop: &dyn Fn() -> bool,
+    progress: &dyn Fn(f32),
+) -> Result<Waveform, String> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let token = JobCancellation {
+        cancelled: Arc::clone(&cancelled),
+    };
+
+    let mut decoder = FfmpegDecoder::new(threads).map_err(|e| e.to_string())?;
+    decoder.open(asset).map_err(|e| e.to_string())?;
+
+    let total_seconds = asset.duration.as_seconds_f64().max(0.0);
+    let mut builder = PeakBuilder::new(PEAKS_PER_SECOND);
+
+    loop {
+        if stop() {
+            cancelled.store(true, Ordering::Release);
+            return Err("cancelled".to_owned());
+        }
+
+        let Some(buffer) = decoder.decode_audio(&token).map_err(|e| e.to_string())? else {
+            break;
+        };
+        builder.push(&buffer);
+
+        if total_seconds > 0.0 {
+            let done = builder.seconds_consumed() / total_seconds;
+            progress(done.clamp(0.0, 0.99) as f32);
+        }
+    }
+
+    builder.finish().map_err(|e| e.to_string())
 }
 
 /// Accumulates decoded audio into fixed-width peak buckets.
