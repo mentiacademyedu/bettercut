@@ -565,6 +565,25 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "crop",
+        description: "Cut the edges off a picture clip's source: `left`, `top`, `right` and \
+                      `bottom` are fractions of the picture to take off each side (0 keeps \
+                      the edge; 0.1 is a tenth). What is left is fitted to the frame like a \
+                      new picture. All zero takes the crop off.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "left": { "type": "number", "minimum": 0, "maximum": 0.95 },
+                    "top": { "type": "number", "minimum": 0, "maximum": 0.95 },
+                    "right": { "type": "number", "minimum": 0, "maximum": 0.95 },
+                    "bottom": { "type": "number", "minimum": 0, "maximum": 0.95 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "history",
         description: "The steps undo would take back, newest first (the last 20), and the \
                       steps redo would bring back — attached to the window, the person's own \
@@ -1431,6 +1450,34 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 .set_clip_property(clip, ClipProperty::ChromaKey(Some(key)), false)
                 .map_err(|e| e.to_string())?;
             Ok("Keyed: put what should show through on the lane beneath".to_owned())
+        }
+        "crop" => {
+            let clip = clip_arg(args)?;
+            let now = editor
+                .video_clip(clip)
+                .ok_or("that is not a picture clip")?
+                .crop;
+            let edge = |name: &str, was: f32| -> Result<f32, String> {
+                Ok(optional_number(args, name)?.unwrap_or(was))
+            };
+            let crop = bettercut_editor_core::timeline::Crop {
+                left: edge("left", now.left)?,
+                top: edge("top", now.top)?,
+                right: edge("right", now.right)?,
+                bottom: edge("bottom", now.bottom)?,
+            }
+            .clamped();
+            editor
+                .set_clip_property(clip, ClipProperty::Crop(crop), false)
+                .map_err(|e| e.to_string())?;
+            Ok(if crop.is_none() {
+                "Crop off".to_owned()
+            } else {
+                format!(
+                    "Cropped: left {:.2}, top {:.2}, right {:.2}, bottom {:.2}",
+                    crop.left, crop.top, crop.right, crop.bottom
+                )
+            })
         }
         "history" => {
             let (done, undone) = editor.history_steps();

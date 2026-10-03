@@ -1294,6 +1294,31 @@ fn an_assistant_keys_a_green_screen() {
     assert_eq!(keyed(&mut client)["color"], json!([0.0, 0.0, 1.0]));
 
     client.ok("green_screen", json!({ "clip_id": screen, "off": true }));
+
+    // Cropping the same clip: only the edges given change, and it is held
+    // to leave something.
+    let said = client.ok(
+        "crop",
+        json!({ "clip_id": screen, "left": 0.1, "right": 0.2 }),
+    );
+    assert!(
+        said.contains("left 0.10") && said.contains("right 0.20"),
+        "{said}"
+    );
+    let said = client.ok(
+        "crop",
+        json!({ "clip_id": screen, "top": 0.9, "bottom": 0.9 }),
+    );
+    assert!(said.contains("left 0.10"), "kept: {said}");
+    assert!(
+        !said.contains("top 0.90, right 0.20, bottom 0.90"),
+        "held apart: {said}"
+    );
+    let said = client.ok(
+        "crop",
+        json!({ "clip_id": screen, "left": 0, "top": 0, "right": 0, "bottom": 0 }),
+    );
+    assert_eq!(said, "Crop off");
     assert!(keyed(&mut client).is_null(), "the key is off");
     let _ = std::fs::remove_dir_all(&dir);
 }
