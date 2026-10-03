@@ -68,6 +68,19 @@ fn an_assistant_edits_the_open_window() {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
+            // The window's crash recovery brings back what the assistant did,
+            // undo included, exactly.
+            let recovered = bettercut_editor_core::recover(editor.recovery_paths().clone())
+                .expect("the window's edits are in recovery");
+            assert_eq!(recovered.failed, 0);
+            assert_eq!(
+                serde_json::to_value(&recovered.project).unwrap(),
+                serde_json::to_value(editor.project()).unwrap(),
+                "recovery differs from the window's project"
+            );
+            // Unsaved, so it lives in the machine's temp folder: removed, or
+            // the next launch of the real app would offer this test's work.
+            recovered.discard();
             (editor.project().clone(), said)
         })
     };
