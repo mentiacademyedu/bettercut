@@ -2126,6 +2126,8 @@ fn describe(editor: &Editor) -> Value {
                 "duration": seconds_of(m.duration.ticks()),
                 "width": m.width,
                 "height": m.height,
+                // An iPhone Live Photo's moment, as video: import_media it to use it.
+                "live_photo_video": m.live_video.as_ref().map(|p| p.display().to_string()),
             })
         })
         .collect();
