@@ -48,7 +48,7 @@ fn a_thousand_clips_draw_quickly() {
 
     let mut state = UiState::default();
     let ctx = egui::Context::default();
-    let mut frame = |editor: &mut Editor, state: &mut UiState| {
+    let frame = |editor: &mut Editor, state: &mut UiState| {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))),
             ..Default::default()
