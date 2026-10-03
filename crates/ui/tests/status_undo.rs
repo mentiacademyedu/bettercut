@@ -50,3 +50,25 @@ fn undo_is_offered_after_an_edit_and_not_after_a_toggle() {
         "Undo offered after a toggle"
     );
 }
+
+/// A newer version found by the day's check, and an assistant at work, are
+/// said in the bar — and only while they are so.
+#[test]
+fn a_newer_version_and_an_assistant_are_shown() {
+    let (editor, _events) = Editor::new_project("Status");
+    let mut state = UiState::default();
+    let quiet = words(&editor, &mut state);
+    assert!(
+        !quiet.contains("is out") && !quiet.contains("assistant connected"),
+        "{quiet}"
+    );
+
+    *state.update_found.lock().unwrap() = Some(bettercut_ui::updates::Update {
+        version: "9.9.9".to_owned(),
+        url: "https://example.invalid/9.9.9".to_owned(),
+    });
+    state.assistant_seen = Some(std::time::Instant::now());
+    let busy = words(&editor, &mut state);
+    assert!(busy.contains("bettercut 9.9.9 is out"), "{busy}");
+    assert!(busy.contains("assistant connected"), "{busy}");
+}
