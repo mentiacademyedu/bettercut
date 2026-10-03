@@ -792,3 +792,99 @@ fn an_assistant_fixes_the_sound() {
     assert!(is_error && text.contains("no sound"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A mono 16-bit WAV: a tone for each `true` second, silence for each `false`.
+fn talk_and_pauses(path: &std::path::Path, pattern: &[(f64, bool)]) {
+    let rate = 48_000_u32;
+    let mut samples: Vec<i16> = Vec::new();
+    for &(seconds, loud) in pattern {
+        for i in 0..(seconds * f64::from(rate)) as usize {
+            let t = i as f64 / f64::from(rate);
+            let v = if loud {
+                (t * 440.0 * std::f64::consts::TAU).sin() * 0.5
+            } else {
+                0.0
+            };
+            samples.push((v * f64::from(i16::MAX)) as i16);
+        }
+    }
+    let data = samples.len() as u32 * 2;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&rate.to_le_bytes());
+    bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data.to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn an_assistant_cuts_the_pauses() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp10-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("talk.wav");
+    talk_and_pauses(&wav, &[(1.0, true), (1.5, false), (1.0, true)]);
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [wav.display().to_string()] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let talk = placed["clip_ids"][0].clone();
+    let length = |client: &mut Client| -> f64 {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["sequence"]["duration"].as_f64().unwrap()
+    };
+    let before = length(&mut client);
+
+    let found: Value = serde_json::from_str(&client.ok(
+        "remove_silences",
+        json!({ "clip_id": talk, "preview": true }),
+    ))
+    .unwrap();
+    let pauses = found["pauses"].as_array().unwrap();
+    assert_eq!(pauses.len(), 1, "{found}");
+    let start = pauses[0]["start"].as_f64().unwrap();
+    let end = pauses[0]["end"].as_f64().unwrap();
+    // The pause is 1.0–2.5 s; the padding keeps a little either side.
+    assert!(
+        start > 1.0 && start < 1.3 && end > 2.2 && end < 2.5,
+        "{found}"
+    );
+    assert!(
+        (length(&mut client) - before).abs() < 1e-6,
+        "a preview cuts nothing"
+    );
+
+    let said = client.ok("remove_silences", json!({ "clip_id": talk }));
+    assert!(said.contains("1 pauses cut"), "{said}");
+    let after = length(&mut client);
+    assert!(
+        (before - after - (end - start)).abs() < 0.05,
+        "{before} -> {after}"
+    );
+    client.ok("undo", json!({}));
+    assert!((length(&mut client) - before).abs() < 1e-6, "one undo step");
+    let _ = std::fs::remove_dir_all(&dir);
+}

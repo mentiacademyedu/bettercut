@@ -302,6 +302,28 @@ const TOOLS: &[Tool] = &[
         schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
     },
     Tool {
+        name: "remove_silences",
+        description: "Cut the pauses out of a clip with someone talking, closing each gap — \
+                      the jump-cut edit. Works on a sound clip or a picture clip with sound; \
+                      the picture is cut with it. `threshold_db` is how quiet counts as \
+                      silence (default -34), `shortest` the shortest pause to cut in seconds \
+                      (default 0.6), `padding` the breath kept each side (default 0.12). With \
+                      `preview` true nothing is cut: the pauses found are listed. One undo \
+                      step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "threshold_db": { "type": "number", "minimum": -42, "maximum": -6 },
+                    "shortest": { "type": "number", "minimum": 0.1 },
+                    "padding": { "type": "number", "minimum": 0 },
+                    "preview": { "type": "boolean" }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "enhance_voice",
         description: "Clean up a spoken recording in one step: less hiss and rumble, a little \
                       presence, quiet and loud words brought closer, sharp \"s\" sounds \
@@ -772,6 +794,46 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 "Ducked under the voice ({} speaking parts)",
                 speech.len()
             ))
+        }
+        "remove_silences" => {
+            let sound = sound_clip(editor, args)?;
+            let defaults = bettercut_playback::SilenceSettings::default();
+            let settings = bettercut_playback::SilenceSettings {
+                threshold_db: optional_number(args, "threshold_db")?
+                    .map_or(defaults.threshold_db, |db| db.clamp(-42.0, -6.0)),
+                shortest: seconds(args, "shortest")?
+                    .map_or(defaults.shortest, |s| timeline_time(s.max(0.1))),
+                padding: seconds(args, "padding")?.map_or(defaults.padding, timeline_time),
+            };
+            let waveform = waveform_of(editor, sound.media_id)?;
+            let ranges = bettercut_playback::silent_ranges(&sound, &waveform, settings);
+            let listed: Vec<Value> = ranges
+                .iter()
+                .map(|r| {
+                    json!({
+                        "start": r.start.as_seconds_f64(),
+                        "end": r.end.as_seconds_f64(),
+                    })
+                })
+                .collect();
+            if args
+                .get("preview")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(json!({ "pauses": listed }).to_string());
+            }
+            if ranges.is_empty() {
+                return Err("no pauses long and quiet enough to cut".to_owned());
+            }
+            let cut = editor
+                .remove_ranges(sound.id, &ranges)
+                .map_err(|e| e.to_string())?;
+            let seconds: f64 = ranges
+                .iter()
+                .map(|r| (r.end - r.start).as_seconds_f64())
+                .sum();
+            Ok(format!("{cut} pauses cut, {seconds:.1} s shorter"))
         }
         "enhance_voice" => {
             let clip = sound_clip(editor, args)?;

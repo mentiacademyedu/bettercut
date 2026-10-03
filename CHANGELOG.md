@@ -13,6 +13,8 @@
   `apply_template` builds one on the timeline from your media and words.
 - **Sound for assistants**: `normalise_volume`, `duck_under_voice` (music
   dips wherever someone speaks over it), `enhance_voice` and `mute_clip`.
+- **`remove_silences`**: an assistant cuts the pauses out of someone talking
+  and closes the gaps — or, with `preview`, just lists them first.
 
 ## 0.4.0 — An assistant in the open window
 
