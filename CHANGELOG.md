@@ -19,6 +19,10 @@
   have selected and where the playhead is (`get_selection`), and select clips
   itself to show you which ones it means (`select_clips`); `set_playhead`
   moves the playhead.
+- **Layout for assistants**: `add_colour` (a colour or gradient
+  background), `freeze_frame`, `picture_in_picture`, and `copy_as_shape` —
+  a vertical 9:16 (or square, 4:5, 21:9) copy of the whole edit, every shot
+  reframed — with `switch_sequence` to move between them.
 - **`split_at_scenes`** cuts a long recording into its shots, and
   **`mark_beats`** puts a marker on every beat of a song, with its tempo.
 

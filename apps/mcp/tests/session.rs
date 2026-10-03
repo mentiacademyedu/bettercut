@@ -986,3 +986,84 @@ fn an_assistant_splits_scenes_and_marks_beats() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_lays_out_and_reshapes() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp12-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let shot = placed["clip_ids"][0].clone();
+    let describe = |client: &mut Client| -> Value {
+        serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap()
+    };
+    let colour: Value = serde_json::from_str(&client.ok(
+        "add_colour",
+        json!({ "color": "#102030", "to": "#000000", "at": 0 }),
+    ))
+    .unwrap();
+    assert!(colour["clip_id"].is_string(), "{colour}");
+    let before = describe(&mut client)["sequence"]["duration"]
+        .as_f64()
+        .unwrap();
+
+    client.ok(
+        "picture_in_picture",
+        json!({ "clip_id": shot, "corner": "top left", "size": "small" }),
+    );
+    let lanes = describe(&mut client)["picture_lanes"].to_string();
+    assert!(lanes.contains("\"x\":-"), "moved left: {lanes}");
+    client.ok(
+        "picture_in_picture",
+        json!({ "clip_id": shot, "size": "full" }),
+    );
+
+    // Last: the freeze opens a gap by cutting the shot, so its id is spent.
+    client.ok(
+        "freeze_frame",
+        json!({ "clip_id": shot, "at": 0.5, "duration": 1.5 }),
+    );
+    let after = describe(&mut client)["sequence"]["duration"]
+        .as_f64()
+        .unwrap();
+    assert!((after - before - 1.5).abs() < 0.05, "{before} -> {after}");
+
+    let copied: Value =
+        serde_json::from_str(&client.ok("copy_as_shape", json!({ "shape": "9:16" }))).unwrap();
+    let now = describe(&mut client);
+    let (w, h) = (
+        now["sequence"]["width"].as_u64().unwrap(),
+        now["sequence"]["height"].as_u64().unwrap(),
+    );
+    assert!(h > w, "vertical: {w}x{h}");
+    let sequences = now["sequences"].as_array().unwrap();
+    assert_eq!(sequences.len(), 2, "{now}");
+    let first = sequences
+        .iter()
+        .find(|s| s["sequence_id"] != copied["sequence_id"])
+        .unwrap()["sequence_id"]
+        .clone();
+    client.ok("switch_sequence", json!({ "sequence_id": first }));
+    let back = describe(&mut client);
+    assert!(
+        back["sequence"]["width"].as_u64().unwrap() > back["sequence"]["height"].as_u64().unwrap()
+    );
+
+    let (text, is_error) = client.tool("copy_as_shape", json!({ "shape": "triangle" }));
+    assert!(is_error && text.contains("9:16"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -386,6 +386,72 @@ const TOOLS: &[Tool] = &[
         schema: || object(json!({ "at": { "type": "number", "minimum": 0 } }), &["at"]),
     },
     Tool {
+        name: "add_colour",
+        description: "Add a clip that is all one colour (\"#rrggbb\"), or a gradient from \
+                      `color` at the top to `to` at the bottom, at `at` seconds — a \
+                      background for a title card, say. It goes under anything already \
+                      there.",
+        schema: || {
+            object(
+                json!({
+                    "color": { "type": "string" },
+                    "to": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 }
+                }),
+                &["color", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "freeze_frame",
+        description: "Hold the picture of a clip at `at` seconds still for `duration` seconds \
+                      (default 2), pushing what follows later.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "at": { "type": "number", "minimum": 0 },
+                    "duration": { "type": "number", "exclusiveMinimum": 0 }
+                }),
+                &["clip_id", "at"],
+            )
+        },
+    },
+    Tool {
+        name: "picture_in_picture",
+        description: "Shrink a picture clip into a corner over whatever is beneath it: \
+                      `corner` is top left, top right, bottom left or bottom right; `size` is \
+                      small, medium (default), large — or full to fill the frame again.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "corner": { "type": "string" },
+                    "size": { "type": "string" }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "copy_as_shape",
+        description: "Make a copy of the edit in another shape — 9:16 for Shorts, TikTok and \
+                      Reels, 1:1, 4:5, 16:9 or 21:9 — with every shot reframed to fill it, and \
+                      switch to the copy, so the tools after this edit it. switch_sequence goes \
+                      back.",
+        schema: || object(json!({ "shape": { "type": "string" } }), &["shape"]),
+    },
+    Tool {
+        name: "switch_sequence",
+        description: "Work on another of the project's sequences (describe_project lists them).",
+        schema: || {
+            object(
+                json!({ "sequence_id": { "type": "string" } }),
+                &["sequence_id"],
+            )
+        },
+    },
+    Tool {
         name: "add_marker",
         description: "Put a marker on the timeline at `at` seconds, optionally named with \
                       `label` — to note a beat, a chapter or a cut to make.",
@@ -954,6 +1020,89 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         }
         "get_selection" | "select_clips" => {
             Err("only the app's window has a selection: attach_to_app first".to_owned())
+        }
+        "add_colour" => {
+            let top = colour_arg(str_arg(args, "color")?)?;
+            let bottom = match args.get("to").and_then(Value::as_str) {
+                Some(to) => colour_arg(to)?,
+                None => top,
+            };
+            editor.set_playhead(time_arg(args, "at")?);
+            let clip = editor
+                .add_colour_clip(bettercut_editor_core::media::Generated::Colour {
+                    top: [top.r, top.g, top.b],
+                    bottom: [bottom.r, bottom.g, bottom.b],
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
+        }
+        "freeze_frame" => {
+            let clip = clip_arg(args)?;
+            let duration = timeline_time(seconds(args, "duration")?.unwrap_or(2.0).max(0.04));
+            editor.set_playhead(time_arg(args, "at")?);
+            let held = editor
+                .freeze_frame(clip, duration)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": held.to_string() }).to_string())
+        }
+        "picture_in_picture" => {
+            use bettercut_editor_core::{PipCorner, PipSize};
+            let clip = clip_arg(args)?;
+            if editor.video_clip(clip).is_none() {
+                return Err("that is not a picture clip".to_owned());
+            }
+            let size = args.get("size").and_then(Value::as_str).unwrap_or("medium");
+            if plain(size) == "full" {
+                editor
+                    .reset_to_full_frame(clip)
+                    .map_err(|e| e.to_string())?;
+                return Ok("Full frame".to_owned());
+            }
+            let size = one_of(&PipSize::ALL, PipSize::label, size, "size")?;
+            let corner = match args.get("corner").and_then(Value::as_str) {
+                None => PipCorner::BottomRight,
+                Some(name) => one_of(&PipCorner::ALL, PipCorner::label, name, "corner")?,
+            };
+            editor
+                .apply_picture_in_picture(clip, corner, size)
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "{} inset, {}",
+                size.label(),
+                corner.label().to_lowercase()
+            ))
+        }
+        "copy_as_shape" => {
+            let wanted = str_arg(args, "shape")?;
+            let shape = bettercut_editor_core::SHAPES
+                .into_iter()
+                .find(|s| plain(s.label) == plain(wanted) || plain(s.file_suffix) == plain(wanted))
+                .ok_or_else(|| {
+                    let labels: Vec<&str> = bettercut_editor_core::SHAPES
+                        .iter()
+                        .map(|s| s.label)
+                        .collect();
+                    format!("no shape {wanted:?}; one of {}", labels.join(", "))
+                })?;
+            let from = editor
+                .active_sequence()
+                .map(|s| s.id)
+                .ok_or("the project has no sequence")?;
+            let copy = editor
+                .copy_sequence_as(from, shape)
+                .map_err(|e| e.to_string())?;
+            editor.switch_sequence(copy);
+            Ok(json!({ "sequence_id": copy.to_string(), "shape": shape.label }).to_string())
+        }
+        "switch_sequence" => {
+            let id = id_arg(args, "sequence_id")?;
+            let target = editor
+                .sequence_list()
+                .into_iter()
+                .find(|(s, _)| s.to_string() == id.to_string())
+                .ok_or("no sequence with that id")?;
+            editor.switch_sequence(target.0);
+            Ok(format!("Working on {}", target.1))
         }
         "add_marker" => {
             let label = args.get("label").and_then(Value::as_str).unwrap_or("");
@@ -1882,6 +2031,9 @@ fn describe(editor: &Editor) -> Value {
         "picture_lanes": video,
         "sound_lanes": audio,
         "title_lanes": titles,
+        "sequences": editor.sequence_list().into_iter().map(|(id, name)| json!({
+            "sequence_id": id.to_string(), "name": name,
+        })).collect::<Vec<_>>(),
         "markers": sequence.markers.iter().map(|m| json!({
             "at": seconds_of(m.time.ticks()), "label": m.label,
         })).collect::<Vec<_>>(),
