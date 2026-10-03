@@ -19,6 +19,8 @@
 - **The Export window fits a small screen.** In a short window it ran off
   the top and bottom, Export and Cancel out of reach; its settings scroll
   now, and the buttons stay.
+- **The toolbar takes a second row in a narrow window** instead of drawing
+  the timecode, Actions and Windows over its buttons.
 
 ### New
 

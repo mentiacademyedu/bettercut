@@ -19,7 +19,9 @@ pub fn toolbar(
     state: &mut UiState,
     preview: Option<&mut crate::Preview>,
 ) {
-    ui.horizontal(|ui| {
+    // Wrapped, so a narrow window gives the toolbar a second row instead of
+    // drawing its right-hand group over the buttons.
+    ui.horizontal_wrapped(|ui| {
         // Transport first: it is the control reached for most often.
         if let Some(preview) = preview {
             let playing = preview.is_playing();
@@ -683,7 +685,15 @@ pub fn toolbar(
         })
         .response
         .on_hover_text("Zoom, track height, snapping, magnetic, split, and new tracks");
-        ui.separator();
+        // The find box and the right-hand group (timecode, Actions, Windows)
+        // need about this much. Short of it, they start a second row
+        // together rather than land on top of the buttons.
+        const FIND_AND_RIGHT: f32 = 130.0 + 300.0;
+        if ui.available_width() < FIND_AND_RIGHT {
+            ui.end_row();
+        } else {
+            ui.separator();
+        }
         // Find clips by file name, title words or note; Enter goes to the next
         // one after the playhead, and round again from the start.
         let field = ui.add(
