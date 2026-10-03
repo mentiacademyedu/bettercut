@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "An AI assistant can now edit the project open in this window, live: ask it to attach_to_app",
-    "Its edits are on your undo history, and the status bar says what it did",
-    "Assistants can also place and style titles, correct colour, add markers, captions and photo moves",
+    "Windows, then AI Assistant: connect Claude to bettercut in one click",
+    "An attached assistant sees what you have selected, so \u{201c}this clip\u{201d} means the one you clicked",
+    "Assistants can now cut pauses, split scenes, mark beats, level sound, add lower thirds, effects and keyframes",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

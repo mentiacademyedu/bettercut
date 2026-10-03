@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — Connect an assistant in one click; 55 tools
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
