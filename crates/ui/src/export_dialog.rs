@@ -1094,6 +1094,15 @@ pub fn show(
         .show(ctx, |ui| {
             ui.set_min_width(LABEL_WIDTH + FIELD_WIDTH + 60.0);
             ui.add_space(2.0);
+            // The settings scroll when the window is short; the Export and
+            // Cancel buttons below them never leave the screen. Unbounded,
+            // the dialog ran off both ends of a small window — no way to
+            // export at all.
+            let room = (ctx.content_rect().height() - 150.0).max(120.0);
+            egui::ScrollArea::vertical()
+                .max_height(room)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
 
             row(ui, "Export timeline", |ui| {
                 ui.label(egui::RichText::new(&sequence_name).color(theme::disabled()));
@@ -1286,6 +1295,7 @@ pub fn show(
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(complaint).color(theme::error_text()));
             }
+                });
 
             ui.add_space(6.0);
             ui.separator();

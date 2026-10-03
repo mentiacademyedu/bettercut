@@ -16,6 +16,9 @@
 - **A long file name no longer widens the media panel.** Camera names have
   no spaces to wrap at, so one pushed the panel wide; it is cut short with
   "…" now, and shown whole on hover.
+- **The Export window fits a small screen.** In a short window it ran off
+  the top and bottom, Export and Cancel out of reach; its settings scroll
+  now, and the buttons stay.
 
 ### New
 

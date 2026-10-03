@@ -49,9 +49,18 @@ fn main() -> eframe::Result {
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting bettercut");
 
+    // `BETTERCUT_WINDOW=1280x720`: another size to start at — to see the
+    // interface as a small laptop does, with BETTERCUT_SCREENSHOT.
+    let size = std::env::var("BETTERCUT_WINDOW")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+        })
+        .unwrap_or([1440.0, 900.0]);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 900.0])
+            .with_inner_size(size)
             .with_min_inner_size([900.0, 560.0])
             // Files dragged in from the desktop are imported (see
             // `bettercut_ui::file_drop`). Said explicitly rather than left to
