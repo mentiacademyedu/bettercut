@@ -761,6 +761,21 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "contact_sheet",
+        description: "See the whole edit at a glance: `count` frames (default 8, 2–16) spread \
+                      evenly through it, each about `tile_width` pixels wide (default 320), in \
+                      one picture, four to a row. The caption gives each frame's time.",
+        schema: || {
+            object(
+                json!({
+                    "count": { "type": "integer", "minimum": 2, "maximum": 16 },
+                    "tile_width": { "type": "integer", "minimum": 96, "maximum": 640 }
+                }),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "preview_frame",
         description: "See the edit: the frame at `at` seconds, rendered exactly as it will be \
                       exported, as a PNG image (at most `max_width` pixels wide, default 960).",
@@ -1091,6 +1106,9 @@ impl Session {
 pub fn run_on(editor: &mut Editor, name: &str, args: &Value) -> Result<Reply, String> {
     if name == "preview_frame" {
         return preview_frame(editor, args);
+    }
+    if name == "contact_sheet" {
+        return contact_sheet(editor, args);
     }
     run_text(editor, name, args).map(Reply::Text)
 }
@@ -1846,6 +1864,49 @@ fn preview_frame(editor: &mut Editor, args: &Value) -> Result<Reply, String> {
             at.as_seconds_f64(),
             size.width,
             size.height
+        ),
+    })
+}
+
+/// Frames spread through the edit, tiled into one picture: the export's own
+/// contact sheet (`bettercut_export::contact_sheet`), handed over as an image.
+fn contact_sheet(editor: &mut Editor, args: &Value) -> Result<Reply, String> {
+    let count = u32_arg(args, "count")?.unwrap_or(8).clamp(2, 16);
+    let tile_width = u32_arg(args, "tile_width")?.unwrap_or(320).clamp(96, 640);
+    let sequence = editor
+        .active_sequence()
+        .ok_or("the project has no sequence")?;
+    let length = sequence.duration();
+    if length.ticks() <= 0 {
+        return Err("The timeline is empty: there is nothing to see".to_owned());
+    }
+    let file = std::env::temp_dir().join(format!("bettercut-mcp-sheet-{}.png", std::process::id()));
+    let range = bettercut_editor_core::timeline::TimelineRange::new(TimelineTime::ZERO, length)
+        .map_err(|e| e.to_string())?;
+    let mut settings = bettercut_export::SheetSettings::of(file.clone(), range);
+    settings.tiles = count;
+    settings.columns = count.min(4);
+    settings.tile_width = tile_width;
+    let times: Vec<String> = settings
+        .instants()
+        .iter()
+        .map(|t| format!("{:.2}", t.as_seconds_f64()))
+        .collect();
+    bettercut_export::contact_sheet(
+        editor.project(),
+        sequence,
+        &settings,
+        &mut |_| {},
+        &bettercut_editor_core::media::NeverCancelled,
+    )
+    .map_err(|e| format!("could not make the sheet: {e}"))?;
+    let png = std::fs::read(&file).map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&file);
+    Ok(Reply::Image {
+        png: png?,
+        caption: format!(
+            "{count} frames, left to right and down, at {} s",
+            times.join(", ")
         ),
     })
 }

@@ -92,6 +92,7 @@ impl Listener {
                 request.tool.as_str(),
                 "describe_project"
                     | "preview_frame"
+                    | "contact_sheet"
                     | "get_selection"
                     | "select_clips"
                     | "_project"

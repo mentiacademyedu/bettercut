@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **`contact_sheet`**: an assistant sees the whole edit in one picture —
+  frames spread through it, in a grid — to check a cut in one look.
+
 ## 0.6.0 — Hear about new versions; assistants export GIFs
 
 Still a beta: expect bugs, and please

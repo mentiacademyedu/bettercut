@@ -1432,3 +1432,56 @@ fn the_file_ending_picks_what_is_exported() {
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_sees_the_whole_edit_at_a_glance() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp18-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string(), "width": 640, "height": 360 }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+    let reply = client.request(
+        "tools/call",
+        json!({ "name": "contact_sheet", "arguments": { "count": 6, "tile_width": 160 } }),
+    );
+    let result = &reply["result"];
+    if result["isError"] == true {
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("adapter") || text.to_lowercase().contains("gpu"),
+            "{text}"
+        );
+        eprintln!("no GPU here; skipping: {text}");
+    } else {
+        assert_eq!(result["content"][0]["type"], "image");
+        let caption = result["content"][1]["text"].as_str().unwrap();
+        assert!(caption.starts_with("6 frames"), "{caption}");
+        let times = caption.rsplit(" at ").next().unwrap_or_default();
+        assert_eq!(times.split(", ").count(), 6, "six times: {caption}");
+    }
+    let (text, is_error) = {
+        let mut empty = Client::new();
+        empty.ok(
+            "new_project",
+            json!({ "path": dir.join("e.vproj").display().to_string() }),
+        );
+        let out = empty.tool("contact_sheet", json!({}));
+        drop(empty);
+        out
+    };
+    assert!(is_error && text.contains("empty"), "{text}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
