@@ -739,6 +739,11 @@ pub struct UiState {
     pub welcome_open: bool,
     /// The after-an-update window (`crate::whats_new`).
     pub whats_new_open: bool,
+    /// How to connect an AI assistant (`crate::assistant`).
+    pub assistant_open: bool,
+    /// When an assistant last called through the live link, for that window
+    /// to say whether one is connected. Set by the desktop shell.
+    pub assistant_seen: Option<std::time::Instant>,
     /// The command palette (Ctrl+K): open, what is typed, and which row is
     /// highlighted.
     pub palette_open: bool,
@@ -1082,6 +1087,8 @@ impl Default for UiState {
             crash_report: None,
             welcome_open: false,
             whats_new_open: false,
+            assistant_open: false,
+            assistant_seen: None,
             palette_open: false,
             palette_query: String::new(),
             palette_pick: 0,

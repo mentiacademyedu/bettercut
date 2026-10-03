@@ -793,6 +793,13 @@ pub fn toolbar(
                 {
                     state.shortcuts_open = !state.shortcuts_open;
                 }
+                if ui
+                    .button("AI Assistant")
+                    .on_hover_text("Connect Claude or another AI assistant to edit with you")
+                    .clicked()
+                {
+                    state.assistant_open = !state.assistant_open;
+                }
             })
             .response
             .on_hover_text("Captions, markers, notes, scopes, history and the other windows");

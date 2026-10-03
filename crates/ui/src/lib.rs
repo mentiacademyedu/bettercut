@@ -4,6 +4,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod assistant;
 pub mod bounce;
 pub mod bug_report;
 pub mod caption_list;
@@ -185,6 +186,7 @@ pub fn draw(
     disk_change::check(editor, state);
     disk_change::show(ui.ctx(), editor, state);
     whats_new::show(ui.ctx(), state);
+    assistant::show(ui.ctx(), state);
     // Text an action asked to have put on the clipboard.
     if let Some(text) = state.copy_out.take() {
         ui.ctx().copy_text(text);

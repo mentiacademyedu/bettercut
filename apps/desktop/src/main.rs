@@ -369,6 +369,7 @@ impl eframe::App for App {
             }
             if served.any {
                 self.ui.needs_repaint = true;
+                self.ui.assistant_seen = Some(std::time::Instant::now());
             }
             if let Some(tool) = served.last_change {
                 self.ui.info(format!("An assistant: {tool}"));

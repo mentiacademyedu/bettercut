@@ -417,6 +417,11 @@ pub const ACTIONS: &[Action] = &[
         },
     },
     Action {
+        name: "Connect an AI Assistant",
+        hint: "Claude or another assistant, editing with you in this window",
+        run: |_, s| s.assistant_open = true,
+    },
+    Action {
         name: "What's New",
         hint: "the new things in this version",
         run: |_, s| s.whats_new_open = true,
