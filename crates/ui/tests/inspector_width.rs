@@ -36,9 +36,10 @@ fn width_of(editor: &mut Editor, state: &mut UiState, room: f32) -> f32 {
 #[test]
 fn every_tab_fits_the_narrowest_inspector() {
     let (mut editor, _events) = Editor::new_project("Widths");
+    // A long name, as cameras give: no spaces to wrap at.
     let mut asset = MediaAsset::new(
         MediaKind::Video,
-        "C:/media/a.mp4",
+        "C:/media/a-very-long-file-name-from-a-camera-that-names-things-badly-0001.mp4",
         MediaTime::from_seconds(20),
     );
     asset.width = 1920;
