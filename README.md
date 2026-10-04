@@ -127,7 +127,8 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered
 exactly as it will export, so it can check its own work. The server also offers
 ready-made requests as prompts — `tighten_interview`, `make_short`,
-`cut_to_the_beat`, `title_card` — which Claude Code lists as slash commands.
+`cut_to_the_beat`, `title_card`, `make_it_cinematic`, `clean_up_sound` — which
+Claude Code lists as slash commands.
 
 **Live, in the open window:** with the app running, `attach_to_app` makes
 every tool act on the project in its window instead: the edits appear as they

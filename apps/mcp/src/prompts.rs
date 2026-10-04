@@ -76,6 +76,29 @@ const PROMPTS: &[Prompt] = &[
                smaller beneath it if given. Give the title a gentle animate_title intro, and \
                fade into the first shot. Check it with preview_frame.",
     },
+    Prompt {
+        name: "make_it_cinematic",
+        description: "Give the edit a film look: bars, a grade, grain, soft cuts and music that ends with it",
+        arguments: &[("song", "Music to put under it, as a path", false)],
+        text: "In bettercut, make the edit that is open look like a film (attach_to_app if the \
+               app is open). Use whole_video_look for 2.39 bars, a little grain and a light \
+               vignette. Pick one apply_filter look that suits the shots and use it on every \
+               picture clip, then transition_every_cut with a crossfade on the main picture \
+               lane. If I gave a song ({song}), import it, put it on the timeline and use \
+               fit_music so it ends with the pictures, at a volume under any talking. Check a \
+               few frames with preview_frame and tell me what you chose.",
+    },
+    Prompt {
+        name: "clean_up_sound",
+        description: "Make the talking in the edit clear and even, and keep music under it",
+        arguments: &[],
+        text: "In bettercut, clean up the sound of the edit that is open (attach_to_app if the \
+               app is open). For each clip with someone talking: enhance_voice, then \
+               shape_sound with the Voice eq (Hum 50 or Hum 60 instead if there is mains \
+               hum), then normalise_volume. Where music plays under talking, use \
+               duck_under_voice on the music. Use history to list what you changed, then tell \
+               me.",
+    },
 ];
 
 /// The prompts, as `prompts/list` reports them.
