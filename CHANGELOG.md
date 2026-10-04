@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.3 — One undo for an assistant's whole change; chapters and subtitles
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 

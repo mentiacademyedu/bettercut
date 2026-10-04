@@ -13,7 +13,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Splitting into many pieces at once is fast: a thousand cuts in a quarter of a second, not forty-five",
+    "An assistant's whole change can be one undo step",
+    "Assistants write YouTube chapters from your markers, and .srt subtitles from your captions",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
