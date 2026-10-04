@@ -1906,6 +1906,60 @@ fn an_assistant_sets_up_the_lanes() {
 }
 
 #[test]
+fn an_assistant_tidies_the_media() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp26-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("tone-48k.wav"), fixture("still.png")] }),
+    ))
+    .unwrap();
+    client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+    let media = |client: &mut Client| -> Vec<Value> {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["media"].as_array().unwrap().clone()
+    };
+
+    let said = client.ok(
+        "organise_media",
+        json!({ "media_id": imported[0]["media_id"], "rename": "Theme tune", "bin": "Music" }),
+    );
+    assert_eq!(said, "Now called \"Theme tune\", in the \"Music\" bin");
+    let tune = media(&mut client)[0].clone();
+    assert!(
+        tune["name"] == "Theme tune" && tune["bin"] == "Music",
+        "{tune}"
+    );
+    let history: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(history["undo"][0], "Organise Media", "{history}");
+
+    let (text, is_error) = client.tool(
+        "organise_media",
+        json!({ "media_id": imported[0]["media_id"] }),
+    );
+    assert!(is_error && text.contains("nothing"), "{text}");
+
+    // The photo was never used.
+    let said = client.ok("remove_unused_media", json!({}));
+    assert!(said.starts_with("1 unused"), "{said}");
+    assert_eq!(media(&mut client).len(), 1);
+    let said = client.ok("remove_unused_media", json!({}));
+    assert!(said.contains("nothing removed"), "{said}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_assistant_shapes_the_sound() {
     let dir = std::env::temp_dir().join(format!("bettercut-mcp22-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

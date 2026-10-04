@@ -395,6 +395,29 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "organise_media",
+        description: "Tidy one imported file in the project's media list, in one undo step: \
+                      `rename` it (the file on disk keeps its name; an empty name goes back \
+                      to the file's), and file it in a `bin` (an empty bin takes it out of \
+                      one). describe_project shows names and bins.",
+        schema: || {
+            object(
+                json!({
+                    "media_id": { "type": "string" },
+                    "rename": { "type": "string" },
+                    "bin": { "type": "string" }
+                }),
+                &["media_id"],
+            )
+        },
+    },
+    Tool {
+        name: "remove_unused_media",
+        description: "Take every imported file that no clip uses out of the project's media \
+                      list, in one undo step. The files stay on disk.",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
         name: "set_lane",
         description: "Change a lane, named by `lane` (as describe_project lists it) or by one \
                       of its clips' `clip_id`, in one undo step: `rename` it, `locked` so no \
@@ -1561,6 +1584,53 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "remove_range" => remove_range(editor, args),
         "whole_video_look" => whole_video_look(editor, args),
         "set_lane" => set_lane(editor, args),
+        "organise_media" => {
+            let media = MediaId::from_uuid(id_arg(args, "media_id")?);
+            if editor.project().media_asset(media).is_none() {
+                return Err("no imported file with that media_id".to_owned());
+            }
+            let depth = editor.undo_depth();
+            let mut said = Vec::new();
+            if let Some(name) = args.get("rename").and_then(Value::as_str) {
+                editor
+                    .rename_media(media, name)
+                    .map_err(|e| e.to_string())?;
+                said.push(format!(
+                    "called {:?}",
+                    editor
+                        .project()
+                        .media_asset(media)
+                        .map_or("", |m| m.display_name())
+                ));
+            }
+            if let Some(bin) = args.get("bin").and_then(Value::as_str) {
+                if let Err(error) = editor.set_media_bin(media, bin) {
+                    for _ in 0..editor.undo_depth().saturating_sub(depth) {
+                        let _ = editor.undo();
+                    }
+                    return Err(error.to_string());
+                }
+                said.push(if bin.trim().is_empty() {
+                    "in no bin".to_owned()
+                } else {
+                    format!("in the {:?} bin", bin.trim())
+                });
+            }
+            if said.is_empty() {
+                return Err("nothing to change: pass rename or bin".to_owned());
+            }
+            let steps = editor.undo_depth().saturating_sub(depth);
+            editor.merge_last_steps(steps, "Organise Media");
+            Ok(format!("Now {}", said.join(", ")))
+        }
+        "remove_unused_media" => {
+            let removed = editor.remove_unused_media().map_err(|e| e.to_string())?;
+            Ok(if removed == 0 {
+                "Every file is in use; nothing removed".to_owned()
+            } else {
+                format!("{removed} unused files taken out of the project")
+            })
+        }
         "hold_last_frame" => {
             let clip = clip_arg(args)?;
             let duration = timeline_time(seconds(args, "duration")?.unwrap_or(2.0).max(0.04));
@@ -3293,6 +3363,7 @@ fn describe(editor: &Editor) -> Value {
             json!({
                 "media_id": m.id.to_string(),
                 "name": m.display_name(),
+                "bin": m.bin,
                 "kind": format!("{:?}", m.kind).to_lowercase(),
                 "duration": seconds_of(m.duration.ticks()),
                 "width": m.width,

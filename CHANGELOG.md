@@ -15,6 +15,8 @@
   and the background colour over the whole video, in one undo step.
 - **`set_lane`**: rename a lane, lock it, switch it off, solo it or set a
   sound lane's volume. `describe_project` now shows each lane's state.
+- **`organise_media`** renames an imported file and files it in a bin;
+  **`remove_unused_media`** clears out what no clip uses.
 - Two new ready-made requests: **`make_it_cinematic`** (bars, one look,
   soft cuts, music that ends with the pictures) and **`clean_up_sound`**.
 - **`remove_range`**: take out everything between two times on every lane,
