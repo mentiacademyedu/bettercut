@@ -1559,3 +1559,54 @@ fn a_batch_is_one_undo_step() {
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_assistant_writes_chapters_and_subtitles() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp20-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    // Thirty seconds of edit: a colour clip held long enough.
+    let colour: Value =
+        serde_json::from_str(&client.ok("add_colour", json!({ "color": "#203040", "at": 0 })))
+            .unwrap();
+    client.ok(
+        "trim_clip",
+        json!({ "clip_id": colour["clip_id"], "edge": "end", "to": 40 }),
+    );
+    client.ok("add_marker", json!({ "at": 12, "label": "The middle" }));
+    client.ok("add_marker", json!({ "at": 25, "label": "The end" }));
+    let chapters: Value = serde_json::from_str(&client.ok("chapters", json!({}))).unwrap();
+    let text = chapters["text"].as_str().unwrap();
+    assert!(text.starts_with("0:00"), "{text}");
+    assert!(
+        text.contains("0:12 The middle") && text.contains("0:25 The end"),
+        "{text}"
+    );
+
+    client.ok(
+        "add_captions",
+        json!({ "lines": [
+            { "start": 0, "end": 2, "text": "Hello" },
+            { "start": 2, "end": 4, "text": "And goodbye" }
+        ] }),
+    );
+    let srt = dir.join("subs.srt");
+    let said = client.ok(
+        "export_captions",
+        json!({ "path": srt.display().to_string() }),
+    );
+    assert!(said.starts_with("2 captions"), "{said}");
+    let written = std::fs::read_to_string(&srt).unwrap();
+    assert!(
+        written.contains("00:00:02,000 --> 00:00:04,000"),
+        "{written}"
+    );
+    assert!(written.contains("And goodbye"), "{written}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}

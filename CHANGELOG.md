@@ -6,6 +6,8 @@
 
 - **`batch`**: an assistant makes several edits as one undo step, so its
   whole change comes back with one Ctrl+Z.
+- **`chapters`** gives the YouTube chapter list from the markers, and
+  **`export_captions`** writes the captions to an `.srt` or `.vtt` file.
 
 ## 0.6.2 — Many cuts at once are fast
 

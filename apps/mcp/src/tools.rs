@@ -613,6 +613,19 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "chapters",
+        description: "The YouTube chapter list made from the markers (`0:00 Intro`, one a \
+                      line, named after each marker), ready to paste into a description — \
+                      and anything YouTube would refuse (too few chapters, one too short).",
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
+        name: "export_captions",
+        description: "Write the captions to a subtitle file at `path`: .srt or .vtt, by the \
+                      ending — for YouTube, or a player that shows subtitles.",
+        schema: || object(json!({ "path": { "type": "string" } }), &["path"]),
+    },
+    Tool {
         name: "history",
         description: "The steps undo would take back, newest first (the last 20), and the \
                       steps redo would bring back — attached to the window, the person's own \
@@ -1606,6 +1619,26 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                     crop.left, crop.top, crop.right, crop.bottom
                 )
             })
+        }
+        "chapters" => {
+            let sequence = editor
+                .active_sequence()
+                .ok_or("the project has no sequence")?;
+            let list = bettercut_editor_core::timeline::chapters::chapter_list(
+                &sequence.markers,
+                sequence.duration(),
+            );
+            Ok(json!({
+                "text": list.text,
+                "count": list.count,
+                "problems": list.problems.iter().map(|p| p.describe()).collect::<Vec<_>>(),
+            })
+            .to_string())
+        }
+        "export_captions" => {
+            let path = path_arg(args, "path")?;
+            let written = editor.export_captions(&path).map_err(|e| e.to_string())?;
+            Ok(format!("{written} captions written to {}", path.display()))
         }
         "history" => {
             let (done, undone) = editor.history_steps();
