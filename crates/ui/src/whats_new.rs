@@ -13,8 +13,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "An assistant's whole change can be one undo step",
-    "Assistants write YouTube chapters from your markers, and .srt subtitles from your captions",
+    "Assistants can set a clip's EQ, voice and echo, the whole video's bars and progress bar, and each lane",
+    "When an assistant deletes a shot, its sound goes with it",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

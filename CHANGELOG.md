@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.4 — An assistant shapes the sound, the lanes and the whole video
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
