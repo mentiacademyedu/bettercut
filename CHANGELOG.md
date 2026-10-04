@@ -11,6 +11,8 @@
   **`transition_every_cut`**, **`fit_music`**, **`group_clips`**,
   **`hold_last_frame`** and **`split_into`** — the timeline menu's
   structural edits, for an assistant.
+- **`whole_video_look`**: cinematic bars, a progress bar, vignette, grain
+  and the background colour over the whole video, in one undo step.
 - **`remove_range`**: take out everything between two times on every lane,
   closing the gap or leaving it, in one undo step.
 

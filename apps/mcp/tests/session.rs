@@ -1763,6 +1763,57 @@ fn an_assistant_takes_out_a_stretch_and_holds_the_end() {
 }
 
 #[test]
+fn an_assistant_sets_the_whole_video_look() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp24-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let look = |client: &mut Client| -> Value {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["sequence"]["whole_video"].clone()
+    };
+    assert!(look(&mut client)["bars"].is_null());
+
+    let said = client.ok(
+        "whole_video_look",
+        json!({ "bars": "2.39:1", "progress_bar": "thick", "progress_color": "#00ff00",
+                "progress_top": true, "vignette": 40, "grain": 10, "background": "#102030" }),
+    );
+    assert!(said.contains("bars at 2.39:1"), "{said}");
+    let now = look(&mut client);
+    assert!((now["bars"].as_f64().unwrap() - 2.39).abs() < 1e-4, "{now}");
+    assert_eq!(now["progress_bar"]["color"], "#00ff00", "{now}");
+    assert_eq!(now["progress_bar"]["top"], true, "{now}");
+    assert_eq!(now["vignette"], 40.0, "{now}");
+    assert_eq!(now["grain"], 10.0, "{now}");
+
+    let history: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(history["undo"][0], "Whole Video Look", "{history}");
+    client.ok("undo", json!({}));
+    let now = look(&mut client);
+    assert!(
+        now["bars"].is_null() && now["progress_bar"].is_null() && now["vignette"] == 0.0,
+        "one undo takes it all back: {now}"
+    );
+    client.ok("redo", json!({}));
+    client.ok("whole_video_look", json!({ "bars": "none", "progress_bar": "none" }));
+    let now = look(&mut client);
+    assert!(now["bars"].is_null() && now["progress_bar"].is_null(), "{now}");
+
+    let (text, is_error) = client.tool("whole_video_look", json!({ "bars": "square" }));
+    assert!(is_error && text.contains("2.39"), "{text}");
+    let (text, is_error) = client.tool("whole_video_look", json!({}));
+    assert!(is_error && text.contains("nothing"), "{text}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_assistant_shapes_the_sound() {
     let dir = std::env::temp_dir().join(format!("bettercut-mcp22-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

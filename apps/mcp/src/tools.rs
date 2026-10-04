@@ -395,6 +395,30 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "whole_video_look",
+        description: "Settings over the whole video rather than one clip, in one undo step; \
+                      only what you pass changes. `bars`: cinematic black bars cutting the \
+                      picture to a shape (\"2.39\", \"1.85\", \"2\", \"2.76\" or none); \
+                      `progress_bar`: none, thin or thick, a bar that fills as the video \
+                      plays, with `progress_color` (\"#rrggbb\") and `progress_top`; \
+                      `vignette` and `grain` 0-100; `background` (\"#rrggbb\"), what shows \
+                      where no picture does.",
+        schema: || {
+            object(
+                json!({
+                    "bars": { "type": "string" },
+                    "progress_bar": { "type": "string", "enum": ["none", "thin", "thick"] },
+                    "progress_color": { "type": "string" },
+                    "progress_top": { "type": "boolean" },
+                    "vignette": { "type": "number", "minimum": 0, "maximum": 100 },
+                    "grain": { "type": "number", "minimum": 0, "maximum": 100 },
+                    "background": { "type": "string" }
+                }),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "remove_range",
         description: "Take everything between `from` and `to` seconds off every unlocked \
                       lane, cutting clips that cross either end. With `close_gap` (default \
@@ -1513,6 +1537,7 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         }
         "shape_sound" => shape_sound(editor, args),
         "remove_range" => remove_range(editor, args),
+        "whole_video_look" => whole_video_look(editor, args),
         "hold_last_frame" => {
             let clip = clip_arg(args)?;
             let duration = timeline_time(seconds(args, "duration")?.unwrap_or(2.0).max(0.04));
@@ -2810,6 +2835,101 @@ fn sound_clip(
         .ok_or_else(|| "that clip has no sound: use an id from sound_lanes".to_owned())
 }
 
+/// The sequence's own look — bars, progress bar, vignette, grain, background —
+/// as one undo step.
+fn whole_video_look(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::MAX_PROGRESS_BAR;
+    let master = editor
+        .active_sequence()
+        .ok_or("the project has no sequence")?
+        .master;
+    let mut properties = Vec::new();
+    let mut said = Vec::new();
+    if let Some(bars) = args.get("bars").and_then(Value::as_str) {
+        let shape = if plain(bars) == "none" || plain(bars) == "off" {
+            0.0
+        } else {
+            let ratio = bars.split(':').next().unwrap_or("").trim();
+            ratio
+                .parse::<f32>()
+                .ok()
+                .filter(|r| r.is_finite() && *r > 1.0 && *r <= 4.0)
+                .ok_or_else(|| {
+                    format!("bars is a shape wider than 1 like \"2.39\", or none — not {bars:?}")
+                })?
+        };
+        properties.push(ClipProperty::Bars(shape));
+        said.push(if shape == 0.0 {
+            "no bars".to_owned()
+        } else {
+            format!("bars at {shape}:1")
+        });
+    }
+    let mut bar = master.progress_bar;
+    let mut bar_changed = false;
+    if let Some(size) = args.get("progress_bar").and_then(Value::as_str) {
+        bar.height = match plain(size).as_str() {
+            "none" | "off" => 0.0,
+            "thin" => MAX_PROGRESS_BAR * 0.3,
+            "thick" => MAX_PROGRESS_BAR,
+            _ => return Err(format!("progress_bar is none, thin or thick, not {size:?}")),
+        };
+        bar_changed = true;
+        said.push(format!("progress bar {}", size.to_lowercase()));
+    }
+    if let Some(colour) = args.get("progress_color").and_then(Value::as_str) {
+        let c = colour_arg(colour)?;
+        bar.colour = [c.r, c.g, c.b];
+        bar_changed = true;
+    }
+    if let Some(top) = args.get("progress_top").and_then(Value::as_bool) {
+        bar.top = top;
+        bar_changed = true;
+    }
+    if bar_changed {
+        properties.push(ClipProperty::ProgressBar(bar));
+    }
+    if let Some(v) = optional_number(args, "vignette")? {
+        let v = v.clamp(0.0, 100.0);
+        properties.push(ClipProperty::Vignette(v / 100.0));
+        said.push(format!("vignette {v}"));
+    }
+    if let Some(v) = optional_number(args, "grain")? {
+        let v = v.clamp(0.0, 100.0);
+        properties.push(ClipProperty::Grain(v / 100.0));
+        said.push(format!("grain {v}"));
+    }
+    if let Some(colour) = args.get("background").and_then(Value::as_str) {
+        let c = colour_arg(colour)?;
+        properties.push(ClipProperty::Background([
+            f32::from(c.r) / 255.0,
+            f32::from(c.g) / 255.0,
+            f32::from(c.b) / 255.0,
+        ]));
+        said.push(format!("background {colour}"));
+    }
+    if properties.is_empty() {
+        return Err("nothing to change: pass bars, progress_bar, progress_color, \
+                    progress_top, vignette, grain or background"
+            .to_owned());
+    }
+    let depth = editor.undo_depth();
+    for property in properties {
+        if let Err(error) = editor.set_sequence_value(property, false) {
+            for _ in 0..editor.undo_depth().saturating_sub(depth) {
+                let _ = editor.undo();
+            }
+            return Err(error.to_string());
+        }
+    }
+    let steps = editor.undo_depth().saturating_sub(depth);
+    editor.merge_last_steps(steps, "Whole Video Look");
+    if said.is_empty() {
+        said.push("progress bar restyled".to_owned());
+    }
+    Ok(format!("Whole video: {}", said.join(", ")))
+}
+
 /// Lift or extract a stretch given in seconds: marks it, takes it out, puts
 /// the person's own marks back, and folds all of that into one undo step.
 fn remove_range(editor: &mut Editor, args: &Value) -> Result<String, String> {
@@ -3139,6 +3259,19 @@ fn describe(editor: &Editor) -> Value {
             "height": sequence.resolution.height,
             "fps": rate.num() as f64 / rate.den() as f64,
             "duration": seconds_of(sequence.duration().ticks()),
+            "whole_video": {
+                "bars": (sequence.master.bars > 1.0).then_some(sequence.master.bars),
+                "progress_bar": sequence.master.progress_bar.is_visible().then(|| {
+                    let bar = sequence.master.progress_bar;
+                    json!({
+                        "color": format!("#{:02x}{:02x}{:02x}",
+                            bar.colour[0], bar.colour[1], bar.colour[2]),
+                        "top": bar.top,
+                    })
+                }),
+                "vignette": (sequence.master.vignette * 100.0).round(),
+                "grain": (sequence.master.grain * 100.0).round(),
+            },
         },
         "media": media,
         "picture_lanes": video,
