@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **`shape_sound`**: an assistant sets a clip's EQ (Voice, Phone, Radio,
+  Megaphone…), voice (chipmunk, deep or any pitch), echo or reverb and
+  robot voice in one undo step.
+- **`close_gaps`**, **`loop_clip`**, **`boomerang`**,
+  **`transition_every_cut`**, **`fit_music`** and **`group_clips`** — the
+  timeline menu's structural edits, for an assistant.
+
+### Fixed
+
+- An assistant deleting a shot left its sound behind, and a ripple delete
+  left that sound out of sync with everything after it. The shot's sound
+  now goes with it, as Delete does in the app.
+
 ## 0.6.3 — One undo for an assistant's whole change; chapters and subtitles
 
 Still a beta: expect bugs, and please

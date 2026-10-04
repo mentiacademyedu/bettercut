@@ -372,6 +372,90 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "shape_sound",
+        description: "Change how a clip's sound is coloured, in one undo step; only what you \
+                      pass changes. `eq` is Voice, Phone, Radio, Megaphone, Rumble, Hum 50, \
+                      Hum 60 or Flat; `voice` is normal, chipmunk or deep, or `pitch` in \
+                      semitones (-12 to 12, speed unchanged); `space` is dry, echo, room or \
+                      hall with `space_amount` 0-100 (default 30); `robot` 0-100. A picture \
+                      clip's own sound is shaped.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "eq": { "type": "string" },
+                    "voice": { "type": "string", "enum": ["normal", "chipmunk", "deep"] },
+                    "pitch": { "type": "number", "minimum": -12, "maximum": 12 },
+                    "space": { "type": "string", "enum": ["dry", "echo", "room", "hall"] },
+                    "space_amount": { "type": "number", "minimum": 0, "maximum": 100 },
+                    "robot": { "type": "number", "minimum": 0, "maximum": 100 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "close_gaps",
+        description: "Close every empty stretch on the lane `clip_id` is on, sliding the \
+                      clips after each gap left (their linked sound moves too). One undo \
+                      step. Says how many gaps closed.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "loop_clip",
+        description: "Play a clip `times` times in a row (2-20): copies follow it, pushing \
+                      what comes after later. Its sound loops with it.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "times": { "type": "integer", "minimum": 2, "maximum": 20 }
+                }),
+                &["clip_id", "times"],
+            )
+        },
+    },
+    Tool {
+        name: "boomerang",
+        description: "Play a picture clip forwards then backwards straight after, the \
+                      back-and-forth loop. Pushes what follows later.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "transition_every_cut",
+        description: "Put the same transition on every cut of the lane `clip_id` is on \
+                      (`kind` as add_transition takes, or none to take every transition off \
+                      that lane). Cuts without spare footage either side are skipped and \
+                      counted.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "kind": { "type": "string" } }),
+                &["clip_id", "kind"],
+            )
+        },
+    },
+    Tool {
+        name: "fit_music",
+        description: "End a music clip (a sound clip not linked to a picture) where the \
+                      pictures end, with a fade out, so the song does not run on past the \
+                      edit.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "group_clips",
+        description: "Group clips so they move together (at least two), or with `ungroup` \
+                      true take the groups these clips are in apart.",
+        schema: || {
+            object(
+                json!({
+                    "clip_ids": { "type": "array", "items": { "type": "string" } },
+                    "ungroup": { "type": "boolean" }
+                }),
+                &["clip_ids"],
+            )
+        },
+    },
+    Tool {
         name: "get_selection",
         description: "When attached to the app's window: the clips the person has selected \
                       there, and where the playhead is — what \"this clip\" and \"here\" mean \
@@ -658,8 +742,8 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "delete_clip",
-        description: "Remove a clip (or title). With `ripple`, everything after it on its lane \
-                      moves up to close the gap.",
+        description: "Remove a clip (or title); a shot's own sound goes with it. With \
+                      `ripple`, everything after it on its lanes moves up to close the gap.",
         schema: || {
             object(
                 json!({ "clip_id": { "type": "string" }, "ripple": { "type": "boolean" } }),
@@ -1380,6 +1464,77 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             }
             Ok(if muted { "Muted" } else { "Unmuted" }.to_owned())
         }
+        "shape_sound" => shape_sound(editor, args),
+        "close_gaps" => {
+            let clip = clip_arg(args)?;
+            let track = editor.track_of(clip).ok_or("no clip with that id")?;
+            let closed = editor.close_all_gaps(track).map_err(|e| e.to_string())?;
+            Ok(format!("{closed} gaps closed"))
+        }
+        "loop_clip" => {
+            let clip = clip_arg(args)?;
+            let times = u32_arg(args, "times")?.ok_or("times is required")?;
+            let copies = editor.loop_clip(clip, times).map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "clip_ids": copies.iter().map(ToString::to_string).collect::<Vec<_>>() })
+                    .to_string(),
+            )
+        }
+        "boomerang" => {
+            let clip = clip_arg(args)?;
+            let back = editor.boomerang(clip).map_err(|e| e.to_string())?;
+            Ok(json!({ "reversed_clip_id": back.to_string() }).to_string())
+        }
+        "transition_every_cut" => {
+            let clip = clip_arg(args)?;
+            let track = editor.track_of(clip).ok_or("no clip with that id")?;
+            let kind = str_arg(args, "kind")?;
+            if plain(kind) == "none" {
+                let removed = editor
+                    .remove_every_transition(track)
+                    .map_err(|e| e.to_string())?;
+                return Ok(format!("{removed} transitions taken off"));
+            }
+            let kind = transition_named(kind)?;
+            let (applied, skipped) = editor
+                .transition_every_cut(track, kind)
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "{} on {applied} cuts; {skipped} skipped for want of footage",
+                kind.label()
+            ))
+        }
+        "fit_music" => {
+            let clip = clip_arg(args)?;
+            let end = editor.fit_music(clip).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Music now ends at {:.3} s, fading out",
+                end.as_seconds_f64()
+            ))
+        }
+        "group_clips" => {
+            let clips = args
+                .get("clip_ids")
+                .and_then(Value::as_array)
+                .ok_or("clip_ids is required")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                        .map(ClipId::from_uuid)
+                        .ok_or_else(|| "clip_ids holds something that is not an id".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if args.get("ungroup").and_then(Value::as_bool) == Some(true) {
+                let parted = editor.ungroup_clips(&clips).map_err(|e| e.to_string())?;
+                if parted == 0 {
+                    return Err("none of those clips is in a group".to_owned());
+                }
+                return Ok(format!("{parted} groups taken apart"));
+            }
+            let grouped = editor.group_clips(&clips).map_err(|e| e.to_string())?;
+            Ok(format!("{grouped} clips now move as one group"))
+        }
         "set_playhead" => {
             let at = time_arg(args, "at")?;
             editor.set_playhead(at);
@@ -1886,13 +2041,38 @@ fn delete_clip(editor: &mut Editor, args: &Value) -> Result<String, String> {
         editor.remove_text(clip).map_err(|e| e.to_string())?;
         return Ok("Deleted the title".to_owned());
     }
-    let track = editor.track_of(clip).ok_or("no clip with that id")?;
-    if ripple {
-        editor.ripple_delete(track, clip)
-    } else {
-        editor.remove_clip(track, clip)
-    }
-    .map_err(|e| e.to_string())?;
+    use bettercut_editor_core::Command;
+    editor.track_of(clip).ok_or("no clip with that id")?;
+    let sequence = editor
+        .active_sequence()
+        .map(|s| s.id)
+        .ok_or("the project has no sequence")?;
+    // A shot's own sound goes with it, on its own lane, as Delete in the app
+    // takes both: otherwise a ripple would leave the sound out of sync.
+    let commands = editor
+        .linked_with(clip)
+        .into_iter()
+        .filter_map(|clip| {
+            let track = editor.track_of(clip)?;
+            Some(if ripple {
+                Command::RippleDeleteClip {
+                    sequence,
+                    track,
+                    clip,
+                }
+            } else {
+                Command::RemoveClip {
+                    sequence,
+                    track,
+                    clip,
+                }
+            })
+        })
+        .collect();
+    let label = if ripple { "Ripple Delete" } else { "Delete" };
+    editor
+        .dispatch_group(label, commands)
+        .map_err(|e| e.to_string())?;
     Ok("Deleted".to_owned())
 }
 
@@ -2564,6 +2744,71 @@ fn sound_clip(
         .ok_or_else(|| "that clip has no sound: use an id from sound_lanes".to_owned())
 }
 
+/// The sound's equaliser, voice, room and robot, as one undo step.
+fn shape_sound(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::{ClipEq, ClipSpace, SpaceKind};
+    let sound = sound_clip(editor, args)?;
+    let mut properties = Vec::new();
+    let mut said = Vec::new();
+    if let Some(name) = args.get("eq").and_then(Value::as_str) {
+        let eq = if plain(name) == "flat" || plain(name) == "off" {
+            ClipEq::default()
+        } else {
+            ClipEq::PRESETS
+                .iter()
+                .find(|(label, _, _)| plain(label) == plain(name))
+                .map(|(_, _, eq)| *eq)
+                .ok_or_else(|| {
+                    let names: Vec<&str> = ClipEq::PRESETS.iter().map(|(l, _, _)| *l).collect();
+                    format!("no eq {name:?}; one of {}, or Flat", names.join(", "))
+                })?
+        };
+        properties.push(ClipProperty::Eq(eq));
+        said.push(format!("eq {name}"));
+    }
+    let pitch = match args.get("voice").and_then(Value::as_str) {
+        None => optional_number(args, "pitch")?,
+        Some(voice) => Some(match plain(voice).as_str() {
+            "normal" => 0.0,
+            "chipmunk" => 7.0,
+            "deep" => -5.0,
+            _ => return Err(format!("voice is normal, chipmunk or deep, not {voice:?}")),
+        }),
+    };
+    if let Some(semitones) = pitch {
+        let semitones = (semitones.clamp(-12.0, 12.0) * 10.0).round() / 10.0;
+        properties.push(ClipProperty::Pitch(semitones));
+        said.push(format!("pitch {semitones:+} semitones"));
+    }
+    if let Some(name) = args.get("space").and_then(Value::as_str) {
+        let kind = one_of(&SpaceKind::ALL, SpaceKind::label, name, "space")?;
+        let amount = optional_number(args, "space_amount")?.unwrap_or(30.0);
+        let space = ClipSpace {
+            kind,
+            mix: amount / 100.0,
+        }
+        .clamped();
+        properties.push(ClipProperty::Space(space));
+        said.push(if space.is_dry() {
+            "dry".to_owned()
+        } else {
+            format!("{} at {}", kind.label().to_lowercase(), amount.clamp(0.0, 100.0))
+        });
+    }
+    if let Some(robot) = optional_number(args, "robot")? {
+        let robot = robot.clamp(0.0, 100.0);
+        properties.push(ClipProperty::Robot(robot));
+        said.push(format!("robot {robot}"));
+    }
+    if properties.is_empty() {
+        return Err("nothing to change: pass eq, voice, pitch, space or robot".to_owned());
+    }
+    editor
+        .set_clip_properties(sound.id, properties, "Shape Sound")
+        .map_err(|e| e.to_string())?;
+    Ok(format!("Sound: {}", said.join(", ")))
+}
+
 /// A file's waveform: the app's cached one when it has made it, otherwise
 /// read now. Not written to the app's cache: that is the app's to fill.
 fn waveform_of(editor: &Editor, media: MediaId) -> Result<bettercut_cache::Waveform, String> {
@@ -2734,6 +2979,15 @@ fn describe(editor: &Editor) -> Value {
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
                             "media": name_of(c.media_id),
                             "volume": c.gain, "speed": c.speed.as_f64(), "reversed": c.reversed,
+                            "eq": (!c.eq.is_flat()).then(|| bettercut_editor_core::timeline::ClipEq::PRESETS
+                                .iter().find(|(_, _, eq)| eq.clamped() == c.eq.clamped())
+                                .map_or("custom", |(label, _, _)| *label)),
+                            "pitch": c.pitch,
+                            "space": (!c.space.is_dry()).then(|| json!({
+                                "kind": c.space.kind.label(),
+                                "amount": (c.space.mix * 100.0).round(),
+                            })),
+                            "robot": c.robot,
                             "animated": animated_names(editor, c.id) })
                 }).collect::<Vec<_>>(),
             })
