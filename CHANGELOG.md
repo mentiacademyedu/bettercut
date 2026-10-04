@@ -8,8 +8,11 @@
   Megaphone…), voice (chipmunk, deep or any pitch), echo or reverb and
   robot voice in one undo step.
 - **`close_gaps`**, **`loop_clip`**, **`boomerang`**,
-  **`transition_every_cut`**, **`fit_music`** and **`group_clips`** — the
-  timeline menu's structural edits, for an assistant.
+  **`transition_every_cut`**, **`fit_music`**, **`group_clips`**,
+  **`hold_last_frame`** and **`split_into`** — the timeline menu's
+  structural edits, for an assistant.
+- **`remove_range`**: take out everything between two times on every lane,
+  closing the gap or leaving it, in one undo step.
 
 ### Fixed
 

@@ -395,6 +395,53 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "remove_range",
+        description: "Take everything between `from` and `to` seconds off every unlocked \
+                      lane, cutting clips that cross either end. With `close_gap` (default \
+                      true) what follows moves up, markers too; false leaves the hole. One \
+                      undo step.",
+        schema: || {
+            object(
+                json!({
+                    "from": { "type": "number", "minimum": 0 },
+                    "to": { "type": "number", "minimum": 0 },
+                    "close_gap": { "type": "boolean" }
+                }),
+                &["from", "to"],
+            )
+        },
+    },
+    Tool {
+        name: "hold_last_frame",
+        description: "Hold a picture clip's last frame still for `duration` seconds (default \
+                      2) straight after it, pushing what follows later — an ending that \
+                      lingers.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "duration": { "type": "number", "exclusiveMinimum": 0 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "split_into",
+        description: "Cut a clip into `parts` equal pieces (2-100), or into pieces `every` \
+                      seconds long (the last one takes what is left). One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "parts": { "type": "integer", "minimum": 2, "maximum": 100 },
+                    "every": { "type": "number", "exclusiveMinimum": 0 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "close_gaps",
         description: "Close every empty stretch on the lane `clip_id` is on, sliding the \
                       clips after each gap left (their linked sound moves too). One undo \
@@ -1465,6 +1512,25 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             Ok(if muted { "Muted" } else { "Unmuted" }.to_owned())
         }
         "shape_sound" => shape_sound(editor, args),
+        "remove_range" => remove_range(editor, args),
+        "hold_last_frame" => {
+            let clip = clip_arg(args)?;
+            let duration = timeline_time(seconds(args, "duration")?.unwrap_or(2.0).max(0.04));
+            let held = editor
+                .hold_last_frame(clip, duration)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": held.to_string() }).to_string())
+        }
+        "split_into" => {
+            let clip = clip_arg(args)?;
+            let made = match (u32_arg(args, "parts")?, seconds(args, "every")?) {
+                (Some(parts), None) => editor.split_into_parts(clip, parts),
+                (None, Some(every)) => editor.split_every(clip, timeline_time(every)),
+                _ => return Err("give either parts or every".to_owned()),
+            }
+            .map_err(|e| e.to_string())?;
+            Ok(format!("{made} cuts made"))
+        }
         "close_gaps" => {
             let clip = clip_arg(args)?;
             let track = editor.track_of(clip).ok_or("no clip with that id")?;
@@ -2742,6 +2808,56 @@ fn sound_clip(
         .into_iter()
         .find_map(|other| editor.audio_clip(other).cloned())
         .ok_or_else(|| "that clip has no sound: use an id from sound_lanes".to_owned())
+}
+
+/// Lift or extract a stretch given in seconds: marks it, takes it out, puts
+/// the person's own marks back, and folds all of that into one undo step.
+fn remove_range(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    let from = time_arg(args, "from")?;
+    let to = time_arg(args, "to")?;
+    if to <= from {
+        return Err("to must be after from".to_owned());
+    }
+    let close = args.get("close_gap").and_then(Value::as_bool).unwrap_or(true);
+    let sequence = editor
+        .active_sequence()
+        .ok_or("the project has no sequence")?;
+    let (id, marks) = (sequence.id, (sequence.mark_in, sequence.mark_out));
+    let depth = editor.undo_depth();
+    let taken = (|| {
+        editor.set_mark_in(from)?;
+        editor.set_mark_out(to)?;
+        let taken = if close {
+            editor.extract_marked()?
+        } else {
+            editor.lift_marked()?
+        };
+        let now = editor.active_sequence().map(|s| (s.mark_in, s.mark_out));
+        if now != Some(marks) {
+            editor.dispatch(bettercut_editor_core::Command::SetInOut {
+                sequence: id,
+                mark_in: marks.0,
+                mark_out: marks.1,
+            })?;
+        }
+        Ok::<usize, bettercut_editor_core::EditorError>(taken)
+    })();
+    let steps = editor.undo_depth().saturating_sub(depth);
+    let taken = match taken {
+        Ok(taken) => taken,
+        Err(error) => {
+            for _ in 0..steps {
+                let _ = editor.undo();
+            }
+            return Err(error.to_string());
+        }
+    };
+    let label = if close { "Remove Range" } else { "Lift Range" };
+    editor.merge_last_steps(steps, label);
+    Ok(format!(
+        "{taken} clips or parts of clips taken out{}",
+        if close { ", gap closed" } else { "" }
+    ))
 }
 
 /// The sound's equaliser, voice, room and robot, as one undo step.

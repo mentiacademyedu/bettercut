@@ -1627,7 +1627,7 @@ fn an_assistant_rearranges_the_edit() {
     ))
     .unwrap();
     let mut pictures = Vec::new();
-    for (from, to) in [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)] {
+    for (from, to) in [(0.0, 0.6), (0.6, 1.2), (1.2, 1.8)] {
         let placed: Value = serde_json::from_str(&client.ok(
             "add_to_timeline",
             json!({ "media_id": imported[0]["media_id"], "from": from, "to": to }),
@@ -1646,10 +1646,9 @@ fn an_assistant_rearranges_the_edit() {
     };
 
     let said = client.ok("transition_every_cut", json!({ "clip_id": a, "kind": "wipe" }));
-    // The last clip ends with the file, so that cut has no footage to spare.
-    assert_eq!(said, "Wipe on 1 cuts; 1 skipped for want of footage");
+    assert_eq!(said, "Wipe on 2 cuts; 0 skipped for want of footage");
     let said = client.ok("transition_every_cut", json!({ "clip_id": a, "kind": "none" }));
-    assert!(said.starts_with("1 transitions"), "{said}");
+    assert!(said.starts_with("2 transitions"), "{said}");
 
     // A hole in the middle, then closed.
     client.ok("delete_clip", json!({ "clip_id": b }));
@@ -1664,7 +1663,7 @@ fn an_assistant_rearranges_the_edit() {
     assert_eq!(said, "1 gaps closed");
     let clips = lane(&mut client);
     assert_eq!(clips[1]["clip_id"], *c);
-    assert!((clips[1]["start"].as_f64().unwrap() - 1.0).abs() < 0.04, "{clips:?}");
+    assert!((clips[1]["start"].as_f64().unwrap() - 0.6).abs() < 0.04, "{clips:?}");
     let (text, is_error) = client.tool("close_gaps", json!({ "clip_id": c }));
     assert!(is_error, "no gap left: {text}");
 
@@ -1691,6 +1690,74 @@ fn an_assistant_rearranges_the_edit() {
     let (text, is_error) =
         client.tool("group_clips", json!({ "clip_ids": [a], "ungroup": true }));
     assert!(is_error && text.contains("no"), "{text}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_assistant_takes_out_a_stretch_and_holds_the_end() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp23-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let mut pictures = Vec::new();
+    for (from, to) in [(0.0, 0.6), (0.6, 1.2), (1.2, 1.8)] {
+        let placed: Value = serde_json::from_str(&client.ok(
+            "add_to_timeline",
+            json!({ "media_id": imported[0]["media_id"], "from": from, "to": to }),
+        ))
+        .unwrap();
+        pictures.push(placed["clip_ids"][0].clone());
+    }
+    let described = |client: &mut Client| -> Value {
+        serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap()
+    };
+    let length = |client: &mut Client| -> f64 {
+        described(client)["sequence"]["duration"].as_f64().unwrap()
+    };
+    let full = length(&mut client);
+
+    let said = client.ok("remove_range", json!({ "from": 0.3, "to": 0.9 }));
+    assert!(said.contains("gap closed"), "{said}");
+    assert!((length(&mut client) - (full - 0.6)).abs() < 0.04);
+    let history: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(history["undo"][0], "Remove Range", "{history}");
+    client.ok("undo", json!({}));
+    assert!((length(&mut client) - full).abs() < 0.04, "one undo puts it back");
+
+    // Lifted: a hole, the same length.
+    client.ok(
+        "remove_range",
+        json!({ "from": 0.3, "to": 0.9, "close_gap": false }),
+    );
+    assert!((length(&mut client) - full).abs() < 0.04);
+    let lane = described(&mut client)["picture_lanes"][0]["clips"].clone();
+    assert!(
+        (lane[1]["start"].as_f64().unwrap() - 0.9).abs() < 0.04,
+        "{lane}"
+    );
+    let (text, is_error) = client.tool("remove_range", json!({ "from": 2, "to": 1 }));
+    assert!(is_error && text.contains("after"), "{text}");
+
+    let said = client.ok("split_into", json!({ "clip_id": pictures[2], "parts": 4 }));
+    assert_eq!(said, "3 cuts made");
+    let (text, is_error) = client.tool("split_into", json!({ "clip_id": pictures[2] }));
+    assert!(is_error && text.contains("either"), "{text}");
+
+    let before = length(&mut client);
+    let lane = described(&mut client)["picture_lanes"][0]["clips"].clone();
+    let last = lane.as_array().unwrap().last().unwrap()["clip_id"].clone();
+    client.ok("hold_last_frame", json!({ "clip_id": last, "duration": 1.5 }));
+    assert!((length(&mut client) - (before + 1.5)).abs() < 0.04);
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
