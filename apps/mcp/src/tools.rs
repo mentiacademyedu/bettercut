@@ -395,6 +395,28 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "set_lane",
+        description: "Change a lane, named by `lane` (as describe_project lists it) or by one \
+                      of its clips' `clip_id`, in one undo step: `rename` it, `locked` so no \
+                      edit touches it, `on` false to hide a picture or title lane or silence \
+                      a sound lane, `solo` to hear only it, `volume` (sound lanes, 1 as \
+                      recorded).",
+        schema: || {
+            object(
+                json!({
+                    "lane": { "type": "string" },
+                    "clip_id": { "type": "string" },
+                    "rename": { "type": "string", "minLength": 1 },
+                    "locked": { "type": "boolean" },
+                    "on": { "type": "boolean" },
+                    "solo": { "type": "boolean" },
+                    "volume": { "type": "number", "minimum": 0 }
+                }),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "whole_video_look",
         description: "Settings over the whole video rather than one clip, in one undo step; \
                       only what you pass changes. `bars`: cinematic black bars cutting the \
@@ -1538,6 +1560,7 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "shape_sound" => shape_sound(editor, args),
         "remove_range" => remove_range(editor, args),
         "whole_video_look" => whole_video_look(editor, args),
+        "set_lane" => set_lane(editor, args),
         "hold_last_frame" => {
             let clip = clip_arg(args)?;
             let duration = timeline_time(seconds(args, "duration")?.unwrap_or(2.0).max(0.04));
@@ -2835,6 +2858,110 @@ fn sound_clip(
         .ok_or_else(|| "that clip has no sound: use an id from sound_lanes".to_owned())
 }
 
+/// A lane's name, lock, on/off, solo and volume, as one undo step.
+fn set_lane(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::TrackFlag;
+    let sequence = editor
+        .active_sequence()
+        .ok_or("the project has no sequence")?;
+    // (id, name, sound lane's gain and pan)
+    let lanes: Vec<_> = sequence
+        .video_tracks
+        .iter()
+        .map(|t| (t.id, t.name.clone(), None))
+        .chain(
+            sequence
+                .audio_tracks
+                .iter()
+                .map(|t| (t.id, t.name.clone(), Some((t.gain, t.pan)))),
+        )
+        .chain(
+            sequence
+                .text_tracks
+                .iter()
+                .map(|t| (t.id, t.name.clone(), None)),
+        )
+        .collect();
+    let (track, name, mix) = match (
+        args.get("lane").and_then(Value::as_str),
+        args.get("clip_id"),
+    ) {
+        (Some(wanted), _) => lanes
+            .into_iter()
+            .find(|(_, name, _)| plain(name) == plain(wanted))
+            .ok_or_else(|| format!("no lane called {wanted:?}"))?,
+        (None, Some(_)) => {
+            let track = editor
+                .track_of(clip_arg(args)?)
+                .ok_or("no clip with that id")?;
+            lanes
+                .into_iter()
+                .find(|(id, _, _)| *id == track)
+                .ok_or("that clip is not on a picture, sound or title lane")?
+        }
+        (None, None) => return Err("give lane or clip_id".to_owned()),
+    };
+    let volume = optional_number(args, "volume")?;
+    if volume.is_some() && mix.is_none() {
+        return Err(format!(
+            "{name} is not a sound lane: volume is for sound lanes"
+        ));
+    }
+    let depth = editor.undo_depth();
+    let mut said = Vec::new();
+    let outcome = (|| -> Result<(), String> {
+        let flags = [
+            ("locked", TrackFlag::Locked, "locked", "unlocked"),
+            ("on", TrackFlag::Enabled, "on", "off"),
+            ("solo", TrackFlag::Solo, "solo", "not solo"),
+        ];
+        // Unlock first and lock last, so a locked lane can still be renamed.
+        if args.get("locked").and_then(Value::as_bool) == Some(false) {
+            editor
+                .set_track_flag(track, TrackFlag::Locked, false)
+                .map_err(|e| e.to_string())?;
+            said.push("unlocked".to_owned());
+        }
+        if let Some(new_name) = args.get("rename").and_then(Value::as_str) {
+            editor
+                .rename_track(track, new_name)
+                .map_err(|e| e.to_string())?;
+            said.push(format!("renamed {new_name:?}"));
+        }
+        if let (Some(volume), Some((_, pan))) = (volume, mix) {
+            editor
+                .set_track_mix(track, volume, pan, false)
+                .map_err(|e| e.to_string())?;
+            said.push(format!("volume {volume}"));
+        }
+        for (key, flag, yes, no) in flags {
+            let Some(value) = args.get(key).and_then(Value::as_bool) else {
+                continue;
+            };
+            if matches!(flag, TrackFlag::Locked) && !value {
+                continue;
+            }
+            editor
+                .set_track_flag(track, flag, value)
+                .map_err(|e| e.to_string())?;
+            said.push(if value { yes } else { no }.to_owned());
+        }
+        Ok(())
+    })();
+    let steps = editor.undo_depth().saturating_sub(depth);
+    if let Err(error) = outcome {
+        for _ in 0..steps {
+            let _ = editor.undo();
+        }
+        return Err(error);
+    }
+    if said.is_empty() {
+        return Err("nothing to change: pass rename, locked, on, solo or volume".to_owned());
+    }
+    editor.merge_last_steps(steps, "Change Lane");
+    Ok(format!("{name}: {}", said.join(", ")))
+}
+
 /// The sequence's own look — bars, progress bar, vignette, grain, background —
 /// as one undo step.
 fn whole_video_look(editor: &mut Editor, args: &Value) -> Result<String, String> {
@@ -2909,9 +3036,11 @@ fn whole_video_look(editor: &mut Editor, args: &Value) -> Result<String, String>
         said.push(format!("background {colour}"));
     }
     if properties.is_empty() {
-        return Err("nothing to change: pass bars, progress_bar, progress_color, \
+        return Err(
+            "nothing to change: pass bars, progress_bar, progress_color, \
                     progress_top, vignette, grain or background"
-            .to_owned());
+                .to_owned(),
+        );
     }
     let depth = editor.undo_depth();
     for property in properties {
@@ -2938,7 +3067,10 @@ fn remove_range(editor: &mut Editor, args: &Value) -> Result<String, String> {
     if to <= from {
         return Err("to must be after from".to_owned());
     }
-    let close = args.get("close_gap").and_then(Value::as_bool).unwrap_or(true);
+    let close = args
+        .get("close_gap")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let sequence = editor
         .active_sequence()
         .ok_or("the project has no sequence")?;
@@ -3028,7 +3160,11 @@ fn shape_sound(editor: &mut Editor, args: &Value) -> Result<String, String> {
         said.push(if space.is_dry() {
             "dry".to_owned()
         } else {
-            format!("{} at {}", kind.label().to_lowercase(), amount.clamp(0.0, 100.0))
+            format!(
+                "{} at {}",
+                kind.label().to_lowercase(),
+                amount.clamp(0.0, 100.0)
+            )
         });
     }
     if let Some(robot) = optional_number(args, "robot")? {
@@ -3182,7 +3318,7 @@ fn describe(editor: &Editor) -> Value {
         .iter()
         .map(|track| {
             json!({
-                "lane": track.name,
+                "lane": track.name, "locked": track.locked, "on": track.enabled,
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
@@ -3209,7 +3345,8 @@ fn describe(editor: &Editor) -> Value {
         .iter()
         .map(|track| {
             json!({
-                "lane": track.name,
+                "lane": track.name, "locked": track.locked, "on": track.enabled,
+                "volume": track.gain,
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,
@@ -3234,7 +3371,7 @@ fn describe(editor: &Editor) -> Value {
         .iter()
         .map(|track| {
             json!({
-                "lane": track.name,
+                "lane": track.name, "locked": track.locked, "on": track.enabled,
                 "clips": track.clips().iter().map(|c| {
                     let (start, end) = span(c.timeline.start, c.timeline.end);
                     json!({ "clip_id": c.id.to_string(), "start": start, "end": end,

@@ -13,6 +13,8 @@
   structural edits, for an assistant.
 - **`whole_video_look`**: cinematic bars, a progress bar, vignette, grain
   and the background colour over the whole video, in one undo step.
+- **`set_lane`**: rename a lane, lock it, switch it off, solo it or set a
+  sound lane's volume. `describe_project` now shows each lane's state.
 - **`remove_range`**: take out everything between two times on every lane,
   closing the gap or leaving it, in one undo step.
 

@@ -1645,17 +1645,25 @@ fn an_assistant_rearranges_the_edit() {
             .clone()
     };
 
-    let said = client.ok("transition_every_cut", json!({ "clip_id": a, "kind": "wipe" }));
+    let said = client.ok(
+        "transition_every_cut",
+        json!({ "clip_id": a, "kind": "wipe" }),
+    );
     assert_eq!(said, "Wipe on 2 cuts; 0 skipped for want of footage");
-    let said = client.ok("transition_every_cut", json!({ "clip_id": a, "kind": "none" }));
+    let said = client.ok(
+        "transition_every_cut",
+        json!({ "clip_id": a, "kind": "none" }),
+    );
     assert!(said.starts_with("2 transitions"), "{said}");
 
     // A hole in the middle, then closed.
     client.ok("delete_clip", json!({ "clip_id": b }));
-    let described: Value =
-        serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
     assert_eq!(
-        described["sound_lanes"][0]["clips"].as_array().unwrap().len(),
+        described["sound_lanes"][0]["clips"]
+            .as_array()
+            .unwrap()
+            .len(),
         2,
         "the shot's sound went with it: {described}"
     );
@@ -1663,13 +1671,15 @@ fn an_assistant_rearranges_the_edit() {
     assert_eq!(said, "1 gaps closed");
     let clips = lane(&mut client);
     assert_eq!(clips[1]["clip_id"], *c);
-    assert!((clips[1]["start"].as_f64().unwrap() - 0.6).abs() < 0.04, "{clips:?}");
+    assert!(
+        (clips[1]["start"].as_f64().unwrap() - 0.6).abs() < 0.04,
+        "{clips:?}"
+    );
     let (text, is_error) = client.tool("close_gaps", json!({ "clip_id": c }));
     assert!(is_error, "no gap left: {text}");
 
     let looped: Value =
-        serde_json::from_str(&client.ok("loop_clip", json!({ "clip_id": a, "times": 3 })))
-            .unwrap();
+        serde_json::from_str(&client.ok("loop_clip", json!({ "clip_id": a, "times": 3 }))).unwrap();
     assert_eq!(looped["clip_ids"].as_array().unwrap().len(), 2, "{looped}");
     let (_, is_error) = client.tool("loop_clip", json!({ "clip_id": a, "times": 50 }));
     assert!(is_error, "more than 20 loops is refused");
@@ -1687,8 +1697,7 @@ fn an_assistant_rearranges_the_edit() {
     assert!(said.contains("one group"), "{said}");
     let said = client.ok("group_clips", json!({ "clip_ids": [a], "ungroup": true }));
     assert_eq!(said, "1 groups taken apart");
-    let (text, is_error) =
-        client.tool("group_clips", json!({ "clip_ids": [a], "ungroup": true }));
+    let (text, is_error) = client.tool("group_clips", json!({ "clip_ids": [a], "ungroup": true }));
     assert!(is_error && text.contains("no"), "{text}");
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1732,7 +1741,10 @@ fn an_assistant_takes_out_a_stretch_and_holds_the_end() {
     let history: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
     assert_eq!(history["undo"][0], "Remove Range", "{history}");
     client.ok("undo", json!({}));
-    assert!((length(&mut client) - full).abs() < 0.04, "one undo puts it back");
+    assert!(
+        (length(&mut client) - full).abs() < 0.04,
+        "one undo puts it back"
+    );
 
     // Lifted: a hole, the same length.
     client.ok(
@@ -1756,7 +1768,10 @@ fn an_assistant_takes_out_a_stretch_and_holds_the_end() {
     let before = length(&mut client);
     let lane = described(&mut client)["picture_lanes"][0]["clips"].clone();
     let last = lane.as_array().unwrap().last().unwrap()["clip_id"].clone();
-    client.ok("hold_last_frame", json!({ "clip_id": last, "duration": 1.5 }));
+    client.ok(
+        "hold_last_frame",
+        json!({ "clip_id": last, "duration": 1.5 }),
+    );
     assert!((length(&mut client) - (before + 1.5)).abs() < 0.04);
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1801,13 +1816,90 @@ fn an_assistant_sets_the_whole_video_look() {
         "one undo takes it all back: {now}"
     );
     client.ok("redo", json!({}));
-    client.ok("whole_video_look", json!({ "bars": "none", "progress_bar": "none" }));
+    client.ok(
+        "whole_video_look",
+        json!({ "bars": "none", "progress_bar": "none" }),
+    );
     let now = look(&mut client);
-    assert!(now["bars"].is_null() && now["progress_bar"].is_null(), "{now}");
+    assert!(
+        now["bars"].is_null() && now["progress_bar"].is_null(),
+        "{now}"
+    );
 
     let (text, is_error) = client.tool("whole_video_look", json!({ "bars": "square" }));
     assert!(is_error && text.contains("2.39"), "{text}");
     let (text, is_error) = client.tool("whole_video_look", json!({}));
+    assert!(is_error && text.contains("nothing"), "{text}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_assistant_sets_up_the_lanes() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp25-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("tone-48k.wav")] }),
+    ))
+    .unwrap();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": imported[0]["media_id"] }),
+    ))
+    .unwrap();
+    let described = |client: &mut Client| -> Value {
+        serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap()
+    };
+    let sound_lane = described(&mut client)["sound_lanes"][0]["lane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let said = client.ok(
+        "set_lane",
+        json!({ "clip_id": placed["clip_ids"][0], "rename": "Music",
+                "volume": 0.5, "locked": true }),
+    );
+    assert!(
+        said.contains("renamed") && said.contains("locked"),
+        "{said}"
+    );
+    let lane = described(&mut client)["sound_lanes"][0].clone();
+    assert_eq!(lane["lane"], "Music", "{lane}");
+    assert_eq!(lane["locked"], true, "{lane}");
+    assert_eq!(lane["volume"], 0.5, "{lane}");
+    let history: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(history["undo"][0], "Change Lane", "{history}");
+    client.ok("undo", json!({}));
+    let lane = described(&mut client)["sound_lanes"][0].clone();
+    assert_eq!(lane["lane"], sound_lane.as_str(), "one undo: {lane}");
+    assert_eq!(lane["locked"], false, "{lane}");
+    client.ok("redo", json!({}));
+
+    // A locked lane can still be renamed, and unlocked by name.
+    client.ok(
+        "set_lane",
+        json!({ "lane": "music", "rename": "Song", "locked": false, "on": false }),
+    );
+    let lane = described(&mut client)["sound_lanes"][0].clone();
+    assert!(
+        lane["lane"] == "Song" && lane["locked"] == false && lane["on"] == false,
+        "{lane}"
+    );
+
+    let title_lane = described(&mut client)["title_lanes"][0]["lane"].clone();
+    let (text, is_error) = client.tool("set_lane", json!({ "lane": title_lane, "volume": 1 }));
+    assert!(is_error && text.contains("not a sound lane"), "{text}");
+    let (text, is_error) = client.tool("set_lane", json!({ "lane": "nowhere", "solo": true }));
+    assert!(is_error && text.contains("no lane"), "{text}");
+    let (text, is_error) = client.tool("set_lane", json!({ "lane": "Song" }));
     assert!(is_error && text.contains("nothing"), "{text}");
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1866,10 +1958,16 @@ fn an_assistant_shapes_the_sound() {
     assert!(is_error && text.contains("nothing"), "{text}");
     let (text, is_error) = client.tool("shape_sound", json!({ "clip_id": tone, "eq": "tin can" }));
     assert!(is_error && text.contains("Megaphone"), "{text}");
-    client.ok("shape_sound", json!({ "clip_id": tone, "eq": "flat", "pitch": 3.04 }));
+    client.ok(
+        "shape_sound",
+        json!({ "clip_id": tone, "eq": "flat", "pitch": 3.04 }),
+    );
     let shaped = sound(&mut client);
     assert!(shaped["eq"].is_null(), "{shaped}");
-    assert!((shaped["pitch"].as_f64().unwrap() - 3.0).abs() < 1e-4, "{shaped}");
+    assert!(
+        (shaped["pitch"].as_f64().unwrap() - 3.0).abs() < 1e-4,
+        "{shaped}"
+    );
 
     // Music held to where the pictures end, with a fade.
     let colour: Value =
