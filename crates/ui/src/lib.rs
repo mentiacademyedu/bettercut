@@ -83,6 +83,33 @@ use bettercut_editor_core::{Editor, Event};
 /// │ Status                                             │
 /// └────────────────────────────────────────────────────┘
 /// ```
+/// A window that can be waiting when the app starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupWindow {
+    Recovery,
+    CrashReport,
+    Welcome,
+    WhatsNew,
+}
+
+/// Which start-up window to show now: one at a time, the most urgent first —
+/// getting work back, then what went wrong last time, then the greetings.
+/// Each centres itself, so two at once covered each other's words; the
+/// others wait until the one before is answered.
+pub fn startup_window(state: &UiState) -> Option<StartupWindow> {
+    if state.pending_recovery.is_some() {
+        Some(StartupWindow::Recovery)
+    } else if state.crash_report.is_some() {
+        Some(StartupWindow::CrashReport)
+    } else if state.welcome_open {
+        Some(StartupWindow::Welcome)
+    } else if state.whats_new_open {
+        Some(StartupWindow::WhatsNew)
+    } else {
+        None
+    }
+}
+
 pub fn draw(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -183,13 +210,17 @@ pub fn draw(
     highlight_dialog::show(ui.ctx(), editor, state);
     scene_dialog::show(ui.ctx(), editor, state);
     palette::show(ui.ctx(), editor, state);
-    welcome::show(ui.ctx(), editor, state);
-    crash::show(ui.ctx(), state);
+    match startup_window(state) {
+        Some(StartupWindow::CrashReport) => crash::show(ui.ctx(), state),
+        Some(StartupWindow::Welcome) => welcome::show(ui.ctx(), editor, state),
+        Some(StartupWindow::WhatsNew) => whats_new::show(ui.ctx(), state),
+        // The recovery prompt, drawn above; or nothing waiting.
+        Some(StartupWindow::Recovery) | None => {}
+    }
     save_prompt::show(ui.ctx(), editor, state);
     // Saved by something else — an assistant through bettercut-mcp, say.
     disk_change::check(editor, state);
     disk_change::show(ui.ctx(), editor, state);
-    whats_new::show(ui.ctx(), state);
     assistant::show(ui.ctx(), state);
     // Text an action asked to have put on the clipboard.
     if let Some(text) = state.copy_out.take() {

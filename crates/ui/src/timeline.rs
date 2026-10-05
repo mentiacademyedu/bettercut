@@ -88,6 +88,65 @@ struct LaneLayout {
     rect: Rect,
 }
 
+/// An empty edit: a dashed box on the main picture lane saying what would
+/// fill it. Filled, so the lane lines do not run through the words, and kept
+/// inside the one lane, whatever height the lanes are.
+fn draw_empty_hint(painter: &egui::Painter, lanes: &[LaneLayout], left: f32, width: f32) {
+    let Some(lane) = lanes
+        .iter()
+        .find(|l| l.kind == TrackKind::Video)
+        .or_else(|| lanes.first())
+    else {
+        return;
+    };
+    let lane_rect = lane.rect.intersect(Rect::from_min_size(
+        Pos2::new(left, lane.rect.top()),
+        egui::vec2(width, lane.rect.height()),
+    ));
+    let boxed = lane_rect.shrink2(egui::vec2(12.0, 4.0));
+    if boxed.width() < 120.0 || boxed.height() < 16.0 {
+        return;
+    }
+    painter.rect_filled(boxed, 6.0, theme::panel());
+    let corners = [
+        boxed.left_top(),
+        boxed.right_top(),
+        boxed.right_bottom(),
+        boxed.left_bottom(),
+        boxed.left_top(),
+    ];
+    painter.extend(egui::Shape::dashed_line(
+        &corners,
+        egui::Stroke::new(1.0, theme::disabled()),
+        6.0,
+        4.0,
+    ));
+    // Two lines when the lane has room for them, the one that matters when not.
+    let two = boxed.height() >= 44.0;
+    let main_y = if two {
+        boxed.center().y - 8.0
+    } else {
+        boxed.center().y
+    };
+    painter.text(
+        Pos2::new(boxed.center().x, main_y),
+        Align2::CENTER_CENTER,
+        "Drag files here, press “Add to timeline” in Media, or start from Templates",
+        FontId::proportional(13.0),
+        theme::disabled(),
+    );
+    if two {
+        // Where everything else is, for someone who has not found it yet.
+        painter.text(
+            Pos2::new(boxed.center().x, boxed.center().y + 10.0),
+            Align2::CENTER_CENTER,
+            crate::keys::keys("Ctrl+K finds any action by name"),
+            FontId::proportional(12.0),
+            theme::disabled(),
+        );
+    }
+}
+
 /// A clip the pointer is currently over.
 #[derive(Clone, Copy)]
 struct ClipHit {
@@ -209,25 +268,6 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             theme::disabled(),
         );
         return;
-    }
-
-    // An empty edit: the timeline is the biggest thing on screen and has
-    // nothing to draw, so it says what would fill it.
-    if editor
-        .active_sequence()
-        .is_some_and(|s| s.clip_spans().next().is_none())
-        && state.drag.is_none()
-    {
-        painter.text(
-            Pos2::new(
-                rect.center().x,
-                rect.top() + theme::RULER_HEIGHT + rect.height() / 3.0,
-            ),
-            Align2::CENTER_CENTER,
-            "Drop a file here, or import one and press + beside it",
-            FontId::proportional(14.0),
-            theme::disabled(),
-        );
     }
 
     select_whole_groups(editor, state);
@@ -369,28 +409,8 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         draw_marquee(&painter, state);
         draw_playhead(&painter, rect, viewport, playhead);
 
-        if sequence.clip_count() == 0 {
-            painter.text(
-                Pos2::new(
-                    viewport.origin_x + lane_width / 2.0,
-                    rect.top() + theme::RULER_HEIGHT + 36.0,
-                ),
-                Align2::CENTER_CENTER,
-                "Drag files here, press “Add to timeline” in Media, or start from Templates",
-                FontId::proportional(13.0),
-                theme::disabled(),
-            );
-            // Where everything else is, for someone who has not found it yet.
-            painter.text(
-                Pos2::new(
-                    viewport.origin_x + lane_width / 2.0,
-                    rect.top() + theme::RULER_HEIGHT + 56.0,
-                ),
-                Align2::CENTER_CENTER,
-                crate::keys::keys("Ctrl+K finds any action by name"),
-                FontId::proportional(12.0),
-                theme::disabled(),
-            );
+        if sequence.clip_count() == 0 && state.drag.is_none() {
+            draw_empty_hint(&painter, &lanes, viewport.origin_x, lane_width);
         }
 
         lanes
