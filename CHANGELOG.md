@@ -6,6 +6,8 @@
 
 - **A zoom slider** with - and + in the corner above the track heads, as in
   CapCut. Ctrl+wheel and the Timeline menu still zoom too.
+- **An Import card** fills the empty media panel, as in CapCut: click it to
+  choose files, or drop them on it.
 
 ## 0.6.5 — Transitions between whole clips; a hang fixed; CapCut-style timeline
 

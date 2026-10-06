@@ -1145,13 +1145,63 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     });
     ui.separator();
 
+    // Nothing imported: the panel is one big place to start, as in CapCut —
+    // click it to choose files, or drop them on it (or anywhere).
     if editor.project().media.is_empty() {
-        ui.label(
-            egui::RichText::new(
-                "No media yet. Drag files onto the window, or press Import. Dropped on the timeline, they are added to it too.",
-            )
-            .color(theme::disabled()),
+        let width = ui.available_width();
+        let (card, response) = ui.allocate_exact_size(
+            egui::vec2(width, 150.0_f32.min(width)),
+            egui::Sense::click(),
         );
+        let painter = ui.painter();
+        let hovered = response.hovered();
+        painter.rect_filled(
+            card,
+            8.0,
+            if hovered {
+                theme::panel().gamma_multiply(1.4)
+            } else {
+                theme::panel()
+            },
+        );
+        let corners = [
+            card.left_top(),
+            card.right_top(),
+            card.right_bottom(),
+            card.left_bottom(),
+            card.left_top(),
+        ];
+        painter.extend(egui::Shape::dashed_line(
+            &corners,
+            egui::Stroke::new(1.0, theme::disabled()),
+            6.0,
+            4.0,
+        ));
+        painter.text(
+            card.center() - egui::vec2(0.0, 12.0),
+            egui::Align2::CENTER_CENTER,
+            "+  Import",
+            egui::FontId::proportional(18.0),
+            if hovered {
+                theme::accent()
+            } else {
+                ui.visuals().text_color()
+            },
+        );
+        painter.text(
+            card.center() + egui::vec2(0.0, 16.0),
+            egui::Align2::CENTER_CENTER,
+            "or drag videos, photos and music here",
+            egui::FontId::proportional(12.0),
+            theme::disabled(),
+        );
+        if response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Choose files to add to the project. Dropped on the timeline, they are placed there too")
+            .clicked()
+        {
+            import_media(editor, state);
+        }
         return;
     }
 
@@ -1423,26 +1473,6 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             }
         });
         ui.separator();
-    }
-
-    // Nothing imported at all: say what to do. A blank panel is the one
-    // screen a person cannot argue with, and this is the first one they see.
-    if total == 0 {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("No files yet")
-                .strong()
-                .color(theme::disabled()),
-        );
-        ui.label(
-            egui::RichText::new(
-                "Drop a video, a photo or a song onto the window, or press Import… above. \
-                 Then drag it onto the timeline, or press + beside it.",
-            )
-            .small()
-            .color(theme::disabled()),
-        );
-        return;
     }
 
     if assets.len() < total {
