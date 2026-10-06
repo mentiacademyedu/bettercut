@@ -17,6 +17,10 @@
   assistant detecting scenes while an export started. Opening a decoder,
   an encoder or a graphics device now happens one at a time; once open
   they still run side by side.
+- **Timeline thumbnails keep the picture's shape.** Zoomed out, each
+  thumbnail was squeezed to a sliver holding a whole frame; now every tile
+  is the video's own shape (narrow for a phone video) and shows the frame
+  under it, as in CapCut.
 - At start-up, the welcome window no longer sits on top of the "Recover
   unsaved work?" prompt: windows waiting at start come one at a time.
 - The empty timeline's hint is a drop box on the main lane, readable at any

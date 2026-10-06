@@ -2761,10 +2761,12 @@ fn draw_marquee(painter: &egui::Painter, state: &UiState) {
 
 /// Paint the filmstrip tiles a clip covers (§53).
 ///
-/// Tiles span the whole source file, so a trimmed clip shows only the slice it
-/// plays. Each tile is drawn at the screen position of the source time it was
-/// sampled from, which keeps the strip aligned with the footage as the user
-/// trims and zooms rather than stretching to fit the clip.
+/// Every tile keeps the picture's own shape, as in CapCut: the lane is cut
+/// into columns a tile wide, and each column shows the sampled frame nearest
+/// the moment under its middle. Drawing each tile as wide as the stretch of
+/// time it was sampled for squeezed a whole frame into a few pixels when
+/// zoomed out. The columns are counted from the timeline's zero, so they stay
+/// put as the view scrolls, and a trimmed clip shows only the slice it plays.
 #[allow(clippy::too_many_arguments)]
 fn draw_filmstrip(
     painter: &egui::Painter,
@@ -2782,59 +2784,33 @@ fn draw_filmstrip(
         return;
     }
 
-    let per_tile = media_ticks / i64::from(tiles).max(1);
-    if per_tile <= 0 {
+    let height = clip_rect.height() - 4.0;
+    let [sheet_w, sheet_h] = sheet.size();
+    if height < 4.0 || sheet_h == 0 {
         return;
     }
-
-    // Tile width on screen: how much timeline one tile of source covers. At 2×
-    // a tile of source covers half as much timeline, so the thumbnails have to
-    // pack in tighter — drawn unscaled they would run off the end of a
-    // shortened clip and mislabel every frame under them.
-    let per_tile_timeline = speed
-        .inverse()
-        .map_or(per_tile, |inverse| inverse.scale(per_tile))
-        .max(1);
-    let tile_px = (per_tile_timeline / viewport.ticks_per_pixel.max(1)) as f32;
-    if tile_px < 1.0 {
-        // Zoomed out so far that a tile is under a pixel; drawing it would be
-        // noise, and thousands of draw calls for it.
-        return;
-    }
+    let aspect = (sheet_w as f32 / tiles as f32) / sheet_h as f32;
+    let width = (height * aspect).clamp(8.0, 400.0);
 
     let strip = painter.with_clip_rect(clip_rect);
     let uv_step = 1.0 / tiles as f32;
-
-    // Walk source-tile boundaries rather than screen columns, so tiles land on
-    // frame content instead of sliding as the clip scrolls.
-    let first = (source_start.ticks() / per_tile).max(0);
-    let mut index = first;
-    while index < i64::from(tiles) {
-        let tile_source = index * per_tile;
-        let into_clip = speed
-            .inverse()
-            .map_or(tile_source - source_start.ticks(), |inverse| {
-                inverse.scale(tile_source - source_start.ticks())
-            });
-        let x = viewport.x_of(TimelineTime::from_ticks(timeline_start.ticks() + into_clip));
-        if x > clip_rect.right() {
-            break;
-        }
-
-        let rect = Rect::from_min_size(
-            Pos2::new(x, clip_rect.top() + 4.0),
-            vec2(tile_px, clip_rect.height() - 4.0),
+    let zero = viewport.x_of(TimelineTime::ZERO);
+    let first = ((clip_rect.left() - zero) / width).floor() as i64;
+    let last = ((clip_rect.right() - zero) / width).ceil() as i64;
+    for column in first..last {
+        let left = zero + column as f32 * width;
+        // The moment under the column's middle, as a time in the file.
+        let at = viewport.tick_of(left + width / 2.0).ticks() - timeline_start.ticks();
+        let into_source = speed.scale(at.max(0));
+        let source = (source_start.ticks() + into_source).clamp(0, media_ticks - 1);
+        let index = (source as i128 * i128::from(tiles) / i128::from(media_ticks)) as u32;
+        let u0 = index.min(tiles - 1) as f32 * uv_step;
+        strip.image(
+            sheet.id(),
+            Rect::from_min_size(Pos2::new(left, clip_rect.top() + 4.0), vec2(width, height)),
+            Rect::from_min_max(Pos2::new(u0, 0.0), Pos2::new(u0 + uv_step, 1.0)),
+            Color32::WHITE.gamma_multiply(0.85),
         );
-        if rect.right() >= clip_rect.left() {
-            let u0 = index as f32 * uv_step;
-            strip.image(
-                sheet.id(),
-                rect,
-                Rect::from_min_max(Pos2::new(u0, 0.0), Pos2::new(u0 + uv_step, 1.0)),
-                Color32::WHITE.gamma_multiply(0.85),
-            );
-        }
-        index += 1;
     }
 }
 
