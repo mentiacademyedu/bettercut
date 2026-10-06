@@ -2261,9 +2261,10 @@ fn draw_lanes(
                         badges
                     },
                     frozen: false,
-                    waveform: waveforms
-                        .get(&clip.media_id)
-                        .map(|w| (w.as_ref(), clip.source.start)),
+                    waveform: waveforms.get(&clip.media_id).map(|w| {
+                        let gain = if clip.muted { 0.0 } else { clip.gain };
+                        (w.as_ref(), clip.source.start, gain)
+                    }),
                     filmstrip: None,
                     colour: None,
                     duration_of_media: MediaTime::ZERO,
@@ -2680,7 +2681,9 @@ struct ClipVisual<'a> {
     top: Color32,
     /// Peaks plus where in the media this clip starts, so a trimmed clip shows
     /// the part of the waveform it actually plays.
-    waveform: Option<(&'a bettercut_cache::Waveform, MediaTime)>,
+    /// The sound's peaks, where in the file the clip starts, and its volume
+    /// (zero when muted), which scales the drawing as it scales the sound.
+    waveform: Option<(&'a bettercut_cache::Waveform, MediaTime, f32)>,
     /// Filmstrip sheet, its tile count, and where in the media this clip
     /// starts — the same trimming question as the waveform.
     filmstrip: Option<(&'a egui::TextureHandle, u32, MediaTime)>,
@@ -2931,6 +2934,12 @@ fn draw_volume_envelope(
 /// that column. Drawing every peak instead would emit thousands of shapes for a
 /// clip a few hundred pixels wide, and they would land on the same pixels
 /// anyway — the column *is* the unit of resolution on screen.
+///
+/// Drawn in decibels, as CapCut and every mixer do: on a straight scale a
+/// voice or a song at an ordinary level (about −18 dB) was a thin line an
+/// eighth of the clip high. And scaled by the clip's volume, so turning a
+/// clip down shows on it.
+#[allow(clippy::too_many_arguments)]
 fn draw_waveform(
     painter: &egui::Painter,
     clip_rect: Rect,
@@ -2938,6 +2947,7 @@ fn draw_waveform(
     waveform: &bettercut_cache::Waveform,
     timeline_start: TimelineTime,
     source_start: MediaTime,
+    gain: f32,
 ) {
     if waveform.peaks.is_empty() || clip_rect.width() < 2.0 {
         return;
@@ -2964,7 +2974,7 @@ fn draw_waveform(
     while x < clip_rect.right() {
         let next = x + 1.0;
         let peak = waveform.peak_over(bucket_at(x), bucket_at(next).max(bucket_at(x) + 1));
-        let magnitude = peak.magnitude();
+        let magnitude = waveform_height(peak.magnitude() * gain.max(0.0));
 
         // Always draw at least a hairline: a silent passage is information, and
         // a gap in the middle of a clip reads as missing data.
@@ -2973,11 +2983,27 @@ fn draw_waveform(
         x = next;
     }
 
-    let colour = theme::clip_text().gamma_multiply(0.55);
+    // A darker shade of the clip, not a lighter one: now that a waveform fills
+    // most of the clip, the white name drawn over it needs the contrast.
+    let colour = Color32::from_black_alpha(95);
     for [from, to] in segments {
         painter.line_segment([from, to], Stroke::new(1.0, colour));
     }
 }
+
+/// How much of a clip's half-height a peak of `amplitude` (1 = full scale)
+/// fills: 0 at [`WAVEFORM_FLOOR_DB`] and below, 1 at 0 dB, evenly in decibels
+/// between.
+pub fn waveform_height(amplitude: f32) -> f32 {
+    if amplitude <= 0.0 || !amplitude.is_finite() {
+        return 0.0;
+    }
+    let db = 20.0 * amplitude.log10();
+    ((db - WAVEFORM_FLOOR_DB) / -WAVEFORM_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// The quietest level a waveform shows above its centre line.
+pub const WAVEFORM_FLOOR_DB: f32 = -48.0;
 
 #[allow(clippy::too_many_arguments)]
 /// A clip's fades or a title's entrance and exit, as ramps at its ends.
@@ -3169,7 +3195,7 @@ fn draw_clip(
     }
 
     // Under the label and over the body, so the file name stays readable.
-    if let Some((waveform, source_start)) = visual.waveform {
+    if let Some((waveform, source_start, gain)) = visual.waveform {
         draw_waveform(
             painter,
             clip_rect,
@@ -3177,6 +3203,7 @@ fn draw_clip(
             waveform,
             visual.range.start,
             source_start,
+            gain,
         );
     }
 

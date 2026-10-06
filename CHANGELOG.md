@@ -21,6 +21,10 @@
   are in the frame's own pixels, so in 4K a new title, caption, lower
   third, sticker or shape came out half as big. They are now made for the
   frame they go in (by its shorter side, so a vertical video matches too).
+- **Waveforms you can read.** Sound at an ordinary level drew as a thin
+  line; waveforms are now drawn in decibels and fill the clip as in
+  CapCut, follow the clip's volume (a clip turned down, or muted, shows
+  it), and sit darker than the clip so its name stays readable.
 - **Timeline thumbnails keep the picture's shape.** Zoomed out, each
   thumbnail was squeezed to a sliver holding a whole frame; now every tile
   is the video's own shape (narrow for a phone video) and shows the frame
