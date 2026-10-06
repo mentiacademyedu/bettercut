@@ -204,8 +204,12 @@ impl CodecContext {
             (*this.inner).thread_count = threads.max(1) as i32;
         }
 
-        // SAFETY: context and codec are non-null; options are optional.
-        let code = unsafe { ffi::avcodec_open2(this.inner, codec, std::ptr::null_mut()) };
+        // Opening starts the decoder's worker threads; see `crate::gpu_opening`.
+        let code = {
+            let _one_at_a_time = crate::gpu_opening();
+            // SAFETY: context and codec are non-null; options are optional.
+            unsafe { ffi::avcodec_open2(this.inner, codec, std::ptr::null_mut()) }
+        };
         if code < 0 {
             return Err(MediaError::DecodeFailed(format!(
                 "avcodec_open2: {}",
@@ -254,6 +258,9 @@ impl CodecContext {
 
     /// Open a context previously created by [`Self::encoder`].
     pub(crate) fn open_encoder(&self) -> Result<(), MediaError> {
+        // A hardware encoder makes a GPU context as it opens; see
+        // `crate::gpu_opening`.
+        let _one_at_a_time = crate::gpu_opening();
         // SAFETY: `inner` was allocated from a codec and configured but not
         // opened. Passing null re-uses the codec it was allocated with.
         let code =

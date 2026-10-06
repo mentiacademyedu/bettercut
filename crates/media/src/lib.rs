@@ -36,3 +36,20 @@ pub use image_sequence::{
     ImageSequence, MAX_SEQUENCE_FRAMES, Numbered, numbered, pattern_for, sequence_at,
 };
 pub use proxy::{ProxyAsset, ProxyResolution, ProxySpec, ProxyStatus};
+
+/// Held while anything opens a codec or a GPU device, so they open one at a
+/// time across the process. Once open, they run side by side without trouble.
+///
+/// Opening is where the trouble is. A hardware encoder starts a vendor
+/// runtime as it opens (Media Foundation, `amfrt64.dll`, the GPU driver), a
+/// decoder starts its worker threads, and a graphics device starts the driver
+/// too — none documented as safe beside the others. Done at once they wedged
+/// for good: probes beside exports in the test suite, two devices beside each
+/// other, and an assistant detecting scenes while an export opened its encoder.
+/// Never held twice: each open takes it in one place only.
+pub fn gpu_opening() -> std::sync::MutexGuard<'static, ()> {
+    static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    OPENING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

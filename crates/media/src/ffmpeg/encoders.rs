@@ -460,9 +460,6 @@ pub const PRORES: EncoderChoice = EncoderChoice {
 /// every frame a keyframe as ProRes always is. Quality is set by the
 /// profile, not a bitrate.
 pub fn open_prores(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), MediaError> {
-    let _guard = OPENING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let context = CodecContext::encoder(PRORES.name, target.threads)?;
     let rate = av_rational(target.frame_rate);
 
@@ -506,9 +503,6 @@ pub fn open_prores(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext)
 
 /// Open [`VP9_ALPHA`] at the target's size and rate, for 4:2:0 with alpha.
 pub fn open_vp9_alpha(target: EncodeTarget) -> Result<(EncoderChoice, CodecContext), MediaError> {
-    let _guard = OPENING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let context = CodecContext::encoder(VP9_ALPHA.name, target.threads)?;
     let rate = av_rational(target.frame_rate);
 
@@ -557,33 +551,14 @@ pub fn open_vp9_alpha(target: EncodeTarget) -> Result<(EncoderChoice, CodecConte
     Ok((VP9_ALPHA, context))
 }
 
-/// Serialises hardware-encoder initialisation.
-///
-/// Opening these is not a pure FFmpeg operation: it initialises a vendor
-/// runtime. `h264_mf` starts Media Foundation, which is process-global; `h264_amf`
-/// loads `amfrt64.dll`, which on a machine without AMD hardware is a failed
-/// `LoadLibrary` every time. None of them document thread-safe initialisation.
-///
-/// Doing several at once wedges the drivers. It showed up as the whole test
-/// suite hanging: the export tests pass in three seconds on their own and stop
-/// dead when the media crate's probe tests run beside them, opening every
-/// candidate for both codecs at the same moment.
-///
-/// The product never needs concurrent opens — one export at a time, one probe
-/// when a dialog opens — so a lock costs nothing real and removes a class of
-/// failure that would otherwise appear as a frozen window on someone's machine.
-static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// Open one candidate at the real target format.
+///
+/// Opening is not a pure FFmpeg operation: it initialises a vendor runtime.
+/// `h264_mf` starts Media Foundation, which is process-global; `h264_amf`
+/// loads `amfrt64.dll`, which on a machine without AMD hardware is a failed
+/// `LoadLibrary` every time. So the open itself (`CodecContext::open_encoder`)
+/// waits its turn behind every other codec and device (`crate::gpu_opening`).
 fn open(choice: EncoderChoice, target: EncodeTarget) -> Result<CodecContext, MediaError> {
-    // Held across the whole open: the vendor runtime is initialised inside
-    // `avcodec_open2`, not by the allocation above.
-    let _guard = OPENING.lock().unwrap_or_else(|poisoned| {
-        // A panic in another thread's open says nothing about ours; the lock
-        // exists to order driver calls, not to protect data.
-        poisoned.into_inner()
-    });
-
     let context = CodecContext::encoder(choice.name, target.threads)?;
 
     let rate = av_rational(target.frame_rate);

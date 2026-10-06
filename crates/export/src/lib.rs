@@ -675,8 +675,10 @@ fn deinterleave(interleaved: &[f32], channels: usize) -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// A GPU device of our own, on this thread.
+/// A GPU device of our own, on this thread — opened one at a time across the
+/// process (`bettercut_media::gpu_opening`).
 fn open_device() -> Result<(wgpu::Device, wgpu::Queue), ExportError> {
+    let _one_at_a_time = bettercut_media::gpu_opening();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
