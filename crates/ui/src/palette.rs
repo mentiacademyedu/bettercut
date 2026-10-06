@@ -447,6 +447,31 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Animation,
     },
     Action {
+        name: "Show Media",
+        hint: "the left panel's Media tab: the files in the project",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Media,
+    },
+    Action {
+        name: "Show Text Styles",
+        hint: "the left panel's Text tab: titles to add, in each style",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Text,
+    },
+    Action {
+        name: "Show Stickers",
+        hint: "the left panel's Stickers tab: symbols to put over the picture",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Stickers,
+    },
+    Action {
+        name: "Show Transitions",
+        hint: "the left panel's Transitions tab: for the cut after the selected clip",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Transitions,
+    },
+    Action {
+        name: "Show Filters",
+        hint: "the left panel's Filters tab: one-click looks for the selected clips",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Filters,
+    },
+    Action {
         name: "Connect an AI Assistant",
         hint: "Claude or another assistant, editing with you in this window",
         run: |_, s| s.assistant_open = true,

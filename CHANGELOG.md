@@ -6,6 +6,10 @@
 
 - **A zoom slider** with - and + in the corner above the track heads, as in
   CapCut. Ctrl+wheel and the Timeline menu still zoom too.
+- **Text, Stickers, Transitions and Filters tabs** beside Media in the left
+  panel, as in CapCut: each text style shown in its own colours, stickers
+  to click, transitions for the cut after the selected clip, and one-click
+  looks for the selected clips. Ctrl+K: Show Text Styles, Show Stickers…
 - **An Import card** fills the empty media panel, as in CapCut: click it to
   choose files, or drop them on it.
 

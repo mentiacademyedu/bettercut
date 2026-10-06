@@ -640,6 +640,9 @@ pub struct UiState {
 
     /// Which page of the Inspector's clip section is showing.
     pub inspector_tab: crate::panels::InspectorTab,
+    /// Which tab the left panel shows: the media, or text, stickers,
+    /// transitions or filters to add.
+    pub library_tab: crate::library::LibraryTab,
 
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
@@ -1053,6 +1056,7 @@ impl Default for UiState {
             snapping: true,
             drag: None,
             inspector_tab: crate::panels::InspectorTab::default(),
+            library_tab: crate::library::LibraryTab::default(),
             preview_drag: None,
             preview_is_stale: false,
             marquee: None,

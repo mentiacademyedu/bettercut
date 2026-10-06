@@ -24,6 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The debug build for the tests and the release build for the AppImage
+      # together outgrew the runner's disk (the 0.6.5 run died packaging,
+      # "No space left on device"). The runner's Android, .NET and Haskell
+      # kits are never used here and take some twenty gigabytes.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
       # FFmpeg's own needs, then what the app's window, sound and file
       # dialogs link against.
       - name: Tools and libraries

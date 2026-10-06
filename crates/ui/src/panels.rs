@@ -1099,6 +1099,11 @@ fn note_field(
 
 /// Media browser (§58). Import lands here; placing on the timeline is one click.
 pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    crate::library::tabs(ui, state);
+    if state.library_tab != crate::library::LibraryTab::Media {
+        crate::library::show(ui, editor, state);
+        return;
+    }
     // One line: the panel's name, and Import — with the rarer ways in
     // behind More.
     ui.horizontal(|ui| {
