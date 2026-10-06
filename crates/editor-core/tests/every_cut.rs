@@ -76,10 +76,10 @@ fn every_cut_takes_the_transition_in_one_step() {
     );
 }
 
-/// A cut with no footage to spare skips a crossfade, counted, while one that
-/// needs no footage still lands there.
+/// A cut with no footage to spare overlaps its clips to take a crossfade,
+/// and one that needs no footage lands there as it is.
 #[test]
-fn a_cut_without_room_is_counted_not_forced() {
+fn a_cut_without_room_overlaps_to_make_it() {
     let (mut editor, _events) = Editor::new_project("Tight");
     let track = editor.active_sequence().unwrap().video_tracks[0].id;
     for (i, name) in ["a", "b"].iter().enumerate() {
@@ -102,12 +102,16 @@ fn a_cut_without_room_is_counted_not_forced() {
             )
             .unwrap();
     }
+    // No footage either side: the clips overlap to make room, as CapCut
+    // does, and the edit gets shorter by about the transition.
+    let length = editor.active_sequence().unwrap().duration();
     assert_eq!(
         editor
             .transition_every_cut(track, TransitionKind::Crossfade)
             .unwrap(),
-        (0, 1)
+        (1, 0)
     );
+    assert!(editor.active_sequence().unwrap().duration() < length);
     assert_eq!(
         editor
             .transition_every_cut(track, TransitionKind::FadeThroughBlack)

@@ -85,6 +85,7 @@ pub mod template_apply;
 pub mod three_point;
 pub mod tone;
 pub mod track_motion;
+mod transition_overlap;
 pub mod trim_black;
 pub mod trim_window;
 pub mod versions;

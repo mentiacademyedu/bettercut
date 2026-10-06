@@ -4666,11 +4666,17 @@ impl Editor {
         let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
         // Reuse the length already there when only the kind is changing, so
         // switching a 2-second dissolve to a fade does not silently shorten it.
-        let duration = self
-            .video_clip(clip)
-            .and_then(|c| c.transition_out)
-            .map(|t| t.duration)
-            .unwrap_or(self.project.settings.transition_length);
+        let duration = self.transition_length_for(clip);
+        // No footage either side to blend: overlap the clips instead, as
+        // CapCut does, rather than refuse the most ordinary request there is.
+        if self
+            .transition_room(clip, kind)
+            .is_some_and(|room| room < bettercut_timeline::MIN_TRANSITION)
+        {
+            return self
+                .overlap_into_transition(clip, kind, duration)
+                .map(|_| ());
+        }
         self.dispatch(Command::SetTransition {
             sequence,
             track,

@@ -7822,9 +7822,15 @@ fn clip_transition(
     // black, and hiding the whole section there would hide the one that works.
     let room: Vec<_> = TransitionKind::ALL
         .into_iter()
-        .map(|kind| (kind, editor.transition_room(clip, kind)))
+        .map(|kind| {
+            (
+                kind,
+                editor.transition_room(clip, kind),
+                editor.transition_overlap(clip, kind),
+            )
+        })
         .collect();
-    if room.iter().all(|(_, r)| r.is_none()) {
+    if room.iter().all(|(_, r, _)| r.is_none()) {
         return; // no clip straight after this one — nothing to fade into
     }
 
@@ -7843,13 +7849,17 @@ fn clip_transition(
         if ui.selectable_label(existing.is_none(), "None").clicked() {
             chosen = Some(None);
         }
-        for (kind, available) in &room {
-            let usable = available.is_some_and(|r| r >= MIN_TRANSITION);
+        for (kind, available, overlap) in &room {
+            let usable = available.is_some_and(|r| r >= MIN_TRANSITION) || overlap.is_some();
             let selected = existing.is_some_and(|t| t.kind == *kind);
+            let hover = match overlap {
+                Some(shorter) => overlap_hint(*kind, *shorter),
+                None => kind.description().to_owned(),
+            };
             let response = ui
                 .add_enabled(usable, egui::Button::selectable(selected, kind.label()))
-                .on_hover_text(kind.description())
-                .on_disabled_hover_text("Not enough spare footage either side of the cut.");
+                .on_hover_text(hover)
+                .on_disabled_hover_text("These clips are too short to blend into each other.");
             if response.clicked() {
                 chosen = Some(Some(*kind));
             }
@@ -7861,8 +7871,8 @@ fn clip_transition(
         // one that will actually render (§25).
         let limit = room
             .iter()
-            .find(|(kind, _)| *kind == transition.kind)
-            .and_then(|(_, r)| *r)
+            .find(|(kind, _, _)| *kind == transition.kind)
+            .and_then(|(_, r, _)| *r)
             .unwrap_or(MIN_TRANSITION);
         let mut seconds = transition.duration.ticks() as f64 / 960_000.0;
         let response = ui.add(theme::labeled(
@@ -7898,6 +7908,19 @@ fn clip_transition(
         },
         None => {}
     }
+}
+
+/// What choosing a transition does when the clips have no footage past the
+/// cut: they overlap, and the edit gets shorter by `shorter`.
+pub(crate) fn overlap_hint(
+    kind: bettercut_editor_core::timeline::TransitionKind,
+    shorter: bettercut_editor_core::foundation::TimelineTime,
+) -> String {
+    format!(
+        "{} No spare footage past the cut, so the clips overlap to make it: the edit gets {:.1} s shorter.",
+        kind.description(),
+        shorter.as_seconds_f64()
+    )
 }
 
 /// How fast one clip plays.

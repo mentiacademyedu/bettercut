@@ -486,6 +486,37 @@ pub(crate) fn transition_room(
     clip: ClipId,
     kind: bettercut_timeline::TransitionKind,
 ) -> Option<TimelineTime> {
+    let cut = cut_handles(project, sequence, track, clip)?;
+    Some(Transition::max_duration(
+        kind,
+        cut.outgoing_length,
+        cut.incoming_length,
+        MediaTime::from_ticks(cut.after.ticks()),
+        MediaTime::from_ticks(cut.before.ticks()),
+    ))
+}
+
+/// The cut at the end of a clip, as a transition sees it: each side's length
+/// and its spare footage past the cut, in timeline ticks at the clip's speed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CutHandles {
+    pub outgoing: ClipId,
+    pub incoming: ClipId,
+    pub outgoing_length: TimelineTime,
+    pub incoming_length: TimelineTime,
+    /// Footage the outgoing clip has after its out-point.
+    pub after: TimelineTime,
+    /// Footage the incoming clip has before its in-point.
+    pub before: TimelineTime,
+}
+
+/// `None` when there is no cut at the end of `clip` — no next clip, or a gap.
+pub(crate) fn cut_handles(
+    project: &Project,
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+) -> Option<CutHandles> {
     let sequence = project.sequence(sequence)?;
     let track = sequence.video_tracks.iter().find(|t| t.id == track)?;
     let clips = track.clips();
@@ -529,16 +560,17 @@ pub(crate) fn transition_room(
     // transition, so its handle is worth half as much — measured unscaled, a
     // fast clip would be offered twice the crossfade its footage can cover.
     let usable = |handle: MediaTime, speed: bettercut_foundation::Rational| {
-        MediaTime::from_ticks(bettercut_timeline::timeline_ticks_for(handle, speed))
+        TimelineTime::from_ticks(bettercut_timeline::timeline_ticks_for(handle, speed))
     };
 
-    Some(Transition::max_duration(
-        kind,
-        outgoing.timeline.duration(),
-        incoming.timeline.duration(),
-        usable(handle_after, outgoing.speed),
-        usable(handle_before, incoming.speed),
-    ))
+    Some(CutHandles {
+        outgoing: outgoing.id,
+        incoming: incoming.id,
+        outgoing_length: outgoing.timeline.duration(),
+        incoming_length: incoming.timeline.duration(),
+        after: usable(handle_after, outgoing.speed),
+        before: usable(handle_before, incoming.speed),
+    })
 }
 
 /// Add a text overlay (§26).

@@ -59,10 +59,32 @@ impl Client {
         let id = self.next;
         self.next += 1;
         let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        // `MCP_CALL_LOG=<file>`: each call's start and end, by test, so a
+        // run that hangs shows which calls were in flight (it found a codec
+        // open deadlocking beside an export — `bettercut_media::gpu_opening`).
+        let probe = std::env::var_os("MCP_CALL_LOG").map(|path| {
+            let who = std::thread::current().name().unwrap_or("?").to_owned();
+            let what = params["name"].as_str().unwrap_or(method).to_owned();
+            let write = move |phase: &str| {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    let _ = writeln!(f, "{phase} {who} {what}");
+                }
+            };
+            write("start");
+            write
+        });
         let reply = self
             .server
             .handle_line(&line.to_string())
             .expect("a request is answered");
+        if let Some(write) = &probe {
+            write("end");
+        }
         let reply: Value = serde_json::from_str(&reply).expect("the reply is JSON");
         assert_eq!(reply["jsonrpc"], "2.0");
         assert_eq!(reply["id"], id, "the reply is to this request");
@@ -1955,6 +1977,60 @@ fn an_assistant_tidies_the_media() {
     assert_eq!(media(&mut client).len(), 1);
     let said = client.ok("remove_unused_media", json!({}));
     assert!(said.contains("nothing removed"), "{said}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_transition_between_whole_clips_overlaps_them() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp27-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let mut first = Value::Null;
+    for _ in 0..2 {
+        let placed: Value = serde_json::from_str(&client.ok(
+            "add_to_timeline",
+            json!({ "media_id": imported[0]["media_id"] }),
+        ))
+        .unwrap();
+        if first.is_null() {
+            first = placed["clip_ids"][0].clone();
+        }
+    }
+    let length = |client: &mut Client| -> f64 {
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        described["sequence"]["duration"].as_f64().unwrap()
+    };
+    let before = length(&mut client);
+
+    let said = client.ok(
+        "add_transition",
+        json!({ "clip_id": first, "kind": "crossfade", "duration": 0.4 }),
+    );
+    assert!(
+        said.contains("overlap") && said.contains("shorter"),
+        "{said}"
+    );
+    let shortened = before - length(&mut client);
+    assert!(
+        (0.399..0.48).contains(&shortened),
+        "about the 0.4 s asked for: {shortened}"
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let transition = &described["picture_lanes"][0]["clips"][0]["transition"];
+    assert_eq!(transition["kind"], "Crossfade", "{described}");
+    assert!((transition["duration"].as_f64().unwrap() - 0.4).abs() < 0.01);
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }

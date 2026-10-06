@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Transitions between clips placed whole.** Two clips dropped in from
+  start to end have no footage past the cut, so a crossfade, slide or wipe
+  between them used to be greyed out. Now the clips overlap to make room,
+  as in CapCut: each gives up half the transition and the edit gets that
+  much shorter. The menu says by how much before you choose. "Transition
+  on Every Cut" does the same.
+
+### Fixed
+
+- **A hang when two jobs opened video at the same moment** — for example an
+  assistant detecting scenes while an export started. Opening a decoder,
+  an encoder or a graphics device now happens one at a time; once open
+  they still run side by side.
+- At start-up, the welcome window no longer sits on top of the "Recover
+  unsaved work?" prompt: windows waiting at start come one at a time.
+- The empty timeline's hint is a drop box on the main lane, readable at any
+  lane height, instead of two lines of text cut through by the lanes.
+
 ## 0.6.4 — An assistant shapes the sound, the lanes and the whole video
 
 Still a beta: expect bugs, and please

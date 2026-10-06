@@ -162,10 +162,10 @@ fn a_length_below_the_floor_is_raised() {
 }
 
 /// A clip trimmed to the very start of its file has nothing to crossfade from.
-/// Refusing says so; accepting would store a transition that renders as a black
-/// flash.
+/// Storing the crossfade as it is would render as a black flash; instead the
+/// clips overlap until both sides have the footage it reads.
 #[test]
-fn a_crossfade_with_no_handle_is_refused() {
+fn a_crossfade_with_no_handle_overlaps_the_clips_to_get_one() {
     let (mut editor, _rx) = Editor::new_project("No handles");
     let media = editor.import_media(MediaAsset::new(
         MediaKind::Video,
@@ -195,16 +195,22 @@ fn a_crossfade_with_no_handle_is_refused() {
         .add_clip(track, ClipPayload::Video(Box::new(b)))
         .unwrap();
 
+    editor
+        .set_transition(a_id, TransitionKind::Crossfade)
+        .unwrap();
+    let stored = transition_of(&editor, a_id).expect("the crossfade is there");
     assert!(
         editor
-            .set_transition(a_id, TransitionKind::Crossfade)
-            .is_err(),
-        "a crossfade with no handles was accepted"
+            .transition_room(a_id, TransitionKind::Crossfade)
+            .unwrap()
+            >= stored.duration,
+        "every frame of it has footage to read, not black"
     );
+    editor.undo().unwrap();
     assert_eq!(transition_of(&editor, a_id), None);
 
-    // The same cut takes a fade through black, which reads nothing outside
-    // either clip.
+    // The same cut takes a fade through black as it is: it reads nothing
+    // outside either clip.
     assert!(
         editor
             .set_transition(a_id, TransitionKind::FadeThroughBlack)
@@ -331,11 +337,16 @@ fn only_the_handle_free_kinds_are_offered_at_a_cut_with_nothing_to_spare() {
                 "{} was offered room at a cut with no handles",
                 kind.label()
             );
+            // Offered by overlapping the clips instead — tried, then taken
+            // back, so the next kind meets the same bare cut.
             assert!(
-                editor.set_transition(a, kind).is_err(),
-                "{} was accepted with no footage to read",
+                editor.transition_overlap(a, kind).is_some(),
+                "{} could not overlap to make room",
                 kind.label()
             );
+            editor.set_transition(a, kind).unwrap();
+            assert!(editor.transition_room(a, kind).unwrap() > TimelineTime::ZERO);
+            editor.undo().unwrap();
         } else {
             assert_eq!(
                 room,

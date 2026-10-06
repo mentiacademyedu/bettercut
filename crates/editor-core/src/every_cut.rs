@@ -70,16 +70,36 @@ impl Editor {
             .map(|clip| clip.id)
             .collect();
 
-        let mut commands = Vec::new();
+        let depth = self.undo_depth();
         let mut skipped = 0;
+        // Cuts with no footage either side overlap to make room, as a single
+        // one does (`overlap_into_transition`) — or clips dropped in whole
+        // would get none at all. Latest first: overlapping moves only what
+        // comes after, so the earlier cuts are still where they were found.
+        let mut overlapped = Vec::new();
+        for &clip in clips.iter().rev() {
+            if self
+                .transition_room(clip, kind)
+                .is_some_and(|room| room < MIN_TRANSITION)
+            {
+                match self.overlap_into_transition(clip, kind, house) {
+                    Ok(_) => overlapped.push(clip),
+                    Err(_) => skipped += 1,
+                }
+            }
+        }
+
+        let mut commands = Vec::new();
         for clip in clips {
+            if overlapped.contains(&clip) {
+                continue;
+            }
             // `None`: no clip straight after — not a cut, nothing to count.
             let Some(room) = self.transition_room(clip, kind) else {
                 continue;
             };
             if room < MIN_TRANSITION {
-                skipped += 1;
-                continue;
+                continue; // counted above
             }
             commands.push(Command::SetTransition {
                 sequence,
@@ -88,10 +108,13 @@ impl Editor {
                 transition: Some(Transition::new(kind, house.min(room))),
             });
         }
-        let applied = commands.len();
-        if applied > 0 {
-            self.dispatch_group(format!("{} on Every Cut", kind.label()), commands)?;
+        let applied = commands.len() + overlapped.len();
+        let label = format!("{} on Every Cut", kind.label());
+        if !commands.is_empty() {
+            self.dispatch_group(label.clone(), commands)?;
         }
+        let steps = self.undo_depth().saturating_sub(depth);
+        self.merge_last_steps(steps, &label);
         Ok((applied, skipped))
     }
 

@@ -927,7 +927,9 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "add_transition",
         description: "Put a transition at the end of a picture clip, into the next one. \
-                      Optionally its length in seconds.",
+                      Optionally its length in seconds. When the clips have no footage past \
+                      the cut (placed whole), they overlap to make room and the edit gets \
+                      that much shorter; describe_project shows the new times.",
         schema: || {
             object(
                 json!({ "clip_id": { "type": "string" },
@@ -2065,15 +2067,36 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             let clip = clip_arg(args)?;
             let kind = transition_named(str_arg(args, "kind")?)?;
             let duration = seconds(args, "duration")?;
-            editor
-                .set_transition(clip, kind)
-                .map_err(|e| e.to_string())?;
-            if let Some(duration) = duration {
-                editor
-                    .set_transition_duration(clip, timeline_time(duration))
-                    .map_err(|e| e.to_string())?;
+            let before = editor_length(editor);
+            match duration {
+                // No footage past the cut: overlap at the length asked for,
+                // rather than at the house length and then clamping to it.
+                Some(duration) if editor.transition_overlap(clip, kind).is_some() => {
+                    editor
+                        .overlap_into_transition(clip, kind, timeline_time(duration))
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => {
+                    editor
+                        .set_transition(clip, kind)
+                        .map_err(|e| e.to_string())?;
+                    if let Some(duration) = duration {
+                        editor
+                            .set_transition_duration(clip, timeline_time(duration))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
             }
-            Ok(format!("{} added", kind.label()))
+            let shorter = before - editor_length(editor);
+            Ok(if shorter > 0.0005 {
+                format!(
+                    "{} added; the clips had no footage past the cut, so they overlap to make \
+                     room and the edit is {shorter:.2} s shorter",
+                    kind.label()
+                )
+            } else {
+                format!("{} added", kind.label())
+            })
         }
         "apply_filter" => {
             let filter = filter_named(str_arg(args, "filter")?)?;
@@ -3492,6 +3515,13 @@ fn describe(editor: &Editor) -> Value {
             "at": seconds_of(m.time.ticks()), "label": m.label,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// How long the sequence on screen runs, in seconds.
+fn editor_length(editor: &Editor) -> f64 {
+    editor
+        .active_sequence()
+        .map_or(0.0, |s| s.duration().as_seconds_f64())
 }
 
 fn seconds_of(ticks: i64) -> f64 {

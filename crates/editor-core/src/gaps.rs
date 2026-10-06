@@ -158,7 +158,7 @@ impl Editor {
 
     /// What closing `gap` on `track` would move, and where to — checked
     /// against the timeline as it is now.
-    fn gap_moves(
+    pub(crate) fn gap_moves(
         &self,
         track: TrackId,
         gap: TimelineRange,
@@ -208,7 +208,7 @@ impl Editor {
 
     /// Stage the moves, earliest first on each track so nothing is moved into
     /// space its neighbour has not vacated yet.
-    fn stage_moves(
+    pub(crate) fn stage_moves(
         &mut self,
         stage: &mut crate::editor::Stage,
         sequence: SequenceId,

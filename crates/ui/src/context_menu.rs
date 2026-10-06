@@ -2008,7 +2008,8 @@ fn transition_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, 
             // Ask what the cut can take before offering it, so an unavailable
             // crossfade says why instead of failing after the click.
             let room = editor.transition_room(clip, kind);
-            let available = room.is_some_and(|r| r >= MIN_TRANSITION);
+            let overlap = editor.transition_overlap(clip, kind);
+            let available = room.is_some_and(|r| r >= MIN_TRANSITION) || overlap.is_some();
             let chosen = existing.is_some_and(|t| t.kind == kind);
 
             let button = egui::Button::new(if chosen {
@@ -2018,12 +2019,13 @@ fn transition_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, 
             });
             let response = ui
                 .add_enabled(available, button)
-                .on_hover_text(if available {
-                    kind.description()
-                } else if room.is_none() {
-                    "There is no clip straight after this one to fade into."
-                } else {
-                    "Not enough spare footage either side of the cut."
+                .on_hover_text(match overlap {
+                    Some(shorter) => crate::panels::overlap_hint(kind, shorter),
+                    None if available => kind.description().to_owned(),
+                    None if room.is_none() => {
+                        "There is no clip straight after this one to fade into.".to_owned()
+                    }
+                    None => "These clips are too short to blend into each other.".to_owned(),
                 });
 
             if response.clicked() {
