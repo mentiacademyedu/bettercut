@@ -69,6 +69,7 @@ impl Editor {
             stroke: None,
             ..TextStyle::default()
         };
+        self.fit_to_frame(&mut clip);
         let id = clip.id;
         self.dispatch(Command::AddText {
             sequence: sequence_id,

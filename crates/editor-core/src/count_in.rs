@@ -95,6 +95,7 @@ impl Editor {
             bettercut_timeline::TextClip::with_duration("Count-in", TimelineTime::ZERO, length)?;
         countdown.style = bettercut_text::TextStyle::title(bettercut_text::TitleLook::Headline);
         countdown.counter = Some(bettercut_timeline::Counter::countdown(length));
+        self.fit_to_frame(&mut countdown);
         let beeps: Vec<AudioClip> = (0..seconds)
             .map(|second| {
                 AudioClip::new(

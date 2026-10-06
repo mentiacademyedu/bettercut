@@ -342,6 +342,32 @@ impl Default for TextStyle {
 }
 
 impl TextStyle {
+    /// The same look with every pixel measurement times `factor`: the size,
+    /// the outline, the shadow, the box and the wrap width. Sizes are in
+    /// sequence pixels, so a title made for 1080 lines needs doubling in a
+    /// 4K sequence to look the same. Letter and line spacing are already
+    /// shares of the size and stay as they are.
+    pub fn scaled(&self, factor: f32) -> Self {
+        let mut style = self.clone();
+        style.size *= factor;
+        if let Some(stroke) = &mut style.stroke {
+            stroke.width *= factor;
+        }
+        if let Some(shadow) = &mut style.shadow {
+            shadow.offset_x *= factor;
+            shadow.offset_y *= factor;
+            shadow.blur *= factor;
+        }
+        if let Some(background) = &mut style.background {
+            background.padding *= factor;
+            background.corner_radius *= factor;
+        }
+        if let Some(wrap) = &mut style.wrap_width {
+            *wrap *= factor;
+        }
+        style
+    }
+
     /// What an imported subtitle looks like (§27, Milestone 10).
     ///
     /// Deliberately different from a title. A title is a design element and

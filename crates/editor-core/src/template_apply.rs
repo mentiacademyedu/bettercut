@@ -227,6 +227,7 @@ impl Editor {
                         clip.style = style.clone();
                         clip.animation = *animation;
                         clip.transform = *transform;
+                        editor.fit_to_frame(&mut clip);
                         let id = clip.id;
 
                         editor.stage(

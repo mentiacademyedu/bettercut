@@ -46,6 +46,7 @@ impl Editor {
             let mut title =
                 bettercut_timeline::TextClip::with_duration(name, span.start, span.duration())?;
             title.style = bettercut_text::TextStyle::title(bettercut_text::TitleLook::LowerThird);
+            self.fit_to_frame(&mut title);
             taken.push(span);
             commands.push(Command::AddText {
                 sequence,

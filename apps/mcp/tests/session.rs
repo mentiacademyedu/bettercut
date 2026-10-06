@@ -2036,6 +2036,36 @@ fn a_transition_between_whole_clips_overlaps_them() {
 }
 
 #[test]
+fn a_new_title_is_the_same_size_on_screen_in_any_frame() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp28-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let size_in = |w: u32, h: u32| -> f64 {
+        let mut client = Client::new();
+        client.ok(
+            "new_project",
+            json!({ "path": dir.join(format!("{w}x{h}.vproj")).display().to_string(),
+                    "width": w, "height": h }),
+        );
+        client.ok("add_title", json!({ "text": "Hello", "at": 0 }));
+        let described: Value =
+            serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+        let size = described["title_lanes"][0]["clips"][0]["size"]
+            .as_f64()
+            .unwrap();
+        drop(client);
+        size
+    };
+    let hd = size_in(1920, 1080);
+    // Pixels are the frame's own: twice as many lines, twice the size.
+    assert!((size_in(3840, 2160) - 2.0 * hd).abs() < 0.01);
+    // A vertical video is measured by its shorter side too.
+    assert!((size_in(1080, 1920) - hd).abs() < 0.01);
+    assert!((size_in(1280, 720) - hd * 720.0 / 1080.0).abs() < 0.01);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_assistant_shapes_the_sound() {
     let dir = std::env::temp_dir().join(format!("bettercut-mcp22-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -113,6 +113,9 @@ impl Editor {
             subtitle.animation = enter(MotionKind::Fade, 700);
             parts.push(subtitle);
         }
+        for part in &mut parts {
+            self.fit_to_frame(part);
+        }
 
         // A free title lane for each part: existing ones with room first, in
         // order, then new ones.

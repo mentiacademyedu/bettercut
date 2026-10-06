@@ -2207,6 +2207,26 @@ impl Editor {
     /// onwards where it fits. Not simply *at* the playhead, because that is
     /// often over an existing title and refusing would be a dead end — the user
     /// asked for a title, not for a lesson in track occupancy.
+    /// Size a newly made title for this sequence's frame. Its pixel sizes are
+    /// worked out for a 1080-line frame, and a sequence's pixels are its own,
+    /// so in 4K a default title came out half the size. Scaled by the shorter
+    /// side, so a vertical 1080×1920 video is 1080 too. Only for titles being
+    /// made: a pasted or duplicated one keeps the size it has.
+    pub(crate) fn fit_to_frame(&self, clip: &mut bettercut_timeline::TextClip) {
+        let Some(sequence) = self.active_sequence() else {
+            return;
+        };
+        let short = sequence.resolution.width.min(sequence.resolution.height);
+        let factor = short.max(1) as f32 / 1080.0;
+        if (factor - 1.0).abs() < 0.001 {
+            return;
+        }
+        clip.style = clip.style.scaled(factor);
+        if let Some(shape) = &mut clip.shape {
+            *shape = shape.scaled(factor);
+        }
+    }
+
     pub fn add_text(&mut self, text: impl Into<String>) -> Result<ClipId, EditorError> {
         let sequence_id = self.active_sequence_id()?;
         let track = self
@@ -2215,7 +2235,8 @@ impl Editor {
             .ok_or(EditorError::NoTextTrack)?;
 
         let start = self.free_text_slot(track, self.playhead);
-        let clip = bettercut_timeline::TextClip::new(text, start)?;
+        let mut clip = bettercut_timeline::TextClip::new(text, start)?;
+        self.fit_to_frame(&mut clip);
         let id = clip.id;
 
         self.dispatch(Command::AddText {
@@ -2237,6 +2258,7 @@ impl Editor {
         let start = self.free_text_slot(track, self.playhead);
         let mut clip = bettercut_timeline::TextClip::new(kind.label(), start)?;
         clip.shape = Some(bettercut_text::Shape::new(kind));
+        self.fit_to_frame(&mut clip);
         let id = clip.id;
         self.dispatch(Command::AddText {
             sequence: sequence_id,
@@ -2277,6 +2299,7 @@ impl Editor {
         let mut clip = bettercut_timeline::TextClip::with_duration(name, start, length)?;
         clip.style = bettercut_text::TextStyle::title(bettercut_text::TitleLook::Headline);
         clip.counter = Some(counter);
+        self.fit_to_frame(&mut clip);
         let id = clip.id;
         // Placed where the room is, which for a ten-second clip may be later
         // than a three-second title's slot: check the whole length fits.
@@ -2576,6 +2599,7 @@ impl Editor {
             let mut clip =
                 bettercut_timeline::TextClip::with_duration(segment.text, segment.start, duration)?;
             clip.style = style.clone();
+            self.fit_to_frame(&mut clip);
             // Low in the frame, where a subtitle belongs — positive y is down.
             // Not at the very edge: phone players put their own controls there.
             clip.transform.position = bettercut_timeline::Vec2::new(0.0, 0.35);

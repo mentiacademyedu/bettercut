@@ -84,6 +84,19 @@ fn default_radius() -> f32 {
 }
 
 impl Shape {
+    /// The same shape with its pixel sizes times `factor` — see
+    /// [`crate::TextStyle::scaled`].
+    pub fn scaled(&self, factor: f32) -> Self {
+        let mut shape = self.clone();
+        shape.width *= factor;
+        shape.height *= factor;
+        shape.corner_radius *= factor;
+        if let Some(outline) = &mut shape.outline {
+            outline.width *= factor;
+        }
+        shape
+    }
+
     /// A new shape of `kind`: a medium white block, big enough to see and
     /// small enough to place.
     pub fn new(kind: ShapeKind) -> Self {

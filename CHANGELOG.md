@@ -17,6 +17,10 @@
   assistant detecting scenes while an export started. Opening a decoder,
   an encoder or a graphics device now happens one at a time; once open
   they still run side by side.
+- **New titles are the same size in a 4K project as in HD.** Title sizes
+  are in the frame's own pixels, so in 4K a new title, caption, lower
+  third, sticker or shape came out half as big. They are now made for the
+  frame they go in (by its shorter side, so a vertical video matches too).
 - **Timeline thumbnails keep the picture's shape.** Zoomed out, each
   thumbnail was squeezed to a sliver holding a whole frame; now every tile
   is the video's own shape (narrow for a phone video) and shows the frame
