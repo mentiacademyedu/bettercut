@@ -3789,6 +3789,55 @@ pub fn transport(
 
         let width = ui.available_width().max(400.0);
 
+        // The everyday cuts, as buttons at the end of the row — above the
+        // timeline, where CapCut keeps them — so they can be found without
+        // knowing the keys. Each says its key, to learn it from. Left out when
+        // the row has no room for them, rather than drawn over the meter: the
+        // keys and the clip menu still do all four.
+        const EDIT_BUTTONS_WIDTH: f32 = 330.0;
+        let room = ui.available_width() >= EDIT_BUTTONS_WIDTH;
+        if room {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let has_clips = duration > TimelineTime::ZERO;
+            let trim_end = ui
+                .add_enabled(has_clips, egui::Button::new("Trim End"))
+                .on_hover_text(crate::keys::keys(
+                    "Cut away the selected clip after the playhead and close the gap (W)",
+                ));
+            let trim_start = ui
+                .add_enabled(has_clips, egui::Button::new("Trim Start"))
+                .on_hover_text(crate::keys::keys(
+                    "Cut away the selected clip before the playhead and close the gap (Q)",
+                ));
+            let delete = ui
+                .add_enabled(!state.selected_clips.is_empty(), egui::Button::new("Delete"))
+                .on_hover_text(crate::keys::keys(
+                    "Delete the selected clips (Del). Shift+Delete closes the gap",
+                ));
+            let split = ui
+                .add_enabled(has_clips, egui::Button::new("Split"))
+                .on_hover_text(crate::keys::keys(
+                    "Cut the selected clip, or the one under the playhead, at the playhead (S)",
+                ));
+            if split.clicked() {
+                crate::shortcuts::split_at_playhead(editor, state);
+            }
+            if delete.clicked() {
+                if ui.input(|i| i.modifiers.shift) {
+                    crate::shortcuts::ripple_delete_selection(editor, state);
+                } else {
+                    crate::shortcuts::delete_selection(editor, state);
+                }
+            }
+            if trim_start.clicked() {
+                crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::Start);
+            }
+            if trim_end.clicked() {
+                crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::End);
+            }
+        });
+        }
+
         match preview {
             Some(preview) => {
                 if let Some(position) = seek_to {

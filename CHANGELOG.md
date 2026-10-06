@@ -4,6 +4,9 @@
 
 ### New
 
+- **Split, Delete, Trim Start and Trim End buttons** above the timeline,
+  where CapCut keeps them, so the everyday cuts can be found without the
+  keys (each button names its key). Left out when the window is too narrow.
 - **Transitions between clips placed whole.** Two clips dropped in from
   start to end have no footage past the cut, so a crossfade, slide or wipe
   between them used to be greyed out. Now the clips overlap to make room,
