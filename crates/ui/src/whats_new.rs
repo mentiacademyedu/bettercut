@@ -13,8 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
+    "A CapCut-style workspace: Text, Stickers, Transitions and Filters tabs on the left, edit buttons and a zoom slider over the timeline",
     "Transitions work between clips dropped in whole: they overlap to make room, as in CapCut",
-    "Split, Delete and Trim buttons above the timeline; thumbnails and waveforms you can read",
+    "Timeline thumbnails and waveforms you can read; new titles the right size in 4K",
     "Fixed a freeze when scene detection and an export started at the same moment",
 ];
 

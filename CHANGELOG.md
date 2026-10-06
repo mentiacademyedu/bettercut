@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.5 — A CapCut-style workspace; transitions between whole clips; a hang fixed
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
@@ -12,14 +15,6 @@
   looks for the selected clips. Ctrl+K: Show Text Styles, Show Stickers…
 - **An Import card** fills the empty media panel, as in CapCut: click it to
   choose files, or drop them on it.
-
-## 0.6.5 — Transitions between whole clips; a hang fixed; CapCut-style timeline
-
-Still a beta: expect bugs, and please
-[report them](https://github.com/mentiacademyedu/bettercut/issues).
-
-### New
-
 - **Split, Delete, Trim Start and Trim End buttons** above the timeline,
   where CapCut keeps them, so the everyday cuts can be found without the
   keys (each button names its key). Left out when the window is too narrow.
