@@ -13,8 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Assistants can set a clip's EQ, voice and echo, the whole video's bars and progress bar, and each lane",
-    "When an assistant deletes a shot, its sound goes with it",
+    "Transitions work between clips dropped in whole: they overlap to make room, as in CapCut",
+    "Split, Delete and Trim buttons above the timeline; thumbnails and waveforms you can read",
+    "Fixed a freeze when scene detection and an export started at the same moment",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

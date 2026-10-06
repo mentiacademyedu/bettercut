@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.5 — Transitions between whole clips; a hang fixed; CapCut-style timeline
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
