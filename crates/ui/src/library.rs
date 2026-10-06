@@ -19,6 +19,7 @@ use crate::theme;
 pub enum LibraryTab {
     #[default]
     Media,
+    Audio,
     Text,
     Stickers,
     Transitions,
@@ -26,8 +27,9 @@ pub enum LibraryTab {
 }
 
 impl LibraryTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Media,
+        Self::Audio,
         Self::Text,
         Self::Stickers,
         Self::Transitions,
@@ -37,6 +39,7 @@ impl LibraryTab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Media => "Media",
+            Self::Audio => "Audio",
             Self::Text => "Text",
             Self::Stickers => "Stickers",
             Self::Transitions => "Transitions",
@@ -65,6 +68,7 @@ pub fn tabs(ui: &mut egui::Ui, state: &mut UiState) {
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     egui::ScrollArea::vertical().show(ui, |ui| match state.library_tab {
         LibraryTab::Media => {}
+        LibraryTab::Audio => audio_tab(ui, editor, state),
         LibraryTab::Text => text_tab(ui, editor, state),
         LibraryTab::Stickers => sticker_tab(ui, editor, state),
         LibraryTab::Transitions => transition_tab(ui, editor, state),
@@ -83,6 +87,37 @@ fn wide(ui: &mut egui::Ui, label: &str) -> egui::Response {
         egui::vec2(ui.available_width(), 26.0),
         egui::Button::new(label),
     )
+}
+
+fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    use bettercut_editor_core::media::GeneratedSound;
+    hint(
+        ui,
+        "Sound effects: click to put one at the playhead, on a free sound lane",
+    );
+    let mut chosen = None;
+    for sound in GeneratedSound::EFFECTS {
+        if wide(ui, &sound.name())
+            .on_hover_text(sound.description().unwrap_or_default())
+            .clicked()
+        {
+            chosen = Some(sound);
+        }
+    }
+    if let Some(sound) = chosen {
+        let seconds = sound.natural_length().unwrap_or(1.0);
+        let length = bettercut_editor_core::foundation::TimelineTime::from_millis(
+            (seconds * 1000.0).ceil() as i64,
+        );
+        match editor.add_generated_sound(sound, length) {
+            Ok(clip) => {
+                state.select_only(clip);
+                state.inspector_tab = InspectorTab::Audio;
+                state.needs_repaint = true;
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 }
 
 fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {

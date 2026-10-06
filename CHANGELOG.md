@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Sound effects**: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click
+  and Riser — made by bettercut, no files needed — in a new **Audio** tab in
+  the left panel and in Add Sound. An assistant adds them with
+  `add_sound_effect`.
+
 ## 0.6.5 — A CapCut-style workspace; transitions between whole clips; a hang fixed
 
 Still a beta: expect bugs, and please

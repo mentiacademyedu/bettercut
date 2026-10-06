@@ -452,6 +452,11 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.library_tab = crate::library::LibraryTab::Media,
     },
     Action {
+        name: "Show Sound Effects",
+        hint: "the left panel's Audio tab: whoosh, pop, ding, boom and more",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Audio,
+    },
+    Action {
         name: "Show Text Styles",
         hint: "the left panel's Text tab: titles to add, in each style",
         run: |_, s| s.library_tab = crate::library::LibraryTab::Text,

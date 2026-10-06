@@ -38,6 +38,11 @@ pub const EFFECT_PEAK: f32 = 0.35;
 pub const WHOOSH_SECONDS: f64 = 0.7;
 pub const CLICK_SECONDS: f64 = 0.03;
 pub const RISER_SECONDS: f64 = 2.0;
+pub const POP_SECONDS: f64 = 0.12;
+pub const DING_SECONDS: f64 = 1.5;
+pub const BOOM_SECONDS: f64 = 1.2;
+pub const CHIME_SECONDS: f64 = 0.8;
+pub const SHUTTER_SECONDS: f64 = 0.15;
 
 /// Sound with no file behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -54,6 +59,17 @@ pub enum GeneratedSound {
     Riser,
     /// Nothing at all — but nothing *placed*, which a gap is not.
     Silence,
+    /// A bubble popping: a short drop in pitch. Under a sticker or a word
+    /// appearing.
+    Pop,
+    /// A bell struck once, ringing away: a reveal, a right answer.
+    Ding,
+    /// A low impact: a title landing, a hard cut.
+    Boom,
+    /// Two rising notes, like a notification.
+    Chime,
+    /// A camera shutter: a freeze frame, a photo.
+    Shutter,
 }
 
 impl GeneratedSound {
@@ -74,7 +90,42 @@ impl GeneratedSound {
             Self::Whoosh => "Whoosh".to_owned(),
             Self::Click => "Click".to_owned(),
             Self::Riser => "Riser".to_owned(),
+            Self::Pop => "Pop".to_owned(),
+            Self::Ding => "Ding".to_owned(),
+            Self::Boom => "Boom".to_owned(),
+            Self::Chime => "Chime".to_owned(),
+            Self::Shutter => "Shutter".to_owned(),
         }
+    }
+
+    /// The effects, in the order the interface offers them.
+    pub const EFFECTS: [Self; 8] = [
+        Self::Whoosh,
+        Self::Pop,
+        Self::Click,
+        Self::Ding,
+        Self::Chime,
+        Self::Boom,
+        Self::Shutter,
+        Self::Riser,
+    ];
+
+    /// What an effect is for, for its hover text; `None` for a tone or
+    /// silence.
+    pub fn description(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Whoosh => {
+                "A breath of air, dark to bright, under a fast move or a title flying in"
+            }
+            Self::Click => "A short tick: a button, a cut, a beat",
+            Self::Riser => "A tone climbing in pitch and level: the run-up to a drop or a reveal",
+            Self::Pop => "A bubble popping, under a sticker or a word appearing",
+            Self::Ding => "A bell struck once: a reveal, a right answer",
+            Self::Boom => "A low impact: a title landing, a hard cut",
+            Self::Chime => "Two rising notes, like a notification",
+            Self::Shutter => "A camera shutter: a freeze frame, a photo",
+            Self::Tone { .. } | Self::Silence => return None,
+        })
     }
 
     /// How long the effect itself lasts; a tone or silence goes on as long
@@ -84,6 +135,11 @@ impl GeneratedSound {
             Self::Whoosh => Some(WHOOSH_SECONDS),
             Self::Click => Some(CLICK_SECONDS),
             Self::Riser => Some(RISER_SECONDS),
+            Self::Pop => Some(POP_SECONDS),
+            Self::Ding => Some(DING_SECONDS),
+            Self::Boom => Some(BOOM_SECONDS),
+            Self::Chime => Some(CHIME_SECONDS),
+            Self::Shutter => Some(SHUTTER_SECONDS),
             Self::Tone { .. } | Self::Silence => None,
         }
     }
@@ -101,10 +157,7 @@ impl GeneratedSound {
                     LINE_UP_DB
                 },
             },
-            Self::Silence => Self::Silence,
-            Self::Whoosh => Self::Whoosh,
-            Self::Click => Self::Click,
-            Self::Riser => Self::Riser,
+            other => other,
         }
     }
 
@@ -113,7 +166,7 @@ impl GeneratedSound {
         match self.clamped() {
             Self::Tone { level_db, .. } => 10.0_f32.powf(level_db / 20.0),
             Self::Silence => 0.0,
-            Self::Whoosh | Self::Click | Self::Riser => EFFECT_PEAK,
+            _ => EFFECT_PEAK,
         }
     }
 
@@ -135,7 +188,7 @@ impl GeneratedSound {
         let amplitude = sound.amplitude();
         let hz = match sound {
             Self::Tone { hz, .. } => f64::from(hz),
-            Self::Silence | Self::Whoosh | Self::Click | Self::Riser => 0.0,
+            _ => 0.0,
         };
         if amplitude <= 0.0 || hz <= 0.0 {
             return vec![vec![0.0; frames], vec![0.0; frames]];
@@ -204,9 +257,73 @@ impl GeneratedSound {
                     ((std::f64::consts::TAU * turns).sin() * level * f64::from(EFFECT_PEAK)) as f32
                 })
                 .collect(),
+            Self::Pop | Self::Ding | Self::Boom | Self::Chime | Self::Shutter => (0..frames)
+                .map(|index| {
+                    let sample = first + index as i64;
+                    let value = self.struck(sample, sample as f64 / rate);
+                    (value * f64::from(EFFECT_PEAK)).clamp(-1.0, 1.0) as f32
+                })
+                .collect(),
             Self::Tone { .. } | Self::Silence => return None,
         };
         Some(vec![plane.clone(), plane])
+    }
+
+    /// The struck effects at time `t` (sample `sample`), about -1..1 before
+    /// the effect level: each a pitch or a burst of noise with an envelope
+    /// that falls away, the shapes those sounds have.
+    fn struck(self, sample: i64, t: f64) -> f64 {
+        use std::f64::consts::TAU;
+        // The phase of a pitch gliding from `from` to `to` hertz with time
+        // constant `tau`: the integral of the glide, in turns.
+        let glide = |from: f64, to: f64, tau: f64, t: f64| {
+            (to * t + (from - to) * tau * (1.0 - (-t / tau).exp())).fract()
+        };
+        // A few milliseconds of rise, so nothing starts with a click.
+        let attack = |t: f64| (t / 0.002).min(1.0);
+        match self {
+            Self::Pop if t < POP_SECONDS => {
+                (TAU * glide(900.0, 280.0, 0.02, t)).sin() * (-t / 0.03).exp() * attack(t) * 2.0
+            }
+            Self::Ding if t < DING_SECONDS => {
+                // A bell's partials are not whole multiples, and the high ones
+                // die first.
+                let partial = |ratio: f64, level: f64, decay: f64| {
+                    (TAU * (880.0 * ratio * t).fract()).sin() * level * (-t / decay).exp()
+                };
+                (partial(1.0, 1.0, 0.5) + partial(2.76, 0.5, 0.25) + partial(5.4, 0.25, 0.12))
+                    * attack(t)
+                    * 1.6
+            }
+            Self::Boom if t < BOOM_SECONDS => {
+                let body = (TAU * glide(110.0, 42.0, 0.08, t)).sin() * (-t / 0.35).exp();
+                let hit = noise(sample) * (-t / 0.015).exp() * 0.4;
+                (body + hit) * attack(t) * 2.4
+            }
+            Self::Chime if t < CHIME_SECONDS => {
+                let note = |hz: f64, start: f64| {
+                    let t = t - start;
+                    if t < 0.0 {
+                        return 0.0;
+                    }
+                    (TAU * (hz * t).fract()).sin() * (-t / 0.18).exp() * attack(t)
+                };
+                (note(1_046.5, 0.0) + note(1_568.0, 0.15)) * 1.6
+            }
+            Self::Shutter if t < SHUTTER_SECONDS => {
+                // Two snaps of bright noise: the curtain opening and closing.
+                let snap = |start: f64| {
+                    let t = t - start;
+                    if t < 0.0 {
+                        return 0.0;
+                    }
+                    (-t / 0.008).exp()
+                };
+                let bright = (noise(sample) - noise(sample - 1)) * 0.5;
+                bright * (snap(0.0) + 0.8 * snap(0.07)) * 2.4
+            }
+            _ => 0.0,
+        }
     }
 }
 
@@ -334,6 +451,58 @@ mod tests {
             assert_eq!(&whole[..1_000], &first[..], "{sound:?} first block");
             assert_eq!(&whole[1_000..], &second[..], "{sound:?} second block");
         }
+    }
+
+    /// The struck effects: loud at once, quieter by their end, silent after
+    /// it, never clipping — and the same in any block size.
+    #[test]
+    fn the_struck_effects_ring_away_and_stop() {
+        for sound in [
+            GeneratedSound::Pop,
+            GeneratedSound::Ding,
+            GeneratedSound::Boom,
+            GeneratedSound::Chime,
+            GeneratedSound::Shutter,
+        ] {
+            let length = sound.natural_length().unwrap();
+            let total = (length * AUDIO_SAMPLE_RATE as f64) as usize;
+            let all = whole(sound, length + 0.1);
+            let opening = peak(&all[..total / 4]);
+            let closing = peak(&all[total * 3 / 4..total]);
+            assert!(opening > 0.1, "{sound:?} is too quiet: {opening}");
+            assert!(
+                closing < opening,
+                "{sound:?} did not fall away: {opening} then {closing}"
+            );
+            assert!(peak(&all[total + 10..]) == 0.0, "{sound:?} did not stop");
+            assert!(peak(&all) <= 1.0, "{sound:?} clipped");
+            assert!(
+                sound.description().is_some(),
+                "{sound:?} has no description"
+            );
+
+            let joined: Vec<f32> = sound
+                .read(MediaTime::ZERO, 700)
+                .remove(0)
+                .into_iter()
+                .chain(
+                    sound
+                        .read(MediaTime::from_ticks(700 * TICKS_PER_AUDIO_SAMPLE), 1_348)
+                        .remove(0),
+                )
+                .collect();
+            assert_eq!(
+                joined,
+                sound.read(MediaTime::ZERO, 2_048).remove(0),
+                "{sound:?}"
+            );
+        }
+        assert_eq!(GeneratedSound::EFFECTS.len(), 8);
+        assert!(
+            GeneratedSound::EFFECTS
+                .iter()
+                .all(|e| e.natural_length().is_some())
+        );
     }
 
     #[test]

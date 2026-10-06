@@ -403,29 +403,30 @@ pub fn toolbar(
                         "Silence you put there, which reads differently from a gap nobody noticed \
                          — trim, move and fade it like any clip",
                     ),
-                    (
-                        "Whoosh",
-                        GeneratedSound::Whoosh,
-                        1,
-                        "A breath of air, dark to bright, under a fast move or a title flying in",
-                    ),
-                    (
-                        "Click",
-                        GeneratedSound::Click,
-                        1,
-                        "A short tick: a button, a cut, a beat",
-                    ),
-                    (
-                        "Riser · 2 s",
-                        GeneratedSound::Riser,
-                        2,
-                        "A tone climbing in pitch and level: the run-up to a drop or a reveal",
-                    ),
                 ] {
                     if ui.button(name).on_hover_text(hint).clicked() {
                         made = Some((
                             sound,
                             bettercut_editor_core::foundation::TimelineTime::from_seconds(seconds),
+                        ));
+                        ui.close();
+                    }
+                }
+                // The effects, each as long as it runs — the same list as
+                // the left panel's Audio tab.
+                ui.separator();
+                for sound in GeneratedSound::EFFECTS {
+                    if ui
+                        .button(sound.name())
+                        .on_hover_text(sound.description().unwrap_or_default())
+                        .clicked()
+                    {
+                        let seconds = sound.natural_length().unwrap_or(1.0);
+                        made = Some((
+                            sound,
+                            bettercut_editor_core::foundation::TimelineTime::from_millis(
+                                (seconds * 1000.0).ceil() as i64,
+                            ),
                         ));
                         ui.close();
                     }

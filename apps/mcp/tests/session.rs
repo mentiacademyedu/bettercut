@@ -2066,6 +2066,44 @@ fn a_new_title_is_the_same_size_on_screen_in_any_frame() {
 }
 
 #[test]
+fn an_assistant_adds_sound_effects() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp29-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let added: Value =
+        serde_json::from_str(&client.ok("add_sound_effect", json!({ "effect": "Ding", "at": 2 })))
+            .unwrap();
+    client.ok("add_sound_effect", json!({ "effect": "boom", "at": 2.5 }));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let clips: Vec<&Value> = described["sound_lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|lane| lane["clips"].as_array().unwrap())
+        .collect();
+    let ding = clips
+        .iter()
+        .find(|c| c["clip_id"] == added["clip_id"])
+        .expect("the ding is on a sound lane");
+    assert_eq!(ding["start"], 2.0);
+    assert!((ding["end"].as_f64().unwrap() - 3.5).abs() < 0.01, "{ding}");
+    assert_eq!(
+        clips.len(),
+        2,
+        "the boom overlaps the ding, so it went on another lane"
+    );
+    let (text, is_error) = client.tool("add_sound_effect", json!({ "effect": "kazoo", "at": 0 }));
+    assert!(is_error && text.contains("Shutter"), "{text}");
+    drop(client);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_assistant_shapes_the_sound() {
     let dir = std::env::temp_dir().join(format!("bettercut-mcp22-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

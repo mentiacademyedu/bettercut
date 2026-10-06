@@ -395,6 +395,22 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "add_sound_effect",
+        description: "Put a sound effect at `at` seconds, on a sound lane with room: Whoosh, \
+                      Pop, Click, Ding, Chime, Boom, Shutter or Riser. Made by bettercut, no \
+                      file needed. Returns the new clip id.",
+        schema: || {
+            object(
+                json!({
+                    "effect": { "type": "string", "enum": ["whoosh", "pop", "click", "ding",
+                                                           "chime", "boom", "shutter", "riser"] },
+                    "at": { "type": "number", "minimum": 0 }
+                }),
+                &["effect", "at"],
+            )
+        },
+    },
+    Tool {
         name: "organise_media",
         description: "Tidy one imported file in the project's media list, in one undo step: \
                       `rename` it (the file on disk keeps its name; an empty name goes back \
@@ -1586,6 +1602,24 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "remove_range" => remove_range(editor, args),
         "whole_video_look" => whole_video_look(editor, args),
         "set_lane" => set_lane(editor, args),
+        "add_sound_effect" => {
+            use bettercut_editor_core::media::GeneratedSound;
+            let wanted = str_arg(args, "effect")?;
+            let sound = GeneratedSound::EFFECTS
+                .into_iter()
+                .find(|s| plain(&s.name()) == plain(wanted))
+                .ok_or_else(|| {
+                    let names: Vec<String> =
+                        GeneratedSound::EFFECTS.iter().map(|s| s.name()).collect();
+                    format!("no effect {wanted:?}; one of {}", names.join(", "))
+                })?;
+            editor.set_playhead(time_arg(args, "at")?);
+            let length = timeline_time(sound.natural_length().unwrap_or(1.0));
+            let clip = editor
+                .add_generated_sound(sound, length)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "clip_id": clip.to_string() }).to_string())
+        }
         "organise_media" => {
             let media = MediaId::from_uuid(id_arg(args, "media_id")?);
             if editor.project().media_asset(media).is_none() {

@@ -143,6 +143,11 @@ fn label_for(sound: GeneratedSound) -> &'static str {
         GeneratedSound::Whoosh => "Add Whoosh",
         GeneratedSound::Click => "Add Click",
         GeneratedSound::Riser => "Add Riser",
+        GeneratedSound::Pop => "Add Pop",
+        GeneratedSound::Ding => "Add Ding",
+        GeneratedSound::Boom => "Add Boom",
+        GeneratedSound::Chime => "Add Chime",
+        GeneratedSound::Shutter => "Add Shutter",
     }
 }
 
