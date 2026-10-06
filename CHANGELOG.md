@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **A zoom slider** with - and + in the corner above the track heads, as in
+  CapCut. Ctrl+wheel and the Timeline menu still zoom too.
+
 ## 0.6.5 — Transitions between whole clips; a hang fixed; CapCut-style timeline
 
 Still a beta: expect bugs, and please

@@ -1234,6 +1234,26 @@ impl UiState {
         }
     }
 
+    /// How far zoomed in, as a step from 0 (furthest out) to
+    /// [`Self::zoom_steps`] − 1 (closest in): the way a slider reads it.
+    pub fn zoom_step(&self) -> usize {
+        ZOOM_LEVELS.len() - 1 - self.zoom_index.min(ZOOM_LEVELS.len() - 1)
+    }
+
+    /// How many zoom steps there are.
+    pub fn zoom_steps(&self) -> usize {
+        ZOOM_LEVELS.len()
+    }
+
+    /// Zoom to a step as [`Self::zoom_step`] counts them.
+    pub fn set_zoom_step(&mut self, step: usize) {
+        let index = ZOOM_LEVELS.len() - 1 - step.min(ZOOM_LEVELS.len() - 1);
+        if index != self.zoom_index {
+            self.zoom_index = index;
+            self.needs_repaint = true;
+        }
+    }
+
     pub fn can_zoom_in(&self) -> bool {
         self.zoom_index > 0
     }

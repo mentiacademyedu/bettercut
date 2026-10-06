@@ -444,7 +444,51 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         state,
     );
 
+    // Last, so it is on top of the canvas for both drawing and clicks.
+    zoom_control(ui, rect, state);
+
     crate::context_menu::show(&response, editor, state);
+}
+
+/// Zoom out, a slider, zoom in — in the corner above the track heads, where
+/// CapCut keeps its zoom. Ctrl+wheel and the Timeline menu still zoom too.
+fn zoom_control(ui: &mut egui::Ui, rect: Rect, state: &mut UiState) {
+    // Clear of the playhead's head, which hangs over the corner's right edge
+    // when the playhead is at the very start.
+    let corner = Rect::from_min_size(
+        rect.min + vec2(4.0, 1.0),
+        vec2(theme::TRACK_HEADER_WIDTH - 16.0, theme::RULER_HEIGHT - 2.0),
+    );
+    let px_per_second = state.pixels_per_second();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().slider_width = (corner.width() - 52.0).max(20.0);
+            if ui
+                .add_enabled(state.can_zoom_out(), egui::Button::new("-").small())
+                .on_hover_text("Zoom out")
+                .clicked()
+            {
+                state.zoom_out();
+            }
+            let mut step = state.zoom_step();
+            let slider = ui
+                .add(egui::Slider::new(&mut step, 0..=state.zoom_steps() - 1).show_value(false))
+                .on_hover_text(format!(
+                    "Zoom: {px_per_second:.0} pixels a second (Ctrl+wheel)"
+                ));
+            if slider.changed() {
+                state.set_zoom_step(step);
+            }
+            if ui
+                .add_enabled(state.can_zoom_in(), egui::Button::new("+").small())
+                .on_hover_text("Zoom in")
+                .clicked()
+            {
+                state.zoom_in();
+            }
+        });
+    });
 }
 
 /// The whole edit in one strip, with the visible part marked on it (§58).
@@ -1936,15 +1980,6 @@ fn draw_ruler(
             None => break,
         }
     }
-
-    // Zoom readout, so the scale is never a mystery.
-    painter.text(
-        Pos2::new(rect.left() + 8.0, ruler.center().y),
-        Align2::LEFT_CENTER,
-        format!("{px_per_second:.0} px/s"),
-        FontId::monospace(11.0),
-        theme::disabled(),
-    );
 }
 
 #[allow(clippy::too_many_arguments)] // a canvas draw genuinely needs all of it
