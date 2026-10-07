@@ -34,11 +34,21 @@ pub enum TextPreset {
     Soft,
     /// Warm cream letters with a solid offset shadow, like old print.
     Retro,
+    /// White on a red box, like a news banner.
+    Breaking,
+    /// Orange letters glowing like embers.
+    Fire,
+    /// Pale blue letters with a cold white glow.
+    Ice,
+    /// White with a heavy black outline and a hard red shadow.
+    Comic,
+    /// Hot pink with a white outline.
+    Candy,
 }
 
 impl TextPreset {
     /// Every preset, in the order the interface offers them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 12] = [
         Self::Classic,
         Self::Pop,
         Self::Neon,
@@ -46,6 +56,11 @@ impl TextPreset {
         Self::Highlight,
         Self::Soft,
         Self::Retro,
+        Self::Breaking,
+        Self::Fire,
+        Self::Ice,
+        Self::Comic,
+        Self::Candy,
     ];
 
     pub fn label(self) -> &'static str {
@@ -57,6 +72,11 @@ impl TextPreset {
             Self::Highlight => "Highlight",
             Self::Soft => "Soft",
             Self::Retro => "Retro",
+            Self::Breaking => "Breaking",
+            Self::Fire => "Fire",
+            Self::Ice => "Ice",
+            Self::Comic => "Comic",
+            Self::Candy => "Candy",
         }
     }
 
@@ -69,6 +89,11 @@ impl TextPreset {
             Self::Highlight => "Black on a yellow box",
             Self::Soft => "White with a soft shadow",
             Self::Retro => "Cream letters with a solid offset shadow",
+            Self::Breaking => "White on a red banner, like breaking news",
+            Self::Fire => "Orange letters glowing like embers",
+            Self::Ice => "Pale blue letters with a cold glow",
+            Self::Comic => "Heavy outline and a hard red shadow, like a comic book",
+            Self::Candy => "Hot pink with a white outline",
         }
     }
 
@@ -152,6 +177,64 @@ impl TextPreset {
                     blur: 0.0,
                     color: Rgba::opaque(214, 86, 40),
                 }),
+                None,
+            ),
+            Self::Breaking => (
+                Rgba::WHITE,
+                None,
+                None,
+                Some(Background {
+                    color: Rgba::opaque(214, 24, 32),
+                    padding: 12.0 * k,
+                    corner_radius: 2.0 * k,
+                }),
+            ),
+            Self::Fire => (
+                Rgba::opaque(255, 150, 30),
+                Some(Stroke {
+                    width: 2.0 * k,
+                    color: Rgba::opaque(150, 20, 0),
+                }),
+                Some(Shadow {
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur: 16.0 * k,
+                    color: Rgba::opaque(255, 70, 0),
+                }),
+                None,
+            ),
+            Self::Ice => (
+                Rgba::opaque(200, 240, 255),
+                None,
+                Some(Shadow {
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur: 14.0 * k,
+                    color: Rgba::opaque(255, 255, 255),
+                }),
+                None,
+            ),
+            Self::Comic => (
+                Rgba::WHITE,
+                Some(Stroke {
+                    width: 7.0 * k,
+                    color: Rgba::BLACK,
+                }),
+                Some(Shadow {
+                    offset_x: 6.0 * k,
+                    offset_y: 6.0 * k,
+                    blur: 0.0,
+                    color: Rgba::opaque(230, 30, 40),
+                }),
+                None,
+            ),
+            Self::Candy => (
+                Rgba::opaque(255, 70, 170),
+                Some(Stroke {
+                    width: 5.0 * k,
+                    color: Rgba::WHITE,
+                }),
+                None,
                 None,
             ),
         };

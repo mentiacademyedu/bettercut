@@ -138,12 +138,17 @@ fn every_preset_is_offered() {
             | TextPreset::Boxed
             | TextPreset::Highlight
             | TextPreset::Soft
-            | TextPreset::Retro => true,
+            | TextPreset::Retro
+            | TextPreset::Breaking
+            | TextPreset::Fire
+            | TextPreset::Ice
+            | TextPreset::Comic
+            | TextPreset::Candy => true,
         }
     }
-    assert_eq!(TextPreset::ALL.len(), 7, "a preset was added or removed");
+    assert_eq!(TextPreset::ALL.len(), 12, "a preset was added or removed");
     assert!(TextPreset::ALL.into_iter().all(offered));
     let mut labels: Vec<_> = TextPreset::ALL.iter().map(|p| p.label()).collect();
     labels.dedup();
-    assert_eq!(labels.len(), 7);
+    assert_eq!(labels.len(), 12);
 }
