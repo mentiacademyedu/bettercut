@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Drag files, text, stickers, sounds, effects, filters and transitions from the left panel straight onto the timeline",
-    "Sound effects: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click and Riser in a new Audio tab",
-    "An Effects tab, title designs in the Text tab, and \"apply to all\" for transitions and filters",
+    "Animated titles in the Text tab: Pop in, Typed out, Bounce, Neon pulse and more",
+    "The blade tool (B): click a clip to cut it there; Marker and Freeze beside Split",
+    "Snap and Magnet toggles in the status bar; start a new project from a template",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

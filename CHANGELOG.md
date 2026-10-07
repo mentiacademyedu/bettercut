@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.7 — Animated titles, the blade tool, and CapCut's timeline toggles
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
