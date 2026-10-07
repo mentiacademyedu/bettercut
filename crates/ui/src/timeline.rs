@@ -556,6 +556,29 @@ fn library_drop(
         let Ok((at, kind)) = editor.drop_plan(media, at) else {
             return;
         };
+        // A ghost of the clip, as long as it will be, on the lane it lands on.
+        if let Some(asset) = editor.project().media_asset(media) {
+            let length = asset
+                .placement_duration_with(editor.project().settings.photo_length)
+                .ticks();
+            let kind_of_lane = if asset.kind.has_video() {
+                TrackKind::Video
+            } else {
+                TrackKind::Audio
+            };
+            if let Some(lane) = editor
+                .active_sequence()
+                .and_then(|s| s.target_track(kind_of_lane))
+                .and_then(|track| lanes.iter().find(|l| l.track == track))
+            {
+                let ghost = Rect::from_x_y_ranges(
+                    viewport.x_of(at)
+                        ..=viewport.x_of(TimelineTime::from_ticks(at.ticks() + length)),
+                    lane.rect.shrink2(vec2(0.0, 4.0)).y_range(),
+                );
+                painter.rect_filled(ghost, 4.0, theme::accent().gamma_multiply(0.35));
+            }
+        }
         mark(
             viewport.x_of(at),
             match kind {
