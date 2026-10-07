@@ -9,6 +9,8 @@
   exit or loop, in one click or one drag.
 - **The blade tool** (B, or Blade above the timeline): a click on a clip
   cuts it where you click, as in CapCut.
+- **Start from a template** under the Import card of an empty project, and
+  Templates… in the Media tab's More menu.
 - **Marker and Freeze buttons** beside Split and Delete when the window is
   wide enough; at 1280 px the cut buttons now show instead of none.
 

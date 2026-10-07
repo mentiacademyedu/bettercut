@@ -1105,12 +1105,19 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         crate::library::show(ui, editor, state);
         return;
     }
-    // One line: the panel's name, and Import — with the rarer ways in
-    // behind More.
+    // One line: Import, with the rarer ways in behind More. The tab above
+    // already says this is Media.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Media").strong().color(theme::ruler_text()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("More", |ui| {
+                if ui
+                    .button("Templates…")
+                    .on_hover_text("Start from a ready-made edit and drop your clips into it")
+                    .clicked()
+                {
+                    ui.close();
+                    state.template_dialog.open();
+                }
                 if ui
                     .button("Import Sequence…")
                     .on_hover_text(
@@ -1139,7 +1146,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
             })
             .response
-            .on_hover_text("Import a numbered image sequence");
+            .on_hover_text("Templates, and importing a numbered image sequence");
             if ui
                 .button("Import…")
                 .on_hover_text("Add a file to the project's media library")
@@ -1207,6 +1214,17 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             .clicked()
         {
             import_media(editor, state);
+        }
+        ui.add_space(8.0);
+        if ui
+            .add_sized(
+                egui::vec2(ui.available_width(), 28.0),
+                egui::Button::new("Start from a template"),
+            )
+            .on_hover_text("A ready-made edit: pick one, then drop your clips into its places")
+            .clicked()
+        {
+            state.template_dialog.open();
         }
         return;
     }
