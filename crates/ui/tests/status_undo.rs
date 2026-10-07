@@ -7,7 +7,7 @@ use bettercut_editor_core::foundation::TimelineTime;
 use bettercut_ui::UiState;
 use egui::{Pos2, RawInput, Rect, vec2};
 
-fn words(editor: &Editor, state: &mut UiState) -> String {
+fn words(editor: &mut Editor, state: &mut UiState) -> String {
     let ctx = egui::Context::default();
     let input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 200.0))),
@@ -31,7 +31,7 @@ fn words(editor: &Editor, state: &mut UiState) -> String {
 fn undo_is_offered_after_an_edit_and_not_after_a_toggle() {
     let (mut editor, _events) = Editor::new_project("Status");
     let mut state = UiState::default();
-    words(&editor, &mut state);
+    words(&mut editor, &mut state);
 
     // An edit and its message in the same frame.
     editor
@@ -39,14 +39,14 @@ fn undo_is_offered_after_an_edit_and_not_after_a_toggle() {
         .unwrap();
     state.info("Added 1 marker");
     assert!(
-        words(&editor, &mut state).contains("Undo"),
+        words(&mut editor, &mut state).contains("Undo"),
         "no Undo after an edit"
     );
 
     // A message with no new step: no Undo.
     state.info("Snapping on");
     assert!(
-        !words(&editor, &mut state).contains("Undo"),
+        !words(&mut editor, &mut state).contains("Undo"),
         "Undo offered after a toggle"
     );
 }
@@ -55,9 +55,9 @@ fn undo_is_offered_after_an_edit_and_not_after_a_toggle() {
 /// said in the bar — and only while they are so.
 #[test]
 fn a_newer_version_and_an_assistant_are_shown() {
-    let (editor, _events) = Editor::new_project("Status");
+    let (mut editor, _events) = Editor::new_project("Status");
     let mut state = UiState::default();
-    let quiet = words(&editor, &mut state);
+    let quiet = words(&mut editor, &mut state);
     assert!(
         !quiet.contains("is out") && !quiet.contains("assistant connected"),
         "{quiet}"
@@ -68,7 +68,7 @@ fn a_newer_version_and_an_assistant_are_shown() {
         url: "https://example.invalid/9.9.9".to_owned(),
     });
     state.assistant_seen = Some(std::time::Instant::now());
-    let busy = words(&editor, &mut state);
+    let busy = words(&mut editor, &mut state);
     assert!(busy.contains("bettercut 9.9.9 is out"), "{busy}");
     assert!(busy.contains("assistant connected"), "{busy}");
 }

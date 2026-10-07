@@ -629,18 +629,7 @@ pub fn toolbar(
                 .on_hover_text("Keep the main track's clips together from the start: deleting or moving one closes the gap")
                 .changed()
             {
-                match editor.dispatch(bettercut_editor_core::Command::ChangeSetting {
-                    change: bettercut_editor_core::SettingChange::MagneticTimeline(magnetic),
-                }) {
-                    Ok(()) => {
-                        if magnetic {
-                            // Turning it on packs the track now, as part of the
-                            // same step, so it is magnetic from the first moment.
-                            crate::shortcuts::close_up_if_magnetic(editor, state);
-                        }
-                    }
-                    Err(err) => state.error(err.to_string()),
-                }
+                set_magnetic(editor, state, magnetic);
             }
 
             if ui
@@ -3993,6 +3982,22 @@ fn freeze_here(editor: &mut Editor, state: &mut UiState) {
         Ok(held) => {
             state.select_only(held);
             state.info("Holding this frame for 2 s");
+        }
+        Err(err) => state.error(err.to_string()),
+    }
+}
+
+/// Switch the magnetic main track on or off.
+fn set_magnetic(editor: &mut Editor, state: &mut UiState, magnetic: bool) {
+    match editor.dispatch(bettercut_editor_core::Command::ChangeSetting {
+        change: bettercut_editor_core::SettingChange::MagneticTimeline(magnetic),
+    }) {
+        Ok(()) => {
+            if magnetic {
+                // Turning it on packs the track now, as part of the same
+                // step, so it is magnetic from the first moment.
+                crate::shortcuts::close_up_if_magnetic(editor, state);
+            }
         }
         Err(err) => state.error(err.to_string()),
     }
@@ -11111,7 +11116,7 @@ pub fn recovery_prompt(ctx: &egui::Context, editor: &mut Editor, state: &mut UiS
 }
 
 /// Status bar: project state at a glance, plus the last message.
-pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
+pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     // A message that arrived with a new undo step is an edit's: only then is
     // Undo offered beside it.
     let depth = editor.undo_depth();
@@ -11194,6 +11199,25 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
                     "How long this sequence runs, and how many clips are in it",
                 );
             });
+        }
+
+        // Snapping and the magnetic main track, always in sight as in
+        // CapCut: they change what every drag does.
+        ui.separator();
+        if ui
+            .selectable_label(state.snapping, "Snap")
+            .on_hover_text(crate::keys::keys("Snap edits to clip edges, markers and the playhead (N). Hold Alt to bypass"))
+            .clicked()
+        {
+            state.snapping = !state.snapping;
+        }
+        let magnetic = editor.is_magnetic();
+        if ui
+            .selectable_label(magnetic, "Magnet")
+            .on_hover_text("The main track stays packed: deleting or moving a clip closes the gap")
+            .clicked()
+        {
+            set_magnetic(editor, state, !magnetic);
         }
 
         // §47a.4 / §20a: quiet when playback is keeping up, loud when it is
