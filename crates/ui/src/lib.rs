@@ -223,18 +223,15 @@ pub fn draw(
     disk_change::check(editor, state);
     disk_change::show(ui.ctx(), editor, state);
     assistant::show(ui.ctx(), state);
-    // A file on its way from the media panel: its name follows the pointer,
+    // Something on its way from the left panel: its name follows the pointer,
     // and a release anywhere but the timeline (which handles its own) drops
     // the drag.
-    if let Some(media) = state.dragging_media {
+    if let Some(item) = state.dragging {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.pointer.any_released()) {
-            state.dragging_media = None;
+            state.dragging = None;
         } else if let Some(pointer) = ctx.input(|i| i.pointer.hover_pos()) {
-            let name = editor
-                .project()
-                .media_asset(media)
-                .map_or_else(String::new, |m| m.display_name().to_owned());
+            let name = item.label(editor);
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::new("media drag"),

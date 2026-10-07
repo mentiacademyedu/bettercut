@@ -14,6 +14,61 @@ use crate::panels::InspectorTab;
 use crate::state::UiState;
 use crate::theme;
 
+/// Something being dragged from the left panel towards the timeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LibraryDrag {
+    /// A file: lands where it is let go, pushing clips aside.
+    Media(bettercut_editor_core::foundation::MediaId),
+    /// These land at the moment they are let go at.
+    Sticker(&'static str),
+    Text(Option<TextPreset>),
+    Design(bettercut_editor_core::text::TitleLook),
+    Sound(bettercut_editor_core::media::GeneratedSound),
+    /// These land on the clip they are let go on (an index into
+    /// `effects::EFFECTS`).
+    Effect(usize),
+    Filter(Filter),
+    /// On the cut at the end of the clip it is let go on.
+    Transition(TransitionKind),
+}
+
+impl LibraryDrag {
+    /// What the chip following the pointer says.
+    pub fn label(self, editor: &Editor) -> String {
+        match self {
+            Self::Media(media) => editor
+                .project()
+                .media_asset(media)
+                .map_or_else(String::new, |m| m.display_name().to_owned()),
+            Self::Sticker(sticker) => sticker.to_owned(),
+            Self::Text(None) => "Text".to_owned(),
+            Self::Text(Some(preset)) => format!("{} text", preset.label()),
+            Self::Design(look) => look.label().to_owned(),
+            Self::Sound(sound) => sound.name(),
+            Self::Effect(index) => bettercut_editor_core::effects::EFFECTS
+                .get(index)
+                .map_or_else(String::new, |e| e.name.to_owned()),
+            Self::Filter(filter) => filter.label().to_owned(),
+            Self::Transition(kind) => kind.label().to_owned(),
+        }
+    }
+
+    /// Whether it lands on a clip rather than at a moment.
+    pub fn onto_a_clip(self) -> bool {
+        matches!(
+            self,
+            Self::Effect(_) | Self::Filter(_) | Self::Transition(_)
+        )
+    }
+}
+
+/// Start dragging `item` when `response` starts being dragged.
+fn draggable(response: &egui::Response, state: &mut UiState, item: LibraryDrag) {
+    if response.drag_started() {
+        state.dragging = Some(item);
+    }
+}
+
 /// Which tab the left panel is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LibraryTab {
@@ -91,7 +146,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 fn wide(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add_sized(
         egui::vec2(ui.available_width(), 26.0),
-        egui::Button::new(label),
+        egui::Button::new(label).sense(egui::Sense::click_and_drag()),
     )
 }
 
@@ -103,10 +158,10 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     );
     let mut chosen = None;
     for sound in GeneratedSound::EFFECTS {
-        if wide(ui, &sound.name())
-            .on_hover_text(sound.description().unwrap_or_default())
-            .clicked()
-        {
+        let response =
+            wide(ui, &sound.name()).on_hover_text(sound.description().unwrap_or_default());
+        draggable(&response, state, LibraryDrag::Sound(sound));
+        if response.clicked() {
             chosen = Some(sound);
         }
     }
@@ -129,10 +184,10 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
 fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     hint(ui, "Click to put a title at the playhead");
     let mut chosen: Option<Option<TextPreset>> = None;
-    if wide(ui, "Default text")
-        .on_hover_text("White with a black outline, ready to type into")
-        .clicked()
-    {
+    let response =
+        wide(ui, "Default text").on_hover_text("White with a black outline, ready to type into");
+    draggable(&response, state, LibraryDrag::Text(None));
+    if response.clicked() {
         chosen = Some(None);
     }
     for preset in TextPreset::ALL {
@@ -143,15 +198,16 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             egui::RichText::new(preset.label())
                 .strong()
                 .color(rgb(look.color)),
-        );
+        )
+        .sense(egui::Sense::click_and_drag());
         if let Some(background) = look.background {
             button = button.fill(rgb(background.color));
         }
-        if ui
+        let response = ui
             .add_sized(egui::vec2(ui.available_width(), 26.0), button)
-            .on_hover_text(preset.description())
-            .clicked()
-        {
+            .on_hover_text(preset.description());
+        draggable(&response, state, LibraryDrag::Text(Some(preset)));
+        if response.clicked() {
             chosen = Some(Some(preset));
         }
     }
@@ -164,19 +220,18 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     hint(ui, "Designs: a title already styled and placed");
     let mut design = None;
     for look in bettercut_editor_core::text::TitleLook::ALL {
-        if wide(ui, look.label())
-            .on_hover_text(match look {
-                bettercut_editor_core::text::TitleLook::Headline => "Big and bold, near the middle",
-                bettercut_editor_core::text::TitleLook::LowerThird => {
-                    "A boxed strip low on the left, for a name or a place"
-                }
-                bettercut_editor_core::text::TitleLook::Quote => "Light serif with room to breathe",
-                bettercut_editor_core::text::TitleLook::Typewriter => {
-                    "Monospaced and spaced out, for the typewriter entrance"
-                }
-            })
-            .clicked()
-        {
+        let response = wide(ui, look.label()).on_hover_text(match look {
+            bettercut_editor_core::text::TitleLook::Headline => "Big and bold, near the middle",
+            bettercut_editor_core::text::TitleLook::LowerThird => {
+                "A boxed strip low on the left, for a name or a place"
+            }
+            bettercut_editor_core::text::TitleLook::Quote => "Light serif with room to breathe",
+            bettercut_editor_core::text::TitleLook::Typewriter => {
+                "Monospaced and spaced out, for the typewriter entrance"
+            }
+        });
+        draggable(&response, state, LibraryDrag::Design(look));
+        if response.clicked() {
             design = Some(look);
         }
     }
@@ -246,14 +301,15 @@ fn sticker_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         .spacing(egui::vec2(6.0, 6.0))
         .show(ui, |ui| {
             for (index, (sticker, name)) in STICKERS.iter().enumerate() {
-                if ui
+                let response = ui
                     .add_sized(
                         egui::vec2(size, size),
-                        egui::Button::new(egui::RichText::new(*sticker).size(24.0)),
+                        egui::Button::new(egui::RichText::new(*sticker).size(24.0))
+                            .sense(egui::Sense::click_and_drag()),
                     )
-                    .on_hover_text(*name)
-                    .clicked()
-                {
+                    .on_hover_text(*name);
+                draggable(&response, state, LibraryDrag::Sticker(sticker));
+                if response.clicked() {
                     chosen = Some(*sticker);
                 }
                 if index % columns == columns - 1 {
@@ -288,11 +344,14 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let Some(clip) = selected_picture(editor, state) else {
         hint(
             ui,
-            "Select the clip before a cut, then click a transition to put it on that cut",
+            "Drag a transition onto a clip to put it on the cut at its end, or select the clip and click",
         );
         for kind in TransitionKind::ALL {
-            ui.add_enabled(false, egui::Button::new(kind.label()))
-                .on_disabled_hover_text(kind.description());
+            let response = wide(ui, kind.label()).on_hover_text(kind.description());
+            draggable(&response, state, LibraryDrag::Transition(kind));
+            if response.clicked() {
+                state.info("Select the clip before the cut first, or drag the transition onto it");
+            }
         }
         return;
     };
@@ -312,16 +371,22 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             None => kind.description().to_owned(),
         };
         let selected = existing.is_some_and(|t| t.kind == kind);
+        // Enabled even where this cut cannot take it: it can still be dragged
+        // onto another clip.
         let response = ui
-            .add_enabled(
-                usable,
+            .add(
                 egui::Button::selectable(selected, kind.label())
-                    .min_size(egui::vec2(ui.available_width(), 26.0)),
+                    .min_size(egui::vec2(ui.available_width(), 26.0))
+                    .sense(egui::Sense::click_and_drag()),
             )
-            .on_hover_text(hover.clone())
-            .on_disabled_hover_text(hover);
+            .on_hover_text(hover.clone());
+        draggable(&response, state, LibraryDrag::Transition(kind));
         if response.clicked() {
-            chosen = Some(kind);
+            if usable {
+                chosen = Some(kind);
+            } else {
+                state.info(hover);
+            }
         }
     }
     if let Some(kind) = chosen {
@@ -372,27 +437,31 @@ fn effect_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     hint(
         ui,
         if onto.is_empty() {
-            "Select picture clips, then click an effect to put it on them"
+            "Drag an effect onto a clip, or select clips and click"
         } else {
             "Click to switch an effect on or off; set how strong in the inspector's Effects tab"
         },
     );
     let mut chosen = None;
-    for effect in &EFFECTS {
+    for (index, effect) in EFFECTS.iter().enumerate() {
         let on = onto
             .first()
             .and_then(|clip| editor.video_clip(*clip))
             .is_some_and(|clip| effect.amount_on(clip) > 0.0);
         let response = ui
-            .add_enabled(
-                !onto.is_empty(),
+            .add(
                 egui::Button::selectable(on, effect.name)
-                    .min_size(egui::vec2(ui.available_width(), 26.0)),
+                    .min_size(egui::vec2(ui.available_width(), 26.0))
+                    .sense(egui::Sense::click_and_drag()),
             )
-            .on_hover_text(effect.description)
-            .on_disabled_hover_text(effect.description);
+            .on_hover_text(effect.description);
+        draggable(&response, state, LibraryDrag::Effect(index));
         if response.clicked() {
-            chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
+            if onto.is_empty() {
+                state.info("Select picture clips first, or drag the effect onto one");
+            } else {
+                chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
+            }
         }
     }
     if let Some((effect, amount)) = chosen {
@@ -429,7 +498,7 @@ fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     hint(
         ui,
         if onto.is_empty() {
-            "Select picture clips, then click a filter to give them that look"
+            "Drag a filter onto a clip, or select clips and click"
         } else {
             "Click to give the selected clips this look"
         },
@@ -438,15 +507,19 @@ fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     let mut chosen = None;
     for filter in Filter::ALL {
         let response = ui
-            .add_enabled(
-                !onto.is_empty(),
+            .add(
                 egui::Button::selectable(current == Some(filter), filter.label())
-                    .min_size(egui::vec2(ui.available_width(), 26.0)),
+                    .min_size(egui::vec2(ui.available_width(), 26.0))
+                    .sense(egui::Sense::click_and_drag()),
             )
-            .on_hover_text(filter.description())
-            .on_disabled_hover_text(filter.description());
+            .on_hover_text(filter.description());
+        draggable(&response, state, LibraryDrag::Filter(filter));
         if response.clicked() {
-            chosen = Some(filter);
+            if onto.is_empty() {
+                state.info("Select picture clips first, or drag the filter onto one");
+            } else {
+                chosen = Some(filter);
+            }
         }
     }
     if let Some(filter) = chosen {

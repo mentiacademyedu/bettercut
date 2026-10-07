@@ -416,8 +416,8 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         lanes
     };
 
-    if state.dragging_media.is_some() {
-        media_drop(ui, &painter, rect, viewport, editor, state);
+    if state.dragging.is_some() {
+        library_drop(ui, &painter, rect, viewport, &lanes, editor, state);
     }
 
     // A clip's note, where the pointer is resting on it — not while dragging,
@@ -454,57 +454,168 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     crate::context_menu::show(&response, editor, state);
 }
 
-/// A file dragged in from the media panel: a line where it would land and
-/// how, and on release, put it there (`Editor::drop_plan`, which never
-/// covers what is already on the timeline).
-fn media_drop(
+/// Something dragged in from the left panel. A file shows a line where it
+/// would land (`Editor::drop_plan`, which never covers what is already
+/// there); a sticker, title or sound a line at the moment under the pointer;
+/// an effect, filter or transition the clip it would go on. Let go, it lands.
+#[allow(clippy::too_many_arguments)]
+fn library_drop(
     ui: &egui::Ui,
     painter: &egui::Painter,
     rect: Rect,
     viewport: Viewport,
+    lanes: &[LaneLayout],
     editor: &mut Editor,
     state: &mut UiState,
 ) {
-    let Some(media) = state.dragging_media else {
+    use crate::library::LibraryDrag;
+    let Some(item) = state.dragging else {
         return;
     };
-    let lanes = Rect::from_min_max(
+    let area = Rect::from_min_max(
         Pos2::new(viewport.origin_x, rect.top() + theme::RULER_HEIGHT),
         rect.max,
     );
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let released = ui.input(|i| i.pointer.any_released());
-    let Some(pointer) = pointer.filter(|p| lanes.contains(*p)) else {
+    let Some(pointer) = pointer.filter(|p| area.contains(*p)) else {
         return;
     };
-    let Ok((at, kind)) = editor.drop_plan(media, viewport.tick_of(pointer.x)) else {
-        return;
+
+    // A line across the lanes with a word beside it.
+    let mark = |x: f32, words: &str| {
+        painter.line_segment(
+            [Pos2::new(x, area.top()), Pos2::new(x, area.bottom())],
+            Stroke::new(2.0, theme::accent()),
+        );
+        painter.text(
+            Pos2::new(x + 6.0, area.top() + 4.0),
+            Align2::LEFT_TOP,
+            words,
+            FontId::proportional(12.0),
+            theme::accent(),
+        );
     };
-    let x = viewport.x_of(at);
-    painter.line_segment(
-        [Pos2::new(x, lanes.top()), Pos2::new(x, lanes.bottom())],
-        Stroke::new(2.0, theme::accent()),
-    );
-    painter.text(
-        Pos2::new(x + 6.0, lanes.top() + 4.0),
-        Align2::LEFT_TOP,
-        match kind {
-            bettercut_editor_core::three_point::DropKind::Insert => "Insert here",
-            bettercut_editor_core::three_point::DropKind::Overwrite => "Place here",
-        },
-        FontId::proportional(12.0),
-        theme::accent(),
-    );
-    if released {
-        state.dragging_media = None;
-        match editor.place_media_at(media, None, at, kind) {
-            Ok(clips) => {
-                state.selected_clips = clips.into_iter().collect();
-                state.needs_repaint = true;
-            }
+
+    if item.onto_a_clip() {
+        let Some((clip, clip_rect)) = picture_clip_at(editor, lanes, viewport, pointer) else {
+            return;
+        };
+        if let LibraryDrag::Transition(_) = item {
+            mark(clip_rect.right(), "On this cut");
+        } else {
+            painter.rect_stroke(
+                clip_rect.expand(1.0),
+                4.0,
+                Stroke::new(2.0, theme::accent()),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if !released {
+            return;
+        }
+        state.dragging = None;
+        let done = match item {
+            LibraryDrag::Effect(index) => bettercut_editor_core::effects::EFFECTS
+                .get(index)
+                .map_or(Ok(()), |effect| {
+                    editor.set_clip_property(
+                        clip,
+                        effect.at(bettercut_editor_core::effects::ONE_CLICK_AMOUNT),
+                        false,
+                    )
+                }),
+            LibraryDrag::Filter(filter) => editor.apply_filter(filter, vec![clip]).map(|_| ()),
+            LibraryDrag::Transition(kind) => editor.set_transition(clip, kind),
+            _ => Ok(()),
+        };
+        match done {
+            Ok(()) => state.select_only(clip),
             Err(err) => state.error(err.to_string()),
         }
+        state.needs_repaint = true;
+        return;
     }
+
+    let at = viewport.tick_of(pointer.x);
+    if let LibraryDrag::Media(media) = item {
+        let Ok((at, kind)) = editor.drop_plan(media, at) else {
+            return;
+        };
+        mark(
+            viewport.x_of(at),
+            match kind {
+                bettercut_editor_core::three_point::DropKind::Insert => "Insert here",
+                bettercut_editor_core::three_point::DropKind::Overwrite => "Place here",
+            },
+        );
+        if released {
+            state.dragging = None;
+            match editor.place_media_at(media, None, at, kind) {
+                Ok(clips) => {
+                    state.selected_clips = clips.into_iter().collect();
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+        return;
+    }
+
+    mark(viewport.x_of(at), "Here");
+    if !released {
+        return;
+    }
+    state.dragging = None;
+    // Each of these lands at the playhead; put it there for the moment, and
+    // back after, so a drop does not move where the person is looking.
+    let playhead = editor.playhead();
+    editor.set_playhead(at);
+    match item {
+        LibraryDrag::Text(preset) => crate::library::add_styled_text(editor, state, preset),
+        LibraryDrag::Design(look) => crate::library::add_title_design(editor, state, look),
+        LibraryDrag::Sticker(sticker) => match editor.add_sticker(sticker) {
+            Ok(clip) => state.select_only(clip),
+            Err(err) => state.error(err.to_string()),
+        },
+        LibraryDrag::Sound(sound) => {
+            let seconds = sound.natural_length().unwrap_or(1.0);
+            let length = TimelineTime::from_millis((seconds * 1000.0).ceil() as i64);
+            match editor.add_generated_sound(sound, length) {
+                Ok(clip) => state.select_only(clip),
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+        _ => {}
+    }
+    editor.set_playhead(playhead);
+    state.needs_repaint = true;
+}
+
+/// The picture clip under `pointer`, and where it is drawn.
+fn picture_clip_at(
+    editor: &Editor,
+    lanes: &[LaneLayout],
+    viewport: Viewport,
+    pointer: Pos2,
+) -> Option<(ClipId, Rect)> {
+    let lane = lanes
+        .iter()
+        .find(|lane| lane.kind == TrackKind::Video && lane.rect.y_range().contains(pointer.y))?;
+    let sequence = editor.active_sequence()?;
+    let at = viewport.tick_of(pointer.x);
+    sequence
+        .video_track(lane.track)?
+        .clips()
+        .iter()
+        .find(|clip| clip.timeline.start <= at && at < clip.timeline.end)
+        .map(|clip| {
+            let rect = Rect::from_x_y_ranges(
+                viewport.x_of(clip.timeline.start)..=viewport.x_of(clip.timeline.end),
+                lane.rect.y_range(),
+            );
+            (clip.id, rect)
+        })
 }
 
 /// Zoom out, a slider, zoom in — in the corner above the track heads, where

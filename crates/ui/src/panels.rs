@@ -1545,7 +1545,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                             "{name}\n\nDrag onto the timeline to place it. Switch to Cards for the thumbnail, renaming and the rest"
                         ));
                     if label.drag_started() && can_place {
-                        state.dragging_media = Some(*id);
+                        state.dragging = Some(crate::library::LibraryDrag::Media(*id));
                     }
                 });
                 mark_revealed(ui, state, *id, row.response.rect);
@@ -4128,7 +4128,7 @@ fn thumbnail(
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     // Dragged from here onto the timeline, as in CapCut (`timeline::media_drop`).
     if response.drag_started() && !missing && !duration.is_zero() {
-        state.dragging_media = Some(media);
+        state.dragging = Some(crate::library::LibraryDrag::Media(media));
     }
 
     // Hovering skims through the file: the filmstrip's tile under the pointer

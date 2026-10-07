@@ -8,6 +8,10 @@
   where it will land: dropped inside a clip it goes in at the nearer edge
   and pushes the rest along; dropped in a gap long enough it goes down
   there; nothing already on the timeline is covered.
+- **Drag from every tab, too.** Text, title designs, stickers and sound
+  effects land at the moment they are let go (the playhead stays put);
+  effects and filters land on the clip they are let go on; a transition
+  lands on the cut at the end of that clip.
 - **Sound effects**: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click
   and Riser — made by bettercut, no files needed — in a new **Audio** tab in
   the left panel and in Add Sound. An assistant adds them with

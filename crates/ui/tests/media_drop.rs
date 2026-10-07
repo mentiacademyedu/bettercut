@@ -9,6 +9,7 @@ use bettercut_editor_core::Editor;
 use bettercut_editor_core::foundation::{MediaId, MediaTime};
 use bettercut_editor_core::media::{MediaAsset, MediaKind};
 use bettercut_ui::UiState;
+use bettercut_ui::library::LibraryDrag;
 use egui::{Modifiers, Pos2, RawInput, Rect, vec2};
 
 /// Mirrors `theme::TRACK_HEADER_WIDTH` and `RULER_HEIGHT`; 30 px a second is
@@ -56,10 +57,16 @@ impl Harness {
 
     /// Drag `media` in from outside and let go at `seconds` on the lanes.
     fn drop_at(&mut self, media: MediaId, seconds: f32) {
-        let pos = Pos2::new(HEADER_W + seconds * PX_PER_SECOND, RULER_H + 80.0);
+        self.drop_item(LibraryDrag::Media(media), seconds);
+    }
+
+    /// Drag `item` in from outside and let go at `seconds`, on the picture
+    /// lane (the second, under the title lane).
+    fn drop_item(&mut self, item: LibraryDrag, seconds: f32) {
+        let pos = Pos2::new(HEADER_W + seconds * PX_PER_SECOND, RULER_H + 58.0 + 29.0);
         // Pressed outside the canvas, where the media panel would be.
         self.frame(vec![egui::Event::PointerMoved(Pos2::new(1190.0, 590.0))]);
-        self.state.dragging_media = Some(media);
+        self.state.dragging = Some(item);
         for _ in 0..3 {
             self.frame(vec![egui::Event::PointerMoved(pos)]);
         }
@@ -109,7 +116,7 @@ fn dropped_inside_a_clip_it_goes_in_at_its_nearer_edge() {
 
     harness.drop_at(dropped, 1.0);
 
-    assert!(harness.state.dragging_media.is_none(), "the drag is over");
+    assert!(harness.state.dragging.is_none(), "the drag is over");
     let pictures = harness.pictures();
     assert_eq!(pictures.len(), 2, "{pictures:?}");
     assert!(
@@ -146,4 +153,84 @@ fn dropped_after_the_end_it_goes_where_it_was_let_go() {
             .any(|clip| harness.editor.video_clip(*clip).is_some()),
         "the dropped clip is selected"
     );
+}
+
+#[test]
+fn a_sticker_lands_at_the_moment_it_is_let_go_and_the_playhead_stays() {
+    let mut harness = Harness::new();
+    let first = harness.import("first", 6);
+    harness.editor.place_media(first).unwrap();
+    let playhead = harness.editor.playhead();
+
+    harness.drop_item(LibraryDrag::Sticker("★"), 2.0);
+
+    let sequence = harness.editor.active_sequence().unwrap();
+    let sticker = sequence
+        .text_tracks
+        .iter()
+        .flat_map(|t| t.clips())
+        .find(|c| c.text == "★")
+        .expect("the sticker is on a title lane");
+    assert!(
+        near(sticker.timeline.start.as_seconds_f64(), 2.0),
+        "{:?}",
+        sticker.timeline
+    );
+    assert_eq!(
+        harness.editor.playhead(),
+        playhead,
+        "the playhead did not move"
+    );
+}
+
+#[test]
+fn a_filter_or_effect_lands_on_the_clip_it_is_let_go_on() {
+    use bettercut_editor_core::effects::EFFECTS;
+    use bettercut_editor_core::filters::Filter;
+    let mut harness = Harness::new();
+    for name in ["first", "second"] {
+        let media = harness.import(name, 3);
+        harness.editor.place_media(media).unwrap();
+    }
+    let clips: Vec<_> = harness.editor.active_sequence().unwrap().video_tracks[0]
+        .clips()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+
+    harness.drop_item(LibraryDrag::Filter(Filter::Vintage), 4.0);
+    assert_eq!(harness.editor.filter_of(clips[1]), Some(Filter::Vintage));
+    assert_ne!(
+        harness.editor.filter_of(clips[0]),
+        Some(Filter::Vintage),
+        "only the one"
+    );
+
+    let glow = EFFECTS.iter().position(|e| e.name == "Glow").unwrap();
+    harness.drop_item(LibraryDrag::Effect(glow), 1.0);
+    let first = harness.editor.video_clip(clips[0]).unwrap();
+    assert!(
+        EFFECTS[glow].amount_on(first) > 0.0,
+        "glow on the first clip"
+    );
+}
+
+#[test]
+fn a_transition_lands_on_the_cut_at_the_end_of_the_clip() {
+    use bettercut_editor_core::timeline::TransitionKind;
+    let mut harness = Harness::new();
+    for name in ["first", "second"] {
+        let media = harness.import(name, 3);
+        harness.editor.place_media(media).unwrap();
+    }
+    let first = harness.editor.active_sequence().unwrap().video_tracks[0].clips()[0].id;
+
+    harness.drop_item(LibraryDrag::Transition(TransitionKind::Wipe), 1.5);
+
+    let transition = harness
+        .editor
+        .video_clip(first)
+        .and_then(|c| c.transition_out)
+        .expect("a transition on the first clip's end");
+    assert_eq!(transition.kind, TransitionKind::Wipe);
 }
