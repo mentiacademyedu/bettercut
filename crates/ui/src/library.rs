@@ -318,7 +318,7 @@ pub struct AnimatedText {
 }
 
 /// The animated titles the Text tab offers.
-pub const ANIMATED_TEXT: [AnimatedText; 7] = {
+pub const ANIMATED_TEXT: [AnimatedText; 12] = {
     use bettercut_editor_core::text::TitleLook;
     use bettercut_editor_core::timeline::{LoopMotion, MotionKind};
     [
@@ -384,6 +384,51 @@ pub const ANIMATED_TEXT: [AnimatedText; 7] = {
             intro: Some((MotionKind::Fade, 600)),
             outro: Some((MotionKind::Fade, 600)),
             looping: Some(LoopMotion::Float),
+        },
+        AnimatedText {
+            name: "Breaking news",
+            description: "A red banner low on the left, sliding in and out",
+            look: Some(TitleLook::LowerThird),
+            preset: Some(TextPreset::Breaking),
+            intro: Some((MotionKind::SlideRight, 400)),
+            outro: Some((MotionKind::SlideLeft, 400)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "On fire",
+            description: "Glowing orange, popping in and pulsing",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Fire),
+            intro: Some((MotionKind::Pop, 300)),
+            outro: Some((MotionKind::Fade, 400)),
+            looping: Some(LoopMotion::Pulse),
+        },
+        AnimatedText {
+            name: "Frozen",
+            description: "Icy blue, fading in and floating",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Ice),
+            intro: Some((MotionKind::Fade, 600)),
+            outro: Some((MotionKind::Fade, 600)),
+            looping: Some(LoopMotion::Float),
+        },
+        AnimatedText {
+            name: "Comic pop",
+            description: "A comic-book caption bouncing in",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Comic),
+            intro: Some((MotionKind::Bounce, 500)),
+            outro: Some((MotionKind::Pop, 300)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "Candy spin",
+            description: "Hot pink, spinning in and wiggling",
+            look: None,
+            preset: Some(TextPreset::Candy),
+            intro: Some((MotionKind::Spin, 500)),
+            outro: Some((MotionKind::Fade, 400)),
+            looping: Some(LoopMotion::Wiggle),
         },
     ]
 };
