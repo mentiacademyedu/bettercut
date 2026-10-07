@@ -20,7 +20,7 @@ Still a beta: expect bugs, and please
 ### Changed
 
 - The Effects, Transitions, Filters and Text tabs lay their choices out two
-  to a row, so all of them fit without scrolling.
+  to a row, so far more of them fit without scrolling.
 
 ## 0.6.8 — Type on the preview, Auto adjust, emoji stickers and three new transitions
 
