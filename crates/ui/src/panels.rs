@@ -6994,6 +6994,19 @@ fn clip_effect_properties(
                 change = Some((ClipProperty::BeatPulse(next_pulse), response.dragged()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            let mut next_shake = editor.video_clip(clip).map_or(0.0, |clip| clip.shake);
+            let response = ui
+                .add(theme::labeled(
+                    "shake",
+                    egui::Slider::new(&mut next_shake, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text("Jolt the picture about, as a camera does through an impact");
+            if response.changed() {
+                change = Some((ClipProperty::Shake(next_shake), response.dragged()));
+            }
+        });
     });
 
     // Reflections: part of the shot, repeated and mirrored over the rest.

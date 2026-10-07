@@ -284,6 +284,7 @@ impl TextProperty {
             | ClipProperty::LightLeak(_)
             | ClipProperty::LensFlare(_)
             | ClipProperty::BeatPulse(_)
+            | ClipProperty::Shake(_)
             | ClipProperty::Reflection(_)
             | ClipProperty::Denoise(_)
             | ClipProperty::Gate(_)
@@ -958,6 +959,8 @@ pub enum ClipProperty {
     LensFlare(f32),
     /// Beat pulse, 0–100. Picture only.
     BeatPulse(f32),
+    /// Camera shake, 0–100. Picture only.
+    Shake(f32),
     /// Mirrored halves, four-way or a kaleidoscope. Video only, not animated.
     Reflection(bettercut_timeline::Reflection),
     /// Voice clean-up on a sound clip, 0–100. Sound only, not animated.
@@ -1061,6 +1064,7 @@ impl ClipProperty {
             | Self::LightLeak(_)
             | Self::LensFlare(_)
             | Self::BeatPulse(_)
+            | Self::Shake(_)
             | Self::Reflection(_)
             | Self::Denoise(_)
             | Self::Gate(_)
@@ -1205,6 +1209,7 @@ impl ClipProperty {
         | Self::LightLeak(amount)
         | Self::LensFlare(amount)
         | Self::BeatPulse(amount)
+        | Self::Shake(amount)
         | Self::Denoise(amount)
         | Self::Gate(amount) = self
         {
@@ -1300,6 +1305,7 @@ impl ClipProperty {
             Self::LightLeak(_) => "Light leak",
             Self::LensFlare(_) => "Lens flare",
             Self::BeatPulse(_) => "Beat pulse",
+            Self::Shake(_) => "Shake",
             Self::Reflection(_) => "Mirror",
             Self::Denoise(_) => "Voice clean-up",
             Self::Gate(_) => "Noise gate",

@@ -49,6 +49,7 @@ const NAMES: &[&str] = &[
     "light_leak",
     "lens_flare",
     "beat_pulse",
+    "shake",
     "background",
     "backdrop",
     "bars",

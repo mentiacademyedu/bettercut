@@ -1081,6 +1081,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub beat_pulse: f32,
 
+    /// Camera shake, 0–100: the picture jolts about as if the camera were
+    /// held through a bump or a blast. Not animated.
+    #[serde(default)]
+    pub shake: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2600,6 +2605,7 @@ impl VideoClip {
             light_leak: 0.0,
             lens_flare: 0.0,
             beat_pulse: 0.0,
+            shake: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

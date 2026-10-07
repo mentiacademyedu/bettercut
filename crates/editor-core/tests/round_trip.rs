@@ -315,6 +315,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         light_leak: 30.0,
         lens_flare: 45.0,
         beat_pulse: 40.0,
+        shake: 35.0,
         smooth_motion: true,
         curves: bettercut_timeline::curves::ColourCurves {
             master: [0.0, 0.2, 0.5, 0.8, 1.0],

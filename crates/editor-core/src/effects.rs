@@ -49,7 +49,7 @@ impl NamedEffect {
 pub const ONE_CLICK_AMOUNT: f32 = 50.0;
 
 /// Every effect, in the order they are offered.
-pub const EFFECTS: [NamedEffect; 15] = [
+pub const EFFECTS: [NamedEffect; 16] = [
     NamedEffect {
         name: "Glitch",
         description: "Blocks of the picture torn sideways, flickering",
@@ -104,6 +104,13 @@ pub const EFFECTS: [NamedEffect; 15] = [
         description: "The picture punches in on every marker: put markers on the beat",
         make: ClipProperty::BeatPulse,
         read: |c| c.beat_pulse,
+        scale: 1.0,
+    },
+    NamedEffect {
+        name: "Shake",
+        description: "The camera jolts about, for an impact, a drop or a blast",
+        make: ClipProperty::Shake,
+        read: |c| c.shake,
         scale: 1.0,
     },
     NamedEffect {
@@ -231,13 +238,12 @@ mod tests {
         }
     }
 
-    #[test]
     /// The slightest Poster is still on, and the strongest is two levels.
     #[test]
     fn poster_runs_from_sixteen_levels_to_two() {
         let poster = NamedEffect::named("poster").unwrap();
         assert!(matches!(poster.at(0.0), ClipProperty::Posterise(l) if l == 0.0));
-        assert!(matches!(poster.at(1.0), ClipProperty::Posterise(l) if l >= 2.0 && l < 16.0));
+        assert!(matches!(poster.at(1.0), ClipProperty::Posterise(l) if (2.0..16.0).contains(&l)));
         assert!(matches!(poster.at(100.0), ClipProperty::Posterise(l) if (l - 2.0).abs() < 1e-4));
         let fisheye = NamedEffect::named("fish eye").unwrap();
         assert!(matches!(fisheye.at(100.0), ClipProperty::Lens(l) if (l + 1.0).abs() < 1e-6));
@@ -249,5 +255,10 @@ mod tests {
         assert_eq!(NamedEffect::named("RGBSplit").unwrap().name, "RGB split");
         assert_eq!(NamedEffect::named("old-film").unwrap().name, "Old film");
         assert!(NamedEffect::named("sparkles").is_none());
+    }
+
+    #[test]
+    fn shake_is_an_effect_by_name() {
+        assert_eq!(NamedEffect::named("shake").unwrap().name, "Shake");
     }
 }

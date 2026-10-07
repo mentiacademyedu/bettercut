@@ -346,6 +346,14 @@ pub(crate) fn plan(
                         request.look.transform.scale.y *= pulse;
                     }
                 }
+                if let Some((x, y, zoom)) = camera_shake(clip.shake, position) {
+                    for request in &mut requests[before..] {
+                        request.look.transform.position.x += x;
+                        request.look.transform.position.y += y;
+                        request.look.transform.scale.x *= zoom;
+                        request.look.transform.scale.y *= zoom;
+                    }
+                }
                 push_light_leak(&mut requests, track.id, clip, position);
                 push_lens_flare(&mut requests, track.id, clip, position);
             }
@@ -1958,6 +1966,30 @@ pub fn beat_pulse_at(
     };
     let left = 1.0 - since as f32 / window as f32;
     1.0 + (amount / 100.0).min(1.0) * MAX_BEAT_PULSE * left * left
+}
+
+/// The furthest camera shake throws the picture, at 100, in frame widths.
+pub const MAX_SHAKE: f32 = 0.03;
+
+/// The jolt camera shake gives a picture at `position`: how far it is thrown
+/// across and up, and how much it is enlarged so the edges stay covered.
+/// `None` with no amount. A few unrelated wobbles summed, so it never settles
+/// into a rhythm; worked out from the time alone, so preview and export shake
+/// the same (§46).
+pub fn camera_shake(amount: f32, position: TimelineTime) -> Option<(f32, f32, f32)> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return None;
+    }
+    let k = (amount / 100.0).min(1.0);
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let wobble = |hz: f64, phase: f64| ((t * hz + phase) * std::f64::consts::TAU).sin() as f32;
+    let x = (0.5 * wobble(7.3, 0.0) + 0.3 * wobble(11.9, 0.37) + 0.2 * wobble(3.1, 0.71))
+        * MAX_SHAKE
+        * k;
+    let y = (0.5 * wobble(6.1, 0.13) + 0.3 * wobble(13.7, 0.59) + 0.2 * wobble(2.3, 0.89))
+        * MAX_SHAKE
+        * k;
+    Some((x, y, 1.0 + 2.5 * MAX_SHAKE * k))
 }
 
 /// The warm colour a light leak glows in.
