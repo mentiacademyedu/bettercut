@@ -7,6 +7,8 @@
 - **Animated titles** in the Text tab, as in CapCut: Pop in, Typed out,
   Bounce, Rise, Neon pulse, Wiggle and Drift — a look with its entrance,
   exit or loop, in one click or one drag.
+- **The blade tool** (B, or Blade above the timeline): a click on a clip
+  cuts it where you click, as in CapCut.
 
 ## 0.6.6 — Drag and drop from every tab; sound effects; title designs
 

@@ -416,6 +416,20 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         lanes
     };
 
+    // The blade's cut, where it would fall.
+    if state.blade
+        && let (Some(hit), Some(pointer)) = (interaction.hit, interaction.pointer)
+    {
+        painter.line_segment(
+            [
+                Pos2::new(pointer.x, hit.rect.top()),
+                Pos2::new(pointer.x, hit.rect.bottom()),
+            ],
+            Stroke::new(2.0, theme::accent()),
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+
     if state.dragging.is_some() {
         library_drop(ui, &painter, rect, viewport, &lanes, editor, state);
     }
@@ -850,6 +864,21 @@ fn apply_interaction(
     // Right-click: remember what is under the pointer before the menu opens.
     if response.secondary_clicked() && rect.contains(pos) {
         capture_context(pos, rect, viewport, interaction, lanes, state);
+        return;
+    }
+
+    // The blade: a press on a clip cuts it there, the sound with it, and is
+    // not the start of a drag.
+    if state.blade
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(hit) = interaction.hit
+    {
+        state.drag = None;
+        match editor.split_clip_at(hit.clip, &[viewport.tick_of(pos.x)]) {
+            Ok(0) => {}
+            Ok(_) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
         return;
     }
 

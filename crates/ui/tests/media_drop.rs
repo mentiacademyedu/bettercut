@@ -234,3 +234,45 @@ fn a_transition_lands_on_the_cut_at_the_end_of_the_clip() {
         .expect("a transition on the first clip's end");
     assert_eq!(transition.kind, TransitionKind::Wipe);
 }
+
+impl Harness {
+    fn click_at(&mut self, seconds: f32) {
+        let pos = Pos2::new(HEADER_W + seconds * PX_PER_SECOND, RULER_H + 58.0 + 29.0);
+        self.frame(vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::default(),
+            }]);
+        }
+        self.frame(vec![]);
+    }
+}
+
+#[test]
+fn the_blade_cuts_a_clip_where_it_is_clicked() {
+    let mut harness = Harness::new();
+    let media = harness.import("long", 6);
+    harness.editor.place_media(media).unwrap();
+
+    harness.click_at(2.0);
+    assert_eq!(
+        harness.pictures().len(),
+        1,
+        "without the blade a click only selects"
+    );
+
+    harness.state.blade = true;
+    harness.click_at(2.0);
+    let pictures = harness.pictures();
+    assert_eq!(pictures.len(), 2, "{pictures:?}");
+    assert!(
+        near(pictures[0].2, 2.0) && near(pictures[1].1, 2.0),
+        "{pictures:?}"
+    );
+
+    harness.click_at(4.0);
+    assert_eq!(harness.pictures().len(), 3, "and again");
+}

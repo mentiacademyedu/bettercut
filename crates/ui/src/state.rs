@@ -645,6 +645,8 @@ pub struct UiState {
     pub library_tab: crate::library::LibraryTab,
     /// Something being dragged from the left panel towards the timeline.
     pub dragging: Option<crate::library::LibraryDrag>,
+    /// The blade tool: a click on a clip cuts it there instead of selecting.
+    pub blade: bool,
 
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
@@ -1060,6 +1062,7 @@ impl Default for UiState {
             inspector_tab: crate::panels::InspectorTab::default(),
             library_tab: crate::library::LibraryTab::default(),
             dragging: None,
+            blade: false,
             preview_drag: None,
             preview_is_stale: false,
             marquee: None,

@@ -3838,7 +3838,7 @@ pub fn transport(
         // knowing the keys. Each says its key, to learn it from. Left out when
         // the row has no room for them, rather than drawn over the meter: the
         // keys and the clip menu still do all four.
-        const EDIT_BUTTONS_WIDTH: f32 = 330.0;
+        const EDIT_BUTTONS_WIDTH: f32 = 390.0;
         let room = ui.available_width() >= EDIT_BUTTONS_WIDTH;
         if room {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3858,6 +3858,14 @@ pub fn transport(
                 .on_hover_text(crate::keys::keys(
                     "Delete the selected clips (Del). Shift+Delete closes the gap",
                 ));
+            let blade = ui
+                .add_enabled(has_clips || state.blade, egui::Button::selectable(state.blade, "Blade"))
+                .on_hover_text(crate::keys::keys(
+                    "The blade: a click on a clip cuts it where you click (B)",
+                ));
+            if blade.clicked() {
+                state.blade = !state.blade;
+            }
             let split = ui
                 .add_enabled(has_clips, egui::Button::new("Split"))
                 .on_hover_text(crate::keys::keys(

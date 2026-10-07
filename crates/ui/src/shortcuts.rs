@@ -102,6 +102,11 @@ pub const SECTIONS: &[Section] = &[
                 &[Key::R],
             ),
             Shortcut::new(
+                "B",
+                "Blade: a click on a clip cuts it there (B again to stop)",
+                &[Key::B],
+            ),
+            Shortcut::new(
                 "Ctrl + G",
                 "Group the selection to move together (Shift: ungroup)",
                 &[Key::G],
@@ -185,6 +190,7 @@ pub const HANDLED_KEYS: &[Key] = &[
     Key::G,
     Key::N,
     Key::R,
+    Key::B,
     Key::F,
     Key::M,
     Key::I,
@@ -461,6 +467,16 @@ pub fn handle(
                     state.fullscreen = !state.fullscreen;
                     state.needs_repaint = true;
                 }
+            }
+
+            // The blade tool, as CapCut and every editor has it.
+            egui::Key::B if !modifiers.command => {
+                state.blade = !state.blade;
+                state.info(if state.blade {
+                    "Blade: click a clip to cut it there. B again to stop"
+                } else {
+                    "Blade off"
+                });
             }
 
             egui::Key::R if !modifiers.command => {
