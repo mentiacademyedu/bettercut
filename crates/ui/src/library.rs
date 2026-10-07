@@ -154,7 +154,7 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     use bettercut_editor_core::media::GeneratedSound;
     hint(
         ui,
-        "Sound effects: click to put one at the playhead, on a free sound lane",
+        "Sound effects: click to put one at the playhead, or drag it onto the timeline",
     );
     let mut chosen = None;
     for sound in GeneratedSound::EFFECTS {
@@ -182,7 +182,10 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
 }
 
 fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
-    hint(ui, "Click to put a title at the playhead");
+    hint(
+        ui,
+        "Click to put a title at the playhead, or drag it onto the timeline",
+    );
     let mut chosen: Option<Option<TextPreset>> = None;
     let response =
         wide(ui, "Default text").on_hover_text("White with a black outline, ready to type into");
@@ -293,7 +296,10 @@ pub fn add_styled_text(editor: &mut Editor, state: &mut UiState, preset: Option<
 }
 
 fn sticker_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
-    hint(ui, "Click to put one at the playhead");
+    hint(
+        ui,
+        "Click to put one at the playhead, or drag it onto the timeline",
+    );
     let mut chosen = None;
     let size = 44.0;
     let columns = ((ui.available_width() / (size + 6.0)).floor() as usize).max(1);

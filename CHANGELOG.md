@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.6 — Drag and drop from every tab; sound effects; title designs
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 

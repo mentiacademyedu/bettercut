@@ -13,10 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "A CapCut-style workspace: Text, Stickers, Transitions and Filters tabs on the left, edit buttons and a zoom slider over the timeline",
-    "Transitions work between clips dropped in whole: they overlap to make room, as in CapCut",
-    "Timeline thumbnails and waveforms you can read; new titles the right size in 4K",
-    "Fixed a freeze when scene detection and an export started at the same moment",
+    "Drag files, text, stickers, sounds, effects, filters and transitions from the left panel straight onto the timeline",
+    "Sound effects: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click and Riser in a new Audio tab",
+    "An Effects tab, title designs in the Text tab, and \"apply to all\" for transitions and filters",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

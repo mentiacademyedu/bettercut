@@ -3,7 +3,7 @@
 A free, open-source desktop video editor with CapCut-style convenience, built
 in Rust to stay quick on ordinary laptops.
 
-**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.6.5)
+**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.6.6)
 
 ![bettercut editing its sample project](docs/images/screenshot.png)
 
@@ -18,12 +18,12 @@ in Rust to stay quick on ordinary laptops.
 ## Download
 
 **Windows 10/11, 64-bit:**
-[bettercut-0.6.5-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.5/bettercut-0.6.5-setup.exe)
+[bettercut-0.6.6-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.6/bettercut-0.6.6-setup.exe)
 (about 50 MB).
 
 **macOS 12 or later (beta):**
-[Apple Silicon](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.5/bettercut-0.6.5-macos.dmg)
-or [Intel](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.5/bettercut-0.6.5-macos-intel.dmg)
+[Apple Silicon](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.6/bettercut-0.6.6-macos.dmg)
+or [Intel](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.6/bettercut-0.6.6-macos-intel.dmg)
 (about 30 MB). Not signed by Apple yet: the first time, macOS refuses to open
 it — open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
@@ -35,7 +35,7 @@ user only (no administrator rights needed) and removes itself cleanly from
 *Settings → Apps*.
 
 **Linux, x86-64 (beta):**
-[bettercut-0.6.5-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.5/bettercut-0.6.5-x86_64.AppImage)
+[bettercut-0.6.6-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.6/bettercut-0.6.6-x86_64.AppImage)
 (about 30 MB): download it, `chmod +x` it and run it. It uses your system's own
 graphics driver (Vulkan) and sound.
 
@@ -121,7 +121,11 @@ The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `add_lower_third`, `add_shape`, `add_sticker`, `add_timer`, `set_effect`, `green_screen`, `crop`, `set_volume`, `set_opacity`, `set_speed`,
 `reverse_clip`, `set_fades`, `add_transition`, `apply_filter`,
 `import_captions`, `add_captions`, `preview_frame`, `contact_sheet`, `undo`, `redo`, `export`,
-`export_status`, `history`, `batch`, `chapters`, `export_captions`, and
+`export_status`, `history`, `batch`, `chapters`, `export_captions`,
+`shape_sound`, `whole_video_look`, `remove_range`, `close_gaps`, `loop_clip`,
+`boomerang`, `transition_every_cut`, `fit_music`, `group_clips`,
+`hold_last_frame`, `split_into`, `set_lane`, `organise_media`,
+`remove_unused_media`, `add_sound_effect`, and
 `attach_to_app` / `detach_from_app`, and — attached — `get_selection` and
 `select_clips`.
 `preview_frame` hands the assistant a picture of any moment of the edit, rendered
