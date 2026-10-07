@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Four new effects**: Shake (the camera jolts about), Strobe (quick white
+  flashes in a steady rhythm), Fisheye and Poster.
+- **Eight new filters**: Noir, Golden, Night, Food, Film, Pastel, Cyber and
+  Matrix.
+- **Three new transitions**: Slide up, Push up and Wipe down.
+- **Cover in the Export window**: see which frame is saved as the video's
+  cover picture, use the playhead's frame, or have none.
+
+### Changed
+
+- The Effects, Transitions, Filters and Text tabs lay their choices out two
+  to a row, so all of them fit without scrolling.
+
 ## 0.6.8 — Type on the preview, Auto adjust, emoji stickers and three new transitions
 
 Still a beta: expect bugs, and please
