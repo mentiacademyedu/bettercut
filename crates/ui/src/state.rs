@@ -647,6 +647,9 @@ pub struct UiState {
     pub dragging: Option<crate::library::LibraryDrag>,
     /// The blade tool: a click on a clip cuts it there instead of selecting.
     pub blade: bool,
+    /// A title being typed into on the preview: which, the words so far, and
+    /// whether the box has had the keyboard yet.
+    pub inline_text: Option<(bettercut_editor_core::foundation::ClipId, String, bool)>,
 
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
@@ -1063,6 +1066,7 @@ impl Default for UiState {
             library_tab: crate::library::LibraryTab::default(),
             dragging: None,
             blade: false,
+            inline_text: None,
             preview_drag: None,
             preview_is_stale: false,
             marquee: None,

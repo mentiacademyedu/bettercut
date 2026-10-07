@@ -6,6 +6,8 @@
 
 - **Auto adjust** at the top of the Colours tab, as in CapCut: exposure,
   contrast and colour cast evened out from the clip's own picture.
+- **Type into a title on the preview**: double-click it, type, click away.
+  Escape leaves it as it was.
 
 ## 0.6.7 — Animated titles, the blade tool, and CapCut's timeline toggles
 

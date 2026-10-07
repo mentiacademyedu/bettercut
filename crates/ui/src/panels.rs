@@ -2378,6 +2378,20 @@ fn transform_handles(
         }
     }
 
+    // A double-click on a title types into it right there, as in CapCut.
+    if response.double_clicked()
+        && let Some(at) = pointer
+        && let Some(shown) = topmost_at(&visible, at)
+        && let Some(title) = editor.text_clip(shown.clip)
+        && title.shape.is_none()
+        && title.counter.is_none()
+    {
+        state.inline_text = Some((shown.clip, title.text.clone(), false));
+    }
+    if state.inline_text.is_some() {
+        inline_title_editor(ui, editor, state, &visible);
+    }
+
     // Decide the gesture on the **press**, not on `drag_started`.
     //
     // egui only calls a movement a drag once it has passed a threshold, and by
@@ -2829,6 +2843,67 @@ fn visible_boxes(
 }
 
 /// The frontmost clip whose picture covers `at`.
+/// The box a title is typed into on the preview: over the title, the words
+/// as they stand. Clicking away keeps them, as one undo step; Escape leaves
+/// the title as it was.
+fn inline_title_editor(
+    ui: &egui::Ui,
+    editor: &mut Editor,
+    state: &mut UiState,
+    visible: &[ShownClip],
+) {
+    let Some((clip, mut draft, focused)) = state.inline_text.take() else {
+        return;
+    };
+    if editor.text_clip(clip).is_none() {
+        return; // gone, undone or deleted while typing
+    }
+    let at = visible
+        .iter()
+        .find(|shown| shown.clip == clip)
+        .map(|shown| shown.box_on_canvas)
+        .unwrap_or_else(|| {
+            egui::Rect::from_center_size(ui.max_rect().center(), egui::vec2(240.0, 40.0))
+        });
+    let id = egui::Id::new(("inline title", clip));
+    let mut keep_open = true;
+    egui::Area::new(id.with("area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at.left_top())
+        .show(ui.ctx(), |ui| {
+            let field = ui.add(
+                egui::TextEdit::multiline(&mut draft)
+                    .id(id)
+                    .desired_width(at.width().max(220.0))
+                    .desired_rows(1)
+                    .font(egui::TextStyle::Heading),
+            );
+            if !focused {
+                field.request_focus();
+            }
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if escape {
+                keep_open = false;
+            } else if focused && field.lost_focus() {
+                keep_open = false;
+                let changed = editor.text_clip(clip).is_some_and(|t| t.text != draft);
+                if changed && !draft.trim().is_empty() {
+                    match editor.set_text_property(
+                        clip,
+                        bettercut_editor_core::TextProperty::Content(draft.clone()),
+                        false,
+                    ) {
+                        Ok(()) => state.needs_repaint = true,
+                        Err(err) => state.error(err.to_string()),
+                    }
+                }
+            }
+        });
+    if keep_open {
+        state.inline_text = Some((clip, draft, true));
+    }
+}
+
 fn topmost_at(visible: &[ShownClip], at: egui::Pos2) -> Option<ShownClip> {
     // Against the picture as it is drawn, turned — not its upright box, which
     // would grab a turned clip by its empty corners and miss its tips.
@@ -12160,6 +12235,69 @@ mod preview_pick_tests {
 
     fn canvas() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 180.0))
+    }
+
+    /// Typing into a title on the preview: the box takes the keyboard, the
+    /// words go in, and clicking away keeps them as one undo step. Escape
+    /// leaves the title as it was.
+    #[test]
+    fn a_title_typed_into_on_the_preview_keeps_its_words() {
+        let run = |escape: bool| {
+            let (mut editor, _events) = Editor::new_project("Inline");
+            let title = editor.add_text("Hi").expect("add text");
+            let depth = editor.undo_depth();
+            let mut state = UiState::default();
+            state.inline_text = Some((title, "Hi".to_owned(), false));
+            let ctx = egui::Context::default();
+            let mut frame = |events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    screen_rect: Some(canvas()),
+                    events,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    inline_title_editor(ui, &mut editor, &mut state, &[]);
+                });
+                output.textures_delta.clear();
+            };
+            frame(vec![]);
+            frame(vec![egui::Event::Text(" there".to_owned())]);
+            if escape {
+                frame(vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                }]);
+            } else {
+                // A click away from the box takes the keyboard from it.
+                let away = egui::pos2(5.0, 175.0);
+                frame(vec![
+                    egui::Event::PointerMoved(away),
+                    egui::Event::PointerButton {
+                        pos: away,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ]);
+                frame(vec![egui::Event::PointerButton {
+                    pos: away,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]);
+            }
+            frame(vec![]);
+            (
+                editor.text_clip(title).expect("the title").text.clone(),
+                editor.undo_depth() - depth,
+                state.inline_text.is_none(),
+            )
+        };
+        assert_eq!(run(false), ("Hi there".to_owned(), 1, true));
+        assert_eq!(run(true), ("Hi".to_owned(), 0, true));
     }
 
     /// §26: a title is grabbable in the picture like anything else. Without
