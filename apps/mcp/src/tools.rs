@@ -747,8 +747,8 @@ const TOOLS: &[Tool] = &[
         name: "set_effect",
         description: "Put an effect on a picture clip at `amount` 0–100 (0 takes it off): \
                       blur, sharpen, vignette, glow, old film, glitch, rgb split, pixelate, \
-                      zoom blur, light leak, lens flare, beat pulse (a bump on each marker) or \
-                      smooth skin.",
+                      zoom blur, light leak, lens flare, beat pulse (a bump on each marker) \
+                      smooth skin, fisheye or poster.",
         schema: || {
             object(
                 json!({

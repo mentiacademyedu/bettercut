@@ -17,7 +17,7 @@ pub struct NamedEffect {
     /// The amount on the clip, in the same units.
     pub read: fn(&VideoClip) -> f32,
     /// Clip units per point on a 0–100 scale: most effects are 0–100 already,
-    /// a few (vignette, smooth skin) are 0–1.
+    /// a few (vignette, smooth skin, fisheye) are 0–1.
     pub scale: f32,
 }
 
@@ -49,7 +49,7 @@ impl NamedEffect {
 pub const ONE_CLICK_AMOUNT: f32 = 50.0;
 
 /// Every effect, in the order they are offered.
-pub const EFFECTS: [NamedEffect; 13] = [
+pub const EFFECTS: [NamedEffect; 15] = [
     NamedEffect {
         name: "Glitch",
         description: "Blocks of the picture torn sideways, flickering",
@@ -141,7 +141,41 @@ pub const EFFECTS: [NamedEffect; 13] = [
         read: |c| c.smooth_skin,
         scale: 0.01,
     },
+    NamedEffect {
+        name: "Fisheye",
+        description: "The middle bulges towards you, as through a peephole",
+        // The lens dial bowed the other way: negative is barrel.
+        make: |amount| ClipProperty::Lens(-amount),
+        read: |c| (-c.lens).max(0.0),
+        scale: 0.01,
+    },
+    NamedEffect {
+        name: "Poster",
+        description: "Colours held to a few flat steps, like a print",
+        // Posterise counts levels, fewer being stronger: none at 0, sixteen
+        // just above it, two at 100.
+        make: |amount| ClipProperty::Posterise(posterise_levels(amount)),
+        read: |c| {
+            if c.posterise < 2.0 {
+                0.0
+            } else {
+                (16.0 - c.posterise) / POSTER_STEP
+            }
+        },
+        scale: 1.0,
+    },
 ];
+
+/// Levels lost per point of Poster: sixteen at the bottom, two at the top.
+const POSTER_STEP: f32 = 0.14;
+
+fn posterise_levels(amount: f32) -> f32 {
+    if amount <= 0.0 {
+        0.0
+    } else {
+        16.0 - amount * POSTER_STEP
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -181,14 +215,32 @@ mod tests {
                 .set_clip_property(id, effect.at(40.0), false)
                 .unwrap();
             let on = editor.video_clip(id).unwrap();
+            // Poster lands on whole levels, so within one of them.
+            let slack = if effect.name == "Poster" {
+                1.0 / POSTER_STEP
+            } else {
+                0.01
+            };
             assert!(
-                (effect.amount_on(on) - 40.0).abs() < 0.01,
+                (effect.amount_on(on) - 40.0).abs() < slack,
                 "{}: set 40, read {}",
                 effect.name,
                 effect.amount_on(on)
             );
             editor.set_clip_property(id, effect.at(0.0), false).unwrap();
         }
+    }
+
+    #[test]
+    /// The slightest Poster is still on, and the strongest is two levels.
+    #[test]
+    fn poster_runs_from_sixteen_levels_to_two() {
+        let poster = NamedEffect::named("poster").unwrap();
+        assert!(matches!(poster.at(0.0), ClipProperty::Posterise(l) if l == 0.0));
+        assert!(matches!(poster.at(1.0), ClipProperty::Posterise(l) if l >= 2.0 && l < 16.0));
+        assert!(matches!(poster.at(100.0), ClipProperty::Posterise(l) if (l - 2.0).abs() < 1e-4));
+        let fisheye = NamedEffect::named("fish eye").unwrap();
+        assert!(matches!(fisheye.at(100.0), ClipProperty::Lens(l) if (l + 1.0).abs() < 1e-6));
     }
 
     #[test]
