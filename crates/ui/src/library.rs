@@ -54,7 +54,9 @@ impl LibraryTab {
 /// The row of tabs.
 pub fn tabs(ui: &mut egui::Ui, state: &mut UiState) {
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        // Tight, so the seven fit on two rows at the panel's usual width.
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
         for tab in LibraryTab::ALL {
             if ui
                 .selectable_label(state.library_tab == tab, tab.label())
