@@ -275,6 +275,35 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             Err(err) => state.error(err.to_string()),
         }
     }
+
+    // CapCut's "Apply to all": the same transition on every cut of the lane.
+    if let Some(transition) = existing {
+        ui.add_space(6.0);
+        if ui
+            .add_sized(
+                egui::vec2(ui.available_width(), 26.0),
+                egui::Button::new(format!("{} on every cut", transition.kind.label())),
+            )
+            .on_hover_text(
+                "Put this transition on every cut of this clip's lane, as one undo step. \
+                 Clips with no footage to spare overlap to make room",
+            )
+            .clicked()
+            && let Some(track) = editor.track_of(clip)
+        {
+            match editor.transition_every_cut(track, transition.kind) {
+                Ok((applied, 0)) => {
+                    state.info(format!("{} on {applied} cuts", transition.kind.label()))
+                }
+                Ok((applied, skipped)) => state.info(format!(
+                    "{} on {applied} cuts; {skipped} too short to take one",
+                    transition.kind.label()
+                )),
+                Err(err) => state.error(err.to_string()),
+            }
+            state.needs_repaint = true;
+        }
+    }
 }
 
 fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
@@ -314,5 +343,39 @@ fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             Err(err) => state.error(err.to_string()),
         }
         state.needs_repaint = true;
+        return;
+    }
+
+    // CapCut's "Apply to all": the selected clip's look on every picture clip.
+    if let Some(filter) = current {
+        ui.add_space(6.0);
+        if ui
+            .add_sized(
+                egui::vec2(ui.available_width(), 26.0),
+                egui::Button::new(if filter == Filter::Original {
+                    "No look on any clip".to_owned()
+                } else {
+                    format!("{} on every clip", filter.label())
+                }),
+            )
+            .on_hover_text("Give every picture clip in the edit this look, as one undo step")
+            .clicked()
+        {
+            let every: Vec<ClipId> = editor
+                .active_sequence()
+                .map(|sequence| {
+                    sequence
+                        .video_tracks
+                        .iter()
+                        .flat_map(|track| track.clips().iter().map(|clip| clip.id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            match editor.apply_filter(filter, every) {
+                Ok(n) => state.info(format!("{} on {n} clips", filter.label())),
+                Err(err) => state.error(err.to_string()),
+            }
+            state.needs_repaint = true;
+        }
     }
 }
