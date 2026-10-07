@@ -1021,7 +1021,7 @@ fn soloed_lanes(sequence: &bettercut_editor_core::timeline::Sequence) -> Option<
 
 pub fn show(
     ctx: &egui::Context,
-    editor: &Editor,
+    editor: &mut Editor,
     state: &mut UiState,
     dialog: &mut ExportDialog,
     exporting: bool,
@@ -1082,6 +1082,11 @@ pub fn show(
     )
     .map_or(duration, |range| range.duration());
     let has_sound = sequence.audio_tracks.iter().any(|track| track.enabled);
+    let cover = sequence.cover_frame;
+    let playhead = editor.playhead();
+    // A cover chosen here, applied once the window is drawn: the sequence is
+    // borrowed until then.
+    let mut cover_choice = None;
     let mut start = None;
 
     let mut open = dialog.open;
@@ -1117,6 +1122,9 @@ pub fn show(
             destination_row(ui, dialog);
             container_row(ui, dialog);
             range_row(ui, dialog, marked, selected, duration);
+            if !dialog.sound_only() {
+                cover_choice = cover_row(ui, dialog, cover, playhead, duration);
+            }
 
             ui.add_space(6.0);
             ui.separator();
@@ -1334,6 +1342,12 @@ pub fn show(
         });
     }
     dialog.open &= open;
+    if let Some(at) = cover_choice {
+        match editor.set_cover_frame(at) {
+            Ok(()) => state.needs_repaint = true,
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 
     if start.is_none() && !quick {
         return Vec::new();
@@ -1692,6 +1706,51 @@ fn also_row(ui: &mut egui::Ui, dialog: &mut ExportDialog, native: Resolution) {
 }
 
 /// One labelled line of the form.
+/// The cover, as CapCut's export window shows it: which frame is saved as a
+/// picture beside the file, and the two ways to change that. Returns the new
+/// choice when one was made — `Some(None)` to have no cover.
+fn cover_row(
+    ui: &mut egui::Ui,
+    dialog: &ExportDialog,
+    cover: Option<TimelineTime>,
+    playhead: TimelineTime,
+    duration: TimelineTime,
+) -> Option<Option<TimelineTime>> {
+    let mut choice = None;
+    row(ui, "Cover", |ui| {
+        let said = match (cover, dialog.path()) {
+            (Some(at), Some(path)) => format!(
+                "{} · {}",
+                at.format_timecode(),
+                bettercut_editor_core::cover::cover_path_for(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+            (Some(at), None) => at.format_timecode(),
+            (None, _) => "None".to_owned(),
+        };
+        ui.label(egui::RichText::new(said).color(theme::disabled()));
+        if cover != Some(playhead)
+            && ui
+                .add_enabled(playhead < duration, egui::Button::new("Use Playhead"))
+                .on_hover_text("Save the frame under the playhead as a picture beside the video")
+                .clicked()
+        {
+            choice = Some(Some(playhead));
+        }
+        if cover.is_some()
+            && ui
+                .button("No Cover")
+                .on_hover_text("Write the video without a cover picture")
+                .clicked()
+        {
+            choice = Some(None);
+        }
+    });
+    choice
+}
+
 fn row<R>(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(

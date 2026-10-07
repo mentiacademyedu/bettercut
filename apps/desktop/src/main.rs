@@ -784,7 +784,7 @@ impl eframe::App for App {
         let mut dialog = std::mem::take(&mut self.ui.export_dialog);
         let requested = bettercut_ui::export_dialog::show(
             ui.ctx(),
-            &self.editor,
+            &mut self.editor,
             &mut self.ui,
             &mut dialog,
             exporting,
