@@ -103,13 +103,16 @@ fn every_transition_kind_is_offered() {
             | TransitionKind::Glitch
             | TransitionKind::Pixelate
             | TransitionKind::Shake
-            | TransitionKind::FadeThroughWhite => true,
+            | TransitionKind::FadeThroughWhite
+            | TransitionKind::SlideUp
+            | TransitionKind::PushUp
+            | TransitionKind::WipeDown => true,
         }
     }
 
     assert_eq!(
         TransitionKind::ALL.len(),
-        14,
+        17,
         "a transition was added or removed"
     );
     assert!(TransitionKind::ALL.into_iter().all(offered));

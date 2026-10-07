@@ -2961,6 +2961,42 @@ fn draw_transition(
                 StrokeKind::Inside,
             );
         }
+        // An arrow pointing up: something arriving from below.
+        TransitionKind::SlideUp => {
+            let tip = Pos2::new(inner.center().x, inner.top());
+            painter.line_segment([Pos2::new(inner.center().x, inner.bottom()), tip], stroke);
+            painter.line_segment(
+                [Pos2::new(inner.center().x - 4.0, inner.top() + 4.0), tip],
+                stroke,
+            );
+            painter.line_segment(
+                [Pos2::new(inner.center().x + 4.0, inner.top() + 4.0), tip],
+                stroke,
+            );
+        }
+        // Two arrows side by side pointing up: both shots on the move.
+        TransitionKind::PushUp => {
+            for offset in [-3.0_f32, 3.0] {
+                let x = inner.center().x + offset;
+                let tip = Pos2::new(x, inner.top());
+                painter.line_segment([Pos2::new(x, inner.bottom()), tip], stroke);
+                painter.line_segment([Pos2::new(x - 3.0, inner.top() + 3.0), tip], stroke);
+            }
+        }
+        // An edge part way down, the revealed top shaded.
+        TransitionKind::WipeDown => {
+            let y = inner.top() + inner.height() * 0.45;
+            painter.rect_filled(
+                egui::Rect::from_min_max(inner.left_top(), Pos2::new(inner.right(), y)),
+                0.0,
+                theme::transition().gamma_multiply(0.4),
+            );
+            painter.line_segment(
+                [Pos2::new(inner.left(), y), Pos2::new(inner.right(), y)],
+                stroke,
+            );
+            painter.rect_stroke(inner, 0.0, stroke, StrokeKind::Inside);
+        }
         // The flash's peak, filled: up to white and down again.
         TransitionKind::FadeThroughWhite => {
             let top = Pos2::new(inner.center().x, inner.top());

@@ -156,6 +156,9 @@ fn the_moving_kinds_need_handles() {
         TransitionKind::Wipe,
         TransitionKind::Iris,
         TransitionKind::Spin,
+        TransitionKind::SlideUp,
+        TransitionKind::PushUp,
+        TransitionKind::WipeDown,
     ] {
         assert!(kind.needs_handles(), "{} claims to need none", kind.label());
     }
@@ -167,7 +170,27 @@ fn the_moving_kinds_need_handles() {
 fn every_kind_is_accounted_for_above() {
     assert_eq!(
         TransitionKind::ALL.len(),
-        14,
+        17,
         "a transition kind was added or removed; say which side of the handle rule it is on in `the_moving_kinds_need_handles`"
     );
+}
+
+/// Slide up and push up: the slide and the push turned a quarter, the next
+/// shot rising from below and landing centred.
+#[test]
+fn the_upward_kinds_move_vertically() {
+    let [start, middle, end] = across(TransitionKind::SlideUp);
+    assert_eq!(
+        start.1.offset_y, 1.0,
+        "the next shot starts below the frame"
+    );
+    assert_eq!(middle.1.offset_y, 0.5);
+    assert_eq!(end.1.offset_y, 0.0);
+    assert_eq!(middle.0.offset_y, 0.0, "a slide covers; this shot stays");
+    assert_eq!(middle.1.offset_x, 0.0);
+
+    let [start, middle, end] = across(TransitionKind::PushUp);
+    assert_eq!((start.0.offset_y, start.1.offset_y), (0.0, 1.0));
+    assert_eq!((middle.0.offset_y, middle.1.offset_y), (-0.5, 0.5));
+    assert_eq!((end.0.offset_y, end.1.offset_y), (-1.0, 0.0));
 }

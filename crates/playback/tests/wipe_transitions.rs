@@ -94,11 +94,14 @@ fn an_iris_opens_from_the_middle() {
     assert!(kept(&mask, [0.02, 0.02]) < 0.01, "a corner opened early");
 }
 
-/// Neither moves or fades either shot, and nothing else is shaped.
+/// No wipe or iris moves or fades either shot, and nothing else is shaped.
 #[test]
-fn only_wipe_and_iris_are_shaped() {
+fn only_the_wipes_and_iris_are_shaped() {
     for kind in TransitionKind::ALL {
-        let shaped = matches!(kind, TransitionKind::Wipe | TransitionKind::Iris);
+        let shaped = matches!(
+            kind,
+            TransitionKind::Wipe | TransitionKind::WipeDown | TransitionKind::Iris
+        );
         assert_eq!(
             transition_mask(kind, 0.5).is_some(),
             shaped,
@@ -111,4 +114,23 @@ fn only_wipe_and_iris_are_shaped() {
             assert_eq!((incoming.offset_x, incoming.alpha), (0.0, 1.0));
         }
     }
+}
+
+/// Wipe down: nothing at the start, all of it by the end, and at the halfway
+/// point the top half — the edge travels down, not across.
+#[test]
+fn wipe_down_reveals_from_the_top() {
+    assert!(shown(TransitionKind::WipeDown, 0.0) < 0.02);
+    assert!(shown(TransitionKind::WipeDown, 1.0) > 0.98);
+    assert!((shown(TransitionKind::WipeDown, 0.5) - 0.5).abs() < 0.05);
+    let mask = transition_mask(TransitionKind::WipeDown, 0.5).unwrap();
+    assert!(
+        kept(&mask, [0.5, 0.2]) > 0.99,
+        "the top shows the next shot"
+    );
+    assert!(
+        kept(&mask, [0.5, 0.8]) < 0.01,
+        "the bottom is still this one"
+    );
+    assert!(kept(&mask, [0.05, 0.2]) > 0.99 && kept(&mask, [0.95, 0.2]) > 0.99);
 }

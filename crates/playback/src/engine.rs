@@ -1616,6 +1616,8 @@ fn push_backdrop(
 pub struct LayerMove {
     /// Offset from centre in frame widths: 1.0 is one whole frame to the right.
     pub offset_x: f32,
+    /// Offset from centre in frame heights: 1.0 is one whole frame down.
+    pub offset_y: f32,
     /// Multiplied into the clip's own scale.
     pub scale: f32,
     /// Multiplied into the clip's own opacity.
@@ -1627,6 +1629,7 @@ pub struct LayerMove {
 impl LayerMove {
     const STILL: Self = Self {
         offset_x: 0.0,
+        offset_y: 0.0,
         scale: 1.0,
         alpha: 1.0,
         rotation: 0.0,
@@ -1708,12 +1711,29 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
         // show the frame's edges around it for the first half of the window.
         TransitionKind::Zoom => (
             LayerMove {
-                offset_x: 0.0,
                 scale: 1.0 + 0.35 * t,
                 alpha: 1.0 - t,
-                rotation: 0.0,
+                ..LayerMove::STILL
             },
             LayerMove::STILL,
+        ),
+        // The slide and the push turned a quarter: in from the bottom.
+        TransitionKind::SlideUp => (
+            LayerMove::STILL,
+            LayerMove {
+                offset_y: 1.0 - t,
+                ..LayerMove::STILL
+            },
+        ),
+        TransitionKind::PushUp => (
+            LayerMove {
+                offset_y: -t,
+                ..LayerMove::STILL
+            },
+            LayerMove {
+                offset_y: 1.0 - t,
+                ..LayerMove::STILL
+            },
         ),
         // The outgoing shot turns half a turn as it shrinks into the middle;
         // at the cut the incoming one is exactly there — the same size, the
@@ -1766,6 +1786,7 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
         | TransitionKind::Flash
         | TransitionKind::Blur
         | TransitionKind::Wipe
+        | TransitionKind::WipeDown
         | TransitionKind::Iris
         | TransitionKind::Glitch
         | TransitionKind::Pixelate
@@ -1795,6 +1816,16 @@ pub fn transition_mask(kind: TransitionKind, progress: f32) -> Option<bettercut_
             size: [0.5, 0.5],
             feather: FEATHER,
             rotation_degrees: -90.0,
+            invert: false,
+        }),
+        // A level edge moving top to bottom, keeping what is above it: the
+        // linear mask as it comes.
+        TransitionKind::WipeDown => Some(Mask {
+            shape: MaskShape::Linear,
+            center: [0.5, -FEATHER + t * (1.0 + 2.0 * FEATHER)],
+            size: [0.5, 0.5],
+            feather: FEATHER,
+            rotation_degrees: 0.0,
             invert: false,
         }),
         // A circle from nothing to past the corners, which sit about 0.71
@@ -2260,6 +2291,7 @@ fn push_moving(
     // Applied *over* whatever the clip already has, so a transition on a clip
     // the user has moved or scaled shifts it from where they put it.
     request.look.transform.position.x += movement.offset_x;
+    request.look.transform.position.y += movement.offset_y;
     request.look.transform.scale.x *= movement.scale;
     request.look.transform.scale.y *= movement.scale;
     request.look.transform.rotation_degrees += movement.rotation;

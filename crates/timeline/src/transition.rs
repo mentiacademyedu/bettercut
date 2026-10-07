@@ -94,10 +94,17 @@ pub enum TransitionKind {
     /// The fade through black's bright twin: out to white, in from it. One
     /// shot at a time: needs no handles.
     FadeThroughWhite,
+    /// The incoming clip slides up from the bottom over a stationary
+    /// outgoing one.
+    SlideUp,
+    /// The incoming clip pushes the outgoing one up and off the top.
+    PushUp,
+    /// The next shot is revealed by an edge sweeping down from the top.
+    WipeDown,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::Crossfade,
         Self::FadeThroughBlack,
         Self::Slide,
@@ -112,6 +119,9 @@ impl TransitionKind {
         Self::Pixelate,
         Self::Shake,
         Self::FadeThroughWhite,
+        Self::SlideUp,
+        Self::PushUp,
+        Self::WipeDown,
     ];
 
     pub fn label(self) -> &'static str {
@@ -130,6 +140,9 @@ impl TransitionKind {
             Self::Pixelate => "Pixelate",
             Self::Shake => "Shake",
             Self::FadeThroughWhite => "Fade through white",
+            Self::SlideUp => "Slide up",
+            Self::PushUp => "Push up",
+            Self::WipeDown => "Wipe down",
         }
     }
 
@@ -178,6 +191,15 @@ impl TransitionKind {
             }
             Self::FadeThroughWhite => {
                 "This shot fades out to white, the next fades in from it. Works anywhere."
+            }
+            Self::SlideUp => {
+                "The next shot slides up from the bottom over this one. With no footage to spare, the clips overlap to make room."
+            }
+            Self::PushUp => {
+                "The next shot pushes this one up and off the top. With no footage to spare, the clips overlap to make room."
+            }
+            Self::WipeDown => {
+                "An edge sweeps down from the top, revealing the next shot. With no footage to spare, the clips overlap to make room."
             }
         }
     }
