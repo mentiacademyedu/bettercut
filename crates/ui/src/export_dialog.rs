@@ -1317,7 +1317,8 @@ pub fn show(
                     }
                     let ready = dialog.folder.is_some() && !exporting;
                     let label = if exporting { "Exporting…" } else { "Export" };
-                    if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                    // The one thing this window is for, coloured so.
+                    if ui.add_enabled(ready, crate::theme::primary_button(label)).clicked() {
                         start = Some(());
                     }
                 });
