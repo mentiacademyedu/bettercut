@@ -1086,6 +1086,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub shake: f32,
 
+    /// Strobe, 0–100: the picture flashes white in a quick, steady rhythm,
+    /// as under a club's strobe light. Not animated.
+    #[serde(default)]
+    pub strobe: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2606,6 +2611,7 @@ impl VideoClip {
             lens_flare: 0.0,
             beat_pulse: 0.0,
             shake: 0.0,
+            strobe: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

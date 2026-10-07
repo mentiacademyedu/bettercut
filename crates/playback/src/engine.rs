@@ -354,6 +354,10 @@ pub(crate) fn plan(
                         request.look.transform.scale.y *= zoom;
                     }
                 }
+                let strobe = strobe_alpha(clip.strobe, position);
+                if strobe > 0.0 {
+                    push_flash(&mut requests, track.id, clip.id, strobe);
+                }
                 push_light_leak(&mut requests, track.id, clip, position);
                 push_lens_flare(&mut requests, track.id, clip, position);
             }
@@ -1990,6 +1994,23 @@ pub fn camera_shake(amount: f32, position: TimelineTime) -> Option<(f32, f32, f3
         * MAX_SHAKE
         * k;
     Some((x, y, 1.0 + 2.5 * MAX_SHAKE * k))
+}
+
+/// Strobe flashes a second.
+pub const STROBE_HZ: f64 = 4.0;
+
+/// How much white a strobe lays over the picture at `position`: a hard flash
+/// at the start of each beat of [`STROBE_HZ`], gone well before the next, so
+/// the picture is seen between them. Nothing with no amount. From the time
+/// alone, so preview and export flash on the same frames (§46).
+pub fn strobe_alpha(amount: f32, position: TimelineTime) -> f32 {
+    if !amount.is_finite() || amount <= 0.0 {
+        return 0.0;
+    }
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let phase = (t * STROBE_HZ).rem_euclid(1.0) as f32;
+    let left = (1.0 - phase * 2.5).max(0.0);
+    (amount / 100.0).min(1.0) * 0.9 * left * left
 }
 
 /// The warm colour a light leak glows in.

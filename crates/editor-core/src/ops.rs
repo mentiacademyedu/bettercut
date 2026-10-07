@@ -2401,6 +2401,11 @@ impl SetClipProperty {
                         clip.shake = glitch_amount(amount);
                         ClipProperty::Shake(was)
                     }
+                    ClipProperty::Strobe(amount) => {
+                        let was = clip.strobe;
+                        clip.strobe = glitch_amount(amount);
+                        ClipProperty::Strobe(was)
+                    }
                     ClipProperty::Reflection(kind) => {
                         let was = clip.reflection;
                         clip.reflection = kind;
@@ -3186,6 +3191,7 @@ impl SetSequenceProperty {
             | ClipProperty::LensFlare(_)
             | ClipProperty::BeatPulse(_)
             | ClipProperty::Shake(_)
+            | ClipProperty::Strobe(_)
             // A reflection is made of one shot's own picture.
             | ClipProperty::Reflection(_)
             // Cleaning up a voice is about one recording, not the whole mix.
