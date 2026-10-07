@@ -3681,6 +3681,7 @@ pub fn transport(
         .response
         .on_hover_text("Look closer at the picture. Ctrl + scroll over it zooms; drag with the middle button to move around");
         // The preview's comparisons and guides, one menu.
+        ratio_menu(ui, editor, state);
         ui.menu_button("Preview", |ui| {
             if ui
                 .selectable_label(looping, "Loop")
@@ -11137,6 +11138,65 @@ fn sequence_format(
                 .color(theme::disabled()),
         );
     }
+}
+
+/// The video's shape, under the player as CapCut keeps it: the same five
+/// shapes the Inspector's Sequence section offers, and what to do with clips
+/// that are a different shape.
+fn ratio_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    let Some((current, rate)) = editor
+        .active_sequence()
+        .map(|s| (s.resolution, s.frame_rate))
+    else {
+        return;
+    };
+    let now = bettercut_editor_core::SHAPES
+        .iter()
+        .find(|shape| matches_aspect(current, shape.ratio))
+        .map_or("Ratio", |shape| shape.label);
+    ui.menu_button(now, |ui| {
+        for shape in bettercut_editor_core::SHAPES {
+            let selected = matches_aspect(current, shape.ratio);
+            if ui
+                .selectable_label(selected, shape.label)
+                .on_hover_text(shape.hint)
+                .clicked()
+                && !selected
+            {
+                ui.close();
+                let size = with_aspect(current, shape.ratio);
+                match editor.set_sequence_format(size, rate) {
+                    Ok(()) => {
+                        state.needs_repaint = true;
+                        state.info(format!(
+                            "Now {} ({}×{}) — clips keep their places",
+                            shape.label, size.width, size.height
+                        ));
+                    }
+                    Err(err) => state.error(err.to_string()),
+                }
+            }
+        }
+        ui.separator();
+        if ui
+            .button("Fill the frame with every clip")
+            .on_hover_text("Scale every clip to cover the frame, cropping what does not fit")
+            .clicked()
+        {
+            ui.close();
+            reframe(editor, state, true);
+        }
+        if ui
+            .button("Fit every clip whole")
+            .on_hover_text("Show every clip whole, with bars where the shapes differ")
+            .clicked()
+        {
+            ui.close();
+            reframe(editor, state, false);
+        }
+    })
+    .response
+    .on_hover_text("The video's shape: 16:9, 9:16 for Shorts and Reels, 1:1, 4:5, 21:9");
 }
 
 fn clips_exist(editor: &Editor) -> bool {
