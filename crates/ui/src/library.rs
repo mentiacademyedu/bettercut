@@ -176,12 +176,17 @@ fn two_to_a_row<'a, T>(
 /// A library button in a [`two_to_a_row`] cell: picked out when `on`, and
 /// draggable onto the timeline.
 fn cell_button(ui: &mut egui::Ui, on: bool, label: &str, width: f32) -> egui::Response {
+    cell(ui, egui::Button::selectable(on, label), width)
+}
+
+/// Any button in a [`two_to_a_row`] cell, draggable.
+fn cell(ui: &mut egui::Ui, button: egui::Button, width: f32) -> egui::Response {
     // Held to its half of the row: a long name wraps onto a second line
     // rather than widening the whole panel.
     ui.scope(|ui| {
         ui.set_max_width(width);
         ui.add(
-            egui::Button::selectable(on, label)
+            button
                 .wrap_mode(egui::TextWrapMode::Wrap)
                 .min_size(egui::vec2(width, 26.0))
                 .sense(egui::Sense::click_and_drag()),
@@ -233,7 +238,7 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     if response.clicked() {
         chosen = Some(None);
     }
-    for preset in TextPreset::ALL {
+    two_to_a_row(ui, &TextPreset::ALL, |ui, _, &preset, width| {
         // Each in its own colours, so the list shows what it gives.
         let look = preset.applied_to(&bettercut_editor_core::text::TextStyle::default());
         let rgb = |c: bettercut_editor_core::text::Rgba| egui::Color32::from_rgb(c.r, c.g, c.b);
@@ -241,19 +246,16 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             egui::RichText::new(preset.label())
                 .strong()
                 .color(rgb(look.color)),
-        )
-        .sense(egui::Sense::click_and_drag());
+        );
         if let Some(background) = look.background {
             button = button.fill(rgb(background.color));
         }
-        let response = ui
-            .add_sized(egui::vec2(ui.available_width(), 26.0), button)
-            .on_hover_text(preset.description());
+        let response = cell(ui, button, width).on_hover_text(preset.description());
         draggable(&response, state, LibraryDrag::Text(Some(preset)));
         if response.clicked() {
             chosen = Some(Some(preset));
         }
-    }
+    });
     if let Some(preset) = chosen {
         add_styled_text(editor, state, preset);
     }
@@ -262,22 +264,26 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.add_space(8.0);
     hint(ui, "Designs: a title already styled and placed");
     let mut design = None;
-    for look in bettercut_editor_core::text::TitleLook::ALL {
-        let response = wide(ui, look.label()).on_hover_text(match look {
-            bettercut_editor_core::text::TitleLook::Headline => "Big and bold, near the middle",
-            bettercut_editor_core::text::TitleLook::LowerThird => {
-                "A boxed strip low on the left, for a name or a place"
+    two_to_a_row(
+        ui,
+        &bettercut_editor_core::text::TitleLook::ALL,
+        |ui, _, &look, width| {
+            let response = cell_button(ui, false, look.label(), width).on_hover_text(match look {
+                bettercut_editor_core::text::TitleLook::Headline => "Big and bold, near the middle",
+                bettercut_editor_core::text::TitleLook::LowerThird => {
+                    "A boxed strip low on the left, for a name or a place"
+                }
+                bettercut_editor_core::text::TitleLook::Quote => "Light serif with room to breathe",
+                bettercut_editor_core::text::TitleLook::Typewriter => {
+                    "Monospaced and spaced out, for the typewriter entrance"
+                }
+            });
+            draggable(&response, state, LibraryDrag::Design(look));
+            if response.clicked() {
+                design = Some(look);
             }
-            bettercut_editor_core::text::TitleLook::Quote => "Light serif with room to breathe",
-            bettercut_editor_core::text::TitleLook::Typewriter => {
-                "Monospaced and spaced out, for the typewriter entrance"
-            }
-        });
-        draggable(&response, state, LibraryDrag::Design(look));
-        if response.clicked() {
-            design = Some(look);
-        }
-    }
+        },
+    );
     if let Some(look) = design {
         add_title_design(editor, state, look);
     }
@@ -286,13 +292,13 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     ui.add_space(8.0);
     hint(ui, "Animated: titles that move in, out or all along");
     let mut animated = None;
-    for (index, which) in ANIMATED_TEXT.iter().enumerate() {
-        let response = wide(ui, which.name).on_hover_text(which.description);
+    two_to_a_row(ui, &ANIMATED_TEXT, |ui, index, which, width| {
+        let response = cell_button(ui, false, which.name, width).on_hover_text(which.description);
         draggable(&response, state, LibraryDrag::Animated(index));
         if response.clicked() {
             animated = Some(which);
         }
-    }
+    });
     if let Some(which) = animated {
         add_animated_text(editor, state, which);
     }
