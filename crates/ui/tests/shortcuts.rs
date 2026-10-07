@@ -678,11 +678,11 @@ fn a_moved_shortcut_answers_to_its_new_key() {
     let mut state = UiState::default();
     editor.set_playhead(TimelineTime::from_seconds(1));
 
-    // Ask to move "M" (add a marker), then press B.
+    // Ask to move "M" (add a marker), then press Y.
     state.rebinding = Some(Key::M);
-    press(&mut editor, &mut state, Key::B);
+    press(&mut editor, &mut state, Key::Y);
     assert_eq!(state.rebinding, None);
-    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+    assert_eq!(state.keymap.key_for(Key::M), Key::Y);
     assert!(
         editor.markers().is_empty(),
         "the key pressed to choose did something"
@@ -690,17 +690,17 @@ fn a_moved_shortcut_answers_to_its_new_key() {
 
     press(&mut editor, &mut state, Key::M);
     assert!(editor.markers().is_empty(), "the old key still marks");
-    press(&mut editor, &mut state, Key::B);
+    press(&mut editor, &mut state, Key::Y);
     assert_eq!(editor.markers().len(), 1, "the new key does not mark");
 
     // A key another shortcut uses is refused, and Escape cancels.
     state.rebinding = Some(Key::M);
     press(&mut editor, &mut state, Key::S);
-    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+    assert_eq!(state.keymap.key_for(Key::M), Key::Y);
     state.rebinding = Some(Key::M);
     press(&mut editor, &mut state, Key::Escape);
     assert_eq!(state.rebinding, None);
-    assert_eq!(state.keymap.key_for(Key::M), Key::B);
+    assert_eq!(state.keymap.key_for(Key::M), Key::Y);
 }
 
 /// Inverting picks everything that was not picked, and nothing that was.

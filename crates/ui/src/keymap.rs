@@ -136,8 +136,8 @@ mod tests {
     fn a_moved_key_does_the_old_ones_job_and_the_old_one_is_free() {
         let mut map = Keymap::default();
         map.rebind(Key::S, Key::X).unwrap_err(); // X is Cut's
-        map.rebind(Key::S, Key::B).unwrap();
-        assert_eq!(map.key_for(Key::S), Key::B);
+        map.rebind(Key::S, Key::Y).unwrap();
+        assert_eq!(map.key_for(Key::S), Key::Y);
         assert!(map.is_moved(Key::S));
         // S itself now does nothing, so another job can take it.
         map.rebind(Key::M, Key::S).unwrap();
@@ -147,7 +147,7 @@ mod tests {
         map.rebind(Key::M, Key::M).unwrap();
         map.rebind(Key::S, Key::S).unwrap();
         assert!(!map.is_moved(Key::S));
-        assert!(map.rebind(Key::Escape, Key::B).is_err());
+        assert!(map.rebind(Key::Escape, Key::Y).is_err());
         assert!(map.rebind(Key::S, Key::Escape).is_err());
     }
 
@@ -157,13 +157,13 @@ mod tests {
         let file = dir.join("keys.txt");
         let _ = std::fs::remove_file(&file);
         let mut map = Keymap::stored_in(file.clone());
-        map.rebind(Key::S, Key::B).unwrap();
+        map.rebind(Key::S, Key::Y).unwrap();
         let again = Keymap::stored_in(file.clone());
-        assert_eq!(again.key_for(Key::S), Key::B);
+        assert_eq!(again.key_for(Key::S), Key::Y);
 
-        std::fs::write(&file, "S=B\nnonsense\nM=B\nQ=Nope\n").unwrap();
+        std::fs::write(&file, "S=Y\nnonsense\nM=Y\nQ=Nope\n").unwrap();
         let odd = Keymap::stored_in(file.clone());
-        assert_eq!(odd.key_for(Key::S), Key::B);
+        assert_eq!(odd.key_for(Key::S), Key::Y);
         assert_eq!(odd.key_for(Key::M), Key::M, "a clash was let in");
         let _ = std::fs::remove_dir_all(dir);
     }

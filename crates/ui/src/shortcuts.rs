@@ -55,7 +55,11 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Cutting",
         shortcuts: &[
-            Shortcut::new("S", "Split at the playhead", &[Key::S]),
+            Shortcut::new(
+                "S / B",
+                "Split at the playhead (B: blade)",
+                &[Key::S, Key::B],
+            ),
             Shortcut::new(
                 "[ and ]",
                 "Trim the selection's start / end to the playhead",
@@ -100,11 +104,6 @@ pub const SECTIONS: &[Section] = &[
                 "R",
                 "Rotate the selection a quarter turn right (Shift: left)",
                 &[Key::R],
-            ),
-            Shortcut::new(
-                "B",
-                "Blade: a click on a clip cuts it there (B again to stop)",
-                &[Key::B],
             ),
             Shortcut::new(
                 "Ctrl + G",
