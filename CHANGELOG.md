@@ -6,6 +6,8 @@
 
 - **Auto adjust** at the top of the Colours tab, as in CapCut: exposure,
   contrast and colour cast evened out from the clip's own picture.
+- **40 stickers**: 24 colour emoji join the symbols — grin, heart eyes,
+  thumbs up, fire, party, 100, sparkles, rocket, rainbow and more.
 - **A Ratio menu** beside the player, as in CapCut: 16:9, 9:16, 1:1, 4:5 or
   21:9, and fill or fit every clip to it.
 - **Type into a title on the preview**: double-click it, type, click away.

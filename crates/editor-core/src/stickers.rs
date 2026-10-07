@@ -22,7 +22,31 @@ use crate::error::EditorError;
 /// two thousand is a worse way to find any of them than typing one into a
 /// title. Every one of them is in the font the interface draws with — there is
 /// a test that holds this list to that.
-pub const STICKERS: [(&str, &str); 16] = [
+pub const STICKERS: [(&str, &str); 40] = [
+    ("😀", "Grin"),
+    ("😂", "Tears of joy"),
+    ("😍", "Heart eyes"),
+    ("😎", "Sunglasses"),
+    ("😮", "Wow"),
+    ("😢", "Sad"),
+    ("😡", "Angry"),
+    ("👍", "Thumbs up"),
+    ("👎", "Thumbs down"),
+    ("👏", "Clap"),
+    ("🙏", "Thank you"),
+    ("💪", "Strong"),
+    ("👀", "Eyes"),
+    ("🔥", "Fire"),
+    ("🎉", "Party"),
+    ("💯", "Hundred"),
+    ("✨", "Sparkles"),
+    ("💥", "Boom"),
+    ("💡", "Idea"),
+    ("🚀", "Rocket"),
+    ("🌈", "Rainbow"),
+    ("💬", "Speech"),
+    ("✅", "Done"),
+    ("❌", "No"),
     ("❤", "Heart"),
     ("★", "Star"),
     ("✔", "Tick"),

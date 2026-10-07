@@ -713,9 +713,13 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "add_sticker",
-        description: "Drop a sticker on the picture from `at` seconds: heart, star, tick, \
-                      cross, smile, frown, sun, cloud, umbrella, snowman, lightning, alarm \
-                      clock, music note, telephone, aeroplane or football.",
+        description: "Drop a sticker on the picture from `at` seconds, by name or as the \
+                      emoji itself: grin, tears of joy, heart eyes, sunglasses, wow, sad, \
+                      angry, thumbs up, thumbs down, clap, thank you, strong, eyes, fire, \
+                      party, hundred, sparkles, boom, idea, rocket, rainbow, speech, done, \
+                      no, heart, star, tick, cross, smile, frown, sun, cloud, umbrella, \
+                      snowman, lightning, alarm clock, music note, telephone, aeroplane or \
+                      football.",
         schema: || {
             object(
                 json!({
