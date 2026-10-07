@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Auto adjust** at the top of the Colours tab, as in CapCut: exposure,
+  contrast and colour cast evened out from the clip's own picture.
+
 ## 0.6.7 — Animated titles, the blade tool, and CapCut's timeline toggles
 
 Still a beta: expect bugs, and please

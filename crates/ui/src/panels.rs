@@ -5599,6 +5599,20 @@ fn clip_colour_properties(
     let color = look.color;
     ui.add_space(4.0);
 
+    // Exposure, contrast and colour cast set from the clip's own frame — the
+    // grade worked out in the background, as the clip menu's Auto Level.
+    if ui
+        .button("Auto adjust")
+        .on_hover_text(
+            "Even out this clip's exposure, contrast and colour cast from its own picture, as one step",
+        )
+        .clicked()
+    {
+        state.auto_level_request = Some(clip);
+        state.info("Working out the adjustment…");
+    }
+    ui.add_space(4.0);
+
     // One-click looks, above the controls they set: pick one, then tune.
     let current = editor.filter_of(clip);
     let mut chosen = None;
