@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- A title or caption look chosen in a 4K project came out at half size;
-  looks are now sized for the frame, like new titles.
-
 ### New
 
 - **Sound effects**: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click
@@ -21,6 +16,11 @@
 - **Apply to all**, as in CapCut: the Transitions tab puts the selected
   clip's transition on every cut of its lane, and the Filters tab gives
   its look to every clip — each one undo step.
+
+### Fixed
+
+- A title or caption look chosen in a 4K project came out at half size;
+  looks are now sized for the frame, like new titles.
 
 ## 0.6.5 — A CapCut-style workspace; transitions between whole clips; a hang fixed
 
