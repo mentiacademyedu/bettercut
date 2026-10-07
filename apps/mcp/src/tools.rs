@@ -401,13 +401,12 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "add_sound_effect",
         description: "Put a sound effect at `at` seconds, on a sound lane with room: Whoosh, \
-                      Pop, Click, Ding, Chime, Boom, Shutter or Riser. Made by bettercut, no \
-                      file needed. Returns the new clip id.",
+                      Pop, Click, Ding, Chime, Boom, Shutter, Riser, Laser, Coin, Buzzer or \
+                      Heartbeat. Made by bettercut, no file needed. Returns the new clip id.",
         schema: || {
             object(
                 json!({
-                    "effect": { "type": "string", "enum": ["whoosh", "pop", "click", "ding",
-                                                           "chime", "boom", "shutter", "riser"] },
+                    "effect": { "type": "string", "enum": sound_effect_names() },
                     "at": { "type": "number", "minimum": 0 }
                 }),
                 &["effect", "at"],
@@ -3626,6 +3625,13 @@ fn plain(name: &str) -> String {
 
 fn transition_names() -> Vec<&'static str> {
     TransitionKind::ALL.iter().map(|k| k.label()).collect()
+}
+
+fn sound_effect_names() -> Vec<String> {
+    bettercut_editor_core::media::GeneratedSound::EFFECTS
+        .iter()
+        .map(|s| s.name().to_lowercase())
+        .collect()
 }
 
 fn text_style_names() -> Vec<&'static str> {

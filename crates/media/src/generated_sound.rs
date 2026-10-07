@@ -43,6 +43,10 @@ pub const DING_SECONDS: f64 = 1.5;
 pub const BOOM_SECONDS: f64 = 1.2;
 pub const CHIME_SECONDS: f64 = 0.8;
 pub const SHUTTER_SECONDS: f64 = 0.15;
+pub const LASER_SECONDS: f64 = 0.35;
+pub const COIN_SECONDS: f64 = 0.5;
+pub const BUZZER_SECONDS: f64 = 0.5;
+pub const HEARTBEAT_SECONDS: f64 = 0.6;
 
 /// Sound with no file behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -70,6 +74,14 @@ pub enum GeneratedSound {
     Chime,
     /// A camera shutter: a freeze frame, a photo.
     Shutter,
+    /// A fast falling zap, like a ray gun.
+    Laser,
+    /// Two quick high notes, like picking up a coin in a game.
+    Coin,
+    /// A low, rough buzz: a wrong answer.
+    Buzzer,
+    /// Two low thumps: tension, a heart racing.
+    Heartbeat,
 }
 
 impl GeneratedSound {
@@ -95,11 +107,15 @@ impl GeneratedSound {
             Self::Boom => "Boom".to_owned(),
             Self::Chime => "Chime".to_owned(),
             Self::Shutter => "Shutter".to_owned(),
+            Self::Laser => "Laser".to_owned(),
+            Self::Coin => "Coin".to_owned(),
+            Self::Buzzer => "Buzzer".to_owned(),
+            Self::Heartbeat => "Heartbeat".to_owned(),
         }
     }
 
     /// The effects, in the order the interface offers them.
-    pub const EFFECTS: [Self; 8] = [
+    pub const EFFECTS: [Self; 12] = [
         Self::Whoosh,
         Self::Pop,
         Self::Click,
@@ -108,6 +124,10 @@ impl GeneratedSound {
         Self::Boom,
         Self::Shutter,
         Self::Riser,
+        Self::Laser,
+        Self::Coin,
+        Self::Buzzer,
+        Self::Heartbeat,
     ];
 
     /// What an effect is for, for its hover text; `None` for a tone or
@@ -124,6 +144,10 @@ impl GeneratedSound {
             Self::Boom => "A low impact: a title landing, a hard cut",
             Self::Chime => "Two rising notes, like a notification",
             Self::Shutter => "A camera shutter: a freeze frame, a photo",
+            Self::Laser => "A fast falling zap, like a ray gun",
+            Self::Coin => "Two quick high notes, like picking up a coin in a game",
+            Self::Buzzer => "A low, rough buzz: a wrong answer",
+            Self::Heartbeat => "Two low thumps: tension, a heart racing",
             Self::Tone { .. } | Self::Silence => return None,
         })
     }
@@ -140,6 +164,10 @@ impl GeneratedSound {
             Self::Boom => Some(BOOM_SECONDS),
             Self::Chime => Some(CHIME_SECONDS),
             Self::Shutter => Some(SHUTTER_SECONDS),
+            Self::Laser => Some(LASER_SECONDS),
+            Self::Coin => Some(COIN_SECONDS),
+            Self::Buzzer => Some(BUZZER_SECONDS),
+            Self::Heartbeat => Some(HEARTBEAT_SECONDS),
             Self::Tone { .. } | Self::Silence => None,
         }
     }
@@ -257,7 +285,15 @@ impl GeneratedSound {
                     ((std::f64::consts::TAU * turns).sin() * level * f64::from(EFFECT_PEAK)) as f32
                 })
                 .collect(),
-            Self::Pop | Self::Ding | Self::Boom | Self::Chime | Self::Shutter => (0..frames)
+            Self::Pop
+            | Self::Ding
+            | Self::Boom
+            | Self::Chime
+            | Self::Shutter
+            | Self::Laser
+            | Self::Coin
+            | Self::Buzzer
+            | Self::Heartbeat => (0..frames)
                 .map(|index| {
                     let sample = first + index as i64;
                     let value = self.struck(sample, sample as f64 / rate);
@@ -321,6 +357,49 @@ impl GeneratedSound {
                 };
                 let bright = (noise(sample) - noise(sample - 1)) * 0.5;
                 bright * (snap(0.0) + 0.8 * snap(0.07)) * 2.4
+            }
+            Self::Laser if t < LASER_SECONDS => {
+                (TAU * glide(2_400.0, 300.0, 0.06, t)).sin() * (-t / 0.12).exp() * attack(t) * 2.2
+            }
+            Self::Coin if t < COIN_SECONDS => {
+                // Two notes a fourth apart, with a little of the third
+                // harmonic for the bright edge of an old game's sound chip.
+                let note = |hz: f64, start: f64, decay: f64| {
+                    let t = t - start;
+                    if t < 0.0 {
+                        return 0.0;
+                    }
+                    let x = TAU * (hz * t).fract();
+                    let x3 = TAU * (3.0 * hz * t).fract();
+                    (x.sin() + 0.3 * x3.sin()) * (-t / decay).exp() * attack(t)
+                };
+                let first = if t < 0.08 {
+                    note(987.8, 0.0, 0.05)
+                } else {
+                    0.0
+                };
+                (first + note(1_318.5, 0.08, 0.12)) * 1.4
+            }
+            Self::Buzzer if t < BUZZER_SECONDS => {
+                // Odd harmonics of a low note, the shape of a square wave,
+                // fading out over its length.
+                let tone: f64 = [1.0_f64, 3.0, 5.0, 7.0]
+                    .iter()
+                    .map(|k| (TAU * (110.0 * k * t).fract()).sin() / k)
+                    .sum();
+                let fade = (1.0 - t / BUZZER_SECONDS).sqrt();
+                tone * fade * attack(t) * 1.4
+            }
+            Self::Heartbeat if t < HEARTBEAT_SECONDS => {
+                // Lub, then a softer dub.
+                let thump = |start: f64, level: f64| {
+                    let t = t - start;
+                    if t < 0.0 {
+                        return 0.0;
+                    }
+                    (TAU * glide(70.0, 45.0, 0.05, t)).sin() * (-t / 0.06).exp() * attack(t) * level
+                };
+                (thump(0.0, 1.0) + thump(0.25, 0.7)) * 2.6
             }
             _ => 0.0,
         }
@@ -463,6 +542,10 @@ mod tests {
             GeneratedSound::Boom,
             GeneratedSound::Chime,
             GeneratedSound::Shutter,
+            GeneratedSound::Laser,
+            GeneratedSound::Coin,
+            GeneratedSound::Buzzer,
+            GeneratedSound::Heartbeat,
         ] {
             let length = sound.natural_length().unwrap();
             let total = (length * AUDIO_SAMPLE_RATE as f64) as usize;
@@ -497,7 +580,7 @@ mod tests {
                 "{sound:?}"
             );
         }
-        assert_eq!(GeneratedSound::EFFECTS.len(), 8);
+        assert_eq!(GeneratedSound::EFFECTS.len(), 12);
         assert!(
             GeneratedSound::EFFECTS
                 .iter()

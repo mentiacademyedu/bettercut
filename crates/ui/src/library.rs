@@ -202,14 +202,14 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         "Sound effects: click to put one at the playhead, or drag it onto the timeline",
     );
     let mut chosen = None;
-    for sound in GeneratedSound::EFFECTS {
-        let response =
-            wide(ui, &sound.name()).on_hover_text(sound.description().unwrap_or_default());
+    two_to_a_row(ui, &GeneratedSound::EFFECTS, |ui, _, &sound, width| {
+        let response = cell(ui, egui::Button::new(sound.name()), width)
+            .on_hover_text(sound.description().unwrap_or_default());
         draggable(&response, state, LibraryDrag::Sound(sound));
         if response.clicked() {
             chosen = Some(sound);
         }
-    }
+    });
     if let Some(sound) = chosen {
         let seconds = sound.natural_length().unwrap_or(1.0);
         let length = bettercut_editor_core::foundation::TimelineTime::from_millis(

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Four new sound effects**: Laser, Coin, Buzzer and Heartbeat. The Audio
+  tab lays its effects out two to a row.
+
 ## 0.6.9 — Shake, Strobe, new filters, transitions and text styles
 
 Still a beta: expect bugs, and please
