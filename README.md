@@ -3,7 +3,7 @@
 A free, open-source desktop video editor with CapCut-style convenience, built
 in Rust to stay quick on ordinary laptops.
 
-**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.6.7)
+**[bettercut.dev](https://bettercut.dev)** · [Download](https://bettercut.dev/download/) · [Release notes](https://github.com/mentiacademyedu/bettercut/releases/tag/v0.6.8)
 
 ![bettercut editing its sample project](docs/images/screenshot.png)
 
@@ -18,12 +18,12 @@ in Rust to stay quick on ordinary laptops.
 ## Download
 
 **Windows 10/11, 64-bit:**
-[bettercut-0.6.7-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.7/bettercut-0.6.7-setup.exe)
+[bettercut-0.6.8-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.8/bettercut-0.6.8-setup.exe)
 (about 50 MB).
 
 **macOS 12 or later (beta):**
-[Apple Silicon](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.7/bettercut-0.6.7-macos.dmg)
-or [Intel](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.7/bettercut-0.6.7-macos-intel.dmg)
+[Apple Silicon](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.8/bettercut-0.6.8-macos.dmg)
+or [Intel](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.8/bettercut-0.6.8-macos-intel.dmg)
 (about 30 MB). Not signed by Apple yet: the first time, macOS refuses to open
 it — open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
@@ -35,7 +35,7 @@ user only (no administrator rights needed) and removes itself cleanly from
 *Settings → Apps*.
 
 **Linux, x86-64 (beta):**
-[bettercut-0.6.7-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.7/bettercut-0.6.7-x86_64.AppImage)
+[bettercut-0.6.8-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.8/bettercut-0.6.8-x86_64.AppImage)
 (about 30 MB): download it, `chmod +x` it and run it. It uses your system's own
 graphics driver (Vulkan) and sound.
 

@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Animated titles in the Text tab: Pop in, Typed out, Bounce, Neon pulse and more",
-    "The blade tool (B): click a clip to cut it there; Marker and Freeze beside Split",
-    "Snap and Magnet toggles in the status bar; start a new project from a template",
+    "Double-click a title in the preview to type into it",
+    "Auto adjust in the Colours tab, and a Ratio menu beside the player",
+    "22 colour emoji stickers, and Pixelate, Shake and Fade through white transitions",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
