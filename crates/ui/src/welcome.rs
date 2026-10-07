@@ -16,11 +16,11 @@ use crate::theme;
 pub const STEPS: [(&str, &str); 4] = [
     (
         "Bring in your files",
-        "Drag videos, photos and music onto the window, or use Import in Media.",
+        "Drop videos, photos and music on the window, then drag them from Media onto the timeline.",
     ),
     (
-        "Cut",
-        "Press S to split at the playhead, Delete to remove a piece. Drag clips to move them.",
+        "Cut and dress it",
+        "Split, Delete and Blade sit above the timeline. Text, Stickers, Effects and Transitions are tabs on the left: drag one where you want it.",
     ),
     (
         "Find anything",
