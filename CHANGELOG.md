@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.9 — Shake, Strobe, new filters, transitions and text styles
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 

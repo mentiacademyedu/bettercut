@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Double-click a title in the preview to type into it",
-    "Auto adjust in the Colours tab, and a Ratio menu beside the player",
-    "22 colour emoji stickers, and Pixelate, Shake and Fade through white transitions",
+    "Shake, Strobe, Fisheye and Poster effects, and eight new filters",
+    "Slide up, Push up and Wipe down transitions, and five new text styles",
+    "Choose the cover picture in the Export window",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
