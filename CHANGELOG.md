@@ -9,7 +9,8 @@
 - **Eight new filters**: Noir, Golden, Night, Food, Film, Pastel, Cyber and
   Matrix.
 - **Three new transitions**: Slide up, Push up and Wipe down.
-- **Five new text styles**: Breaking, Fire, Ice, Comic and Candy.
+- **Five new text styles**: Breaking, Fire, Ice, Comic and Candy. An AI
+  assistant can now pick any text style when it adds a title.
 - **Cover in the Export window**: see which frame is saved as the video's
   cover picture, use the playhead's frame, or have none.
 

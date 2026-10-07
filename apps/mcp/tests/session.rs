@@ -2182,3 +2182,41 @@ fn an_assistant_shapes_the_sound() {
     drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A title can be added already wearing one of the Text tab's looks, as one
+/// undo step; a look that does not exist is refused by name.
+#[test]
+fn an_assistant_adds_a_styled_title() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-style-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    client.ok(
+        "add_title",
+        json!({ "text": "Sweet", "at": 0, "style": "candy" }),
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let words = &described["title_lanes"][0]["clips"][0];
+    assert_eq!(words["text"], "Sweet", "{words}");
+    assert_eq!(words["color"], "#ff46aa", "{words}");
+    let steps: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(steps["undo"][0], "Add Candy Text", "{steps}");
+    assert!(
+        steps["undo"][1].as_str().unwrap().starts_with("Set Format"),
+        "one step: {steps}"
+    );
+
+    let (said, failed) = client.tool(
+        "add_title",
+        json!({ "text": "x", "at": 0, "style": "sparkly" }),
+    );
+    assert!(failed, "{said}");
+    assert!(
+        said.contains("Breaking"),
+        "the refusal names the styles there are: {said}"
+    );
+}

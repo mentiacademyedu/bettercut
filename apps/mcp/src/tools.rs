@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use bettercut_editor_core::filters::Filter;
 use bettercut_editor_core::foundation::{ClipId, MediaId, MediaTime, TimelineTime};
 use bettercut_editor_core::project_format::Project;
+use bettercut_editor_core::text::TextPreset;
 use bettercut_editor_core::timeline::{AnimatedParameter, Movement, TransitionKind};
 use bettercut_editor_core::{ClipProperty, Editor, EventReceiver, TextProperty, TrimEdge};
 use serde_json::{Value, json};
@@ -131,12 +132,15 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "add_title",
-        description: "Add a title (text over the picture) starting at `at` seconds.",
+        description: "Add a title (text over the picture) starting at `at` seconds. `style` \
+                      gives it one of the Text tab's looks (Pop, Neon, Breaking, Comic ...); \
+                      left out, it is white with a black outline.",
         schema: || {
             object(
                 json!({
                     "text": { "type": "string", "minLength": 1 },
-                    "at": { "type": "number", "minimum": 0 }
+                    "at": { "type": "number", "minimum": 0 },
+                    "style": { "type": "string", "enum": text_style_names() }
                 }),
                 &["text", "at"],
             )
@@ -2032,8 +2036,24 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         "add_title" => {
             let text = str_arg(args, "text")?.to_owned();
             let at = time_arg(args, "at")?;
+            let style = match args.get("style").and_then(Value::as_str) {
+                Some(name) => Some(text_style_named(name)?),
+                None => None,
+            };
             editor.set_playhead(at);
+            let depth = editor.undo_depth();
             let clip = editor.add_text(text).map_err(|e| e.to_string())?;
+            if let Some(preset) = style {
+                // The look over the title's own size and font, as the Text tab
+                // gives it: one undo step with the title.
+                if let Some(look) = editor.text_clip(clip).map(|t| preset.applied_to(&t.style)) {
+                    editor
+                        .set_text_property(clip, TextProperty::Style(Box::new(look)), false)
+                        .map_err(|e| e.to_string())?;
+                }
+                let steps = editor.undo_depth().saturating_sub(depth);
+                editor.merge_last_steps(steps, &format!("Add {} Text", preset.label()));
+            }
             Ok(json!({ "clip_id": clip.to_string() }).to_string())
         }
         "split_clip" => {
@@ -3606,6 +3626,22 @@ fn plain(name: &str) -> String {
 
 fn transition_names() -> Vec<&'static str> {
     TransitionKind::ALL.iter().map(|k| k.label()).collect()
+}
+
+fn text_style_names() -> Vec<&'static str> {
+    TextPreset::ALL.iter().map(|p| p.label()).collect()
+}
+
+fn text_style_named(name: &str) -> Result<TextPreset, String> {
+    TextPreset::ALL
+        .into_iter()
+        .find(|p| p.label().eq_ignore_ascii_case(name.trim()))
+        .ok_or_else(|| {
+            format!(
+                "no text style called {name:?}; try {}",
+                text_style_names().join(", ")
+            )
+        })
 }
 
 fn filter_names() -> Vec<&'static str> {
