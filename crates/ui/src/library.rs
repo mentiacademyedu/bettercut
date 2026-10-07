@@ -155,6 +155,41 @@ fn wide(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
+/// `items` two to a row, as CapCut lays out its effects, transitions and
+/// filters: one long column ran off the bottom of the panel, hiding the last
+/// few. `cell` draws one, given its index and the width each gets.
+fn two_to_a_row<'a, T>(
+    ui: &mut egui::Ui,
+    items: &'a [T],
+    mut cell: impl FnMut(&mut egui::Ui, usize, &'a T, f32),
+) {
+    let width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
+    for (row, pair) in items.chunks(2).enumerate() {
+        ui.horizontal(|ui| {
+            for (column, item) in pair.iter().enumerate() {
+                cell(ui, row * 2 + column, item, width);
+            }
+        });
+    }
+}
+
+/// A library button in a [`two_to_a_row`] cell: picked out when `on`, and
+/// draggable onto the timeline.
+fn cell_button(ui: &mut egui::Ui, on: bool, label: &str, width: f32) -> egui::Response {
+    // Held to its half of the row: a long name wraps onto a second line
+    // rather than widening the whole panel.
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        ui.add(
+            egui::Button::selectable(on, label)
+                .wrap_mode(egui::TextWrapMode::Wrap)
+                .min_size(egui::vec2(width, 26.0))
+                .sense(egui::Sense::click_and_drag()),
+        )
+    })
+    .inner
+}
+
 fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     use bettercut_editor_core::media::GeneratedSound;
     hint(
@@ -499,19 +534,20 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             ui,
             "Drag a transition onto a clip to put it on the cut at its end, or select the clip and click",
         );
-        for kind in TransitionKind::ALL {
-            let response = wide(ui, kind.label()).on_hover_text(kind.description());
+        two_to_a_row(ui, &TransitionKind::ALL, |ui, _, &kind, width| {
+            let response =
+                cell_button(ui, false, kind.label(), width).on_hover_text(kind.description());
             draggable(&response, state, LibraryDrag::Transition(kind));
             if response.clicked() {
                 state.info("Select the clip before the cut first, or drag the transition onto it");
             }
-        }
+        });
         return;
     };
     hint(ui, "Click to put it on the cut after the selected clip");
     let existing = editor.video_clip(clip).and_then(|c| c.transition_out);
     let mut chosen = None;
-    for kind in TransitionKind::ALL {
+    two_to_a_row(ui, &TransitionKind::ALL, |ui, _, &kind, width| {
         let room = editor.transition_room(clip, kind);
         let overlap = editor.transition_overlap(clip, kind);
         let usable = room.is_some_and(|r| r >= MIN_TRANSITION) || overlap.is_some();
@@ -526,13 +562,7 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         let selected = existing.is_some_and(|t| t.kind == kind);
         // Enabled even where this cut cannot take it: it can still be dragged
         // onto another clip.
-        let response = ui
-            .add(
-                egui::Button::selectable(selected, kind.label())
-                    .min_size(egui::vec2(ui.available_width(), 26.0))
-                    .sense(egui::Sense::click_and_drag()),
-            )
-            .on_hover_text(hover.clone());
+        let response = cell_button(ui, selected, kind.label(), width).on_hover_text(hover.clone());
         draggable(&response, state, LibraryDrag::Transition(kind));
         if response.clicked() {
             if usable {
@@ -541,7 +571,7 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 state.info(hover);
             }
         }
-    }
+    });
     if let Some(kind) = chosen {
         match editor.set_transition(clip, kind) {
             Ok(()) => state.needs_repaint = true,
@@ -596,35 +626,21 @@ fn effect_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         },
     );
     let mut chosen = None;
-    // Two to a row, as CapCut lays them out: one long column ran off the
-    // bottom of the panel, hiding the last few.
-    let width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
-    for (row, pair) in EFFECTS.chunks(2).enumerate() {
-        ui.horizontal(|ui| {
-            for (column, effect) in pair.iter().enumerate() {
-                let index = row * 2 + column;
-                let on = onto
-                    .first()
-                    .and_then(|clip| editor.video_clip(*clip))
-                    .is_some_and(|clip| effect.amount_on(clip) > 0.0);
-                let response = ui
-                    .add(
-                        egui::Button::selectable(on, effect.name)
-                            .min_size(egui::vec2(width, 26.0))
-                            .sense(egui::Sense::click_and_drag()),
-                    )
-                    .on_hover_text(effect.description);
-                draggable(&response, state, LibraryDrag::Effect(index));
-                if response.clicked() {
-                    if onto.is_empty() {
-                        state.info("Select picture clips first, or drag the effect onto one");
-                    } else {
-                        chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
-                    }
-                }
+    two_to_a_row(ui, &EFFECTS, |ui, index, effect, width| {
+        let on = onto
+            .first()
+            .and_then(|clip| editor.video_clip(*clip))
+            .is_some_and(|clip| effect.amount_on(clip) > 0.0);
+        let response = cell_button(ui, on, effect.name, width).on_hover_text(effect.description);
+        draggable(&response, state, LibraryDrag::Effect(index));
+        if response.clicked() {
+            if onto.is_empty() {
+                state.info("Select picture clips first, or drag the effect onto one");
+            } else {
+                chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
             }
-        });
-    }
+        }
+    });
     if let Some((effect, amount)) = chosen {
         let depth = editor.undo_depth();
         for clip in &onto {
@@ -666,13 +682,8 @@ fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     );
     let current = onto.first().and_then(|clip| editor.filter_of(*clip));
     let mut chosen = None;
-    for filter in Filter::ALL {
-        let response = ui
-            .add(
-                egui::Button::selectable(current == Some(filter), filter.label())
-                    .min_size(egui::vec2(ui.available_width(), 26.0))
-                    .sense(egui::Sense::click_and_drag()),
-            )
+    two_to_a_row(ui, &Filter::ALL, |ui, _, &filter, width| {
+        let response = cell_button(ui, current == Some(filter), filter.label(), width)
             .on_hover_text(filter.description());
         draggable(&response, state, LibraryDrag::Filter(filter));
         if response.clicked() {
@@ -682,7 +693,7 @@ fn filter_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 chosen = Some(filter);
             }
         }
-    }
+    });
     if let Some(filter) = chosen {
         match editor.apply_filter(filter, onto) {
             Ok(n) if n > 1 => state.info(format!("{} on {n} clips", filter.label())),
