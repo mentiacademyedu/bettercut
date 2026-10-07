@@ -33,6 +33,14 @@ pub enum Filter {
     Dream,
     Sepia,
     Duotone,
+    Noir,
+    Golden,
+    Night,
+    Food,
+    Film,
+    Pastel,
+    Cyber,
+    Matrix,
 }
 
 /// The settings a filter sets, in the units the Inspector shows.
@@ -62,7 +70,7 @@ const NEUTRAL: Recipe = Recipe {
 
 impl Filter {
     /// Every filter, in the order the interface offers them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 20] = [
         Self::Original,
         Self::BlackAndWhite,
         Self::Vintage,
@@ -75,6 +83,14 @@ impl Filter {
         Self::Dream,
         Self::Sepia,
         Self::Duotone,
+        Self::Noir,
+        Self::Golden,
+        Self::Night,
+        Self::Food,
+        Self::Film,
+        Self::Pastel,
+        Self::Cyber,
+        Self::Matrix,
     ];
 
     pub fn label(self) -> &'static str {
@@ -91,6 +107,14 @@ impl Filter {
             Self::Dream => "Dream",
             Self::Sepia => "Sepia",
             Self::Duotone => "Duotone",
+            Self::Noir => "Noir",
+            Self::Golden => "Golden",
+            Self::Night => "Night",
+            Self::Food => "Food",
+            Self::Film => "Film",
+            Self::Pastel => "Pastel",
+            Self::Cyber => "Cyber",
+            Self::Matrix => "Matrix",
         }
     }
 
@@ -108,6 +132,14 @@ impl Filter {
             Self::Dream => "Soft, bright and gently glowing",
             Self::Sepia => "The warm brown of an old photograph",
             Self::Duotone => "Two bold colours: deep blue shadows, pink highlights",
+            Self::Noir => "Hard black and white, deep shadows, like an old detective film",
+            Self::Golden => "Rich, glowing late-afternoon sun",
+            Self::Night => "Darker and moonlit blue",
+            Self::Food => "Warm, bright and appetising, the colours lifted",
+            Self::Film => "Gentle contrast and a slightly warm, muted colour, as shot on film",
+            Self::Pastel => "Light, soft and sweet: gentle colour with the shadows lifted",
+            Self::Cyber => "Neon purple shadows into electric cyan highlights",
+            Self::Matrix => "Everything in shades of computer-screen green",
         }
     }
 
@@ -183,6 +215,65 @@ impl Filter {
             Self::Duotone => Recipe {
                 contrast: 1.1,
                 tone: Tone::DUOTONE,
+                ..NEUTRAL
+            },
+            Self::Noir => Recipe {
+                brightness: 0.92,
+                contrast: 1.45,
+                saturation: 0.0,
+                sharpen: 10.0,
+                ..NEUTRAL
+            },
+            Self::Golden => Recipe {
+                brightness: 1.04,
+                contrast: 1.05,
+                saturation: 1.15,
+                temperature: 0.55,
+                tint: 0.05,
+                ..NEUTRAL
+            },
+            Self::Night => Recipe {
+                brightness: 0.85,
+                contrast: 1.1,
+                saturation: 0.8,
+                temperature: -0.35,
+                ..NEUTRAL
+            },
+            Self::Food => Recipe {
+                brightness: 1.05,
+                saturation: 1.25,
+                temperature: 0.2,
+                sharpen: 10.0,
+                ..NEUTRAL
+            },
+            Self::Film => Recipe {
+                contrast: 1.1,
+                saturation: 0.9,
+                temperature: 0.08,
+                tint: 0.04,
+                ..NEUTRAL
+            },
+            Self::Pastel => Recipe {
+                brightness: 1.1,
+                contrast: 0.8,
+                saturation: 0.75,
+                tint: 0.05,
+                ..NEUTRAL
+            },
+            Self::Cyber => Recipe {
+                contrast: 1.15,
+                tone: Tone::Duotone {
+                    shadow: [40, 0, 80],
+                    highlight: [0, 255, 230],
+                },
+                ..NEUTRAL
+            },
+            Self::Matrix => Recipe {
+                contrast: 1.2,
+                tone: Tone::Duotone {
+                    shadow: [0, 18, 6],
+                    highlight: [140, 255, 160],
+                },
                 ..NEUTRAL
             },
         }

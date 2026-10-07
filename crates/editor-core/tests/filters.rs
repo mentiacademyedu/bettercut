@@ -121,3 +121,14 @@ fn sepia_and_duotone_set_a_tone_that_original_clears() {
     assert!(editor.video_clip(clip).unwrap().curves.tone.is_none());
     assert!(editor.video_clip(clip).unwrap().effective_lut().is_none());
 }
+
+/// Each filter is its own look: applied, it is recognised as itself and not
+/// as another with the same recipe.
+#[test]
+fn every_filter_is_recognised_as_itself() {
+    let (mut editor, a, _) = two_clips();
+    for filter in Filter::ALL {
+        editor.apply_filter(filter, [a]).unwrap();
+        assert_eq!(editor.filter_of(a), Some(filter), "{}", filter.label());
+    }
+}
