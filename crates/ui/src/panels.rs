@@ -3838,21 +3838,49 @@ pub fn transport(
         // knowing the keys. Each says its key, to learn it from. Left out when
         // the row has no room for them, rather than drawn over the meter: the
         // keys and the clip menu still do all four.
-        const EDIT_BUTTONS_WIDTH: f32 = 390.0;
+        const EDIT_BUTTONS_WIDTH: f32 = 210.0;
+        const TRIM_BUTTONS_WIDTH: f32 = 390.0;
+        // Marker and Freeze, as CapCut has them too, when there is room for
+        // all seven; the cuts come first when there is not.
+        const ALL_EDIT_BUTTONS_WIDTH: f32 = 540.0;
         let room = ui.available_width() >= EDIT_BUTTONS_WIDTH;
+        let roomy = ui.available_width() >= ALL_EDIT_BUTTONS_WIDTH;
+        let trims = ui.available_width() >= TRIM_BUTTONS_WIDTH;
         if room {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let has_clips = duration > TimelineTime::ZERO;
-            let trim_end = ui
+            if roomy {
+                let freeze = ui
+                    .add_enabled(has_clips, egui::Button::new("Freeze"))
+                    .on_hover_text(
+                        "Hold the frame under the playhead for 2 seconds, pushing what follows along",
+                    );
+                let marker = ui
+                    .add_enabled(has_clips, egui::Button::new("Marker"))
+                    .on_hover_text(crate::keys::keys(
+                        "Put a marker at the playhead, or take away the one there (M)",
+                    ));
+                if marker.clicked() {
+                    match editor.toggle_marker(editor.playhead()) {
+                        Ok(true) => state.info("Marker added"),
+                        Ok(false) => state.info("Marker removed"),
+                        Err(err) => state.error(err.to_string()),
+                    }
+                }
+                if freeze.clicked() {
+                    freeze_here(editor, state);
+                }
+            }
+            let trim_end = trims.then(|| ui
                 .add_enabled(has_clips, egui::Button::new("Trim End"))
                 .on_hover_text(crate::keys::keys(
                     "Cut away the selected clip after the playhead and close the gap (W)",
-                ));
-            let trim_start = ui
+                )));
+            let trim_start = trims.then(|| ui
                 .add_enabled(has_clips, egui::Button::new("Trim Start"))
                 .on_hover_text(crate::keys::keys(
                     "Cut away the selected clip before the playhead and close the gap (Q)",
-                ));
+                )));
             let delete = ui
                 .add_enabled(!state.selected_clips.is_empty(), egui::Button::new("Delete"))
                 .on_hover_text(crate::keys::keys(
@@ -3881,10 +3909,10 @@ pub fn transport(
                     crate::shortcuts::delete_selection(editor, state);
                 }
             }
-            if trim_start.clicked() {
+            if trim_start.is_some_and(|r| r.clicked()) {
                 crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::Start);
             }
-            if trim_end.clicked() {
+            if trim_end.is_some_and(|r| r.clicked()) {
                 crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::End);
             }
         });
@@ -3923,6 +3951,33 @@ pub fn transport(
             state.needs_repaint = true;
         }
     });
+}
+
+/// Hold the frame under the playhead for two seconds: of the selected
+/// picture clip, or else of the picture under the playhead.
+fn freeze_here(editor: &mut Editor, state: &mut UiState) {
+    let selected = state
+        .selected_clips
+        .iter()
+        .copied()
+        .find(|clip| editor.video_clip(*clip).is_some());
+    let clip = selected.or_else(|| {
+        editor
+            .clips_under_playhead()
+            .into_iter()
+            .find(|clip| editor.video_clip(*clip).is_some())
+    });
+    let Some(clip) = clip else {
+        state.info("No picture under the playhead to freeze");
+        return;
+    };
+    match editor.freeze_frame(clip, TimelineTime::from_seconds(2)) {
+        Ok(held) => {
+            state.select_only(held);
+            state.info("Holding this frame for 2 s");
+        }
+        Err(err) => state.error(err.to_string()),
+    }
 }
 
 /// How full the meter's bar is for a peak level, 0.0 to 1.0.
