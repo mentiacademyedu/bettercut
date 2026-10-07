@@ -100,13 +100,16 @@ fn every_transition_kind_is_offered() {
             | TransitionKind::Wipe
             | TransitionKind::Iris
             | TransitionKind::Spin
-            | TransitionKind::Glitch => true,
+            | TransitionKind::Glitch
+            | TransitionKind::Pixelate
+            | TransitionKind::Shake
+            | TransitionKind::FadeThroughWhite => true,
         }
     }
 
     assert_eq!(
         TransitionKind::ALL.len(),
-        11,
+        14,
         "a transition was added or removed"
     );
     assert!(TransitionKind::ALL.into_iter().all(offered));

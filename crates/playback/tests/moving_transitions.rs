@@ -137,6 +137,9 @@ fn the_moving_kinds_need_handles() {
         TransitionKind::FadeThroughBlack,
         TransitionKind::Flash,
         TransitionKind::Glitch,
+        TransitionKind::Pixelate,
+        TransitionKind::Shake,
+        TransitionKind::FadeThroughWhite,
     ] {
         assert!(
             !kind.needs_handles(),
@@ -164,7 +167,7 @@ fn the_moving_kinds_need_handles() {
 fn every_kind_is_accounted_for_above() {
     assert_eq!(
         TransitionKind::ALL.len(),
-        11,
+        14,
         "a transition kind was added or removed; say which side of the handle rule it is on in `the_moving_kinds_need_handles`"
     );
 }

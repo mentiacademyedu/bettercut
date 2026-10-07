@@ -46,3 +46,54 @@ fn a_glitch_is_clean_at_the_ends_and_wrecked_at_the_cut() {
     // And the same instant always lurches the same way.
     assert_eq!(transition_glitch(0.37), transition_glitch(0.37));
 }
+
+#[test]
+fn a_pixelate_is_sharp_at_the_ends_and_blockiest_at_the_cut() {
+    use bettercut_playback::engine::transition_pixelate;
+    assert!(transition_pixelate(0.0).abs() < 1e-3);
+    assert!(transition_pixelate(1.0).abs() < 1e-3);
+    assert!((transition_pixelate(0.5) - 100.0).abs() < 1e-3);
+    assert!(transition_pixelate(0.25) > 0.0 && transition_pixelate(0.25) < 100.0);
+    // The two clips get the same blockiness the same distance from the cut.
+    assert!((transition_pixelate(0.3) - transition_pixelate(0.7)).abs() < 1e-3);
+}
+
+#[test]
+fn a_shake_is_still_at_the_ends_and_covers_the_frame_while_it_moves() {
+    use bettercut_playback::engine::transition_shake;
+    for t in [0.0, 1.0] {
+        let (x, y, zoom) = transition_shake(t);
+        assert!(
+            x.abs() < 1e-3 && y.abs() < 1e-3 && (zoom - 1.0).abs() < 1e-3,
+            "at {t}"
+        );
+    }
+    // Never thrown further than the enlargement hides: the edges stay covered.
+    for i in 0..=100 {
+        let (x, y, zoom) = transition_shake(i as f32 / 100.0);
+        let spare = (zoom - 1.0) / 2.0;
+        assert!(
+            x.abs() <= spare + 1e-4 && y.abs() <= spare + 1e-4,
+            "at {i}%: {x} {y} {zoom}"
+        );
+    }
+    assert_eq!(transition_shake(0.42), transition_shake(0.42));
+}
+
+#[test]
+fn the_new_one_shot_kinds_do_not_move_either_clip() {
+    for kind in [
+        TransitionKind::Pixelate,
+        TransitionKind::Shake,
+        TransitionKind::FadeThroughWhite,
+    ] {
+        let (out, incoming) = moving_transition(kind, 0.5);
+        assert_eq!((out.scale, out.rotation), (1.0, 0.0), "{}", kind.label());
+        assert_eq!(
+            (incoming.scale, incoming.rotation),
+            (1.0, 0.0),
+            "{}",
+            kind.label()
+        );
+    }
+}

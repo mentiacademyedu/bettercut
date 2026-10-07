@@ -2928,6 +2928,48 @@ fn draw_transition(
             );
             painter.rect_stroke(inner, 0.0, stroke, StrokeKind::Inside);
         }
+        // A checkerboard of blocks: the picture gone to squares.
+        TransitionKind::Pixelate => {
+            let cell = inner.width().min(inner.height()) / 3.0;
+            for row in 0..3 {
+                for column in 0..3 {
+                    if (row + column) % 2 == 0 {
+                        let min = inner.center()
+                            + egui::vec2((column as f32 - 1.5) * cell, (row as f32 - 1.5) * cell);
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(min, egui::vec2(cell, cell)),
+                            0.0,
+                            theme::transition(),
+                        );
+                    }
+                }
+            }
+        }
+        // Two frames knocked out of line with each other.
+        TransitionKind::Shake => {
+            let small = inner.shrink(inner.width().min(inner.height()) * 0.2);
+            painter.rect_stroke(
+                small.translate(egui::vec2(-2.0, -2.0)),
+                0.0,
+                stroke,
+                StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                small.translate(egui::vec2(2.0, 2.0)),
+                0.0,
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        // The flash's peak, filled: up to white and down again.
+        TransitionKind::FadeThroughWhite => {
+            let top = Pos2::new(inner.center().x, inner.top());
+            painter.add(egui::Shape::convex_polygon(
+                vec![inner.left_bottom(), top, inner.right_bottom()],
+                theme::transition().gamma_multiply(0.6),
+                stroke,
+            ));
+        }
     }
 }
 

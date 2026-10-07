@@ -85,10 +85,19 @@ pub enum TransitionKind {
     /// comes back together on the next shot. Needs no handles: one shot at a
     /// time, as a flash.
     Glitch,
+    /// The picture breaks into growing blocks at the cut and comes back
+    /// together on the next shot. One shot at a time: needs no handles.
+    Pixelate,
+    /// A hard jolt at the cut, the picture shaking as it changes. One shot at
+    /// a time: needs no handles.
+    Shake,
+    /// The fade through black's bright twin: out to white, in from it. One
+    /// shot at a time: needs no handles.
+    FadeThroughWhite,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::Crossfade,
         Self::FadeThroughBlack,
         Self::Slide,
@@ -100,6 +109,9 @@ impl TransitionKind {
         Self::Iris,
         Self::Spin,
         Self::Glitch,
+        Self::Pixelate,
+        Self::Shake,
+        Self::FadeThroughWhite,
     ];
 
     pub fn label(self) -> &'static str {
@@ -115,6 +127,9 @@ impl TransitionKind {
             Self::Iris => "Iris",
             Self::Spin => "Spin",
             Self::Glitch => "Glitch",
+            Self::Pixelate => "Pixelate",
+            Self::Shake => "Shake",
+            Self::FadeThroughWhite => "Fade through white",
         }
     }
 
@@ -129,31 +144,40 @@ impl TransitionKind {
                  including against the start or end of a file."
             }
             Self::Slide => {
-                "The next shot slides in from the right over this one. Needs spare footage either side of the cut."
+                "The next shot slides in from the right over this one. With no footage to spare, the clips overlap to make room."
             }
             Self::Push => {
-                "The next shot pushes this one off to the left. Needs spare footage either side of the cut."
+                "The next shot pushes this one off to the left. With no footage to spare, the clips overlap to make room."
             }
             Self::Zoom => {
-                "This shot swells and fades as the next arrives behind it. Needs spare footage either side of the cut."
+                "This shot swells and fades as the next arrives behind it. With no footage to spare, the clips overlap to make room."
             }
             Self::Flash => {
                 "The picture blows out to white and comes back on the next shot. Works anywhere, including against the start or end of a file."
             }
             Self::Blur => {
-                "Both shots go soft, change over while they are softest, and come back sharp. Needs spare footage either side of the cut."
+                "Both shots go soft, change over while they are softest, and come back sharp. With no footage to spare, the clips overlap to make room."
             }
             Self::Wipe => {
-                "An edge sweeps across from the left, revealing the next shot. Needs spare footage either side of the cut."
+                "An edge sweeps across from the left, revealing the next shot. With no footage to spare, the clips overlap to make room."
             }
             Self::Iris => {
-                "The next shot opens out of a circle in the middle. Needs spare footage either side of the cut."
+                "The next shot opens out of a circle in the middle. With no footage to spare, the clips overlap to make room."
             }
             Self::Spin => {
-                "This shot spins away into the middle and the next spins out. Needs spare footage either side of the cut."
+                "This shot spins away into the middle and the next spins out. With no footage to spare, the clips overlap to make room."
             }
             Self::Glitch => {
                 "The picture breaks up into glitches at the cut and snaps back on the next shot. Works anywhere, including against the start or end of a file."
+            }
+            Self::Pixelate => {
+                "The picture breaks into big blocks at the cut and sharpens again on the next shot. Works anywhere."
+            }
+            Self::Shake => {
+                "A hard jolt at the cut, the picture shaking as it changes. Works anywhere."
+            }
+            Self::FadeThroughWhite => {
+                "This shot fades out to white, the next fades in from it. Works anywhere."
             }
         }
     }
@@ -166,7 +190,15 @@ impl TransitionKind {
     /// out-point. A fade through black and a flash show one at a time: what
     /// covers the cut is a colour rather than the other shot.
     pub fn needs_handles(self) -> bool {
-        !matches!(self, Self::FadeThroughBlack | Self::Flash | Self::Glitch)
+        !matches!(
+            self,
+            Self::FadeThroughBlack
+                | Self::Flash
+                | Self::Glitch
+                | Self::Pixelate
+                | Self::Shake
+                | Self::FadeThroughWhite
+        )
     }
 }
 

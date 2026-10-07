@@ -6,6 +6,8 @@
 
 - **Auto adjust** at the top of the Colours tab, as in CapCut: exposure,
   contrast and colour cast evened out from the clip's own picture.
+- **Three new transitions**: Pixelate, Shake and Fade through white. Like a
+  flash or a glitch they show one shot at a time, so they work on any cut.
 - **40 stickers**: 24 colour emoji join the symbols — grin, heart eyes,
   thumbs up, fire, party, 100, sparkles, rocket, rainbow and more.
 - **A Ratio menu** beside the player, as in CapCut: 16:9, 9:16, 1:1, 4:5 or

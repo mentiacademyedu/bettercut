@@ -208,6 +208,51 @@ pub(crate) fn plan(
                     request.look.transform.position.x += shake;
                 }
             }
+            // Breaking into blocks towards the cut, sharpening after it: one
+            // shot at a time, on the pixelate the clips already have.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::Pixelate,
+                ..
+            }) => {
+                let before = requests.len();
+                push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                let amount = transition_pixelate(progress);
+                for request in &mut requests[before..] {
+                    request.look.pixelate = request.look.pixelate.max(amount);
+                }
+            }
+            // A jolt at the cut: the picture thrown about, worst on the cut.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::Shake,
+                ..
+            }) => {
+                let before = requests.len();
+                push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                let (x, y, zoom) = transition_shake(progress);
+                for request in &mut requests[before..] {
+                    request.look.transform.position.x += x;
+                    request.look.transform.position.y += y;
+                    request.look.transform.scale.x *= zoom;
+                    request.look.transform.scale.y *= zoom;
+                }
+            }
+            // Out to white and in from it: the shot stays, and white comes up
+            // over it and goes again, as a flash does, only slower.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::FadeThroughWhite,
+                ..
+            }) => {
+                push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                push_flash(
+                    &mut requests,
+                    track.id,
+                    clip.id,
+                    1.0 - (2.0 * progress - 1.0).abs(),
+                );
+            }
             // §25's blur dissolve. Both shots are on screen, as in a
             // crossfade, and both go soft together — so the change-over
             // happens where there is least detail to notice it changing.
@@ -1596,6 +1641,26 @@ pub fn transition_glitch(progress: f32) -> (f32, f32) {
     )
 }
 
+/// How blocky a pixelate transition is at progress, on the clips' own
+/// 0–100 pixelate scale: sharp at either end, biggest blocks on the cut.
+pub fn transition_pixelate(progress: f32) -> f32 {
+    let t = progress.clamp(0.0, 1.0);
+    100.0 * (1.0 - (2.0 * t - 1.0).abs()).powf(0.7)
+}
+
+/// Where a shake transition throws the picture at progress: sideways and
+/// up in frame widths and heights, and how much it is enlarged so the edges
+/// stay covered. Still at either end, wildest on the cut; worked out from the
+/// progress alone, so preview and export shake the same (§46).
+pub fn transition_shake(progress: f32) -> (f32, f32, f32) {
+    let t = progress.clamp(0.0, 1.0);
+    let strength = 1.0 - (2.0 * t - 1.0).abs();
+    let wobble = |turns: f32| (turns * std::f32::consts::TAU).sin();
+    let x = wobble(t * 7.0) * 0.04 * strength;
+    let y = wobble(t * 5.0 + 0.25) * 0.03 * strength;
+    (x, y, 1.0 + 0.1 * strength)
+}
+
 /// The outgoing and incoming placements for a moving transition (§25).
 ///
 /// `progress` is 0 at the window's start and 1 at its end. Written as one
@@ -1690,7 +1755,10 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
         | TransitionKind::Blur
         | TransitionKind::Wipe
         | TransitionKind::Iris
-        | TransitionKind::Glitch => (LayerMove::STILL, LayerMove::STILL),
+        | TransitionKind::Glitch
+        | TransitionKind::Pixelate
+        | TransitionKind::Shake
+        | TransitionKind::FadeThroughWhite => (LayerMove::STILL, LayerMove::STILL),
     }
 }
 
