@@ -596,26 +596,34 @@ fn effect_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         },
     );
     let mut chosen = None;
-    for (index, effect) in EFFECTS.iter().enumerate() {
-        let on = onto
-            .first()
-            .and_then(|clip| editor.video_clip(*clip))
-            .is_some_and(|clip| effect.amount_on(clip) > 0.0);
-        let response = ui
-            .add(
-                egui::Button::selectable(on, effect.name)
-                    .min_size(egui::vec2(ui.available_width(), 26.0))
-                    .sense(egui::Sense::click_and_drag()),
-            )
-            .on_hover_text(effect.description);
-        draggable(&response, state, LibraryDrag::Effect(index));
-        if response.clicked() {
-            if onto.is_empty() {
-                state.info("Select picture clips first, or drag the effect onto one");
-            } else {
-                chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
+    // Two to a row, as CapCut lays them out: one long column ran off the
+    // bottom of the panel, hiding the last few.
+    let width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
+    for (row, pair) in EFFECTS.chunks(2).enumerate() {
+        ui.horizontal(|ui| {
+            for (column, effect) in pair.iter().enumerate() {
+                let index = row * 2 + column;
+                let on = onto
+                    .first()
+                    .and_then(|clip| editor.video_clip(*clip))
+                    .is_some_and(|clip| effect.amount_on(clip) > 0.0);
+                let response = ui
+                    .add(
+                        egui::Button::selectable(on, effect.name)
+                            .min_size(egui::vec2(width, 26.0))
+                            .sense(egui::Sense::click_and_drag()),
+                    )
+                    .on_hover_text(effect.description);
+                draggable(&response, state, LibraryDrag::Effect(index));
+                if response.clicked() {
+                    if onto.is_empty() {
+                        state.info("Select picture clips first, or drag the effect onto one");
+                    } else {
+                        chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
+                    }
+                }
             }
-        }
+        });
     }
     if let Some((effect, amount)) = chosen {
         let depth = editor.undo_depth();
