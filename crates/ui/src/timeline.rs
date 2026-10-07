@@ -574,6 +574,11 @@ fn library_drop(
     match item {
         LibraryDrag::Text(preset) => crate::library::add_styled_text(editor, state, preset),
         LibraryDrag::Design(look) => crate::library::add_title_design(editor, state, look),
+        LibraryDrag::Animated(index) => {
+            if let Some(which) = crate::library::ANIMATED_TEXT.get(index) {
+                crate::library::add_animated_text(editor, state, which);
+            }
+        }
         LibraryDrag::Sticker(sticker) => match editor.add_sticker(sticker) {
             Ok(clip) => state.select_only(clip),
             Err(err) => state.error(err.to_string()),

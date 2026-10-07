@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Animated titles** in the Text tab, as in CapCut: Pop in, Typed out,
+  Bounce, Rise, Neon pulse, Wiggle and Drift — a look with its entrance,
+  exit or loop, in one click or one drag.
+
 ## 0.6.6 — Drag and drop from every tab; sound effects; title designs
 
 Still a beta: expect bugs, and please

@@ -49,3 +49,33 @@ fn a_title_design_is_one_step_styled_and_placed() {
     assert!((title.transform.position.x - x).abs() < 1e-6);
     assert!((title.transform.position.y - y).abs() < 1e-6);
 }
+
+#[test]
+fn every_animated_title_is_one_step_and_moves_as_it_says() {
+    use bettercut_ui::library::{ANIMATED_TEXT, add_animated_text};
+    let (mut editor, _events) = Editor::new_project("Animated");
+    let mut state = UiState::default();
+    for which in &ANIMATED_TEXT {
+        let depth = editor.undo_depth();
+        add_animated_text(&mut editor, &mut state, which);
+        assert_eq!(editor.undo_depth(), depth + 1, "{} is one step", which.name);
+        let clip = *state.selected_clips.iter().next().unwrap();
+        let title = editor.text_clip(clip).unwrap();
+        assert_eq!(
+            title.animation.intro.map(|m| m.kind),
+            which.intro.map(|(kind, _)| kind),
+            "{}",
+            which.name
+        );
+        assert_eq!(
+            title.animation.outro.map(|m| m.kind),
+            which.outro.map(|(kind, _)| kind)
+        );
+        assert_eq!(title.animation.looping, which.looping, "{}", which.name);
+        if let Some(preset) = which.preset {
+            assert_eq!(TextPreset::of(&title.style), Some(preset), "{}", which.name);
+        }
+        // Clear the playhead's spot so the next title has room of its own.
+        editor.set_playhead(title.timeline.end);
+    }
+}

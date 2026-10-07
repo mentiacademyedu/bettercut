@@ -23,6 +23,8 @@ pub enum LibraryDrag {
     Sticker(&'static str),
     Text(Option<TextPreset>),
     Design(bettercut_editor_core::text::TitleLook),
+    /// An index into [ANIMATED_TEXT].
+    Animated(usize),
     Sound(bettercut_editor_core::media::GeneratedSound),
     /// These land on the clip they are let go on (an index into
     /// `effects::EFFECTS`).
@@ -44,6 +46,9 @@ impl LibraryDrag {
             Self::Text(None) => "Text".to_owned(),
             Self::Text(Some(preset)) => format!("{} text", preset.label()),
             Self::Design(look) => look.label().to_owned(),
+            Self::Animated(index) => ANIMATED_TEXT
+                .get(index)
+                .map_or_else(String::new, |a| a.name.to_owned()),
             Self::Sound(sound) => sound.name(),
             Self::Effect(index) => bettercut_editor_core::effects::EFFECTS
                 .get(index)
@@ -241,6 +246,148 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     if let Some(look) = design {
         add_title_design(editor, state, look);
     }
+
+    // Ready-made movement: a look and how it comes in, goes out or keeps moving.
+    ui.add_space(8.0);
+    hint(ui, "Animated: titles that move in, out or all along");
+    let mut animated = None;
+    for (index, which) in ANIMATED_TEXT.iter().enumerate() {
+        let response = wide(ui, which.name).on_hover_text(which.description);
+        draggable(&response, state, LibraryDrag::Animated(index));
+        if response.clicked() {
+            animated = Some(which);
+        }
+    }
+    if let Some(which) = animated {
+        add_animated_text(editor, state, which);
+    }
+}
+
+/// A moving title, ready made: a look, then how it comes in, goes out or
+/// keeps moving — CapCut's animated text, out of what titles already do.
+pub struct AnimatedText {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub look: Option<bettercut_editor_core::text::TitleLook>,
+    pub preset: Option<TextPreset>,
+    /// Entrance and exit: the kind and its length in milliseconds.
+    pub intro: Option<(bettercut_editor_core::timeline::MotionKind, i64)>,
+    pub outro: Option<(bettercut_editor_core::timeline::MotionKind, i64)>,
+    pub looping: Option<bettercut_editor_core::timeline::LoopMotion>,
+}
+
+/// The animated titles the Text tab offers.
+pub const ANIMATED_TEXT: [AnimatedText; 7] = {
+    use bettercut_editor_core::text::TitleLook;
+    use bettercut_editor_core::timeline::{LoopMotion, MotionKind};
+    [
+        AnimatedText {
+            name: "Pop in",
+            description: "Big and bright, popping in and fading away",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Pop),
+            intro: Some((MotionKind::Pop, 400)),
+            outro: Some((MotionKind::Fade, 300)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "Typed out",
+            description: "Letters typed one at a time",
+            look: Some(TitleLook::Typewriter),
+            preset: None,
+            intro: Some((MotionKind::Typewriter, 1_200)),
+            outro: Some((MotionKind::Fade, 300)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "Bounce",
+            description: "Drops in and bounces to rest",
+            look: Some(TitleLook::Headline),
+            preset: None,
+            intro: Some((MotionKind::Bounce, 700)),
+            outro: Some((MotionKind::Fade, 300)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "Rise",
+            description: "Slides up into place and down away",
+            look: None,
+            preset: Some(TextPreset::Classic),
+            intro: Some((MotionKind::SlideUp, 500)),
+            outro: Some((MotionKind::SlideDown, 400)),
+            looping: None,
+        },
+        AnimatedText {
+            name: "Neon pulse",
+            description: "Glowing letters that gently pulse",
+            look: None,
+            preset: Some(TextPreset::Neon),
+            intro: Some((MotionKind::Fade, 400)),
+            outro: None,
+            looping: Some(LoopMotion::Pulse),
+        },
+        AnimatedText {
+            name: "Wiggle",
+            description: "Black on yellow, rocking for attention",
+            look: None,
+            preset: Some(TextPreset::Highlight),
+            intro: Some((MotionKind::Pop, 300)),
+            outro: None,
+            looping: Some(LoopMotion::Wiggle),
+        },
+        AnimatedText {
+            name: "Drift",
+            description: "Soft and quiet, floating gently",
+            look: None,
+            preset: Some(TextPreset::Soft),
+            intro: Some((MotionKind::Fade, 600)),
+            outro: Some((MotionKind::Fade, 600)),
+            looping: Some(LoopMotion::Float),
+        },
+    ]
+};
+
+/// A title at the playhead as one of [`ANIMATED_TEXT`], as one undo step.
+pub fn add_animated_text(editor: &mut Editor, state: &mut UiState, which: &AnimatedText) {
+    use bettercut_editor_core::foundation::TimelineTime;
+    use bettercut_editor_core::timeline::Motion;
+    let depth = editor.undo_depth();
+    let clip = match editor.add_text(which.name) {
+        Ok(clip) => clip,
+        Err(err) => {
+            state.error(err.to_string());
+            return;
+        }
+    };
+    let mut result = Ok(());
+    if let Some(look) = which.look {
+        result = editor.set_title_look(clip, look);
+    }
+    if result.is_ok()
+        && let Some(preset) = which.preset
+        && let Some(style) = editor
+            .text_clip(clip)
+            .map(|title| preset.applied_to(&title.style))
+    {
+        result = editor.set_text_property(clip, TextProperty::Style(Box::new(style)), false);
+    }
+    if result.is_ok()
+        && let Some(mut animation) = editor.text_clip(clip).map(|title| title.animation)
+    {
+        let motion = |(kind, ms): (_, i64)| Motion::new(kind, TimelineTime::from_millis(ms));
+        animation.intro = which.intro.map(motion);
+        animation.outro = which.outro.map(motion);
+        animation.looping = which.looping;
+        result = editor.set_text_property(clip, TextProperty::Animation(animation), false);
+    }
+    if let Err(err) = result {
+        state.error(err.to_string());
+    }
+    let steps = editor.undo_depth().saturating_sub(depth);
+    editor.merge_last_steps(steps, &format!("Add {} Title", which.name));
+    state.select_only(clip);
+    state.inspector_tab = InspectorTab::Video;
+    state.needs_repaint = true;
 }
 
 /// A title at the playhead in one of the whole designs, as one undo step.
