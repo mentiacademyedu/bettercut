@@ -2213,11 +2213,7 @@ impl Editor {
     /// side, so a vertical 1080×1920 video is 1080 too. Only for titles being
     /// made: a pasted or duplicated one keeps the size it has.
     pub(crate) fn fit_to_frame(&self, clip: &mut bettercut_timeline::TextClip) {
-        let Some(sequence) = self.active_sequence() else {
-            return;
-        };
-        let short = sequence.resolution.width.min(sequence.resolution.height);
-        let factor = short.max(1) as f32 / 1080.0;
+        let factor = self.frame_scale();
         if (factor - 1.0).abs() < 0.001 {
             return;
         }
@@ -2225,6 +2221,15 @@ impl Editor {
         if let Some(shape) = &mut clip.shape {
             *shape = shape.scaled(factor);
         }
+    }
+
+    /// How much bigger than at 1080 lines a design is drawn in this
+    /// sequence's frame, by its shorter side. 1 with no sequence.
+    pub fn frame_scale(&self) -> f32 {
+        self.active_sequence().map_or(1.0, |sequence| {
+            let short = sequence.resolution.width.min(sequence.resolution.height);
+            short.max(1) as f32 / 1080.0
+        })
     }
 
     pub fn add_text(&mut self, text: impl Into<String>) -> Result<ClipId, EditorError> {
@@ -2830,8 +2835,10 @@ impl Editor {
                 sequence,
                 track,
                 clip,
+                // Designed for 1080 lines, like every new title: sized for
+                // this frame (`Self::fit_to_frame`).
                 property: crate::command::TextProperty::Style(Box::new(
-                    bettercut_text::TextStyle::title(look),
+                    bettercut_text::TextStyle::title(look).scaled(self.frame_scale()),
                 )),
             },
             Command::SetTextProperty {
@@ -2859,7 +2866,8 @@ impl Editor {
         &mut self,
         look: bettercut_text::CaptionLook,
     ) -> Result<usize, EditorError> {
-        self.dress_captions(bettercut_text::TextStyle::look(look))
+        // A canned look is designed for 1080 lines; sized for this frame.
+        self.dress_captions(bettercut_text::TextStyle::look(look).scaled(self.frame_scale()))
     }
 
     /// Put `style` on every caption, whatever it came from — one of the

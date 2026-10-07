@@ -158,6 +158,55 @@ fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     if let Some(preset) = chosen {
         add_styled_text(editor, state, preset);
     }
+
+    // Whole designs: the font, the size and where the title sits.
+    ui.add_space(8.0);
+    hint(ui, "Designs: a title already styled and placed");
+    let mut design = None;
+    for look in bettercut_editor_core::text::TitleLook::ALL {
+        if wide(ui, look.label())
+            .on_hover_text(match look {
+                bettercut_editor_core::text::TitleLook::Headline => "Big and bold, near the middle",
+                bettercut_editor_core::text::TitleLook::LowerThird => {
+                    "A boxed strip low on the left, for a name or a place"
+                }
+                bettercut_editor_core::text::TitleLook::Quote => "Light serif with room to breathe",
+                bettercut_editor_core::text::TitleLook::Typewriter => {
+                    "Monospaced and spaced out, for the typewriter entrance"
+                }
+            })
+            .clicked()
+        {
+            design = Some(look);
+        }
+    }
+    if let Some(look) = design {
+        add_title_design(editor, state, look);
+    }
+}
+
+/// A title at the playhead in one of the whole designs, as one undo step.
+pub fn add_title_design(
+    editor: &mut Editor,
+    state: &mut UiState,
+    look: bettercut_editor_core::text::TitleLook,
+) {
+    let depth = editor.undo_depth();
+    let clip = match editor.add_text(look.label()) {
+        Ok(clip) => clip,
+        Err(err) => {
+            state.error(err.to_string());
+            return;
+        }
+    };
+    if let Err(err) = editor.set_title_look(clip, look) {
+        state.error(err.to_string());
+    }
+    let steps = editor.undo_depth().saturating_sub(depth);
+    editor.merge_last_steps(steps, &format!("Add {} Title", look.label()));
+    state.select_only(clip);
+    state.inspector_tab = InspectorTab::Video;
+    state.needs_repaint = true;
 }
 
 /// A title at the playhead, wearing `preset`, as one undo step; selected so

@@ -103,7 +103,10 @@ pub fn lane_look(
     let style = &sequence.text_track(track)?.get(first.clip)?.style;
     bettercut_editor_core::text::CaptionLook::ALL
         .into_iter()
-        .find(|option| &bettercut_editor_core::text::TextStyle::look(*option) == style)
+        .find(|option| {
+            &bettercut_editor_core::text::TextStyle::look(*option).scaled(editor.frame_scale())
+                == style
+        })
 }
 
 /// Draw the window, if it is open.

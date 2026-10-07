@@ -8830,7 +8830,9 @@ fn text_properties(
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Look").strong());
             for option in bettercut_editor_core::text::TitleLook::ALL {
-                let selected = bettercut_editor_core::text::TextStyle::title(option) == style;
+                let selected = bettercut_editor_core::text::TextStyle::title(option)
+                    .scaled(editor.frame_scale())
+                    == style;
                 if ui
                     .selectable_label(selected, option.label())
                     .on_hover_text(match option {

@@ -32,3 +32,20 @@ fn a_styled_title_is_one_step_and_wears_its_style() {
     add_styled_text(&mut editor, &mut state, None);
     assert_eq!(editor.undo_depth(), depth + 1);
 }
+
+#[test]
+fn a_title_design_is_one_step_styled_and_placed() {
+    use bettercut_editor_core::text::{TextStyle, TitleLook};
+    let (mut editor, _events) = Editor::new_project("Designs");
+    let mut state = UiState::default();
+    let depth = editor.undo_depth();
+
+    bettercut_ui::library::add_title_design(&mut editor, &mut state, TitleLook::LowerThird);
+    assert_eq!(editor.undo_depth(), depth + 1, "one undo step");
+    let clip = *state.selected_clips.iter().next().unwrap();
+    let title = editor.text_clip(clip).unwrap();
+    assert_eq!(title.style, TextStyle::title(TitleLook::LowerThird));
+    let (x, y) = TitleLook::LowerThird.anchor();
+    assert!((title.transform.position.x - x).abs() < 1e-6);
+    assert!((title.transform.position.y - y).abs() < 1e-6);
+}
