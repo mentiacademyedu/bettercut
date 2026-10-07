@@ -21,6 +21,7 @@ pub mod count_in;
 pub mod cover;
 pub mod crop_shape;
 pub mod editor;
+pub mod effects;
 pub mod error;
 pub mod event;
 pub mod every_cut;

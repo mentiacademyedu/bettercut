@@ -8,6 +8,9 @@
   and Riser — made by bettercut, no files needed — in a new **Audio** tab in
   the left panel and in Add Sound. An assistant adds them with
   `add_sound_effect`.
+- **An Effects tab** in the left panel, as in CapCut: glitch, RGB split,
+  glow, old film, light leak, lens flare and the rest, switched on or off
+  for the selected clips with a click (strength in the inspector).
 - **Apply to all**, as in CapCut: the Transitions tab puts the selected
   clip's transition on every cut of its lane, and the Filters tab gives
   its look to every clip — each one undo step.

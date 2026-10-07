@@ -467,6 +467,11 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.library_tab = crate::library::LibraryTab::Stickers,
     },
     Action {
+        name: "Show Effects List",
+        hint: "the left panel's Effects tab: glitch, glow, old film, light leak and more",
+        run: |_, s| s.library_tab = crate::library::LibraryTab::Effects,
+    },
+    Action {
         name: "Show Transitions",
         hint: "the left panel's Transitions tab: for the cut after the selected clip",
         run: |_, s| s.library_tab = crate::library::LibraryTab::Transitions,

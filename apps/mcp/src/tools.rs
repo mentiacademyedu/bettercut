@@ -1914,17 +1914,16 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             if editor.video_clip(clip).is_none() {
                 return Err("that is not a picture clip".to_owned());
             }
-            let wanted = plain(str_arg(args, "effect")?);
-            let (label, make, scale) = EFFECTS
-                .iter()
-                .find(|(label, _, _)| plain(label) == wanted)
-                .ok_or_else(|| {
-                    let names: Vec<&str> = EFFECTS.iter().map(|(label, _, _)| *label).collect();
-                    format!("no effect {wanted:?}; one of {}", names.join(", "))
-                })?;
+            use bettercut_editor_core::effects::{EFFECTS, NamedEffect};
+            let wanted = str_arg(args, "effect")?;
+            let effect = NamedEffect::named(wanted).ok_or_else(|| {
+                let names: Vec<String> = EFFECTS.iter().map(|e| e.name.to_lowercase()).collect();
+                format!("no effect {:?}; one of {}", plain(wanted), names.join(", "))
+            })?;
+            let label = effect.name.to_lowercase();
             let amount = number(args, "amount")?.clamp(0.0, 100.0) as f32;
             editor
-                .set_clip_property(clip, make(amount * scale), false)
+                .set_clip_property(clip, effect.at(amount), false)
                 .map_err(|e| e.to_string())?;
             Ok(if amount == 0.0 {
                 format!("{label} off")
@@ -2790,27 +2789,6 @@ fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
     Ok("Animated".to_owned())
 }
 
-/// Builds a clip property from its amount.
-type MakeProperty = fn(f32) -> ClipProperty;
-
-/// `set_effect`'s effects: the name, the property, and what turns 0–100
-/// into the property's own range.
-const EFFECTS: &[(&str, MakeProperty, f32)] = &[
-    ("blur", ClipProperty::Blur, 1.0),
-    ("sharpen", ClipProperty::Sharpen, 1.0),
-    ("vignette", ClipProperty::Vignette, 0.01),
-    ("glow", ClipProperty::Glow, 1.0),
-    ("old film", ClipProperty::OldFilm, 1.0),
-    ("glitch", ClipProperty::Glitch, 1.0),
-    ("rgb split", ClipProperty::RgbSplit, 1.0),
-    ("pixelate", ClipProperty::Pixelate, 1.0),
-    ("zoom blur", ClipProperty::ZoomBlur, 1.0),
-    ("light leak", ClipProperty::LightLeak, 1.0),
-    ("lens flare", ClipProperty::LensFlare, 1.0),
-    ("beat pulse", ClipProperty::BeatPulse, 1.0),
-    ("smooth skin", ClipProperty::SmoothSkin, 0.01),
-];
-
 /// The properties `animate` takes, by name: what each drives, and whether it
 /// is a sound clip's.
 const ANIMATED: &[(&str, &[AnimatedParameter], bool)] = &[
@@ -3375,13 +3353,16 @@ pub fn clip_ids(args: &Value) -> Result<Vec<ClipId>, String> {
 /// A picture clip's effects in `set_effect`'s names and 0–100 amounts —
 /// only those that are on.
 fn effects_of(clip: &bettercut_editor_core::timeline::VideoClip) -> Value {
-    let fields = serde_json::to_value(clip).unwrap_or(Value::Null);
-    let on: serde_json::Map<String, Value> = EFFECTS
+    let on: serde_json::Map<String, Value> = bettercut_editor_core::effects::EFFECTS
         .iter()
-        .filter_map(|(name, _, scale)| {
-            let amount = fields.get(name.replace(' ', "_"))?.as_f64()? / f64::from(*scale);
-            (amount.abs() > 1e-6)
-                .then(|| ((*name).to_owned(), json!((amount * 10.0).round() / 10.0)))
+        .filter_map(|effect| {
+            let amount = f64::from(effect.amount_on(clip));
+            (amount.abs() > 1e-6).then(|| {
+                (
+                    effect.name.to_lowercase(),
+                    json!((amount * 10.0).round() / 10.0),
+                )
+            })
         })
         .collect();
     Value::Object(on)

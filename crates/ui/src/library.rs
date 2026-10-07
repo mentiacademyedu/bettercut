@@ -22,16 +22,18 @@ pub enum LibraryTab {
     Audio,
     Text,
     Stickers,
+    Effects,
     Transitions,
     Filters,
 }
 
 impl LibraryTab {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Media,
         Self::Audio,
         Self::Text,
         Self::Stickers,
+        Self::Effects,
         Self::Transitions,
         Self::Filters,
     ];
@@ -42,6 +44,7 @@ impl LibraryTab {
             Self::Audio => "Audio",
             Self::Text => "Text",
             Self::Stickers => "Stickers",
+            Self::Effects => "Effects",
             Self::Transitions => "Transitions",
             Self::Filters => "Filters",
         }
@@ -71,6 +74,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         LibraryTab::Audio => audio_tab(ui, editor, state),
         LibraryTab::Text => text_tab(ui, editor, state),
         LibraryTab::Stickers => sticker_tab(ui, editor, state),
+        LibraryTab::Effects => effect_tab(ui, editor, state),
         LibraryTab::Transitions => transition_tab(ui, editor, state),
         LibraryTab::Filters => filter_tab(ui, editor, state),
     });
@@ -303,6 +307,64 @@ fn transition_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             }
             state.needs_repaint = true;
         }
+    }
+}
+
+fn effect_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    use bettercut_editor_core::effects::{EFFECTS, ONE_CLICK_AMOUNT};
+    let onto: Vec<ClipId> = state
+        .selected_clips
+        .iter()
+        .copied()
+        .filter(|clip| editor.video_clip(*clip).is_some())
+        .collect();
+    hint(
+        ui,
+        if onto.is_empty() {
+            "Select picture clips, then click an effect to put it on them"
+        } else {
+            "Click to switch an effect on or off; set how strong in the inspector's Effects tab"
+        },
+    );
+    let mut chosen = None;
+    for effect in &EFFECTS {
+        let on = onto
+            .first()
+            .and_then(|clip| editor.video_clip(*clip))
+            .is_some_and(|clip| effect.amount_on(clip) > 0.0);
+        let response = ui
+            .add_enabled(
+                !onto.is_empty(),
+                egui::Button::selectable(on, effect.name)
+                    .min_size(egui::vec2(ui.available_width(), 26.0)),
+            )
+            .on_hover_text(effect.description)
+            .on_disabled_hover_text(effect.description);
+        if response.clicked() {
+            chosen = Some((effect, if on { 0.0 } else { ONE_CLICK_AMOUNT }));
+        }
+    }
+    if let Some((effect, amount)) = chosen {
+        let depth = editor.undo_depth();
+        for clip in &onto {
+            if let Err(err) = editor.set_clip_property(*clip, effect.at(amount), false) {
+                state.error(err.to_string());
+                break;
+            }
+        }
+        let steps = editor.undo_depth().saturating_sub(depth);
+        editor.merge_last_steps(
+            steps,
+            &if amount > 0.0 {
+                format!("Add {}", effect.name)
+            } else {
+                format!("Remove {}", effect.name)
+            },
+        );
+        if amount > 0.0 {
+            state.inspector_tab = InspectorTab::Effects;
+        }
+        state.needs_repaint = true;
     }
 }
 
