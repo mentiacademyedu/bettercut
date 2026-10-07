@@ -50,6 +50,77 @@ impl DropKind {
 }
 
 impl Editor {
+    /// Where and how a file dragged onto the timeline at `at` goes, so that
+    /// nothing already there is lost — CapCut's drop, which pushes clips
+    /// aside rather than covering them:
+    ///
+    /// - inside a clip, it goes in at that clip's nearer edge, as an insert;
+    /// - in a gap long enough on every lane it lands on, it goes down there
+    ///   and nothing moves;
+    /// - otherwise it goes in at `at`, pushing what follows along.
+    pub fn drop_plan(
+        &self,
+        media: MediaId,
+        at: TimelineTime,
+    ) -> Result<(TimelineTime, DropKind), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let sequence = self
+            .project()
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        let asset = self
+            .project()
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?;
+        let length = asset
+            .placement_duration_with(self.project().settings.photo_length)
+            .ticks()
+            .max(1);
+        let mut lanes = Vec::new();
+        if asset.kind.has_video()
+            && let Some(track) = sequence.target_track(bettercut_timeline::TrackKind::Video)
+        {
+            lanes.push(track);
+        }
+        if asset.audio_codec.is_some()
+            && let Some(track) = sequence.target_track(bettercut_timeline::TrackKind::Audio)
+        {
+            lanes.push(track);
+        }
+        let spans: Vec<(i64, i64)> = sequence
+            .clip_spans()
+            .filter(|span| lanes.contains(&span.track))
+            .map(|span| (span.timeline.start.ticks(), span.timeline.end.ticks()))
+            .collect();
+        let at = self
+            .snap_to_frame(sequence_id, TimelineTime::from_ticks(at.ticks().max(0)))
+            .ticks();
+
+        // The clip under the drop on the picture lane (or the sound lane, for
+        // a sound): in at its nearer edge.
+        let main = lanes.first().copied();
+        if let Some((start, end)) = sequence
+            .clip_spans()
+            .filter(|span| Some(span.track) == main)
+            .map(|span| (span.timeline.start.ticks(), span.timeline.end.ticks()))
+            .find(|(start, end)| *start < at && at < *end)
+        {
+            let edge = if at - start <= end - at { start } else { end };
+            return Ok((TimelineTime::from_ticks(edge), DropKind::Insert));
+        }
+        let free = spans
+            .iter()
+            .all(|(start, end)| *end <= at || *start >= at + length);
+        Ok((
+            TimelineTime::from_ticks(at),
+            if free {
+                DropKind::Overwrite
+            } else {
+                DropKind::Insert
+            },
+        ))
+    }
+
     /// Put `media` — or the `part` of it marked in the browser — down at `at`
     /// on the targeted lanes. Returns the clips it made.
     pub fn place_media_at(

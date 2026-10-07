@@ -416,6 +416,10 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         lanes
     };
 
+    if state.dragging_media.is_some() {
+        media_drop(ui, &painter, rect, viewport, editor, state);
+    }
+
     // A clip's note, where the pointer is resting on it — not while dragging,
     // where a tooltip would sit over the thing being placed.
     if state.drag.is_none()
@@ -448,6 +452,59 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     zoom_control(ui, rect, state);
 
     crate::context_menu::show(&response, editor, state);
+}
+
+/// A file dragged in from the media panel: a line where it would land and
+/// how, and on release, put it there (`Editor::drop_plan`, which never
+/// covers what is already on the timeline).
+fn media_drop(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    viewport: Viewport,
+    editor: &mut Editor,
+    state: &mut UiState,
+) {
+    let Some(media) = state.dragging_media else {
+        return;
+    };
+    let lanes = Rect::from_min_max(
+        Pos2::new(viewport.origin_x, rect.top() + theme::RULER_HEIGHT),
+        rect.max,
+    );
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let released = ui.input(|i| i.pointer.any_released());
+    let Some(pointer) = pointer.filter(|p| lanes.contains(*p)) else {
+        return;
+    };
+    let Ok((at, kind)) = editor.drop_plan(media, viewport.tick_of(pointer.x)) else {
+        return;
+    };
+    let x = viewport.x_of(at);
+    painter.line_segment(
+        [Pos2::new(x, lanes.top()), Pos2::new(x, lanes.bottom())],
+        Stroke::new(2.0, theme::accent()),
+    );
+    painter.text(
+        Pos2::new(x + 6.0, lanes.top() + 4.0),
+        Align2::LEFT_TOP,
+        match kind {
+            bettercut_editor_core::three_point::DropKind::Insert => "Insert here",
+            bettercut_editor_core::three_point::DropKind::Overwrite => "Place here",
+        },
+        FontId::proportional(12.0),
+        theme::accent(),
+    );
+    if released {
+        state.dragging_media = None;
+        match editor.place_media_at(media, None, at, kind) {
+            Ok(clips) => {
+                state.selected_clips = clips.into_iter().collect();
+                state.needs_repaint = true;
+            }
+            Err(err) => state.error(err.to_string()),
+        }
+    }
 }
 
 /// Zoom out, a slider, zoom in — in the corner above the track heads, where

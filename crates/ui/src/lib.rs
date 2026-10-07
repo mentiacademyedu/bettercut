@@ -223,6 +223,38 @@ pub fn draw(
     disk_change::check(editor, state);
     disk_change::show(ui.ctx(), editor, state);
     assistant::show(ui.ctx(), state);
+    // A file on its way from the media panel: its name follows the pointer,
+    // and a release anywhere but the timeline (which handles its own) drops
+    // the drag.
+    if let Some(media) = state.dragging_media {
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.pointer.any_released()) {
+            state.dragging_media = None;
+        } else if let Some(pointer) = ctx.input(|i| i.pointer.hover_pos()) {
+            let name = editor
+                .project()
+                .media_asset(media)
+                .map_or_else(String::new, |m| m.display_name().to_owned());
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("media drag"),
+            ));
+            let text = painter.layout_no_wrap(
+                name,
+                egui::FontId::proportional(13.0),
+                egui::Color32::WHITE,
+            );
+            let chip = egui::Rect::from_min_size(
+                pointer + egui::vec2(14.0, 10.0),
+                text.size() + egui::vec2(16.0, 8.0),
+            );
+            painter.rect_filled(chip, 6.0, theme::accent());
+            painter.galley(chip.min + egui::vec2(8.0, 4.0), text, egui::Color32::WHITE);
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            ctx.request_repaint();
+        }
+    }
+
     // Text an action asked to have put on the clipboard.
     if let Some(text) = state.copy_out.take() {
         ui.ctx().copy_text(text);

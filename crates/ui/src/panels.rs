@@ -1535,10 +1535,18 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     }
                     // Cut short rather than stretch the panel: a camera's
                     // name has no spaces to wrap at. Whole on hover.
-                    ui.add(egui::Label::new(name.as_str()).truncate())
+                    let label = ui
+                        .add(
+                            egui::Label::new(name.as_str())
+                                .truncate()
+                                .sense(egui::Sense::click_and_drag()),
+                        )
                         .on_hover_text(format!(
-                            "{name}\n\nSwitch to Cards for the thumbnail, renaming and the rest"
+                            "{name}\n\nDrag onto the timeline to place it. Switch to Cards for the thumbnail, renaming and the rest"
                         ));
+                    if label.drag_started() && can_place {
+                        state.dragging_media = Some(*id);
+                    }
                 });
                 mark_revealed(ui, state, *id, row.response.rect);
             }
@@ -4117,7 +4125,11 @@ fn thumbnail(
     let size = egui::vec2(width, width * 9.0 / 16.0);
 
     let texture = state.thumbnails.texture(ui.ctx(), media).cloned();
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    // Dragged from here onto the timeline, as in CapCut (`timeline::media_drop`).
+    if response.drag_started() && !missing && !duration.is_zero() {
+        state.dragging_media = Some(media);
+    }
 
     // Hovering skims through the file: the filmstrip's tile under the pointer
     // stands in for the poster, with a line where in the file that is.

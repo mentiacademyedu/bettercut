@@ -643,6 +643,8 @@ pub struct UiState {
     /// Which tab the left panel shows: the media, or text, stickers,
     /// transitions or filters to add.
     pub library_tab: crate::library::LibraryTab,
+    /// A file being dragged from the media panel towards the timeline.
+    pub dragging_media: Option<bettercut_editor_core::foundation::MediaId>,
 
     /// A move or scale being dragged out on the preview.
     pub preview_drag: Option<crate::preview_overlay::PreviewDrag>,
@@ -1057,6 +1059,7 @@ impl Default for UiState {
             drag: None,
             inspector_tab: crate::panels::InspectorTab::default(),
             library_tab: crate::library::LibraryTab::default(),
+            dragging_media: None,
             preview_drag: None,
             preview_is_stale: false,
             marquee: None,

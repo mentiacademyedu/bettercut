@@ -4,6 +4,10 @@
 
 ### New
 
+- **Drag a file from Media onto the timeline**, as in CapCut. A line shows
+  where it will land: dropped inside a clip it goes in at the nearer edge
+  and pushes the rest along; dropped in a gap long enough it goes down
+  there; nothing already on the timeline is covered.
 - **Sound effects**: Pop, Ding, Boom, Chime and Shutter join Whoosh, Click
   and Riser — made by bettercut, no files needed — in a new **Audio** tab in
   the left panel and in Add Sound. An assistant adds them with
