@@ -8,6 +8,8 @@
   tab lays its effects out two to a row.
 - **Five new animated titles**: Breaking news, On fire, Frozen, Comic pop
   and Candy spin, in the new text styles.
+- **Sway effect**: the picture rocks gently from side to side, enlarged just
+  enough that the corners never show.
 
 ## 0.6.9 — Shake, Strobe, new filters, transitions and text styles
 

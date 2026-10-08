@@ -7020,6 +7020,19 @@ fn clip_effect_properties(
                 change = Some((ClipProperty::Strobe(next_strobe), response.dragged()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            let mut next_sway = editor.video_clip(clip).map_or(0.0, |clip| clip.sway);
+            let response = ui
+                .add(theme::labeled(
+                    "sway",
+                    egui::Slider::new(&mut next_sway, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text("Rock the picture gently from side to side");
+            if response.changed() {
+                change = Some((ClipProperty::Sway(next_sway), response.dragged()));
+            }
+        });
     });
 
     // Reflections: part of the shot, repeated and mirrored over the rest.

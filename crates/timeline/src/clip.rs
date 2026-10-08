@@ -1091,6 +1091,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub strobe: f32,
 
+    /// Sway, 0–100: the picture rocks gently from side to side, as from a
+    /// boat or a swinging camera. Not animated.
+    #[serde(default)]
+    pub sway: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2612,6 +2617,7 @@ impl VideoClip {
             beat_pulse: 0.0,
             shake: 0.0,
             strobe: 0.0,
+            sway: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

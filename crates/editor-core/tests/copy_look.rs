@@ -274,6 +274,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         beat_pulse: 40.0,
         shake: 35.0,
         strobe: 25.0,
+        sway: 20.0,
         smooth_motion: false,
         curves: bettercut_timeline::curves::ColourCurves {
             master: [0.0, 0.2, 0.5, 0.8, 1.0],

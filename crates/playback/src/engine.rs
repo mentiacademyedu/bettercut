@@ -354,6 +354,15 @@ pub(crate) fn plan(
                         request.look.transform.scale.y *= zoom;
                     }
                 }
+                let aspect = sequence.resolution.width as f32
+                    / sequence.resolution.height.max(1) as f32;
+                if let Some((degrees, zoom)) = sway(clip.sway, position, aspect) {
+                    for request in &mut requests[before..] {
+                        request.look.transform.rotation_degrees += degrees;
+                        request.look.transform.scale.x *= zoom;
+                        request.look.transform.scale.y *= zoom;
+                    }
+                }
                 let strobe = strobe_alpha(clip.strobe, position);
                 if strobe > 0.0 {
                     push_flash(&mut requests, track.id, clip.id, strobe);
@@ -2025,6 +2034,38 @@ pub fn camera_shake(amount: f32, position: TimelineTime) -> Option<(f32, f32, f3
         * MAX_SHAKE
         * k;
     Some((x, y, 1.0 + 2.5 * MAX_SHAKE * k))
+}
+
+/// The furthest sway tips the picture, at 100, either way.
+pub const MAX_SWAY_DEGREES: f32 = 4.0;
+
+/// Swings a second: there and back again every two seconds.
+pub const SWAY_HZ: f64 = 0.5;
+
+/// How far sway tips a picture at `position`, in degrees, and how much it is
+/// enlarged so no corner of the frame behind ever shows. The enlargement is
+/// the one the furthest tip needs, held for the whole clip, so the picture
+/// rocks without also breathing in and out. `aspect` is the frame's width
+/// over its height. `None` with no amount. From the time alone (§46).
+pub fn sway(amount: f32, position: TimelineTime, aspect: f32) -> Option<(f32, f32)> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return None;
+    }
+    let k = (amount / 100.0).min(1.0);
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let swing = ((t * SWAY_HZ) * std::f64::consts::TAU).sin() as f32;
+    let furthest = (MAX_SWAY_DEGREES * k).to_radians();
+    // A frame turned by `a` covers itself once scaled by cos a + r sin a,
+    // r being its longer side over its shorter.
+    let long = if aspect.is_finite() && aspect > 0.0 {
+        aspect.max(1.0 / aspect)
+    } else {
+        1.0
+    };
+    Some((
+        MAX_SWAY_DEGREES * k * swing,
+        furthest.cos() + long * furthest.sin(),
+    ))
 }
 
 /// Strobe flashes a second.
