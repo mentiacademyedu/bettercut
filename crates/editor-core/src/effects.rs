@@ -49,7 +49,7 @@ impl NamedEffect {
 pub const ONE_CLICK_AMOUNT: f32 = 50.0;
 
 /// Every effect, in the order they are offered.
-pub const EFFECTS: [NamedEffect; 18] = [
+pub const EFFECTS: [NamedEffect; 19] = [
     NamedEffect {
         name: "Glitch",
         description: "Blocks of the picture torn sideways, flickering",
@@ -125,6 +125,13 @@ pub const EFFECTS: [NamedEffect; 18] = [
         description: "The picture rocks gently from side to side, as from a boat",
         make: ClipProperty::Sway,
         read: |c| c.sway,
+        scale: 1.0,
+    },
+    NamedEffect {
+        name: "Flicker",
+        description: "The picture dims at random moments, like a failing bulb",
+        make: ClipProperty::Flicker,
+        read: |c| c.flicker,
         scale: 1.0,
     },
     NamedEffect {

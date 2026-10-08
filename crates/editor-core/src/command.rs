@@ -287,6 +287,7 @@ impl TextProperty {
             | ClipProperty::Shake(_)
             | ClipProperty::Strobe(_)
             | ClipProperty::Sway(_)
+            | ClipProperty::Flicker(_)
             | ClipProperty::Reflection(_)
             | ClipProperty::Denoise(_)
             | ClipProperty::Gate(_)
@@ -967,6 +968,8 @@ pub enum ClipProperty {
     Strobe(f32),
     /// Sway, 0–100. Picture only.
     Sway(f32),
+    /// Flicker, 0–100. Picture only.
+    Flicker(f32),
     /// Mirrored halves, four-way or a kaleidoscope. Video only, not animated.
     Reflection(bettercut_timeline::Reflection),
     /// Voice clean-up on a sound clip, 0–100. Sound only, not animated.
@@ -1073,6 +1076,7 @@ impl ClipProperty {
             | Self::Shake(_)
             | Self::Strobe(_)
             | Self::Sway(_)
+            | Self::Flicker(_)
             | Self::Reflection(_)
             | Self::Denoise(_)
             | Self::Gate(_)
@@ -1220,6 +1224,7 @@ impl ClipProperty {
         | Self::Shake(amount)
         | Self::Strobe(amount)
         | Self::Sway(amount)
+        | Self::Flicker(amount)
         | Self::Denoise(amount)
         | Self::Gate(amount) = self
         {
@@ -1318,6 +1323,7 @@ impl ClipProperty {
             Self::Shake(_) => "Shake",
             Self::Strobe(_) => "Strobe",
             Self::Sway(_) => "Sway",
+            Self::Flicker(_) => "Flicker",
             Self::Reflection(_) => "Mirror",
             Self::Denoise(_) => "Voice clean-up",
             Self::Gate(_) => "Noise gate",

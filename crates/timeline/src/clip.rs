@@ -1096,6 +1096,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub sway: f32,
 
+    /// Flicker, 0–100: the picture dims at random moments, like a failing
+    /// bulb or an old television. Not animated.
+    #[serde(default)]
+    pub flicker: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2618,6 +2623,7 @@ impl VideoClip {
             shake: 0.0,
             strobe: 0.0,
             sway: 0.0,
+            flicker: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

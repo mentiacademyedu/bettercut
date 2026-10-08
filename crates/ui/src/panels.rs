@@ -7033,6 +7033,19 @@ fn clip_effect_properties(
                 change = Some((ClipProperty::Sway(next_sway), response.dragged()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            let mut next_flicker = editor.video_clip(clip).map_or(0.0, |clip| clip.flicker);
+            let response = ui
+                .add(theme::labeled(
+                    "flicker",
+                    egui::Slider::new(&mut next_flicker, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text("Dim the picture at random moments, like a failing bulb");
+            if response.changed() {
+                change = Some((ClipProperty::Flicker(next_flicker), response.dragged()));
+            }
+        });
     });
 
     // Reflections: part of the shot, repeated and mirrored over the rest.

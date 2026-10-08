@@ -367,6 +367,10 @@ pub(crate) fn plan(
                 if strobe > 0.0 {
                     push_flash(&mut requests, track.id, clip.id, strobe);
                 }
+                let flicker = flicker_alpha(clip.flicker, position);
+                if flicker > 0.0 {
+                    push_solid(&mut requests, track.id, clip.id, [0, 0, 0], flicker);
+                }
                 push_light_leak(&mut requests, track.id, clip, position);
                 push_lens_flare(&mut requests, track.id, clip, position);
             }
@@ -1916,12 +1920,22 @@ pub fn flash_alpha(progress: f32) -> f32 {
 /// leaves it black. A night shot would flash to grey and the shadows would
 /// never leave.
 fn push_flash(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, alpha: f32) {
+    push_solid(requests, track, clip, [255, 255, 255], alpha);
+}
+
+/// A plain colour over the whole frame at `alpha`: white for a flash, black
+/// for a flicker's dips.
+fn push_solid(
+    requests: &mut Vec<LayerRequest>,
+    track: TrackId,
+    clip: ClipId,
+    rgb: [u8; 3],
+    alpha: f32,
+) {
     requests.push(LayerRequest {
         clip,
         track,
-        source: LayerSource::Solid {
-            rgb: [255, 255, 255],
-        },
+        source: LayerSource::Solid { rgb },
         source_time: MediaTime::ZERO,
         // Written out rather than defaulted: `ClipLook` has no `Default`
         // precisely because an opacity of zero is not a sensible one, and the
@@ -2066,6 +2080,30 @@ pub fn sway(amount: f32, position: TimelineTime, aspect: f32) -> Option<(f32, f3
         MAX_SWAY_DEGREES * k * swing,
         furthest.cos() + long * furthest.sin(),
     ))
+}
+
+/// How often a flicker can change, a second: about a projector's flutter.
+pub const FLICKER_HZ: f64 = 12.0;
+
+/// How much black a flicker lays over the picture at `position`. Each
+/// twelfth of a second gets its own level from a fixed scramble of its
+/// number, cubed so most are barely there and a few dip hard — a failing
+/// bulb, not a dimmer turned up and down. Nothing with no amount. From the
+/// time alone, so preview and export dip on the same frames (§46).
+pub fn flicker_alpha(amount: f32, position: TimelineTime) -> f32 {
+    if !amount.is_finite() || amount <= 0.0 {
+        return 0.0;
+    }
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let slice = (t * FLICKER_HZ).floor() as i64 as u64;
+    // A few rounds of an integer mix (splitmix64's), enough that
+    // neighbouring slices share nothing.
+    let mut z = slice.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let level = (z >> 40) as f32 / (1u64 << 24) as f32;
+    (amount / 100.0).min(1.0) * 0.75 * level * level * level
 }
 
 /// Strobe flashes a second.

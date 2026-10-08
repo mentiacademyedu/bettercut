@@ -78,7 +78,8 @@ impl Effect {
                 || clip.beat_pulse > 0.0
                 || clip.shake > 0.0
                 || clip.strobe > 0.0
-                || clip.sway > 0.0)
+                || clip.sway > 0.0
+                || clip.flicker > 0.0)
                 .then_some("glitch"),
             Self::Mirror => (clip.reflection != Reflection::None).then_some("mirror"),
         }

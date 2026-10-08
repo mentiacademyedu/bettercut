@@ -998,6 +998,7 @@ impl Editor {
             P::Shake(_) => P::Shake(0.0),
             P::Strobe(_) => P::Strobe(0.0),
             P::Sway(_) => P::Sway(0.0),
+            P::Flicker(_) => P::Flicker(0.0),
             P::Eq(_) => P::Eq(bettercut_timeline::ClipEq::default()),
             P::Space(_) => P::Space(bettercut_timeline::ClipSpace::default()),
             P::Channels(_) => P::Channels(bettercut_timeline::ChannelMode::Stereo),
@@ -3671,6 +3672,7 @@ impl Editor {
             ClipProperty::Shake(clip.shake),
             ClipProperty::Strobe(clip.strobe),
             ClipProperty::Sway(clip.sway),
+            ClipProperty::Flicker(clip.flicker),
             ClipProperty::SmoothMotion(clip.smooth_motion),
             ClipProperty::Curves(clip.curves),
         ])
@@ -3727,6 +3729,7 @@ impl Editor {
             ClipProperty::Shake(0.0),
             ClipProperty::Strobe(0.0),
             ClipProperty::Sway(0.0),
+            ClipProperty::Flicker(0.0),
             ClipProperty::SmoothMotion(false),
             ClipProperty::Curves(bettercut_timeline::curves::ColourCurves::default()),
         ]

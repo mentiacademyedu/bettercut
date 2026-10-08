@@ -10,6 +10,8 @@
   and Candy spin, in the new text styles.
 - **Sway effect**: the picture rocks gently from side to side, enlarged just
   enough that the corners never show.
+- **Flicker effect**: the picture dims at random moments, like a failing bulb
+  or an old television.
 
 ## 0.6.9 — Shake, Strobe, new filters, transitions and text styles
 
