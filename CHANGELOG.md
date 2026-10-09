@@ -13,6 +13,8 @@
   and settles, like a sign on a hook).
 - **Two new looping title moves**: Blink (winks out and back each second)
   and Jelly (squashes and stretches).
+- **Three new animated titles**: Neon sign (blinks), Jelly (wobbles) and
+  Hanging sign (swings in and settles).
 - **AI assistants can ramp speed**: a new `speed_ramp` tool applies any of
   the six speed curve presets.
 

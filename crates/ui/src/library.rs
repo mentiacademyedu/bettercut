@@ -318,7 +318,7 @@ pub struct AnimatedText {
 }
 
 /// The animated titles the Text tab offers.
-pub const ANIMATED_TEXT: [AnimatedText; 12] = {
+pub const ANIMATED_TEXT: [AnimatedText; 15] = {
     use bettercut_editor_core::text::TitleLook;
     use bettercut_editor_core::timeline::{LoopMotion, MotionKind};
     [
@@ -429,6 +429,33 @@ pub const ANIMATED_TEXT: [AnimatedText; 12] = {
             intro: Some((MotionKind::Spin, 500)),
             outro: Some((MotionKind::Fade, 400)),
             looping: Some(LoopMotion::Wiggle),
+        },
+        AnimatedText {
+            name: "Neon sign",
+            description: "Glowing cyan, blinking like a sign in a window",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Neon),
+            intro: Some((MotionKind::Fade, 300)),
+            outro: Some((MotionKind::Fade, 300)),
+            looping: Some(LoopMotion::Blink),
+        },
+        AnimatedText {
+            name: "Jelly",
+            description: "Popping in and wobbling like a jelly",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Pop),
+            intro: Some((MotionKind::Pop, 400)),
+            outro: Some((MotionKind::Pop, 300)),
+            looping: Some(LoopMotion::Jelly),
+        },
+        AnimatedText {
+            name: "Hanging sign",
+            description: "Retro letters swinging in and settling",
+            look: Some(TitleLook::Headline),
+            preset: Some(TextPreset::Retro),
+            intro: Some((MotionKind::Swing, 1_200)),
+            outro: Some((MotionKind::ZoomOut, 400)),
+            looping: None,
         },
     ]
 };
