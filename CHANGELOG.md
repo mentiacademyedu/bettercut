@@ -11,6 +11,8 @@
 - **Two new entrances and exits**, for clips and titles: Zoom out (shrinks
   into place from larger than the frame) and Swing (swings in from a tilt
   and settles, like a sign on a hook).
+- **Two new looping title moves**: Blink (winks out and back each second)
+  and Jelly (squashes and stretches).
 - **AI assistants can ramp speed**: a new `speed_ramp` tool applies any of
   the six speed curve presets.
 

@@ -224,10 +224,21 @@ pub enum LoopMotion {
     Spin,
     /// Bobs gently up and down.
     Float,
+    /// Winks out and back, like a sign that wants to be seen.
+    Blink,
+    /// Squashes and stretches, wide then tall, like a jelly.
+    Jelly,
 }
 
 impl LoopMotion {
-    pub const ALL: [Self; 4] = [Self::Pulse, Self::Wiggle, Self::Spin, Self::Float];
+    pub const ALL: [Self; 6] = [
+        Self::Pulse,
+        Self::Wiggle,
+        Self::Spin,
+        Self::Float,
+        Self::Blink,
+        Self::Jelly,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -235,6 +246,8 @@ impl LoopMotion {
             Self::Wiggle => "Wiggle",
             Self::Spin => "Spin",
             Self::Float => "Float",
+            Self::Blink => "Blink",
+            Self::Jelly => "Jelly",
         }
     }
 
@@ -258,6 +271,21 @@ impl LoopMotion {
             }
             Self::Float => {
                 look.transform.position.y -= 0.02 * (TAU * t / 2.4).sin();
+            }
+            Self::Blink => {
+                // On for most of each second, then a quick wink: off for a
+                // fifth of it. Fully on at the first instant.
+                let phase = (t / 1.0).fract();
+                if phase >= 0.8 {
+                    look.opacity = 0.0;
+                }
+            }
+            Self::Jelly => {
+                // Wider while shorter and the other way round, so it keeps
+                // its size and only its shape wobbles.
+                let wobble = 0.08 * (TAU * t / 0.5).sin();
+                look.transform.scale.x *= 1.0 + wobble;
+                look.transform.scale.y *= 1.0 - wobble;
             }
         }
     }
@@ -877,6 +905,22 @@ mod loop_tests {
         animation.look(Transform::default(), 1.0, span, position, 5)
     }
 
+    /// A blink winks out for a moment each second and is otherwise solid;
+    /// a jelly changes shape but not size.
+    #[test]
+    fn blink_winks_and_jelly_keeps_its_size() {
+        assert_eq!(at(LoopMotion::Blink, 0.0).opacity, 1.0);
+        assert_eq!(at(LoopMotion::Blink, 0.5).opacity, 1.0);
+        assert_eq!(at(LoopMotion::Blink, 0.9).opacity, 0.0);
+        assert_eq!(at(LoopMotion::Blink, 1.1).opacity, 1.0);
+        for i in 0..20 {
+            let look = at(LoopMotion::Jelly, i as f32 * 0.04).transform;
+            let area = look.scale.x * look.scale.y;
+            assert!((area - 1.0).abs() < 0.01, "area {area}");
+            assert!((look.scale.x + look.scale.y - 2.0).abs() < 1e-4);
+        }
+    }
+
     /// Every loop is at rest the instant the title starts, and moves after.
     #[test]
     fn loops_start_at_rest_and_move() {
@@ -894,6 +938,7 @@ mod loop_tests {
                 (later.scale.x - 1.0).abs() > 0.01
                     || later.rotation_degrees.abs() > 0.5
                     || (later.position.y - rest.position.y).abs() > 0.005
+                    || at(kind, i as f32 * 0.07).opacity < 0.5
             });
             assert!(moved, "{kind:?} never moved");
         }
