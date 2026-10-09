@@ -2311,3 +2311,53 @@ fn an_assistant_animates_a_clips_entrance_and_exit() {
     );
     assert!(failed, "a picture has no letters to type: {said}");
 }
+
+/// Flipping and mirroring land together as one undo step, blending as its
+/// own, and the description shows all three.
+#[test]
+fn an_assistant_flips_mirrors_and_blends() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-mirror-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let media = imported[0]["media_id"].as_str().unwrap().to_owned();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": media, "from": 0.0, "to": 2.0 }),
+    ))
+    .unwrap();
+    let clip = placed["clip_ids"][0].as_str().unwrap().to_owned();
+
+    client.ok(
+        "flip_and_mirror",
+        json!({ "clip_id": clip, "horizontal": true, "mirror": "Kaleidoscope" }),
+    );
+    let steps: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(steps["undo"][0], "Flip and Mirror", "{steps}");
+    client.ok("set_blend", json!({ "clip_id": clip, "mode": "screen" }));
+
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let shot = &described["picture_lanes"][0]["clips"][0];
+    assert_eq!(shot["flipped"], json!(["horizontal"]), "{shot}");
+    assert_eq!(shot["mirror"], "Kaleidoscope", "{shot}");
+    assert_eq!(shot["blend"], "Screen", "{shot}");
+
+    client.ok("undo", json!({}));
+    client.ok("undo", json!({}));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let shot = &described["picture_lanes"][0]["clips"][0];
+    assert_eq!(shot["flipped"], json!([]), "two undos take both off: {shot}");
+    assert!(shot["mirror"].is_null(), "{shot}");
+
+    let (said, failed) = client.tool("set_blend", json!({ "clip_id": clip, "mode": "dissolve" }));
+    assert!(failed && said.contains("Multiply"), "{said}");
+}

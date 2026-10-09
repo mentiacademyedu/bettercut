@@ -19,6 +19,9 @@
   the six speed curve presets.
 - **AI assistants can animate clips in and out**: a new `animate_clip` tool
   sets a picture clip's entrance and exit, and `describe_project` shows them.
+- **AI assistants can flip, mirror and blend**: `flip_and_mirror` flips a
+  clip or mirrors it (halves, four-way, kaleidoscope), and `set_blend` sets
+  its blend mode.
 
 ## 0.6.10 — Sway, Flicker, Heartbeat and new sound effects
 

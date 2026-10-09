@@ -245,6 +245,34 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "flip_and_mirror",
+        description: "Flip a picture clip (`horizontal` and `vertical`, true or false) and/or                       mirror it: `mirror` is off, left & right (the left half and its mirror                       image), top & bottom, four-way, or kaleidoscope. Leave out what should                       stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "horizontal": { "type": "boolean" },
+                    "vertical": { "type": "boolean" },
+                    "mirror": { "type": "string", "enum": mirror_names() }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
+        name: "set_blend",
+        description: "How a picture clip combines with the lanes beneath it: normal, screen                       (only brightens: for light leaks, flares, fire), multiply (only darkens:                       for shadows, paper textures) or add.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "mode": { "type": "string", "enum": blend_names() }
+                }),
+                &["clip_id", "mode"],
+            )
+        },
+    },
+    Tool {
         name: "animate_clip",
         description: "How a picture clip arrives and leaves: `intro` and `outro` are fade,                       slide up, slide down, slide right, slide left, pop, bounce, spin,                       zoom out, swing, or none; `duration` is each one's length in seconds                       (default 0.5). Leave out what should stay. One undo step.",
         schema: || {
@@ -1456,6 +1484,19 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         }
         "animate_title" => animate_title(editor, args),
         "animate_clip" => animate_clip(editor, args),
+        "flip_and_mirror" => flip_and_mirror(editor, args),
+        "set_blend" => {
+            use bettercut_editor_core::timeline::BlendMode;
+            let clip = clip_arg(args)?;
+            if editor.video_clip(clip).is_none() {
+                return Err("that is not a picture clip: use an id from picture_lanes".to_owned());
+            }
+            let mode = one_of(&BlendMode::ALL, BlendMode::label, str_arg(args, "mode")?, "blend")?;
+            editor
+                .set_clip_property(clip, ClipProperty::Blend(mode), false)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Blend {}", mode.label()))
+        }
         "animate" => animate(editor, args),
         "list_templates" => Ok(Value::Array(
             templates()
@@ -2858,6 +2899,45 @@ fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
     Ok("Animated".to_owned())
 }
 
+fn flip_and_mirror(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::{FlipAxis, Reflection};
+    let clip = clip_arg(args)?;
+    let shot = editor
+        .video_clip(clip)
+        .ok_or("that is not a picture clip: use an id from picture_lanes")?;
+    let mut changes = Vec::new();
+    for (key, axis, now) in [
+        ("horizontal", FlipAxis::Horizontal, shot.transform.flip_h),
+        ("vertical", FlipAxis::Vertical, shot.transform.flip_v),
+    ] {
+        if let Some(on) = args.get(key).and_then(Value::as_bool)
+            && on != now
+        {
+            changes.push(ClipProperty::Flip { axis, on });
+        }
+    }
+    if let Some(name) = args.get("mirror").and_then(Value::as_str) {
+        let kind = one_of(&Reflection::ALL, Reflection::label, name, "mirror")?;
+        if kind != shot.reflection {
+            changes.push(ClipProperty::Reflection(kind));
+        }
+    }
+    if changes.is_empty() {
+        return Err("nothing to change: give horizontal, vertical or mirror".to_owned());
+    }
+    let depth = editor.undo_depth();
+    for change in changes {
+        if let Err(err) = editor.set_clip_property(clip, change, false) {
+            let steps = editor.undo_depth().saturating_sub(depth);
+            editor.merge_last_steps(steps, "Flip and Mirror");
+            return Err(err.to_string());
+        }
+    }
+    let steps = editor.undo_depth().saturating_sub(depth);
+    editor.merge_last_steps(steps, "Flip and Mirror");
+    Ok("Flipped and mirrored".to_owned())
+}
+
 fn animate_clip(editor: &mut Editor, args: &Value) -> Result<String, String> {
     use bettercut_editor_core::timeline::{Motion, MotionKind};
     let clip = clip_arg(args)?;
@@ -3541,6 +3621,12 @@ fn describe(editor: &Editor) -> Value {
                             "movement": editor.movement_of(c.id)
                                 .filter(|m| *m != Movement::None).map(Movement::label),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
+                            "flipped": ([c.transform.flip_h.then_some("horizontal"),
+                                         c.transform.flip_v.then_some("vertical")]
+                                .into_iter().flatten().collect::<Vec<_>>()),
+                            "mirror": (c.reflection != bettercut_editor_core::timeline::Reflection::None)
+                                .then(|| c.reflection.label()),
+                            "blend": c.blend.label(),
                             "intro": c.motion.intro.map(|m| m.kind.label()),
                             "outro": c.motion.outro.map(|m| m.kind.label()),
                             "transition": c.transition_out.map(|t| json!({
@@ -3711,6 +3797,20 @@ fn sound_effect_names() -> Vec<String> {
     bettercut_editor_core::media::GeneratedSound::EFFECTS
         .iter()
         .map(|s| s.name().to_lowercase())
+        .collect()
+}
+
+fn mirror_names() -> Vec<String> {
+    bettercut_editor_core::timeline::Reflection::ALL
+        .iter()
+        .map(|r| r.label().to_lowercase())
+        .collect()
+}
+
+fn blend_names() -> Vec<String> {
+    bettercut_editor_core::timeline::BlendMode::ALL
+        .iter()
+        .map(|b| b.label().to_lowercase())
         .collect()
 }
 
