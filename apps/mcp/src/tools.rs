@@ -925,6 +925,21 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "speed_ramp",
+        description: "Ramp a clip's speed along a preset curve: montage (slow, a fast rush, \
+                      slow), hero (quick, a slow-motion moment, quick), bullet (eases into deep \
+                      slow motion and out), jump cut (a sudden fast skip), flash in (starts \
+                      fast) or flash out (races away at the end). The clip becomes pieces, \
+                      each at its own speed; its linked sound follows. Returns the pieces.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" },
+                        "ramp": { "type": "string", "enum": speed_ramp_names() } }),
+                &["clip_id", "ramp"],
+            )
+        },
+    },
+    Tool {
         name: "reverse_clip",
         description: "Play a clip backwards (or forwards again with `reversed: false`).",
         schema: || {
@@ -2099,6 +2114,22 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
                 .set_clip_speed(clip, rate, false)
                 .map_err(|e| e.to_string())?;
             Ok(format!("Speed {speed}x"))
+        }
+        "speed_ramp" => {
+            use bettercut_editor_core::SpeedRamp;
+            let clip = clip_arg(args)?;
+            let wanted = str_arg(args, "ramp")?;
+            let ramp = SpeedRamp::ALL
+                .into_iter()
+                .find(|r| plain(r.label()) == plain(wanted))
+                .ok_or_else(|| {
+                    format!("no ramp {wanted:?}; one of {}", speed_ramp_names().join(", "))
+                })?;
+            let pieces = editor
+                .apply_speed_ramp(clip, ramp)
+                .map_err(|e| e.to_string())?;
+            let ids: Vec<String> = pieces.iter().map(ToString::to_string).collect();
+            Ok(json!({ "clip_ids": ids }).to_string())
         }
         "reverse_clip" => {
             let clip = clip_arg(args)?;
@@ -3631,6 +3662,13 @@ fn sound_effect_names() -> Vec<String> {
     bettercut_editor_core::media::GeneratedSound::EFFECTS
         .iter()
         .map(|s| s.name().to_lowercase())
+        .collect()
+}
+
+fn speed_ramp_names() -> Vec<String> {
+    bettercut_editor_core::SpeedRamp::ALL
+        .iter()
+        .map(|r| r.label().to_lowercase())
         .collect()
 }
 

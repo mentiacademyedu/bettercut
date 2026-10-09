@@ -324,3 +324,19 @@ fn every_preset_is_a_real_ramp_within_limits() {
         assert!(!ramp.label().is_empty() && !ramp.description().is_empty());
     }
 }
+
+/// A jump cut keeps the clip's own speed either side of one sudden fast
+/// skip in the middle.
+#[test]
+fn a_jump_cut_skips_once_in_the_middle() {
+    let factors = SpeedRamp::JumpCut.factors();
+    let one = Rational::new(1, 1).unwrap();
+    assert_eq!(factors.len(), 5);
+    assert!(factors[2].num() > 4 * factors[2].den(), "not a fast skip");
+    for (i, factor) in factors.iter().enumerate() {
+        if i != 2 {
+            assert_eq!(*factor, one, "piece {i}");
+        }
+    }
+    assert!(SpeedRamp::ALL.contains(&SpeedRamp::JumpCut));
+}

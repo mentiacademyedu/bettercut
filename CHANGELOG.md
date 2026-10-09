@@ -6,6 +6,10 @@
 
 - **Bounce effect**: the picture hops up and lands, over and over, like a
   ball.
+- **Jump Cut speed ramp**: normal speed, a sudden fast skip, then normal
+  again — the sixth speed curve preset.
+- **AI assistants can ramp speed**: a new `speed_ramp` tool applies any of
+  the six speed curve presets.
 
 ## 0.6.10 — Sway, Flicker, Heartbeat and new sound effects
 

@@ -2220,3 +2220,53 @@ fn an_assistant_adds_a_styled_title() {
         "the refusal names the styles there are: {said}"
     );
 }
+
+/// A clip ramped along a preset becomes its pieces, each at its own speed,
+/// as one undo step; a ramp that does not exist is refused by name.
+#[test]
+fn an_assistant_ramps_a_clips_speed() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-ramp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let media = imported[0]["media_id"].as_str().unwrap().to_owned();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": media, "from": 0.0, "to": 2.0 }),
+    ))
+    .unwrap();
+    let clip = placed["clip_ids"][0].as_str().unwrap().to_owned();
+
+    let ramped: Value = serde_json::from_str(&client.ok(
+        "speed_ramp",
+        json!({ "clip_id": clip, "ramp": "Jump cut" }),
+    ))
+    .unwrap();
+    let pieces = ramped["clip_ids"].as_array().unwrap();
+    assert_eq!(pieces.len(), 5, "{ramped}");
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let speeds: Vec<f64> = described["picture_lanes"][0]["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["speed"].as_f64().unwrap())
+        .collect();
+    assert_eq!(speeds, [1.0, 1.0, 8.0, 1.0, 1.0], "{described}");
+    let steps: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(steps["undo"][0], "Jump Cut Speed Ramp", "{steps}");
+
+    let (said, failed) = client.tool(
+        "speed_ramp",
+        json!({ "clip_id": pieces[0], "ramp": "warp" }),
+    );
+    assert!(failed && said.contains("montage"), "{said}");
+}

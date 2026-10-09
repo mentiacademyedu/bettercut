@@ -36,14 +36,18 @@ pub enum SpeedRamp {
     FlashIn,
     /// Holds the clip's own speed, then races away.
     FlashOut,
+    /// The clip's own speed, a sudden burst of fast, its own speed again:
+    /// the skip a jump cut makes, without the cut.
+    JumpCut,
 }
 
 impl SpeedRamp {
     /// Every preset, in the order a menu shows them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Montage,
         Self::Hero,
         Self::Bullet,
+        Self::JumpCut,
         Self::FlashIn,
         Self::FlashOut,
     ];
@@ -55,6 +59,7 @@ impl SpeedRamp {
             Self::Bullet => "Bullet",
             Self::FlashIn => "Flash In",
             Self::FlashOut => "Flash Out",
+            Self::JumpCut => "Jump Cut",
         }
     }
 
@@ -66,6 +71,7 @@ impl SpeedRamp {
             Self::Bullet => "Eases into deep slow motion and back out",
             Self::FlashIn => "Starts fast and settles to normal speed",
             Self::FlashOut => "Normal speed, then races away",
+            Self::JumpCut => "Normal speed, a sudden fast skip, then normal again",
         }
     }
 
@@ -82,12 +88,14 @@ impl SpeedRamp {
         const FOUR: Rational = Rational::from_parts(4, 1);
         const QUARTER: Rational = Rational::from_parts(1, 4);
         const FIFTH: Rational = Rational::from_parts(1, 5);
+        const EIGHT: Rational = Rational::from_parts(8, 1);
         match self {
             Self::Montage => &[HALF, ONE, THREE, ONE, HALF],
             Self::Hero => &[TWO, TWO, QUARTER, TWO, TWO],
             Self::Bullet => &[ONE, HALF, FIFTH, HALF, ONE],
             Self::FlashIn => &[FOUR, TWO, ONE, ONE, ONE],
             Self::FlashOut => &[ONE, ONE, ONE, TWO, FOUR],
+            Self::JumpCut => &[ONE, ONE, EIGHT, ONE, ONE],
         }
     }
 }
