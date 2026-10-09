@@ -2270,3 +2270,44 @@ fn an_assistant_ramps_a_clips_speed() {
     );
     assert!(failed && said.contains("montage"), "{said}");
 }
+
+/// A picture clip's entrance and exit are set by name, as one undo step,
+/// and read back from the description; a title-only one is refused.
+#[test]
+fn an_assistant_animates_a_clips_entrance_and_exit() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-motion-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let media = imported[0]["media_id"].as_str().unwrap().to_owned();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": media, "from": 0.0, "to": 2.0 }),
+    ))
+    .unwrap();
+    let clip = placed["clip_ids"][0].as_str().unwrap().to_owned();
+
+    client.ok(
+        "animate_clip",
+        json!({ "clip_id": clip, "intro": "zoom out", "outro": "swing", "duration": 0.6 }),
+    );
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    let shot = &described["picture_lanes"][0]["clips"][0];
+    assert_eq!(shot["intro"], "Zoom out", "{shot}");
+    assert_eq!(shot["outro"], "Swing", "{shot}");
+
+    let (said, failed) = client.tool(
+        "animate_clip",
+        json!({ "clip_id": clip, "intro": "typewriter" }),
+    );
+    assert!(failed, "a picture has no letters to type: {said}");
+}

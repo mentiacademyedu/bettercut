@@ -17,6 +17,8 @@
   Hanging sign (swings in and settles).
 - **AI assistants can ramp speed**: a new `speed_ramp` tool applies any of
   the six speed curve presets.
+- **AI assistants can animate clips in and out**: a new `animate_clip` tool
+  sets a picture clip's entrance and exit, and `describe_project` shows them.
 
 ## 0.6.10 — Sway, Flicker, Heartbeat and new sound effects
 

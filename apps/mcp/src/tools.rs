@@ -245,6 +245,21 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "animate_clip",
+        description: "How a picture clip arrives and leaves: `intro` and `outro` are fade,                       slide up, slide down, slide right, slide left, pop, bounce, spin,                       zoom out, swing, or none; `duration` is each one's length in seconds                       (default 0.5). Leave out what should stay. One undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_id": { "type": "string" },
+                    "intro": { "type": "string" },
+                    "outro": { "type": "string" },
+                    "duration": { "type": "number", "exclusiveMinimum": 0 }
+                }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "animate",
         description: "Animate one property of a clip over time with keyframes, replacing any \
                       animation it had. `property` is opacity, x, y, scale, rotation, \
@@ -1440,6 +1455,7 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             Ok(format!("{} ({})", movement.label(), strength.label()))
         }
         "animate_title" => animate_title(editor, args),
+        "animate_clip" => animate_clip(editor, args),
         "animate" => animate(editor, args),
         "list_templates" => Ok(Value::Array(
             templates()
@@ -2842,6 +2858,37 @@ fn animate_title(editor: &mut Editor, args: &Value) -> Result<String, String> {
     Ok("Animated".to_owned())
 }
 
+fn animate_clip(editor: &mut Editor, args: &Value) -> Result<String, String> {
+    use bettercut_editor_core::timeline::{Motion, MotionKind};
+    let clip = clip_arg(args)?;
+    let mut motion = editor
+        .video_clip(clip)
+        .ok_or("that is not a picture clip: use an id from picture_lanes")?
+        .motion;
+    let before = motion;
+    let duration = timeline_time(seconds(args, "duration")?.unwrap_or(0.5).max(0.05));
+    let kind = |name: &str| -> Result<Option<Motion>, String> {
+        if plain(name) == "none" {
+            return Ok(None);
+        }
+        one_of(&MotionKind::ALL, MotionKind::label, name, "animation")
+            .map(|kind| Some(Motion::new(kind, duration)))
+    };
+    if let Some(name) = args.get("intro").and_then(Value::as_str) {
+        motion.intro = kind(name)?;
+    }
+    if let Some(name) = args.get("outro").and_then(Value::as_str) {
+        motion.outro = kind(name)?;
+    }
+    if motion == before {
+        return Err("nothing to change: give intro or outro".to_owned());
+    }
+    editor
+        .set_clip_property(clip, ClipProperty::Motion(motion), false)
+        .map_err(|e| e.to_string())?;
+    Ok("Animated".to_owned())
+}
+
 /// The properties `animate` takes, by name: what each drives, and whether it
 /// is a sound clip's.
 const ANIMATED: &[(&str, &[AnimatedParameter], bool)] = &[
@@ -3494,6 +3541,8 @@ fn describe(editor: &Editor) -> Value {
                             "movement": editor.movement_of(c.id)
                                 .filter(|m| *m != Movement::None).map(Movement::label),
                             "filter": editor.filter_of(c.id).map(|f| f.label()),
+                            "intro": c.motion.intro.map(|m| m.kind.label()),
+                            "outro": c.motion.outro.map(|m| m.kind.label()),
                             "transition": c.transition_out.map(|t| json!({
                                 "kind": t.kind.label(),
                                 "duration": seconds_of(t.duration.ticks()),
