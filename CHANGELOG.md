@@ -12,6 +12,8 @@
   enough that the corners never show.
 - **Flicker effect**: the picture dims at random moments, like a failing bulb
   or an old television.
+- **Heartbeat effect**: the picture thumps in twice a beat, like a heart, with
+  no markers needed.
 
 ## 0.6.9 — Shake, Strobe, new filters, transitions and text styles
 

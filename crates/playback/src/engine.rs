@@ -363,6 +363,13 @@ pub(crate) fn plan(
                         request.look.transform.scale.y *= zoom;
                     }
                 }
+                let beat = heartbeat_zoom(clip.heartbeat, position);
+                if beat != 1.0 {
+                    for request in &mut requests[before..] {
+                        request.look.transform.scale.x *= beat;
+                        request.look.transform.scale.y *= beat;
+                    }
+                }
                 let strobe = strobe_alpha(clip.strobe, position);
                 if strobe > 0.0 {
                     push_flash(&mut requests, track.id, clip.id, strobe);
@@ -2104,6 +2111,37 @@ pub fn flicker_alpha(amount: f32, position: TimelineTime) -> f32 {
     z ^= z >> 31;
     let level = (z >> 40) as f32 / (1u64 << 24) as f32;
     (amount / 100.0).min(1.0) * 0.75 * level * level * level
+}
+
+/// Heartbeats a second: a resting heart, a little quickened.
+pub const HEARTBEAT_HZ: f64 = 1.2;
+
+/// The most a heartbeat enlarges the picture, at 100, on its first thump.
+pub const MAX_HEARTBEAT: f32 = 0.08;
+
+/// How much a heartbeat enlarges the picture at `position`: two thumps a
+/// beat, the second softer and close behind the first — lub-dub — each
+/// jumping in and easing back, then a rest before the next beat. 1.0 with
+/// no amount. From the time alone, so preview and export thump on the same
+/// frames (§46).
+pub fn heartbeat_zoom(amount: f32, position: TimelineTime) -> f32 {
+    if !amount.is_finite() || amount <= 0.0 {
+        return 1.0;
+    }
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let phase = (t * HEARTBEAT_HZ).rem_euclid(1.0) as f32;
+    // A thump starting at `at` within the beat: full at once, gone a
+    // seventh of a beat later.
+    let thump = |at: f32| {
+        let since = (phase - at) * 7.0;
+        if (0.0..1.0).contains(&since) {
+            (1.0 - since) * (1.0 - since)
+        } else {
+            0.0
+        }
+    };
+    let bump = thump(0.0).max(0.6 * thump(0.22));
+    1.0 + (amount / 100.0).min(1.0) * MAX_HEARTBEAT * bump
 }
 
 /// Strobe flashes a second.

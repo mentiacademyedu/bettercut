@@ -7046,6 +7046,19 @@ fn clip_effect_properties(
                 change = Some((ClipProperty::Flicker(next_flicker), response.dragged()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            let mut next_heartbeat = editor.video_clip(clip).map_or(0.0, |clip| clip.heartbeat);
+            let response = ui
+                .add(theme::labeled(
+                    "heartbeat",
+                    egui::Slider::new(&mut next_heartbeat, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text("Thump the picture in twice a beat, like a heart");
+            if response.changed() {
+                change = Some((ClipProperty::Heartbeat(next_heartbeat), response.dragged()));
+            }
+        });
     });
 
     // Reflections: part of the shot, repeated and mirrored over the rest.

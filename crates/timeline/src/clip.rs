@@ -1101,6 +1101,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub flicker: f32,
 
+    /// Heartbeat, 0–100: the picture thumps in twice, steadily, like a
+    /// heart beating. Not animated.
+    #[serde(default)]
+    pub heartbeat: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2624,6 +2629,7 @@ impl VideoClip {
             strobe: 0.0,
             sway: 0.0,
             flicker: 0.0,
+            heartbeat: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

@@ -53,6 +53,7 @@ const NAMES: &[&str] = &[
     "strobe",
     "sway",
     "flicker",
+    "heartbeat",
     "background",
     "backdrop",
     "bars",
