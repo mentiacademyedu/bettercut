@@ -189,6 +189,9 @@ impl CropEdge {
 /// so the picture never slides entirely out of view: some of it always
 /// covers the middle of the area. Returns the canvas and the pan actually
 /// used.
+/// The space kept clear round a fitted picture, on each side.
+pub const PICTURE_MARGIN: f32 = 28.0;
+
 pub fn preview_canvas(
     area: egui::Rect,
     resolution: (u32, u32),
@@ -199,9 +202,13 @@ pub fn preview_canvas(
     let aspect = (resolution.0.max(1) as f32 / resolution.1.max(1) as f32).max(0.01);
     match zoom {
         crate::state::PreviewZoom::Fit => {
-            let mut size = egui::vec2(area.width() - 24.0, (area.width() - 24.0) / aspect);
-            if size.y > area.height() - 24.0 {
-                size = egui::vec2((area.height() - 24.0) * aspect, area.height() - 24.0);
+            // A clear margin all round: room for the rotation handle above a
+            // full-frame clip, and for the picture to sit on its ground rather
+            // than against the panels.
+            let margin = 2.0 * PICTURE_MARGIN;
+            let mut size = egui::vec2(area.width() - margin, (area.width() - margin) / aspect);
+            if size.y > area.height() - margin {
+                size = egui::vec2((area.height() - margin) * aspect, area.height() - margin);
             }
             (
                 egui::Rect::from_center_size(area.center(), size),

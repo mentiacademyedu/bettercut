@@ -9,6 +9,7 @@ use bettercut_editor_core::project_format::PerformanceMode;
 use bettercut_editor_core::timeline::{AnimatedParameter, ColorAdjust, Resolution, VideoClip};
 use bettercut_editor_core::{Editor, Movement, SettingChange, TrackFlag};
 
+use crate::icons::{self, Icon};
 use crate::state::UiState;
 use crate::theme;
 
@@ -17,31 +18,28 @@ pub fn toolbar(
     ui: &mut egui::Ui,
     editor: &mut Editor,
     state: &mut UiState,
-    preview: Option<&mut crate::Preview>,
+    _preview: Option<&mut crate::Preview>,
 ) {
-    // Wrapped, so a narrow window gives the toolbar a second row instead of
-    // drawing its right-hand group over the buttons.
-    ui.horizontal_wrapped(|ui| {
-        // Transport first: it is the control reached for most often.
-        if let Some(preview) = preview {
-            let playing = preview.is_playing();
-            if ui
-                .button(if playing { "Pause" } else { "Play" })
-                .on_hover_text("Space")
-                .clicked()
-            {
-                preview.set_playing(editor, !playing);
-                state.needs_repaint = true;
-            }
-            ui.separator();
-        }
-
-        if ui.button("New").on_hover_text("New project").clicked() {
+    // One row of quiet icon groups — the project, history, what can be added
+    // — the project's name in the middle, and on the right finding things and
+    // Export, the one coloured button, where the eye ends up when the work is
+    // done.
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::SPACE_XS;
+        crate::icons::app_mark(ui);
+        ui.add_space(theme::SPACE_M);
+        if icons::button(ui, Icon::NewFile, false, "New project").clicked() {
             new_project(editor, state);
         }
         // A menu rather than a button: the project wanted is usually one
         // opened yesterday, and a file dialog is a long way round to it.
-        ui.menu_button("Open…", |ui| {
+        let open = icons::button(
+            ui,
+            Icon::Folder,
+            false,
+            "Open a project, or one you worked on recently",
+        );
+        egui::Popup::menu(&open).show(|ui| {
             if ui
                 .button("Browse…")
                 .on_hover_text("Choose a project file")
@@ -89,13 +87,17 @@ pub fn toolbar(
                 ui.close();
                 open_project_at(editor, state, &path);
             }
-        })
-        .response
-        .on_hover_text("Open a project, or one you worked on recently");
-        if ui.button("Save").on_hover_text(crate::keys::keys("Ctrl+S")).clicked() {
+        });
+        if icons::button(ui, Icon::Save, false, &crate::keys::keys("Save (Ctrl+S)")).clicked() {
             save_project(editor, state);
         }
-        ui.menu_button("Save…", |ui| {
+        let more = icons::button(
+            ui,
+            Icon::ChevronDown,
+            false,
+            "Save As, Save a Copy, Collect Files, and earlier versions",
+        );
+        egui::Popup::menu(&more).show(|ui| {
             if ui
                 .button("Save As…")
                 .on_hover_text(crate::keys::keys(
@@ -186,17 +188,10 @@ pub fn toolbar(
                 .on_disabled_hover_text("Earlier versions appear here once the project has been saved more than once");
             });
         });
-        if ui
-            .add(theme::primary_button("Export…"))
-            .on_hover_text("Render the timeline to a video file")
-            .clicked()
-        {
-            state.export_dialog.open(editor);
-        }
 
-        ui.separator();
+        theme::bar_divider(ui);
 
-        // Plain words and ASCII, not arrow glyphs. ↶ and ↷ *are* bundled — but
+        // Drawn icons, not arrow glyphs. ↶ and ↷ *are* bundled — but
         // only in Hack, the monospace font, and a button draws with the
         // proportional family, so they arrive as empty boxes. ＋ and － are in
         // no bundled font at all. egui never falls back to the system's fonts.
@@ -208,8 +203,10 @@ pub fn toolbar(
             .undo_label()
             .map_or_else(|| "Nothing to undo".to_owned(), |l| format!("Undo {l}"));
         if ui
-            .add_enabled(editor.can_undo(), egui::Button::new("Undo"))
-            .on_hover_text(undo_label)
+            .add_enabled_ui(editor.can_undo(), |ui| {
+                icons::button(ui, Icon::Undo, false, &crate::keys::keys(&format!("{undo_label} (Ctrl+Z)")))
+            })
+            .inner
             .clicked()
             && let Err(err) = editor.undo()
         {
@@ -220,35 +217,31 @@ pub fn toolbar(
             .redo_label()
             .map_or_else(|| "Nothing to redo".to_owned(), |l| format!("Redo {l}"));
         if ui
-            .add_enabled(editor.can_redo(), egui::Button::new("Redo"))
-            .on_hover_text(redo_label)
+            .add_enabled_ui(editor.can_redo(), |ui| {
+                icons::button(ui, Icon::Redo, false, &crate::keys::keys(&format!("{redo_label} (Ctrl+Shift+Z)")))
+            })
+            .inner
             .clicked()
             && let Err(err) = editor.redo()
         {
             state.error(err.to_string());
         }
 
-        ui.separator();
+        theme::bar_divider(ui);
 
         // §26: next to the transport rather than buried in a menu. Adding a
         // title is one of the two or three things anyone does in a short-form
         // editor, and the playhead is already where they want it.
         // The same file again: the fifth version of a cut that is nearly
         // right should not be five trips through a window.
-        if ui
-            .add_enabled(
-                state.export_dialog.has_exported(),
-                egui::Button::new("Quick Export"),
-            )
-            .on_hover_text("Write the same file as last time, to the same folder, with these settings")
-            .on_disabled_hover_text("Export once first, and this repeats it")
-            .clicked()
-        {
-            state.export_dialog.quick_export(editor);
-        }
 
         // Everything that puts something new on the timeline, one menu.
-        ui.menu_button("Add", |ui| {
+        icons::labelled_menu(
+            ui,
+            Icon::Plus,
+            "Add",
+            "Text, lower thirds, shapes, timers, stickers, colours, sounds and templates",
+            |ui| {
             ui.menu_button("Add Shape", |ui| {
                 for kind in bettercut_editor_core::text::ShapeKind::ALL {
                     if ui.button(kind.label()).clicked() {
@@ -542,14 +535,13 @@ pub fn toolbar(
             {
                 state.template_dialog.open();
             }
-        })
-        .response
-        .on_hover_text("Text, lower thirds, shapes, timers, stickers, colours, sounds and templates");
+            },
+        );
 
         // One slot rather than two buttons: importing subtitles is something
         // done once per project, and the toolbar is already the busiest strip
         // in the window.
-        ui.menu_button("Captions", |ui| {
+        icons::menu(ui, Icon::Captions, "Captions: import or export subtitles as .srt or .vtt", |ui| {
             if ui.button("Import…").clicked() {
                 ui.close();
                 import_captions(editor, state);
@@ -558,15 +550,15 @@ pub fn toolbar(
                 ui.close();
                 export_captions(editor, state);
             }
-        })
-        .response
-        .on_hover_text("Subtitles, as .srt or .vtt");
-
-        ui.separator();
+        });
 
         // The timeline's own controls, one menu: zoom, lane heights,
         // snapping, magnetic, split and new tracks.
-        ui.menu_button("Timeline", |ui| {
+        icons::menu(
+            ui,
+            Icon::Sliders,
+            "Timeline: zoom, track height, snapping, magnetic, split and new tracks",
+            |ui| {
             ui.label("Zoom");
             if ui
                 .add_enabled(state.can_zoom_out(), egui::Button::new("-"))
@@ -672,59 +664,43 @@ pub fn toolbar(
                     state.error(err.to_string());
                 }
             }
-        })
-        .response
-        .on_hover_text("Zoom, track height, snapping, magnetic, split, and new tracks");
-        // The find box and the right-hand group (timecode, Actions, Windows)
-        // need about this much. Short of it, they start a second row
-        // together rather than land on top of the buttons.
-        const FIND_AND_RIGHT: f32 = 130.0 + 300.0;
-        if ui.available_width() < FIND_AND_RIGHT {
-            ui.end_row();
-        } else {
-            ui.separator();
-        }
-        // Find clips by file name, title words or note; Enter goes to the next
-        // one after the playhead, and round again from the start.
-        let field = ui.add(
-            egui::TextEdit::singleline(&mut state.find_query)
-                .desired_width(130.0)
-                .hint_text("Find clips"),
+            },
         );
-        let found = editor.find_clips(&state.find_query);
-        if !state.find_query.trim().is_empty() {
-            ui.label(
-                egui::RichText::new(match found.len() {
-                    0 => "none".to_owned(),
-                    n => format!("{n} found"),
+        let left_end = ui.cursor().left();
+        let right_start = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = theme::SPACE_XS;
+            // Export, the one coloured button, at the very end of the row.
+            if ui
+                .add(theme::primary_button("Export"))
+                .on_hover_text("Render the timeline to a video file")
+                .clicked()
+            {
+                state.export_dialog.open(editor);
+            }
+            ui.add_space(theme::SPACE_XS);
+            if ui
+                .add_enabled_ui(state.export_dialog.has_exported(), |ui| {
+                    icons::button(
+                        ui,
+                        Icon::QuickExport,
+                        false,
+                        "Quick Export: write the same file as last time, to the same folder, with these settings",
+                    )
                 })
-                .small()
-                .color(theme::disabled()),
-            );
-        }
-        if field.lost_focus()
-            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !found.is_empty()
-        {
-            let playhead = editor.playhead();
-            let next = found
-                .iter()
-                .find(|f| f.start > playhead)
-                .unwrap_or(&found[0]);
-            editor.set_playhead(next.start);
-            state.select_only(next.clip);
-            let lanes = (ui.ctx().content_rect().width() - theme::TRACK_HEADER_WIDTH).max(200.0);
-            state.follow_playhead(next.start, lanes);
-            state.info(format!("Found {}", next.label));
-            state.needs_repaint = true;
-            // Keep the box ready for the next Enter.
-            field.request_focus();
-        }
-
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                .inner
+                .on_disabled_hover_text("Export once first, and this repeats it")
+                .clicked()
+            {
+                state.export_dialog.quick_export(editor);
+            }
+            theme::bar_divider(ui);
             // The windows, one menu: ten buttons in a row read as clutter.
-            ui.menu_button("Windows", |ui| {
+            icons::menu(
+                ui,
+                Icon::Windows,
+                "Windows: captions, markers, notes, scopes, history and the others",
+                |ui| {
                 // The last thing on the right, where people look for help.
                 if ui
                     .button("Captions")
@@ -800,22 +776,99 @@ pub fn toolbar(
                 {
                     state.assistant_open = !state.assistant_open;
                 }
-            })
-            .response
-            .on_hover_text("Captions, markers, notes, scopes, history and the other windows");
+                },
+            );
             // The palette, findable without knowing its key.
-            if ui
-                .button("Actions")
-                .on_hover_text(crate::keys::keys("Find any action by typing its name (Ctrl+K)"))
-                .clicked()
+            if icons::button(
+                ui,
+                Icon::Command,
+                state.palette_open,
+                &crate::keys::keys("Find any action by typing its name (Ctrl+K)"),
+            )
+            .clicked()
             {
                 state.palette_open = !state.palette_open;
                 state.palette_query.clear();
                 state.palette_pick = 0;
             }
-            timecode_readout(ui, editor, state);
-        });
+            ui.add_space(theme::SPACE_S);
+            find_box(ui, editor, state);
+            ui.min_rect().left()
+        })
+        .inner;
+
+        // The project's name in the middle of the bar, when there is room for
+        // it between the two groups, with a dot while there are unsaved
+        // changes.
+        let bar = ui.max_rect();
+        let name = editor.project().name.trim().to_owned();
+        let shown = if editor.is_dirty() { format!("{name}  •") } else { name };
+        let galley = ui.painter().layout_no_wrap(
+            shown,
+            egui::FontId::proportional(theme::TEXT_BODY),
+            theme::text_muted(),
+        );
+        let centre = bar.center().x;
+        let half = galley.size().x / 2.0;
+        if centre - half > left_end + theme::SPACE_XL && centre + half < right_start - theme::SPACE_XL {
+            ui.painter().galley(
+                egui::pos2(centre - half, bar.center().y - galley.size().y / 2.0),
+                galley,
+                theme::text_muted(),
+            );
+        }
     });
+}
+
+/// Find clips by file name, title words or note; Enter goes to the next one
+/// after the playhead, and round again from the start.
+fn find_box(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    let found = editor.find_clips(&state.find_query);
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut state.find_query)
+            .desired_width(150.0)
+            .margin(egui::Margin {
+                left: 26,
+                right: 8,
+                top: 4,
+                bottom: 4,
+            })
+            .hint_text("Find clips"),
+    );
+    crate::icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(field.rect.left() + 14.0, field.rect.center().y),
+            egui::Vec2::splat(13.0),
+        ),
+        Icon::Search,
+        theme::text_muted(),
+    );
+    if !state.find_query.trim().is_empty() {
+        ui.label(
+            egui::RichText::new(match found.len() {
+                0 => "none".to_owned(),
+                n => format!("{n} found"),
+            })
+            .small()
+            .color(theme::text_muted()),
+        );
+    }
+    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !found.is_empty() {
+        let playhead = editor.playhead();
+        let next = found
+            .iter()
+            .find(|f| f.start > playhead)
+            .unwrap_or(&found[0]);
+        editor.set_playhead(next.start);
+        state.select_only(next.clip);
+        let lanes = (ui.ctx().content_rect().width() - theme::TRACK_HEADER_WIDTH).max(200.0);
+        state.follow_playhead(next.start, lanes);
+        state.info(format!("Found {}", next.label));
+        state.needs_repaint = true;
+        // Keep the box ready for the next Enter.
+        field.request_focus();
+    }
 }
 
 /// The playhead's timecode, and a box to type one into when it is clicked:
@@ -825,8 +878,13 @@ fn timecode_readout(ui: &mut egui::Ui, editor: &Editor, state: &mut UiState) {
     let Some(draft) = state.timecode_draft.as_mut() else {
         let readout = ui
             .add(
-                egui::Label::new(egui::RichText::new(&shown).monospace().size(15.0))
-                    .sense(egui::Sense::click()),
+                egui::Label::new(
+                    egui::RichText::new(&shown)
+                        .monospace()
+                        .size(theme::TEXT_TIMECODE)
+                        .color(theme::text()),
+                )
+                .sense(egui::Sense::click()),
             )
             .on_hover_text(
                 "Click to type a timecode: 1:02:03, 2:03.5, 120f, or +10 / -1:00 to move. \
@@ -897,11 +955,36 @@ pub fn sequence_tabs(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
     let mut remove = None;
     let mut menu_open = false;
 
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
         for (id, name) in &sequences {
+            // A tab: the name, lit and underlined in the accent when it is
+            // the one shown.
+            let on = active == Some(*id);
             let tab = ui
-                .selectable_label(active == Some(*id), name)
+                .add(
+                    egui::Button::new(egui::RichText::new(name).color(if on {
+                        theme::text_strong()
+                    } else {
+                        theme::text_muted()
+                    }))
+                    .frame(false)
+                    .min_size(egui::vec2(0.0, theme::ICON_BUTTON)),
+                )
                 .on_hover_text("Right-click to rename, duplicate or delete");
+            if on {
+                let r = tab.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(r.left() + 4.0, r.bottom() - 3.0),
+                        egui::pos2(r.right() - 4.0, r.bottom() - 1.0),
+                    ),
+                    1.0,
+                    theme::accent(),
+                );
+            } else if tab.hovered() {
+                ui.painter().rect_filled(tab.rect, theme::RADIUS_SMALL, theme::hover());
+            }
             if tab.clicked() {
                 switch_to = Some(*id);
             }
@@ -964,7 +1047,11 @@ pub fn sequence_tabs(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             });
         }
         if ui
-            .button("+")
+            .add(
+                egui::Button::new(egui::RichText::new("+").size(16.0).color(theme::text_muted()))
+                    .frame(false)
+                    .min_size(egui::vec2(theme::ICON_BUTTON - 6.0, theme::ICON_BUTTON)),
+            )
             .on_hover_text("A new, empty sequence in the same format")
             .clicked()
         {
@@ -1089,16 +1176,23 @@ fn note_field(
 
 /// Media browser (§58). Import lands here; placing on the timeline is one click.
 pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
-    crate::library::tabs(ui, state);
     if state.library_tab != crate::library::LibraryTab::Media {
+        crate::library::heading(ui, state);
         crate::library::show(ui, editor, state);
         return;
     }
-    // One line: Import, with the rarer ways in behind More. The tab above
-    // already says this is Media.
+    // One line: the heading, and Import with the rarer ways in behind More.
     ui.horizontal(|ui| {
+        ui.label(theme::strong("Media", theme::TEXT_HEADING).color(theme::text()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("More", |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let more = icons::button(
+                ui,
+                Icon::More,
+                false,
+                "Templates, and importing a numbered image sequence",
+            );
+            egui::Popup::menu(&more).show(|ui| {
                 if ui
                     .button("Templates…")
                     .on_hover_text("Start from a ready-made edit and drop your clips into it")
@@ -1133,19 +1227,21 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
                     add_placeholder_clip(editor, state);
                 }
 
-            })
-            .response
-            .on_hover_text("Templates, and importing a numbered image sequence");
-            if ui
-                .button("Import…")
-                .on_hover_text("Add a file to the project's media library")
-                .clicked()
+            });
+            if icons::labelled_button(
+                ui,
+                Icon::Plus,
+                "Import",
+                false,
+                "Add files to the project's media library",
+            )
+            .clicked()
             {
                 import_media(editor, state);
             }
         });
     });
-    ui.separator();
+    ui.add_space(theme::SPACE_S);
 
     // Nothing imported: the panel is one big place to start, as in CapCut —
     // click it to choose files, or drop them on it (or anywhere).
@@ -1569,7 +1665,17 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (id, name, missing, no_duration, duration, still, _) in &assets {
-            let card = ui.group(|ui| {
+            // A card: the picture across its full width, then the name and
+            // the actions, on a well a shade darker than the panel.
+            let card = egui::Frame::NONE
+                .fill(theme::palette().field)
+                .stroke(egui::Stroke::new(1.0, theme::border()))
+                .corner_radius(theme::RADIUS)
+                // One less than the gap wanted: the border is drawn outside
+                // the margin, and the card must not be wider than the panel.
+                .inner_margin(egui::Margin::same(7))
+                .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 match editor.project().media_asset(*id).and_then(|a| a.generated) {
                     Some(colour) => colour_swatch(ui, colour),
                     None => thumbnail(ui, state, *id, *missing, *duration),
@@ -2039,7 +2145,7 @@ pub fn preview(
     // the Inspector's number fields.
     let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0, theme::background());
+    painter.rect_filled(rect, 0, theme::canvas());
 
     let Some(sequence) = editor.active_sequence() else {
         return;
@@ -2087,13 +2193,18 @@ pub fn preview(
     );
     state.preview_pan = pan;
 
-    painter.rect_filled(canvas, 4, egui::Color32::BLACK);
-    painter.rect_stroke(
-        canvas,
-        4,
-        egui::Stroke::new(1.0, theme::grid_line()),
-        egui::StrokeKind::Outside,
+    // The frame itself: black, square-cornered like the video it shows, with
+    // a soft shadow lifting it off the ground.
+    painter.add(
+        egui::Shadow {
+            offset: [0, 6],
+            blur: 28,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(140),
+        }
+        .as_shape(canvas, 0),
     );
+    painter.rect_filled(canvas, 0, egui::Color32::BLACK);
 
     let has_content = preview.is_some_and(crate::Preview::has_content);
 
@@ -2921,12 +3032,8 @@ fn topmost_at(visible: &[ShownClip], at: egui::Pos2) -> Option<ShownClip> {
 
 /// Inspector (§58): what is selected, and the track switches.
 pub fn inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
-    ui.label(
-        egui::RichText::new("Inspector")
-            .strong()
-            .color(theme::ruler_text()),
-    );
-    ui.add_space(4.0);
+    ui.label(theme::strong("Inspector", theme::TEXT_HEADING).color(theme::text()));
+    ui.add_space(theme::SPACE_S);
 
     // Scrollable, because this panel grows: sequence, selection, every track,
     // the proxy settings and the System diagnostics. Without it the lower
@@ -2980,7 +3087,6 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         return;
     }
 
-    ui.separator();
     theme::section(ui, "Selection");
 
     let selected: Vec<_> = state.selected_clips.iter().copied().collect();
@@ -3066,28 +3172,61 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                 .map_or_else(|| "(missing)".to_owned(), |m| m.display_name().to_owned());
             let range = video.map(|v| v.timeline).or_else(|| audio.map(|a| a.0));
 
-            ui.monospace(format!("media     {name}"));
-            if let Some(range) = range {
-                ui.monospace(format!("start     {}", range.start.format_timecode()));
-                ui.monospace(format!("duration  {}", range.duration().format_timecode()));
-            }
-
-            // Above the tabs, because it acts on the whole clip. Inside one it
-            // would look like it acted on that tab, which is the confusion the
-            // Animation tab's button used to cause.
-            if video.is_some() {
-                ui.add_space(2.0);
-                if ui
-                    .button("Reset clip")
-                    .on_hover_text(
-                        "Put every control on every tab back to its default, and \
-                         remove all keyframes.",
-                    )
-                    .clicked()
-                {
-                    reset_video_properties(editor, state, id);
-                }
-            }
+            // The clip, as a card: its name, where it starts and how long it
+            // runs, and — above the tabs, because it acts on the whole clip —
+            // the reset. Inside a tab it would look like it acted on that tab,
+            // which is the confusion the Animation tab's button used to cause.
+            egui::Frame::NONE
+                .fill(theme::control())
+                .corner_radius(theme::RADIUS)
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let reset_room = if video.is_some() { theme::ICON_BUTTON + 4.0 } else { 0.0 };
+                        let text_width = (ui.available_width() - reset_room).max(40.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(text_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_max_width(text_width);
+                                ui.add(
+                                    egui::Label::new(theme::strong(&name, theme::TEXT_BODY).color(theme::text()))
+                                        .truncate(),
+                                )
+                                .on_hover_text(&name);
+                                if let Some(range) = range {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "{} long · starts at {}",
+                                                range.duration().format_timecode(),
+                                                range.start.format_timecode()
+                                            ))
+                                            .small()
+                                            .color(theme::text_muted()),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            },
+                        );
+                        if video.is_some() {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if icons::button(
+                                    ui,
+                                    Icon::Reset,
+                                    false,
+                                    "Reset clip: put every control on every tab back to its default, and remove all keyframes",
+                                )
+                                .clicked()
+                                {
+                                    reset_video_properties(editor, state, id);
+                                }
+                            });
+                        }
+                    });
+                });
 
             ui.add_space(6.0);
             inspector_tabs(ui, state, video.is_some(), sound.is_some());
@@ -3165,8 +3304,7 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         return;
     };
 
-    ui.separator();
-    ui.label(egui::RichText::new("Tracks").strong());
+    theme::section(ui, "Tracks");
 
     // Read the switch states, then dispatch after the borrow ends.
     let tracks: Vec<(TrackId, String, bool, bool, bool)> = sequence
@@ -3557,15 +3695,10 @@ fn inspector_body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     });
 }
 
-/// Transport controls, sitting directly above the timeline (§58).
-///
-/// Duplicates the toolbar's play button on purpose: this is where the eye
-/// already is while cutting, and reaching to the top of the window to pause is
-/// the kind of friction §88 says an editor must not have.
-///
-/// Labels are ASCII words rather than transport glyphs — egui's bundled font
-/// has no ▶ or ⏮, and a missing glyph renders as an empty box.
-pub fn transport(
+/// The bar under the preview: where the playhead is, the transport in the
+/// middle, and how the picture is shown on the right — the controls that act
+/// on the picture, kept with it.
+pub fn preview_bar(
     ui: &mut egui::Ui,
     editor: &mut Editor,
     state: &mut UiState,
@@ -3574,8 +3707,12 @@ pub fn transport(
     /// §55's `playback.skip`. Ten seconds is the conventional jump, and at
     /// 960,000 ticks/second it is exact.
     const SKIP: i64 = 10;
+    /// The transport's width: four icon buttons, Play, and the gaps.
+    const TRANSPORT: f32 = 4.0 * theme::ICON_BUTTON + 34.0 + 4.0 * 4.0;
 
-    ui.horizontal(|ui| {
+    let bar = ui.max_rect();
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
         // Collect intent first, apply once at the end: `preview` is a single
         // mutable borrow, and both the transport and the seek need it.
         let mut seek_to: Option<TimelineTime> = state.jump_to.take();
@@ -3586,31 +3723,33 @@ pub fn transport(
             .map_or(TimelineTime::ZERO, |s| s.duration());
         let at_start = playhead == TimelineTime::ZERO;
 
-        // Where the playhead is, first: the number read most often.
+        // Where the playhead is, first: the number read most often. Click it
+        // to type a time.
+        timecode_readout(ui, editor, state);
         ui.label(
-            egui::RichText::new(playhead.format_timecode())
+            egui::RichText::new(format!("/ {}", editor.display_time(duration).format_timecode()))
                 .monospace()
-                .size(14.0),
-        );
-        ui.label(
-            egui::RichText::new(format!("/ {}", duration.format_timecode()))
-                .monospace()
-                .small()
-                .color(theme::disabled()),
+                .color(theme::text_muted()),
         );
 
-        ui.separator();
-        // The transport, together: start, back, play, forward, end.
+        // The transport, centred under the picture: start, back, play,
+        // forward, end.
+        let gap = bar.center().x - TRANSPORT / 2.0 - ui.cursor().left();
+        if gap > 0.0 {
+            ui.add_space(gap);
+        } else {
+            theme::bar_divider(ui);
+        }
         if ui
-            .add_enabled(!at_start, egui::Button::new("|<"))
-            .on_hover_text("Go to start (Home)")
+            .add_enabled_ui(!at_start, |ui| icons::button(ui, Icon::ToStart, false, "Go to start (Home)"))
+            .inner
             .clicked()
         {
             seek_to = Some(TimelineTime::ZERO);
         }
         if ui
-            .add_enabled(!at_start, egui::Button::new("-10s"))
-            .on_hover_text("Back ten seconds")
+            .add_enabled_ui(!at_start, |ui| icons::button(ui, Icon::Back, false, "Back ten seconds"))
+            .inner
             .clicked()
         {
             // Saturating at zero rather than wrapping: a playhead before the
@@ -3624,26 +3763,17 @@ pub fn transport(
         }
 
         let playing = preview.as_ref().is_some_and(|p| p.is_playing());
-        let label = if playing { "Pause" } else { "Play" };
-        if ui
-            .add(egui::Button::new(egui::RichText::new(label).strong()))
-            .on_hover_text("Space")
-            .clicked()
-        {
+        if icons::play_button(ui, playing).clicked() {
             toggle_play = true;
         }
-        if ui
-            .button("+10s")
-            .on_hover_text("Forward ten seconds")
-            .clicked()
-        {
+        if icons::button(ui, Icon::Forward, false, "Forward ten seconds").clicked() {
             seek_to = Some(TimelineTime::from_ticks(
                 playhead.ticks() + TimelineTime::from_seconds(SKIP).ticks(),
             ));
         }
         if ui
-            .add_enabled(playhead < duration, egui::Button::new(">|"))
-            .on_hover_text("Go to end (End)")
+            .add_enabled_ui(playhead < duration, |ui| icons::button(ui, Icon::ToEnd, false, "Go to end (End)"))
+            .inner
             .clicked()
         {
             seek_to = Some(duration);
@@ -3660,149 +3790,316 @@ pub fn transport(
             .on_hover_text("J / K / L: reverse, stop, forward — press again to go faster");
         }
 
-        ui.separator();
         // Looping: the marked range, or the whole edit without marks.
         let looping = preview.as_ref().is_some_and(|p| p.is_looping());
         let mut toggle_loop = false;
-        // How big the preview draws the picture.
-        ui.menu_button(format!("View {}", state.preview_zoom.label()), |ui| {
-            for zoom in crate::state::PreviewZoom::CHOICES {
-                if ui
-                    .selectable_label(state.preview_zoom == zoom, zoom.label())
-                    .clicked()
-                {
-                    state.preview_zoom = zoom;
-                    state.preview_pan = egui::Vec2::ZERO;
-                    state.needs_repaint = true;
-                    ui.close();
-                }
-            }
-        })
-        .response
-        .on_hover_text("Look closer at the picture. Ctrl + scroll over it zooms; drag with the middle button to move around");
-        // The preview's comparisons and guides, one menu.
-        ratio_menu(ui, editor, state);
-        ui.menu_button("Preview", |ui| {
-            if ui
-                .selectable_label(looping, "Loop")
-                .on_hover_text(crate::keys::keys(
-                    "Play the stretch between the in and out marks over and over — \
-                     or the whole timeline when there are none (Ctrl+L)",
-                ))
-                .clicked()
-            {
-                toggle_loop = true;
-            }
-            if ui
-                .button("Full Screen")
-                .on_hover_text("Watch the picture on the whole screen (F). Escape to come back")
-                .clicked()
+
+        let width = ui.available_width().max(400.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if icons::button(
+                ui,
+                Icon::Fullscreen,
+                false,
+                "Watch the picture on the whole screen (F). Escape to come back",
+            )
+            .clicked()
             {
                 state.fullscreen = true;
                 state.needs_repaint = true;
             }
-            // Hearing the sound while the playhead is dragged.
-            if ui
-                .selectable_label(state.audio_scrub, "Scrub")
-                .on_hover_text("Play the sound while the playhead is dragged or stepped")
-                .clicked()
-            {
-                state.audio_scrub = !state.audio_scrub;
-                state.needs_repaint = true;
-            }
-
-            // Before and after: the preview without any grade or effect.
-            if ui
-                .selectable_label(state.compare_original, "Before")
-                .on_hover_text("Show the picture without its colour grade and effects, to compare. Click again for after")
-                .clicked()
-            {
-                state.compare_original = !state.compare_original;
-                state.needs_repaint = true;
-            }
-            // The same comparison with both halves on screen at once, which is
-            // what makes a small change in a grade visible at all.
-            if ui
-                .selectable_label(state.compare_split, "Split")
-                .on_hover_text(
-                    "Show the original on one side of the picture and the graded \
-                     version on the other. Drag the divider to move it.",
-                )
-                .clicked()
-            {
-                state.compare_split = !state.compare_split;
-                if state.compare_split {
-                    // The two comparisons would fight over the whole frame.
-                    state.compare_original = false;
-                }
-                state.needs_repaint = true;
-            }
-
-            // Guides over the picture: thirds, safe margins, a phone app's buttons.
-            ui.menu_button(
-                if state.preview_guide == crate::state::PreviewGuide::Off {
-                    "Guides"
-                } else {
-                    "Guides •"
-                },
+            icons::menu(
+                ui,
+                Icon::More,
+                "Preview options: scrub, before and after, split view and guides",
                 |ui| {
-                    for guide in crate::state::PreviewGuide::ALL {
-                        if ui
-                            .selectable_label(state.preview_guide == guide, guide.label())
-                            .on_hover_text(guide.description())
-                            .clicked()
-                        {
-                            state.preview_guide = guide;
-                            state.needs_repaint = true;
-                            ui.close();
+                if ui
+                    .selectable_label(looping, "Loop")
+                    .on_hover_text(crate::keys::keys(
+                        "Play the stretch between the in and out marks over and over — \
+                         or the whole timeline when there are none (Ctrl+L)",
+                    ))
+                    .clicked()
+                {
+                    toggle_loop = true;
+                }
+                if ui
+                    .button("Full Screen")
+                    .on_hover_text("Watch the picture on the whole screen (F). Escape to come back")
+                    .clicked()
+                {
+                    state.fullscreen = true;
+                    state.needs_repaint = true;
+                }
+                // Hearing the sound while the playhead is dragged.
+                if ui
+                    .selectable_label(state.audio_scrub, "Scrub")
+                    .on_hover_text("Play the sound while the playhead is dragged or stepped")
+                    .clicked()
+                {
+                    state.audio_scrub = !state.audio_scrub;
+                    state.needs_repaint = true;
+                }
+
+                // Before and after: the preview without any grade or effect.
+                if ui
+                    .selectable_label(state.compare_original, "Before")
+                    .on_hover_text("Show the picture without its colour grade and effects, to compare. Click again for after")
+                    .clicked()
+                {
+                    state.compare_original = !state.compare_original;
+                    state.needs_repaint = true;
+                }
+                // The same comparison with both halves on screen at once, which is
+                // what makes a small change in a grade visible at all.
+                if ui
+                    .selectable_label(state.compare_split, "Split")
+                    .on_hover_text(
+                        "Show the original on one side of the picture and the graded \
+                         version on the other. Drag the divider to move it.",
+                    )
+                    .clicked()
+                {
+                    state.compare_split = !state.compare_split;
+                    if state.compare_split {
+                        // The two comparisons would fight over the whole frame.
+                        state.compare_original = false;
+                    }
+                    state.needs_repaint = true;
+                }
+
+                // Guides over the picture: thirds, safe margins, a phone app's buttons.
+                ui.menu_button(
+                    if state.preview_guide == crate::state::PreviewGuide::Off {
+                        "Guides"
+                    } else {
+                        "Guides •"
+                    },
+                    |ui| {
+                        for guide in crate::state::PreviewGuide::ALL {
+                            if ui
+                                .selectable_label(state.preview_guide == guide, guide.label())
+                                .on_hover_text(guide.description())
+                                .clicked()
+                            {
+                                state.preview_guide = guide;
+                                state.needs_repaint = true;
+                                ui.close();
+                            }
                         }
-                    }
-                    ui.separator();
-                    if ui
-                        .checkbox(&mut state.preview_timecode, "Timecode")
-                        .on_hover_text(
-                            "The playhead's timecode in the corner of the preview, for a screen recording sent for notes. Never in the export.",
-                        )
-                        .changed()
-                    {
-                        state.needs_repaint = true;
-                    }
+                        ui.separator();
+                        if ui
+                            .checkbox(&mut state.preview_timecode, "Timecode")
+                            .on_hover_text(
+                                "The playhead's timecode in the corner of the preview, for a screen recording sent for notes. Never in the export.",
+                            )
+                            .changed()
+                        {
+                            state.needs_repaint = true;
+                        }
+                    },
+                )
+                .response
+                .on_hover_text("Lines over the preview for placing things. Never in the export");
                 },
-            )
-            .response
-            .on_hover_text("Lines over the preview for placing things. Never in the export");
-        })
-        .response
-        .on_hover_text("Loop, full screen, scrub, before and after, split view and guides");
-        // A voiceover: record while the edit plays; the take lands where the
-        // playhead started.
-        let label = match state.voiceover_live {
-            Some((seconds, _)) => format!("Stop Recording {:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0),
-            None => "Record Voice".to_owned(),
-        };
-        let record = ui
-            .add(egui::Button::new(if state.voiceover_live.is_some() {
-                egui::RichText::new(label).color(theme::error_text())
-            } else {
-                egui::RichText::new(label)
-            }))
-            .on_hover_text("Record from the microphone while the edit plays. The recording goes on a sound track where the playhead was");
-        if let Some((_, level)) = state.voiceover_live {
-            // A small level bar, so a silent microphone shows before the take
-            // is wasted.
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 8.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 2, theme::timeline_background());
-            let filled = egui::Rect::from_min_size(
-                rect.min,
-                egui::vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()),
             );
-            ui.painter().rect_filled(filled, 2, theme::playhead());
+            if icons::button(
+                ui,
+                Icon::Loop,
+                looping,
+                &crate::keys::keys(
+                    "Loop: play the stretch between the in and out marks over and over — \
+                     or the whole timeline when there are none (Ctrl+L)",
+                ),
+            )
+            .clicked()
+            {
+                toggle_loop = true;
+            }
+            theme::bar_divider(ui);
+            // The frame's shape, and how big the picture is drawn.
+            ratio_menu(ui, editor, state);
+            ui.menu_button(state.preview_zoom.label(), |ui| {
+                for zoom in crate::state::PreviewZoom::CHOICES {
+                    if ui
+                        .selectable_label(state.preview_zoom == zoom, zoom.label())
+                        .clicked()
+                    {
+                        state.preview_zoom = zoom;
+                        state.preview_pan = egui::Vec2::ZERO;
+                        state.needs_repaint = true;
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Look closer at the picture. Ctrl + scroll over it zooms; drag with the middle button to move around");
+        });
+
+        match preview {
+            Some(preview) => {
+                if let Some(position) = seek_to {
+                    editor.set_playhead(position);
+                    // Keep the clock with the playhead, or resuming would jump
+                    // back to wherever playback last was (§20a.1).
+                    preview.seek_to(editor.playhead());
+                }
+                if toggle_play {
+                    preview.set_playing(editor, !playing);
+                    state.info(if playing { "Paused" } else { "Playing" });
+                }
+                if toggle_loop {
+                    preview.set_looping(!looping);
+                    state.info(if looping { "Loop off" } else { "Loop on" });
+                }
+            }
+            None => {
+                // §50: no renderer is not a reason to stop the playhead moving.
+                if let Some(position) = seek_to {
+                    editor.set_playhead(position);
+                }
+                if toggle_play {
+                    state.error("No preview renderer");
+                }
+            }
         }
-        if record.clicked() {
-            state.voiceover_toggle = true;
+
+        if seek_to.is_some() || toggle_play {
+            state.scroll_to_reveal(editor.playhead(), width);
+            state.needs_repaint = true;
+        }
+    });
+}
+
+/// The strip above the timeline: the everyday cuts as icons on the left —
+/// above the timeline, where CapCut keeps them, each saying its key — and on
+/// the right the meters, recording, snapping and the magnetic main track.
+pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let playhead = editor.playhead();
+        let duration = editor
+            .active_sequence()
+            .map_or(TimelineTime::ZERO, |s| s.duration());
+        let has_clips = duration > TimelineTime::ZERO;
+
+        let split = ui
+            .add_enabled_ui(has_clips, |ui| {
+                icons::button(
+                    ui,
+                    Icon::Split,
+                    false,
+                    &crate::keys::keys(
+                        "Split: cut the selected clip, or the one under the playhead, at the playhead (S)",
+                    ),
+                )
+            })
+            .inner;
+        if split.clicked() {
+            crate::shortcuts::split_at_playhead(editor, state);
+        }
+        let blade = ui
+            .add_enabled_ui(has_clips || state.blade, |ui| {
+                icons::button(
+                    ui,
+                    Icon::Blade,
+                    state.blade,
+                    &crate::keys::keys("Blade: a click on a clip cuts it where you click (B)"),
+                )
+            })
+            .inner;
+        if blade.clicked() {
+            state.blade = !state.blade;
+        }
+        let delete = ui
+            .add_enabled_ui(!state.selected_clips.is_empty(), |ui| {
+                icons::button(
+                    ui,
+                    Icon::Trash,
+                    false,
+                    &crate::keys::keys(
+                        "Delete the selected clips (Del). Shift+Delete closes the gap",
+                    ),
+                )
+            })
+            .inner;
+        if delete.clicked() {
+            if ui.input(|i| i.modifiers.shift) {
+                crate::shortcuts::ripple_delete_selection(editor, state);
+            } else {
+                crate::shortcuts::delete_selection(editor, state);
+            }
+        }
+        theme::bar_divider(ui);
+        let trim_start = ui
+            .add_enabled_ui(has_clips, |ui| {
+                icons::button(
+                    ui,
+                    Icon::TrimStart,
+                    false,
+                    &crate::keys::keys(
+                        "Trim Start: cut away the selected clip before the playhead and close the gap (Q)",
+                    ),
+                )
+            })
+            .inner;
+        if trim_start.clicked() {
+            crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::Start);
+        }
+        let trim_end = ui
+            .add_enabled_ui(has_clips, |ui| {
+                icons::button(
+                    ui,
+                    Icon::TrimEnd,
+                    false,
+                    &crate::keys::keys(
+                        "Trim End: cut away the selected clip after the playhead and close the gap (W)",
+                    ),
+                )
+            })
+            .inner;
+        if trim_end.clicked() {
+            crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::End);
+        }
+        theme::bar_divider(ui);
+        let freeze = ui
+            .add_enabled_ui(has_clips, |ui| {
+                icons::button(
+                    ui,
+                    Icon::Freeze,
+                    false,
+                    "Freeze: hold the frame under the playhead for 2 seconds, pushing what follows along",
+                )
+            })
+            .inner;
+        if freeze.clicked() {
+            freeze_here(editor, state);
+        }
+        let marker = ui
+            .add_enabled_ui(has_clips, |ui| {
+                icons::button(
+                    ui,
+                    Icon::Marker,
+                    false,
+                    &crate::keys::keys(
+                        "Marker: put one at the playhead, or take away the one there (M)",
+                    ),
+                )
+            })
+            .inner;
+        if marker.clicked() {
+            match editor.toggle_marker(playhead) {
+                Ok(true) => state.info("Marker added"),
+                Ok(false) => state.info("Marker removed"),
+                Err(err) => state.error(err.to_string()),
+            }
         }
         // What can be made from the frame under the playhead, one menu.
-        ui.menu_button("Frame", |ui| {
+        icons::menu(
+            ui,
+            Icon::Camera,
+            "Frame: save or copy this frame, set the cover, make a contact sheet, render the marked stretch",
+            |ui| {
             // Beside the timecode, because the frame it saves is the one that
             // timecode names.
             if ui
@@ -3903,136 +4200,82 @@ pub fn transport(
                 state.needs_repaint = true;
             }
 
-        })
-        .response
-        .on_hover_text("Save or copy this frame, set the cover, make a contact sheet, render the marked stretch");
-
-        // §20a: what is going to the device, right now.
-        if let Some(stats) = state.playback {
-            ui.separator();
-            draw_meter(ui, stats.peaks, stats.limited_samples > 0);
-            draw_loudness(ui, stats.loudness, state.loudness_target);
+            },
+        );
+        theme::bar_divider(ui);
+        // A voiceover: record while the edit plays; the take lands where the
+        // playhead started.
+        let label = match state.voiceover_live {
+            Some((seconds, _)) => format!("Stop Recording {:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0),
+            None => "Record Voice".to_owned(),
+        };
+        let live = state.voiceover_live.is_some();
+        let record = icons::button(
+            ui,
+            Icon::Record,
+            live,
+            &format!(
+                "{label}: record from the microphone while the edit plays. The recording goes on a sound track where the playhead was"
+            ),
+        );
+        if live {
+            ui.label(
+                egui::RichText::new(label.trim_start_matches("Stop Recording ").to_owned())
+                    .monospace()
+                    .color(theme::error_text()),
+            );
         }
+        if let Some((_, level)) = state.voiceover_live {
+            // A small level bar, so a silent microphone shows before the take
+            // is wasted.
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 8.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2, theme::timeline_background());
+            let filled = egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()),
+            );
+            ui.painter().rect_filled(filled, 2, theme::playhead());
+        }
+        if record.clicked() {
+            state.voiceover_toggle = true;
+        }
+        theme::bar_divider(ui);
+        // The sequences, as tabs, in the middle of the strip.
+        sequence_tabs(ui, editor, state);
 
-        let width = ui.available_width().max(400.0);
-
-        // The everyday cuts, as buttons at the end of the row — above the
-        // timeline, where CapCut keeps them — so they can be found without
-        // knowing the keys. Each says its key, to learn it from. Left out when
-        // the row has no room for them, rather than drawn over the meter: the
-        // keys and the clip menu still do all four.
-        const EDIT_BUTTONS_WIDTH: f32 = 210.0;
-        const TRIM_BUTTONS_WIDTH: f32 = 390.0;
-        // Marker and Freeze, as CapCut has them too, when there is room for
-        // all seven; the cuts come first when there is not.
-        const ALL_EDIT_BUTTONS_WIDTH: f32 = 540.0;
-        let room = ui.available_width() >= EDIT_BUTTONS_WIDTH;
-        let roomy = ui.available_width() >= ALL_EDIT_BUTTONS_WIDTH;
-        let trims = ui.available_width() >= TRIM_BUTTONS_WIDTH;
-        if room {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let has_clips = duration > TimelineTime::ZERO;
-            if roomy {
-                let freeze = ui
-                    .add_enabled(has_clips, egui::Button::new("Freeze"))
-                    .on_hover_text(
-                        "Hold the frame under the playhead for 2 seconds, pushing what follows along",
-                    );
-                let marker = ui
-                    .add_enabled(has_clips, egui::Button::new("Marker"))
-                    .on_hover_text(crate::keys::keys(
-                        "Put a marker at the playhead, or take away the one there (M)",
-                    ));
-                if marker.clicked() {
-                    match editor.toggle_marker(editor.playhead()) {
-                        Ok(true) => state.info("Marker added"),
-                        Ok(false) => state.info("Marker removed"),
-                        Err(err) => state.error(err.to_string()),
-                    }
-                }
-                if freeze.clicked() {
-                    freeze_here(editor, state);
-                }
+            ui.spacing_mut().item_spacing.x = 2.0;
+            // A magnetic main track: the first picture lane stays packed, so a
+            // delete or a drag closes up behind it.
+            let magnetic = editor.is_magnetic();
+            if icons::button(
+                ui,
+                Icon::Magnet,
+                magnetic,
+                "Magnetic main track: keep its clips together from the start, so deleting or moving one closes the gap",
+            )
+            .clicked()
+            {
+                set_magnetic(editor, state, !magnetic);
             }
-            let trim_end = trims.then(|| ui
-                .add_enabled(has_clips, egui::Button::new("Trim End"))
-                .on_hover_text(crate::keys::keys(
-                    "Cut away the selected clip after the playhead and close the gap (W)",
-                )));
-            let trim_start = trims.then(|| ui
-                .add_enabled(has_clips, egui::Button::new("Trim Start"))
-                .on_hover_text(crate::keys::keys(
-                    "Cut away the selected clip before the playhead and close the gap (Q)",
-                )));
-            let delete = ui
-                .add_enabled(!state.selected_clips.is_empty(), egui::Button::new("Delete"))
-                .on_hover_text(crate::keys::keys(
-                    "Delete the selected clips (Del). Shift+Delete closes the gap",
-                ));
-            let blade = ui
-                .add_enabled(has_clips || state.blade, egui::Button::selectable(state.blade, "Blade"))
-                .on_hover_text(crate::keys::keys(
-                    "The blade: a click on a clip cuts it where you click (B)",
-                ));
-            if blade.clicked() {
-                state.blade = !state.blade;
+            if icons::button(
+                ui,
+                Icon::Snap,
+                state.snapping,
+                "Snap edits to clip edges and the playhead (N). Hold Alt to bypass",
+            )
+            .clicked()
+            {
+                state.snapping = !state.snapping;
+                state.needs_repaint = true;
             }
-            let split = ui
-                .add_enabled(has_clips, egui::Button::new("Split"))
-                .on_hover_text(crate::keys::keys(
-                    "Cut the selected clip, or the one under the playhead, at the playhead (S)",
-                ));
-            if split.clicked() {
-                crate::shortcuts::split_at_playhead(editor, state);
-            }
-            if delete.clicked() {
-                if ui.input(|i| i.modifiers.shift) {
-                    crate::shortcuts::ripple_delete_selection(editor, state);
-                } else {
-                    crate::shortcuts::delete_selection(editor, state);
-                }
-            }
-            if trim_start.is_some_and(|r| r.clicked()) {
-                crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::Start);
-            }
-            if trim_end.is_some_and(|r| r.clicked()) {
-                crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::End);
+            // §20a: what is going to the device, right now.
+            if let Some(stats) = state.playback {
+                theme::bar_divider(ui);
+                draw_meter(ui, stats.peaks, stats.limited_samples > 0);
+                draw_loudness(ui, stats.loudness, state.loudness_target);
             }
         });
-        }
-
-        match preview {
-            Some(preview) => {
-                if let Some(position) = seek_to {
-                    editor.set_playhead(position);
-                    // Keep the clock with the playhead, or resuming would jump
-                    // back to wherever playback last was (§20a.1).
-                    preview.seek_to(editor.playhead());
-                }
-                if toggle_play {
-                    preview.set_playing(editor, !playing);
-                    state.info(if playing { "Paused" } else { "Playing" });
-                }
-                if toggle_loop {
-                    preview.set_looping(!looping);
-                    state.info(if looping { "Loop off" } else { "Loop on" });
-                }
-            }
-            None => {
-                // §50: no renderer is not a reason to stop the playhead moving.
-                if let Some(position) = seek_to {
-                    editor.set_playhead(position);
-                }
-                if toggle_play {
-                    state.error("No preview renderer");
-                }
-            }
-        }
-
-        if seek_to.is_some() || toggle_play {
-            state.scroll_to_reveal(editor.playhead(), width);
-            state.needs_repaint = true;
-        }
     });
 }
 
@@ -4281,7 +4524,7 @@ fn thumbnail(
     duration: MediaTime,
 ) {
     let mut clicked_at: Option<MediaTime> = None;
-    let width = ui.available_width().min(180.0);
+    let width = ui.available_width().min(320.0);
     // 16:9 is only a guess for the placeholder — a real thumbnail draws at its
     // own aspect, letterboxed into this box rather than stretched.
     let size = egui::vec2(width, width * 9.0 / 16.0);
@@ -4526,26 +4769,83 @@ impl InspectorTab {
 /// selection would move the tab under the pointer between one click and the
 /// next.
 fn inspector_tabs(ui: &mut egui::Ui, state: &mut UiState, has_video: bool, has_audio: bool) {
-    ui.horizontal_wrapped(|ui| {
-        for tab in InspectorTab::ALL {
-            let enabled = match tab {
-                InspectorTab::Video
-                | InspectorTab::Effects
-                | InspectorTab::Colours
-                | InspectorTab::Animation => has_video,
-                InspectorTab::Audio => has_audio,
-                // Nothing to configure yet, but the tab is where it will be.
-                InspectorTab::Speed => true,
-            };
-            let selected = state.inspector_tab == tab;
-            let response = ui
-                .add_enabled_ui(enabled, |ui| ui.selectable_label(selected, tab.label()))
-                .inner;
-            if response.clicked() {
-                state.inspector_tab = tab;
-            }
+    // A segmented control: one well with the tabs as segments, the chosen one
+    // raised. Six across when they fit, three and three when the panel is
+    // narrow, so no name is ever cut.
+    let p = theme::palette();
+    let font = egui::FontId::proportional(12.5);
+    let widest = InspectorTab::ALL
+        .iter()
+        .map(|tab| {
+            ui.painter()
+                .layout_no_wrap(tab.label().to_owned(), font.clone(), p.text)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let width = ui.available_width();
+    let per_row = if width / InspectorTab::ALL.len() as f32 >= widest + 8.0 {
+        InspectorTab::ALL.len()
+    } else {
+        InspectorTab::ALL.len().div_ceil(2)
+    };
+    let rows = InspectorTab::ALL.len().div_ceil(per_row);
+    let height = 26.0;
+    let (well, _) = ui.allocate_exact_size(
+        egui::vec2(width, rows as f32 * height + 4.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(well, theme::RADIUS, p.field);
+    ui.painter().rect_stroke(
+        well,
+        theme::RADIUS,
+        egui::Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
+    let segment = (well.width() - 4.0) / per_row as f32;
+    for (index, tab) in InspectorTab::ALL.into_iter().enumerate() {
+        let enabled = match tab {
+            InspectorTab::Video
+            | InspectorTab::Effects
+            | InspectorTab::Colours
+            | InspectorTab::Animation => has_video,
+            InspectorTab::Audio => has_audio,
+            // Nothing to configure yet, but the tab is where it will be.
+            InspectorTab::Speed => true,
+        };
+        let (row, column) = (index / per_row, index % per_row);
+        let rect = egui::Rect::from_min_size(
+            well.min + egui::vec2(2.0 + column as f32 * segment, 2.0 + row as f32 * height),
+            egui::vec2(segment, height),
+        );
+        let response = ui.interact(
+            rect,
+            ui.id().with(("inspector tab", index)),
+            if enabled { egui::Sense::click() } else { egui::Sense::hover() },
+        );
+        let selected = state.inspector_tab == tab;
+        if selected {
+            ui.painter().rect_filled(rect.shrink(1.0), theme::RADIUS_SMALL, p.hover);
+        } else if enabled && response.hovered() {
+            ui.painter().rect_filled(rect.shrink(1.0), theme::RADIUS_SMALL, p.control);
         }
-    });
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            tab.label(),
+            font.clone(),
+            if !enabled {
+                p.text_faint
+            } else if selected {
+                p.text_strong
+            } else {
+                p.text_muted
+            },
+        );
+        if enabled && response.clicked() {
+            state.inspector_tab = tab;
+        }
+    }
 
     // A tab that has just become unavailable — the selection changed to an
     // audio clip while Video was open — would otherwise show an explanation
@@ -11353,7 +11653,9 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         state.status_seen = text;
     }
     state.last_undo_depth = depth;
-    ui.horizontal(|ui| {
+    ui.horizontal_centered(|ui| {
+        // Small type throughout: the status line is read in passing.
+        ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
         match &state.status {
             Some(message) if message.is_error => {
                 ui.label(egui::RichText::new(&message.text).color(theme::error_text()));
@@ -11379,7 +11681,7 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                         "S split · Del delete · Shift+Del ripple · Ctrl+D duplicate · \
                          N snap · drag edges to trim · Ctrl+K any action",
                     ))
-                    .color(theme::disabled()),
+                    .color(theme::text_faint()),
                 );
             }
             None => {}
@@ -11426,25 +11728,6 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     "How long this sequence runs, and how many clips are in it",
                 );
             });
-        }
-
-        // Snapping and the magnetic main track, always in sight as in
-        // CapCut: they change what every drag does.
-        ui.separator();
-        if ui
-            .selectable_label(state.snapping, "Snap")
-            .on_hover_text(crate::keys::keys("Snap edits to clip edges, markers and the playhead (N). Hold Alt to bypass"))
-            .clicked()
-        {
-            state.snapping = !state.snapping;
-        }
-        let magnetic = editor.is_magnetic();
-        if ui
-            .selectable_label(magnetic, "Magnet")
-            .on_hover_text("The main track stays packed: deleting or moving a clip closes the gap")
-            .clicked()
-        {
-            set_magnetic(editor, state, !magnetic);
         }
 
         // §47a.4 / §20a: quiet when playback is keeping up, loud when it is

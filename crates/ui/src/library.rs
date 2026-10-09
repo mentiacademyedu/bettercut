@@ -111,22 +111,89 @@ impl LibraryTab {
     }
 }
 
-/// The row of tabs.
-pub fn tabs(ui: &mut egui::Ui, state: &mut UiState) {
-    ui.horizontal_wrapped(|ui| {
-        // Tight, so the seven fit on two rows at the panel's usual width.
-        ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
-        ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-        for tab in LibraryTab::ALL {
-            if ui
-                .selectable_label(state.library_tab == tab, tab.label())
-                .clicked()
-            {
-                state.library_tab = tab;
-            }
+impl LibraryTab {
+    /// The tab's icon on the rail.
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Media => Icon::Media,
+            Self::Audio => Icon::Music,
+            Self::Text => Icon::Text,
+            Self::Stickers => Icon::Sticker,
+            Self::Effects => Icon::Effects,
+            Self::Transitions => Icon::Transitions,
+            Self::Filters => Icon::Filters,
         }
-    });
-    ui.separator();
+    }
+}
+
+/// How wide the rail of tabs down the left edge is.
+pub const RAIL_WIDTH: f32 = 64.0;
+
+/// The tabs as a rail down the left edge, as a professional asset library
+/// has them: an icon with its name under it, the open one lit in the accent
+/// with a bar along its edge. A column rather than a row, so all seven fit at
+/// any panel width and the names never wrap.
+pub fn rail(ui: &mut egui::Ui, state: &mut UiState) {
+    let p = theme::palette();
+    ui.spacing_mut().item_spacing.y = 2.0;
+    ui.add_space(6.0);
+    for tab in LibraryTab::ALL {
+        let size = egui::vec2(RAIL_WIDTH - 8.0, 50.0);
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let response = response.on_hover_text(tab.label());
+        let on = state.library_tab == tab;
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            let rect = rect.translate(egui::vec2(4.0, 0.0));
+            if on {
+                painter.rect_filled(rect, theme::RADIUS, p.accent.gamma_multiply(0.18));
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.left() - 4.0, rect.top() + 12.0),
+                        egui::vec2(3.0, rect.height() - 24.0),
+                    ),
+                    1.5,
+                    p.accent,
+                );
+            } else if response.hovered() {
+                painter.rect_filled(rect, theme::RADIUS, p.hover);
+            }
+            let colour = if on {
+                p.accent_text
+            } else if response.hovered() {
+                p.text_strong
+            } else {
+                p.text_muted
+            };
+            crate::icons::paint(
+                painter,
+                egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 18.0),
+                    egui::Vec2::splat(18.0),
+                ),
+                tab.icon(),
+                colour,
+            );
+            painter.text(
+                egui::pos2(rect.center().x, rect.bottom() - 10.0),
+                egui::Align2::CENTER_CENTER,
+                tab.label(),
+                egui::FontId::proportional(10.0),
+                colour,
+            );
+        }
+        if response.clicked() {
+            state.library_tab = tab;
+            state.needs_repaint = true;
+        }
+    }
+}
+
+/// The open tab's name, as the heading of the panel beside the rail.
+pub fn heading(ui: &mut egui::Ui, state: &UiState) {
+    ui.label(theme::strong(state.library_tab.label(), theme::TEXT_HEADING).color(theme::text()));
+    ui.add_space(theme::SPACE_S);
 }
 
 /// The tab's contents, for every tab but Media (which is the media browser).

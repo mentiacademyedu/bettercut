@@ -674,9 +674,13 @@ fn zoom_control(ui: &mut egui::Ui, rect: Rect, state: &mut UiState) {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.spacing_mut().slider_width = (corner.width() - 52.0).max(20.0);
+            ui.spacing_mut().slider_rail_height = 3.0;
+            ui.spacing_mut().interact_size.y = 18.0;
             if ui
-                .add_enabled(state.can_zoom_out(), egui::Button::new("-").small())
-                .on_hover_text("Zoom out")
+                .add_enabled_ui(state.can_zoom_out(), |ui| {
+                    crate::icons::button_sized(ui, crate::icons::Icon::ZoomOut, false, "Zoom out", 22.0)
+                })
+                .inner
                 .clicked()
             {
                 state.zoom_out();
@@ -691,8 +695,10 @@ fn zoom_control(ui: &mut egui::Ui, rect: Rect, state: &mut UiState) {
                 state.set_zoom_step(step);
             }
             if ui
-                .add_enabled(state.can_zoom_in(), egui::Button::new("+").small())
-                .on_hover_text("Zoom in")
+                .add_enabled_ui(state.can_zoom_in(), |ui| {
+                    crate::icons::button_sized(ui, crate::icons::Icon::ZoomIn, false, "Zoom in", 22.0)
+                })
+                .inner
                 .clicked()
             {
                 state.zoom_in();
@@ -713,7 +719,7 @@ fn draw_overview(
     state: &UiState,
     lane_width: f32,
 ) {
-    painter.rect_filled(rect, 0, theme::track_header());
+    painter.rect_filled(rect, 0, theme::timeline_background());
     painter.line_segment(
         [
             Pos2::new(rect.left(), rect.top()),
@@ -755,8 +761,8 @@ fn draw_overview(
         let x1 = x_of(span.timeline.end.ticks()).max(x0 + 1.0);
         painter.rect_filled(
             Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + row - 1.0)),
-            0,
-            colour,
+            1.0,
+            colour.gamma_multiply(0.85),
         );
     }
 
@@ -776,11 +782,11 @@ fn draw_overview(
             rect.bottom() - 2.0,
         ),
     );
-    painter.rect_filled(view, 2, theme::selection().gamma_multiply(0.15));
+    painter.rect_filled(view, 3, theme::accent().gamma_multiply(0.14));
     painter.rect_stroke(
         view,
-        2,
-        Stroke::new(1.0, theme::selection()),
+        3,
+        Stroke::new(1.0, theme::accent().gamma_multiply(0.8)),
         StrokeKind::Inside,
     );
 }
@@ -2130,7 +2136,11 @@ fn draw_ruler(
     pointer: Option<Pos2>,
 ) {
     let ruler = Rect::from_min_size(rect.min, vec2(rect.width(), theme::RULER_HEIGHT));
-    painter.rect_filled(ruler, 0, theme::track_header());
+    painter.rect_filled(ruler, 0, theme::panel());
+    painter.line_segment(
+        [ruler.left_bottom(), ruler.right_bottom()],
+        Stroke::new(1.0, theme::grid_line()),
+    );
 
     // The time under the pointer, as the ruler's own readout: scrubbing is
     // one thing, knowing where a cut would land before clicking is another.
@@ -2158,8 +2168,8 @@ fn draw_ruler(
         );
         let at = anchor_at + nudge;
         let box_at = align.anchor_size(at, galley.size());
-        painter.rect_filled(box_at.expand(2.0), 2, theme::track_header());
-        painter.galley(box_at.min, galley, theme::ruler_text());
+        painter.rect_filled(box_at.expand(3.0), 3, theme::control());
+        painter.galley(box_at.min, galley, theme::text());
     }
 
     // Pick the finest label interval that still leaves ~70 px between labels.
@@ -2177,27 +2187,42 @@ fn draw_ruler(
     let last = viewport.scroll_ticks.saturating_add(span);
     let mut ticks = (viewport.scroll_ticks / step_ticks) * step_ticks;
 
+    // Minor ticks between the labelled ones: four, or five for steps that
+    // divide by five, so they fall on round numbers.
+    let minors: i64 = if step_seconds % 5 == 0 && step_seconds % 10 != 0 { 5 } else { 4 };
     while ticks <= last {
         let t = TimelineTime::from_ticks(ticks);
         let x = viewport.x_of(t);
+        for minor in 1..minors {
+            let mx = viewport.x_of(TimelineTime::from_ticks(ticks + step_ticks * minor / minors));
+            if mx >= viewport.origin_x && mx <= rect.right() {
+                painter.line_segment(
+                    [
+                        Pos2::new(mx, ruler.bottom() - 4.0),
+                        Pos2::new(mx, ruler.bottom()),
+                    ],
+                    Stroke::new(1.0, theme::grid_line()),
+                );
+            }
+        }
         if x >= viewport.origin_x - 1.0 {
             painter.line_segment(
                 [
-                    Pos2::new(x, ruler.bottom() - 6.0),
+                    Pos2::new(x, ruler.bottom() - 9.0),
                     Pos2::new(x, ruler.bottom()),
                 ],
-                Stroke::new(1.0, theme::ruler_text()),
+                Stroke::new(1.0, theme::ruler_text().gamma_multiply(0.8)),
             );
             painter.text(
-                Pos2::new(x + 4.0, ruler.top() + 4.0),
+                Pos2::new(x + 4.0, ruler.top() + 5.0),
                 Align2::LEFT_TOP,
                 (t + start).format_timecode(),
-                FontId::monospace(11.0),
+                FontId::monospace(10.5),
                 theme::ruler_text(),
             );
             painter.line_segment(
                 [Pos2::new(x, ruler.bottom()), Pos2::new(x, rect.bottom())],
-                Stroke::new(1.0, theme::grid_line()),
+                Stroke::new(1.0, theme::grid_line().gamma_multiply(0.55)),
             );
         }
         match ticks.checked_add(step_ticks) {
@@ -2625,7 +2650,7 @@ fn draw_header_meter(painter: &egui::Painter, header: Rect, (left, right): (f32,
 /// same answer: a button drawn in one place and clickable in another is the
 /// kind of bug nobody reports, they just decide the app is broken.
 pub fn header_buttons(header: Rect) -> [Rect; 3] {
-    const SIZE: f32 = 16.0;
+    const SIZE: f32 = 18.0;
     const GAP: f32 = 3.0;
     let y = header.center().y - SIZE / 2.0;
     let solo_x = header.right() - SIZE - 8.0;
@@ -2651,6 +2676,13 @@ fn draw_lane_background(painter: &egui::Painter, lane: Rect, viewport: Viewport,
         } else {
             theme::track_lane_alt()
         },
+    );
+    painter.line_segment(
+        [
+            Pos2::new(lanes.left(), lanes.bottom() + theme::TRACK_GAP / 2.0),
+            Pos2::new(lanes.right(), lanes.bottom() + theme::TRACK_GAP / 2.0),
+        ],
+        Stroke::new(1.0, theme::grid_line().gamma_multiply(0.6)),
     );
 }
 
@@ -2681,17 +2713,27 @@ fn draw_track_header<C>(
         [header.right_top(), header.right_bottom()],
         Stroke::new(1.0, theme::grid_line()),
     );
+    painter.line_segment(
+        [
+            Pos2::new(header.left(), header.bottom() + theme::TRACK_GAP / 2.0),
+            Pos2::new(header.right(), header.bottom() + theme::TRACK_GAP / 2.0),
+        ],
+        Stroke::new(1.0, theme::grid_line().gamma_multiply(0.6)),
+    );
 
-    painter.text(
-        Pos2::new(header.left() + 10.0, header.center().y - 7.0),
+    // The name, clipped short of the buttons so a long one never runs under
+    // them.
+    let [first_button, _, _] = header_buttons(header);
+    let name_room = Rect::from_min_max(
+        Pos2::new(header.left() + 12.0, header.top()),
+        Pos2::new(first_button.left() - 4.0, header.bottom()),
+    );
+    painter.with_clip_rect(name_room).text(
+        Pos2::new(header.left() + 12.0, header.center().y - 7.0),
         Align2::LEFT_CENTER,
         name,
-        FontId::proportional(13.0),
-        if enabled {
-            theme::clip_text()
-        } else {
-            theme::disabled()
-        },
+        FontId::new(12.5, theme::strong_family()),
+        if enabled { theme::text() } else { theme::text_faint() },
     );
 
     // The two the mixer needs most, on the header rather than behind a
@@ -2702,33 +2744,42 @@ fn draw_track_header<C>(
         draw_header_meter(painter, header, level);
     }
 
+    // Target and solo as letters, the way every editor marks them; showing
+    // and hearing as an eye or a speaker, crossed out when off.
     let [target_rect, mute_rect, solo_rect] = header_buttons(header);
-    for (rect, glyph, on) in [
-        (target_rect, "T", track.targeted),
-        (mute_rect, "M", !enabled),
-        (solo_rect, "S", solo),
+    let p = theme::palette();
+    for (rect, on, on_fill) in [
+        (target_rect, track.targeted, p.accent),
+        (mute_rect, !enabled, p.playhead),
+        (solo_rect, solo, p.selection),
     ] {
-        painter.rect_filled(
-            rect,
-            3,
-            if on {
-                theme::selection()
-            } else {
-                theme::timeline_background()
-            },
-        );
+        painter.rect_filled(rect, 4, if on { on_fill } else { p.control });
+    }
+    for (rect, glyph, on) in [(target_rect, "T", track.targeted), (solo_rect, "S", solo)] {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
             glyph,
-            FontId::proportional(10.0),
+            FontId::new(10.5, theme::strong_family()),
             if on {
-                theme::background()
+                if glyph == "S" { Color32::from_gray(24) } else { Color32::WHITE }
             } else {
-                theme::disabled()
+                p.text_muted
             },
         );
     }
+    let hearing = mix.is_some();
+    crate::icons::paint(
+        painter,
+        mute_rect.shrink(3.0),
+        match (hearing, enabled) {
+            (true, true) => crate::icons::Icon::Speaker,
+            (true, false) => crate::icons::Icon::SpeakerOff,
+            (false, true) => crate::icons::Icon::Eye,
+            (false, false) => crate::icons::Icon::EyeOff,
+        },
+        if enabled { p.text_muted } else { Color32::WHITE },
+    );
 
     let mut badges: Vec<String> = Vec::new();
     if !enabled {
@@ -2761,12 +2812,12 @@ fn draw_track_header<C>(
         }
     }
     if !badges.is_empty() {
-        painter.text(
-            Pos2::new(header.left() + 10.0, header.center().y + 10.0),
+        painter.with_clip_rect(name_room).text(
+            Pos2::new(header.left() + 12.0, header.center().y + 9.0),
             Align2::LEFT_CENTER,
             badges.join(" · "),
             FontId::proportional(10.0),
-            theme::disabled(),
+            if solo { theme::selection() } else { theme::text_muted() },
         );
     }
 }
@@ -3499,12 +3550,21 @@ fn draw_clip(
     painter.rect_filled(clip_rect, theme::CLIP_CORNER_RADIUS, body);
 
     // A brighter cap along the top edge: at a glance it separates stacked clips
-    // far better than a border does.
+    // far better than a border does. Slim, so the picture under it shows.
     let cap = Rect::from_min_max(
         clip_rect.min,
-        Pos2::new(clip_rect.right(), clip_rect.top() + 4.0),
+        Pos2::new(clip_rect.right(), clip_rect.top() + 3.0),
     );
-    painter.rect_filled(cap, theme::CLIP_CORNER_RADIUS, top);
+    painter.rect_filled(
+        cap,
+        egui::CornerRadius {
+            nw: theme::CLIP_CORNER_RADIUS,
+            ne: theme::CLIP_CORNER_RADIUS,
+            sw: 0,
+            se: 0,
+        },
+        top,
+    );
 
     // A colour clip shows its colours, fading top to bottom as it does in
     // the frame. Only while it plays and is not being dragged: otherwise the
@@ -3624,6 +3684,17 @@ fn draw_clip(
         draw_transition(painter, lane, viewport, transition, visual.range.end);
     }
 
+    // A hairline in the clip's own colour round the whole clip, so clips
+    // side by side read as separate pieces even where their pictures meet.
+    if !visual.selected {
+        painter.rect_stroke(
+            clip_rect,
+            theme::CLIP_CORNER_RADIUS,
+            Stroke::new(1.0, top.gamma_multiply(0.55)),
+            StrokeKind::Inside,
+        );
+    }
+
     // Top-right, where they do not collide with the file name on the left, and
     // only for what is *not* ordinary: a badge on every clip would be noise.
     draw_clip_badges(painter, clip_rect, &visual);
@@ -3631,20 +3702,29 @@ fn draw_clip(
     // Only label a clip wide enough to read it; below that the text is noise.
     if clip_rect.width() > 46.0 {
         let text_painter = painter.with_clip_rect(clip_rect.shrink(4.0));
-        text_painter.text(
-            Pos2::new(clip_rect.left() + 7.0, clip_rect.center().y + 2.0),
-            Align2::LEFT_CENTER,
-            visual.label,
-            FontId::proportional(12.0),
+        // Top left, as an editor labels a clip, so the middle of it is left
+        // to the pictures and the waveform. A soft shadow keeps it readable
+        // over a bright frame.
+        let colour = match visual.colour {
             // A colour clip is drawn in its own colours: text that reads on
             // them, not the theme's, which can be dark on dark.
-            match visual.colour {
-                Some((upper, lower)) if visual.track_enabled && !visual.dragging => {
-                    theme::text_on(upper.lerp_to_gamma(lower, 0.5))
-                }
-                _ => theme::clip_text(),
-            },
-        );
+            Some((upper, lower)) if visual.track_enabled && !visual.dragging => {
+                theme::text_on(upper.lerp_to_gamma(lower, 0.5))
+            }
+            _ => theme::clip_text(),
+        };
+        let at = Pos2::new(clip_rect.left() + 7.0, clip_rect.top() + 6.0);
+        let font = FontId::proportional(11.5);
+        if colour != Color32::from_gray(24) {
+            text_painter.text(
+                at + vec2(0.0, 1.0),
+                Align2::LEFT_TOP,
+                visual.label,
+                font.clone(),
+                Color32::from_black_alpha(150),
+            );
+        }
+        text_painter.text(at, Align2::LEFT_TOP, visual.label, font, colour);
     }
 }
 
@@ -3772,12 +3852,36 @@ fn draw_trim_handles(painter: &egui::Painter, clip_rect: Rect) {
     if clip_rect.width() < TRIM_HANDLE_PIXELS * 3.0 {
         return;
     }
-    for x in [clip_rect.left(), clip_rect.right() - TRIM_HANDLE_PIXELS] {
+    for (x, left) in [
+        (clip_rect.left(), true),
+        (clip_rect.right() - TRIM_HANDLE_PIXELS, false),
+    ] {
         let handle = Rect::from_min_size(
             Pos2::new(x, clip_rect.top()),
             vec2(TRIM_HANDLE_PIXELS, clip_rect.height()),
         );
-        painter.rect_filled(handle, theme::CLIP_CORNER_RADIUS, theme::selection());
+        let r = theme::CLIP_CORNER_RADIUS;
+        painter.rect_filled(
+            handle,
+            if left {
+                egui::CornerRadius { nw: r, sw: r, ne: 0, se: 0 }
+            } else {
+                egui::CornerRadius { nw: 0, sw: 0, ne: r, se: r }
+            },
+            theme::selection(),
+        );
+        // A grip: two short dark lines, so the edge reads as something to
+        // take hold of.
+        let mid = handle.center();
+        for dx in [-1.25, 1.25] {
+            painter.line_segment(
+                [
+                    Pos2::new(mid.x + dx, mid.y - 5.0),
+                    Pos2::new(mid.x + dx, mid.y + 5.0),
+                ],
+                Stroke::new(1.0, Color32::from_black_alpha(140)),
+            );
+        }
     }
 }
 
@@ -4248,15 +4352,29 @@ fn draw_playhead(painter: &egui::Painter, rect: Rect, viewport: Viewport, playhe
         return;
     }
 
+    let x = x.round() + 0.5;
     painter.line_segment(
-        [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+        [
+            Pos2::new(x, rect.top() + theme::RULER_HEIGHT - 6.0),
+            Pos2::new(x, rect.bottom()),
+        ],
         Stroke::new(1.5, theme::playhead()),
     );
 
-    // Grab handle at the top, so the playhead reads as draggable.
-    let handle = Rect::from_center_size(
-        Pos2::new(x, rect.top() + theme::RULER_HEIGHT / 2.0),
-        vec2(11.0, 11.0),
-    );
-    painter.rect_filled(handle, 2, theme::playhead());
+    // The head, on the ruler: a tab that comes to a point at the line, so the
+    // playhead reads as something to take hold of and shows exactly where it
+    // stands.
+    let top = rect.top() + 4.0;
+    let bottom = rect.top() + theme::RULER_HEIGHT - 2.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(x - 6.0, top),
+            Pos2::new(x + 6.0, top),
+            Pos2::new(x + 6.0, bottom - 7.0),
+            Pos2::new(x, bottom),
+            Pos2::new(x - 6.0, bottom - 7.0),
+        ],
+        theme::playhead(),
+        Stroke::NONE,
+    ));
 }

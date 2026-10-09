@@ -13,7 +13,9 @@ use bettercut_ui::UiState;
 use egui::{Color32, Pos2, RawInput, Rect, vec2};
 
 /// Mirrors `theme::automation()`.
-const AUTOMATION: Color32 = Color32::from_rgb(250, 226, 138);
+fn automation() -> Color32 {
+    bettercut_ui::theme::automation()
+}
 
 /// Thirty seconds of sound on A1 from timeline zero.
 fn setup() -> (bettercut_editor_core::Editor, UiState, ClipId) {
@@ -52,7 +54,7 @@ fn envelope_points(editor: &mut bettercut_editor_core::Editor, state: &mut UiSta
 fn collect(shape: &egui::Shape, points: &mut Vec<Pos2>) {
     match shape {
         egui::Shape::Path(path)
-            if path.stroke.color == egui::epaint::ColorMode::Solid(AUTOMATION) =>
+            if path.stroke.color == egui::epaint::ColorMode::Solid(automation()) =>
         {
             points.extend_from_slice(&path.points);
         }

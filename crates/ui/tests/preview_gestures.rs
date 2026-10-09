@@ -120,15 +120,16 @@ fn release(at: Pos2) -> Event {
 }
 
 /// Where the preview draws its canvas, mirroring `panels::preview`: the
-/// sequence's aspect, letterboxed inside the panel with a 24px margin.
+/// sequence's aspect, letterboxed inside the panel with its margin.
 ///
 /// The panel is the whole window here, because the test draws only the preview.
 fn canvas() -> Rect {
     let panel = Rect::from_min_size(Pos2::ZERO, WINDOW);
     let aspect = 16.0 / 9.0_f32;
-    let mut size = vec2(panel.width() - 24.0, (panel.width() - 24.0) / aspect);
-    if size.y > panel.height() - 24.0 {
-        size = vec2((panel.height() - 24.0) * aspect, panel.height() - 24.0);
+    let margin = 2.0 * bettercut_ui::preview_overlay::PICTURE_MARGIN;
+    let mut size = vec2(panel.width() - margin, (panel.width() - margin) / aspect);
+    if size.y > panel.height() - margin {
+        size = vec2((panel.height() - margin) * aspect, panel.height() - margin);
     }
     Rect::from_center_size(panel.center(), size)
 }

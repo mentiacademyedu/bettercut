@@ -11,7 +11,7 @@ use egui::{Modifiers, Pos2, RawInput, Rect, Vec2, vec2};
 
 /// Mirrors `theme::OVERVIEW_HEIGHT` and `TRACK_HEADER_WIDTH`.
 const OVERVIEW_H: f32 = 30.0;
-const HEADER_W: f32 = 148.0;
+const HEADER_W: f32 = bettercut_ui::theme::TRACK_HEADER_WIDTH;
 const SCREEN: Vec2 = vec2(1200.0, 600.0);
 
 struct Harness {

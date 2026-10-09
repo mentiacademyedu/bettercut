@@ -84,6 +84,9 @@ fn main() -> eframe::Result {
         "bettercut",
         options,
         Box::new(move |cc| {
+            // The system's interface face, before anything is laid out.
+            let found = bettercut_ui::fonts::install(&cc.egui_ctx);
+            tracing::info!(system_font = found, "interface font");
             bettercut_ui::theme::apply(&cc.egui_ctx);
             Ok(Box::new(App::new(requested, cc)))
         }),

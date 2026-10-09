@@ -16,7 +16,9 @@ use egui::{Modifiers, Pos2, RawInput, Rect, vec2};
 /// Mirrors the default zoom, for moving a handle a known distance in time.
 const PX_PER_SECOND: f32 = 30.0;
 /// `theme::fade_handle()`, which is how the handles are found in the frame.
-const HANDLE: egui::Color32 = egui::Color32::from_rgb(240, 240, 240);
+fn handle() -> egui::Color32 {
+    bettercut_ui::theme::fade_handle()
+}
 
 struct Harness {
     ctx: egui::Context,
@@ -95,7 +97,7 @@ impl Harness {
         let output = self.frame(vec![]);
         fn walk(shape: &egui::Shape, out: &mut Vec<Pos2>) {
             match shape {
-                egui::Shape::Rect(rect) if rect.fill == HANDLE => out.push(rect.rect.center()),
+                egui::Shape::Rect(rect) if rect.fill == handle() => out.push(rect.rect.center()),
                 egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
                 _ => {}
             }

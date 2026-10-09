@@ -17,9 +17,11 @@ pub mod export_presets;
 pub mod export_queue;
 pub mod file_details;
 pub mod file_drop;
+pub mod fonts;
 pub mod highlight_dialog;
 pub mod history_panel;
 pub mod icon;
+pub mod icons;
 pub mod keymap;
 pub mod keys;
 pub mod library;
@@ -142,12 +144,16 @@ pub fn draw(
         return;
     }
 
-    egui::Panel::top("toolbar").show(ui, |ui| {
-        panels::toolbar(ui, editor, state, preview.as_deref_mut());
-    });
+    egui::Panel::top("toolbar")
+        .exact_size(theme::BAR_HEIGHT)
+        .frame(theme::bar_frame(theme::background()))
+        .show(ui, |ui| {
+            panels::toolbar(ui, editor, state, preview.as_deref_mut());
+        });
 
     egui::Panel::bottom("status")
         .resizable(false)
+        .frame(theme::bar_frame(theme::background()).inner_margin(egui::Margin::symmetric(10, 3)))
         .show(ui, |ui| {
             panels::status_bar(ui, editor, state);
             if std::mem::take(&mut state.undo_request) {
@@ -168,10 +174,14 @@ pub fn draw(
         .resizable(true)
         .default_size(timeline_height)
         .min_size(140.0)
+        .frame(egui::Frame::NONE.fill(theme::timeline_background()))
         .show(ui, |ui| {
-            panels::sequence_tabs(ui, editor, state);
-            panels::transport(ui, editor, state, preview.as_deref_mut());
-            ui.separator();
+            egui::Panel::top("timeline tools")
+                .exact_size(theme::BAR_HEIGHT - 4.0)
+                .frame(theme::bar_frame(theme::panel()))
+                .show(ui, |ui| {
+                    panels::timeline_toolbar(ui, editor, state);
+                });
             timeline::draw(ui, editor, state);
         })
         .response
@@ -179,10 +189,24 @@ pub fn draw(
 
     egui::Panel::left("media")
         .resizable(true)
-        .default_size(240.0)
-        .min_size(160.0)
+        .default_size(300.0)
+        // The rail, the margins and the 160 the browser needs beside them
+        // (`tests/inspector_width.rs`).
+        .min_size(library::RAIL_WIDTH + 20.0 + 160.0)
+        .frame(egui::Frame::NONE.fill(theme::panel()))
         .show(ui, |ui| {
-            panels::media_browser(ui, editor, state);
+            // The tabs as a rail down the edge, and the open one beside it.
+            egui::Panel::left("library rail")
+                .exact_size(library::RAIL_WIDTH)
+                .resizable(false)
+                .frame(egui::Frame::NONE.fill(theme::background()))
+                .show(ui, |ui| library::rail(ui, state));
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    panels::media_browser(ui, editor, state);
+                });
         });
 
     egui::Panel::right("inspector")
@@ -197,13 +221,24 @@ pub fn draw(
         // screen is for, and a long row of choices wraps rather than pushing
         // the preview into a strip.
         .max_size(460.0)
+        .frame(theme::panel_frame())
         .show(ui, |ui| {
             panels::inspector(ui, editor, state);
         });
 
-    egui::CentralPanel::default().show(ui, |ui| {
-        panels::preview(ui, editor, state, preview.as_deref());
-    });
+    // The preview, the centrepiece: the picture on the darkest ground in the
+    // window, with its transport in a bar beneath it.
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(theme::canvas()))
+        .show(ui, |ui| {
+            egui::Panel::bottom("preview bar")
+                .exact_size(theme::BAR_HEIGHT + 4.0)
+                .frame(theme::bar_frame(theme::panel()))
+                .show(ui, |ui| {
+                    panels::preview_bar(ui, editor, state, preview.as_deref_mut());
+                });
+            panels::preview(ui, editor, state, preview.as_deref());
+        });
 
     template_dialog::show(ui.ctx(), editor, state);
     shortcuts::help_window(ui.ctx(), state);

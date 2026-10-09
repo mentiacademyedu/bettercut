@@ -18,8 +18,8 @@ use bettercut_ui::UiState;
 use egui::{Modifiers, Pos2, RawInput, Rect, Vec2, vec2};
 
 /// Mirrors `theme::TRACK_HEADER_WIDTH`, `RULER_HEIGHT`, `TRACK_HEIGHT`.
-const HEADER_W: f32 = 148.0;
-const RULER_H: f32 = 26.0;
+const HEADER_W: f32 = bettercut_ui::theme::TRACK_HEADER_WIDTH;
+const RULER_H: f32 = bettercut_ui::theme::RULER_HEIGHT;
 const TRACK_H: f32 = 58.0;
 const SCREEN: Vec2 = vec2(1200.0, 600.0);
 

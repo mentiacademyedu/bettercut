@@ -14,8 +14,8 @@ use egui::{Modifiers, Pos2, RawInput, Rect, vec2};
 
 /// Mirrors `theme::TRACK_HEADER_WIDTH` and `RULER_HEIGHT`; 30 px a second is
 /// the default zoom.
-const HEADER_W: f32 = 148.0;
-const RULER_H: f32 = 26.0;
+const HEADER_W: f32 = bettercut_ui::theme::TRACK_HEADER_WIDTH;
+const RULER_H: f32 = bettercut_ui::theme::RULER_HEIGHT;
 const PX_PER_SECOND: f32 = 30.0;
 
 struct Harness {

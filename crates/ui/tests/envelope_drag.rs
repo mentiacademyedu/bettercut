@@ -118,7 +118,7 @@ impl Harness {
         fn walk(shape: &egui::Shape, out: &mut Vec<Pos2>) {
             match shape {
                 egui::Shape::Circle(circle)
-                    if circle.fill == egui::Color32::from_rgb(250, 226, 138) =>
+                    if circle.fill == bettercut_ui::theme::automation() =>
                 {
                     out.push(circle.center);
                 }
