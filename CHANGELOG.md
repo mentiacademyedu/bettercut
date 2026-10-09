@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.10 — Sway, Flicker, Heartbeat and new sound effects
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
