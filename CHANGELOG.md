@@ -4,6 +4,11 @@
 
 ### New
 
+- **Voice effects**: Chipmunk, Helium, Deep, Monster, Robot, Alien,
+  Telephone, Radio, Megaphone, Cave and Echo, one click each in the Audio
+  tab. Select a sound clip, or a video with sound. Each sets the pitch,
+  robot, equaliser and echo together, as one undo step; Normal takes it all
+  off. AI assistants get them too (`voice_effect`).
 - **Bounce effect**: the picture hops up and lands, over and over, like a
   ball.
 - **Jump Cut speed ramp**: normal speed, a sudden fast skip, then normal

@@ -224,6 +224,51 @@ fn audio_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             Err(err) => state.error(err.to_string()),
         }
     }
+
+    voice_effects(ui, editor, state);
+}
+
+/// Voice effects for the selected sound — or the sound in the selected
+/// shots — one click each.
+fn voice_effects(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
+    use bettercut_editor_core::voice_effects::VOICE_EFFECTS;
+    let onto: Vec<ClipId> = state.selected_clips.iter().copied().collect();
+    // The voice the first selected sound has, to show which is on.
+    let current = onto.iter().find_map(|&clip| {
+        let sound = if editor.audio_clip(clip).is_some() {
+            Some(clip)
+        } else {
+            editor
+                .linked_with(clip)
+                .into_iter()
+                .find(|c| editor.audio_clip(*c).is_some())
+        }?;
+        editor.voice_effect_of(sound)
+    });
+    ui.add_space(6.0);
+    hint(
+        ui,
+        if current.is_some() {
+            "Voice effects: click to change the selected voice"
+        } else {
+            "Voice effects: select a sound clip, or a video with sound, then click"
+        },
+    );
+    let mut chosen = None;
+    two_to_a_row(ui, &VOICE_EFFECTS, |ui, _, effect, width| {
+        let on = current.is_some_and(|v| v.name == effect.name);
+        let response = cell_button(ui, on, effect.name, width).on_hover_text(effect.description);
+        if response.clicked() {
+            chosen = Some(effect);
+        }
+    });
+    if let Some(effect) = chosen {
+        match editor.apply_voice_effect(&onto, effect) {
+            Ok(_) => state.inspector_tab = InspectorTab::Audio,
+            Err(err) => state.info(err.to_string()),
+        }
+        state.needs_repaint = true;
+    }
 }
 
 fn text_tab(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {

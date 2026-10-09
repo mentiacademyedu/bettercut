@@ -246,7 +246,10 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "flip_and_mirror",
-        description: "Flip a picture clip (`horizontal` and `vertical`, true or false) and/or                       mirror it: `mirror` is off, left & right (the left half and its mirror                       image), top & bottom, four-way, or kaleidoscope. Leave out what should                       stay. One undo step.",
+        description: "Flip a picture clip (`horizontal` and `vertical`, true or false) and/or \
+                      mirror it: `mirror` is off, left & right (the left half and its mirror \
+                      image), top & bottom, four-way, or kaleidoscope. Leave out what should \
+                      stay. One undo step.",
         schema: || {
             object(
                 json!({
@@ -261,7 +264,9 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set_blend",
-        description: "How a picture clip combines with the lanes beneath it: normal, screen                       (only brightens: for light leaks, flares, fire), multiply (only darkens:                       for shadows, paper textures) or add.",
+        description: "How a picture clip combines with the lanes beneath it: normal, screen \
+                      (only brightens: for light leaks, flares, fire), multiply (only darkens: \
+                      for shadows, paper textures) or add.",
         schema: || {
             object(
                 json!({
@@ -273,8 +278,27 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "voice_effect",
+        description: "Change a voice in one go: chipmunk, helium, deep, monster, robot, alien, \
+                      telephone, radio, megaphone, cave, echo, or normal to take every voice \
+                      effect off. Give sound clips, or picture clips to change the sound linked \
+                      to them. Sets pitch, robot, equaliser and echo together; one undo step.",
+        schema: || {
+            object(
+                json!({
+                    "clip_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                    "effect": { "type": "string", "enum": voice_effect_names() }
+                }),
+                &["clip_ids", "effect"],
+            )
+        },
+    },
+    Tool {
         name: "animate_clip",
-        description: "How a picture clip arrives and leaves: `intro` and `outro` are fade,                       slide up, slide down, slide right, slide left, pop, bounce, spin,                       zoom out, swing, or none; `duration` is each one's length in seconds                       (default 0.5). Leave out what should stay. One undo step.",
+        description: "How a picture clip arrives and leaves: `intro` and `outro` are fade, \
+                      slide up, slide down, slide right, slide left, pop, bounce, spin, \
+                      zoom out, swing, or none; `duration` is each one's length in seconds \
+                      (default 0.5). Leave out what should stay. One undo step.",
         schema: || {
             object(
                 json!({
@@ -1484,6 +1508,18 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
         }
         "animate_title" => animate_title(editor, args),
         "animate_clip" => animate_clip(editor, args),
+        "voice_effect" => {
+            use bettercut_editor_core::voice_effects::VoiceEffect;
+            let clips = clip_ids(args)?;
+            let wanted = str_arg(args, "effect")?;
+            let effect = VoiceEffect::named(wanted).ok_or_else(|| {
+                format!("no voice effect {wanted:?}; one of {}", voice_effect_names().join(", "))
+            })?;
+            let changed = editor
+                .apply_voice_effect(&clips, effect)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("{} on {} sound clip(s)", effect.name, changed.len()))
+        }
         "flip_and_mirror" => flip_and_mirror(editor, args),
         "set_blend" => {
             use bettercut_editor_core::timeline::BlendMode;
@@ -3515,7 +3551,7 @@ fn media_name(editor: &Editor, media: MediaId) -> String {
         .map_or_else(String::new, |m| m.display_name().to_owned())
 }
 
-/// `clip_ids` as ids, for `select_clips` and `apply_filter`.
+/// `clip_ids` as ids, for `select_clips`, `apply_filter` and `voice_effect`.
 pub fn clip_ids(args: &Value) -> Result<Vec<ClipId>, String> {
     args.get("clip_ids")
         .and_then(Value::as_array)
@@ -3797,6 +3833,13 @@ fn sound_effect_names() -> Vec<String> {
     bettercut_editor_core::media::GeneratedSound::EFFECTS
         .iter()
         .map(|s| s.name().to_lowercase())
+        .collect()
+}
+
+fn voice_effect_names() -> Vec<String> {
+    bettercut_editor_core::voice_effects::VOICE_EFFECTS
+        .iter()
+        .map(|v| v.name.to_lowercase())
         .collect()
 }
 

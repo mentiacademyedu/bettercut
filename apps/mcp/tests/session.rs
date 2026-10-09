@@ -2361,3 +2361,36 @@ fn an_assistant_flips_mirrors_and_blends() {
     let (said, failed) = client.tool("set_blend", json!({ "clip_id": clip, "mode": "dissolve" }));
     assert!(failed && said.contains("Multiply"), "{said}");
 }
+
+/// A voice effect on a shot changes the sound linked to it, as one step.
+#[test]
+fn an_assistant_changes_a_voice() {
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-voice-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut client = Client::new();
+    client.ok(
+        "new_project",
+        json!({ "path": dir.join("p.vproj").display().to_string() }),
+    );
+    let imported: Value = serde_json::from_str(&client.ok(
+        "import_media",
+        json!({ "paths": [fixture("ntsc-2997.mp4")] }),
+    ))
+    .unwrap();
+    let media = imported[0]["media_id"].as_str().unwrap().to_owned();
+    let placed: Value = serde_json::from_str(&client.ok(
+        "add_to_timeline",
+        json!({ "media_id": media, "from": 0.0, "to": 2.0 }),
+    ))
+    .unwrap();
+    let shot = placed["clip_ids"][0].as_str().unwrap().to_owned();
+
+    let said = client.ok("voice_effect", json!({ "clip_ids": [shot], "effect": "Monster" }));
+    assert!(said.contains("1 sound clip"), "{said}");
+    let steps: Value = serde_json::from_str(&client.ok("history", json!({}))).unwrap();
+    assert_eq!(steps["undo"][0], "Voice: Monster", "{steps}");
+
+    let (said, failed) = client.tool("voice_effect", json!({ "clip_ids": [shot], "effect": "dalek" }));
+    assert!(failed && said.contains("helium"), "{said}");
+}

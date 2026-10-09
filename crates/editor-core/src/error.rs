@@ -60,6 +60,10 @@ pub enum EditorError {
     #[error("a held frame and a photo have no motion to re-time")]
     NoMotionToRetime,
 
+    /// A voice effect was asked of clips with no sound in or linked to them.
+    #[error("select a sound clip, or a video with sound, for a voice effect")]
+    NoSoundToChange,
+
     /// A split-screen layout takes one picture clip per cell.
     #[error("this layout needs {wanted} picture clips selected, and {given} are")]
     SplitScreenCount { wanted: usize, given: usize },

@@ -90,6 +90,7 @@ mod transition_overlap;
 pub mod trim_black;
 pub mod trim_window;
 pub mod versions;
+pub mod voice_effects;
 pub mod voiceover;
 pub mod where_used;
 
