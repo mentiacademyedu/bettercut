@@ -101,10 +101,14 @@ pub enum TransitionKind {
     PushUp,
     /// The next shot is revealed by an edge sweeping down from the top.
     WipeDown,
+    /// A warm burst of light sweeps across and swallows the cut, as when
+    /// film is fogged at the end of a roll. One shot at a time: needs no
+    /// handles.
+    LightLeak,
 }
 
 impl TransitionKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Crossfade,
         Self::FadeThroughBlack,
         Self::Slide,
@@ -122,6 +126,7 @@ impl TransitionKind {
         Self::SlideUp,
         Self::PushUp,
         Self::WipeDown,
+        Self::LightLeak,
     ];
 
     pub fn label(self) -> &'static str {
@@ -143,6 +148,7 @@ impl TransitionKind {
             Self::SlideUp => "Slide up",
             Self::PushUp => "Push up",
             Self::WipeDown => "Wipe down",
+            Self::LightLeak => "Light leak",
         }
     }
 
@@ -201,6 +207,9 @@ impl TransitionKind {
             Self::WipeDown => {
                 "An edge sweeps down from the top, revealing the next shot. With no footage to spare, the clips overlap to make room."
             }
+            Self::LightLeak => {
+                "A warm burst of light sweeps across and swallows the cut. Works anywhere."
+            }
         }
     }
 
@@ -220,6 +229,7 @@ impl TransitionKind {
                 | Self::Pixelate
                 | Self::Shake
                 | Self::FadeThroughWhite
+                | Self::LightLeak
         )
     }
 }

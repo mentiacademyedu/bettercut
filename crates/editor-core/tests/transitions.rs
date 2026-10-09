@@ -323,6 +323,7 @@ fn only_the_handle_free_kinds_are_offered_at_a_cut_with_nothing_to_spare() {
                 | TransitionKind::Pixelate
                 | TransitionKind::Shake
                 | TransitionKind::FadeThroughWhite
+                | TransitionKind::LightLeak
         )
     };
 

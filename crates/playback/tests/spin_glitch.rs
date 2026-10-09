@@ -86,6 +86,7 @@ fn the_new_one_shot_kinds_do_not_move_either_clip() {
         TransitionKind::Pixelate,
         TransitionKind::Shake,
         TransitionKind::FadeThroughWhite,
+        TransitionKind::LightLeak,
     ] {
         let (out, incoming) = moving_transition(kind, 0.5);
         assert_eq!((out.scale, out.rotation), (1.0, 0.0), "{}", kind.label());

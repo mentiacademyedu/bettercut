@@ -3006,6 +3006,17 @@ fn draw_transition(
                 stroke,
             ));
         }
+        // A soft glow drifting across: a filled circle, off centre, with a
+        // fainter halo round it.
+        TransitionKind::LightLeak => {
+            let centre = Pos2::new(
+                inner.left() + inner.width() * 0.6,
+                inner.top() + inner.height() * 0.45,
+            );
+            let r = inner.height() * 0.32;
+            painter.circle_filled(centre, r * 1.5, theme::transition().gamma_multiply(0.25));
+            painter.circle_filled(centre, r, theme::transition().gamma_multiply(0.7));
+        }
     }
 }
 

@@ -253,6 +253,17 @@ pub(crate) fn plan(
                     1.0 - (2.0 * progress - 1.0).abs(),
                 );
             }
+            // A light leak over the cut: the shot stays, and a warm glow
+            // sweeps across it, swelling to swallow the frame at the cut and
+            // drifting off as the next shot shows.
+            Some(Cut {
+                progress,
+                kind: TransitionKind::LightLeak,
+                ..
+            }) => {
+                push_layer(&mut requests, project, track.id, clip, position, 1.0);
+                push_leak_burst(&mut requests, track.id, clip.id, progress);
+            }
             // §25's blur dissolve. Both shots are on screen, as in a
             // crossfade, and both go soft together — so the change-over
             // happens where there is least detail to notice it changing.
@@ -1818,7 +1829,8 @@ pub fn moving_transition(kind: TransitionKind, progress: f32) -> (LayerMove, Lay
         | TransitionKind::Glitch
         | TransitionKind::Pixelate
         | TransitionKind::Shake
-        | TransitionKind::FadeThroughWhite => (LayerMove::STILL, LayerMove::STILL),
+        | TransitionKind::FadeThroughWhite
+        | TransitionKind::LightLeak => (LayerMove::STILL, LayerMove::STILL),
     }
 }
 
@@ -2254,6 +2266,85 @@ fn push_light_leak(
         reveal: None,
         angle: None,
     });
+}
+
+/// Where a light leak transition's glow is at `progress` through the cut:
+/// its centre, its half size and its strength. It crosses from the left edge
+/// to the right, swelling to more than the frame at the cut and shrinking
+/// again, and it is strongest at the cut itself — the moment the shots
+/// change is the moment there is most light over them.
+pub fn leak_burst(progress: f32) -> ([f32; 2], [f32; 2], f32) {
+    let p = progress.clamp(0.0, 1.0);
+    let peak = 1.0 - (2.0 * p - 1.0).abs();
+    let centre = [0.1 + 0.8 * p, 0.45];
+    let half = 0.35 + 0.9 * peak;
+    (centre, [half, half * 0.8], 0.95 * peak.sqrt())
+}
+
+/// The light leak transition's glow over `clip`: the warm solid of the light
+/// leak effect, cut to a soft oval, screened so it only brightens, with a
+/// fainter warm wash over the whole frame at the cut so its middle burns out.
+fn push_leak_burst(requests: &mut Vec<LayerRequest>, track: TrackId, clip: ClipId, progress: f32) {
+    let (centre, size, opacity) = leak_burst(progress);
+    if opacity <= 0.0 {
+        return;
+    }
+    let look = |opacity: f32, mask: Option<bettercut_timeline::Mask>| bettercut_timeline::ClipLook {
+        corner_pin: Default::default(),
+        old_film: 0.0,
+        glow: 0.0,
+        shadow: Default::default(),
+        border: Default::default(),
+        sharpen: 0.0,
+        lut: None,
+        rgb_split: 0.0,
+        glitch: 0.0,
+        pixelate: 0.0,
+        zoom_blur: 0.0,
+        lens: 0.0,
+        tilt_band: 0.0,
+        tilt_centre: 0.5,
+        posterise: 0.0,
+        smooth_skin: 0.0,
+        vignette: 0.0,
+        reflection: bettercut_timeline::Reflection::None,
+        crop: bettercut_timeline::Crop::NONE,
+        transform: Transform::default(),
+        opacity,
+        color: bettercut_timeline::ColorAdjust::IDENTITY,
+        blur: 0.0,
+        chroma_key: None,
+        luma_key: None,
+        mask,
+        blend: bettercut_timeline::BlendMode::Screen,
+    };
+    let wash = 0.5 * opacity * opacity;
+    for (opacity, mask) in [
+        (wash, None),
+        (
+            opacity,
+            Some(bettercut_timeline::Mask {
+                shape: bettercut_timeline::MaskShape::Ellipse,
+                center: centre,
+                size,
+                feather: 1.0,
+                rotation_degrees: 25.0,
+                invert: false,
+            }),
+        ),
+    ] {
+        requests.push(LayerRequest {
+            clip,
+            track,
+            source: LayerSource::Solid {
+                rgb: LIGHT_LEAK_RGB,
+            },
+            source_time: MediaTime::ZERO,
+            look: look(opacity, mask),
+            reveal: None,
+            angle: None,
+        });
+    }
 }
 
 /// One piece of a lens flare: its colour, centre and half size in frame
