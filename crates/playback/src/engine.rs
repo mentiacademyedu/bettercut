@@ -370,6 +370,13 @@ pub(crate) fn plan(
                         request.look.transform.scale.y *= beat;
                     }
                 }
+                if let Some((y, zoom)) = bounce(clip.bounce, position) {
+                    for request in &mut requests[before..] {
+                        request.look.transform.position.y += y;
+                        request.look.transform.scale.x *= zoom;
+                        request.look.transform.scale.y *= zoom;
+                    }
+                }
                 let strobe = strobe_alpha(clip.strobe, position);
                 if strobe > 0.0 {
                     push_flash(&mut requests, track.id, clip.id, strobe);
@@ -2142,6 +2149,30 @@ pub fn heartbeat_zoom(amount: f32, position: TimelineTime) -> f32 {
     };
     let bump = thump(0.0).max(0.6 * thump(0.22));
     1.0 + (amount / 100.0).min(1.0) * MAX_HEARTBEAT * bump
+}
+
+/// Bounces a second.
+pub const BOUNCE_HZ: f64 = 1.6;
+
+/// The highest a bounce lifts the picture, at 100, in frame heights.
+pub const MAX_BOUNCE: f32 = 0.05;
+
+/// Where a bounce puts the picture at `position`: how far up it is (in
+/// frame heights, negative being up, as position runs down the frame) and
+/// how much it is enlarged so the bottom edge never shows. A ball's hop —
+/// fast off the ground, slow at the top, fast back down — from the time
+/// alone (§46). `None` with no amount.
+pub fn bounce(amount: f32, position: TimelineTime) -> Option<(f32, f32)> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return None;
+    }
+    let k = (amount / 100.0).min(1.0);
+    let t = position.ticks() as f64 / bettercut_foundation::TICKS_PER_SECOND as f64;
+    let phase = (t * BOUNCE_HZ).rem_euclid(1.0) as f32;
+    // A parabola: on the ground at either end of the hop, highest halfway.
+    let height = 4.0 * phase * (1.0 - phase);
+    let lift = MAX_BOUNCE * k;
+    Some((-lift * height, 1.0 + 2.0 * lift))
 }
 
 /// Strobe flashes a second.

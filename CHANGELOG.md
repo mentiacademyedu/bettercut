@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Bounce effect**: the picture hops up and lands, over and over, like a
+  ball.
+
 ## 0.6.10 — Sway, Flicker, Heartbeat and new sound effects
 
 Still a beta: expect bugs, and please

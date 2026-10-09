@@ -1106,6 +1106,11 @@ pub struct VideoClip {
     #[serde(default)]
     pub heartbeat: f32,
 
+    /// Bounce, 0–100: the picture hops up and lands, over and over, like a
+    /// ball. Not animated.
+    #[serde(default)]
+    pub bounce: f32,
+
     /// Colour curves (`crate::curves`), drawn as a generated LUT over the
     /// clip's own. Straight lines by default. Not animated.
     #[serde(default)]
@@ -2630,6 +2635,7 @@ impl VideoClip {
             sway: 0.0,
             flicker: 0.0,
             heartbeat: 0.0,
+            bounce: 0.0,
             smooth_motion: false,
             vignette: 0.0,
             border: Border::NONE,

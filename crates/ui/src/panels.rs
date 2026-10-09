@@ -7059,6 +7059,19 @@ fn clip_effect_properties(
                 change = Some((ClipProperty::Heartbeat(next_heartbeat), response.dragged()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            let mut next_bounce = editor.video_clip(clip).map_or(0.0, |clip| clip.bounce);
+            let response = ui
+                .add(theme::labeled(
+                    "bounce",
+                    egui::Slider::new(&mut next_bounce, 0.0..=max).suffix("%"),
+                ))
+                .on_hover_text("Hop the picture up and down, like a bouncing ball");
+            if response.changed() {
+                change = Some((ClipProperty::Bounce(next_bounce), response.dragged()));
+            }
+        });
     });
 
     // Reflections: part of the shot, repeated and mirrored over the rest.
