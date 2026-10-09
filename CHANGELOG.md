@@ -8,6 +8,9 @@
   ball.
 - **Jump Cut speed ramp**: normal speed, a sudden fast skip, then normal
   again — the sixth speed curve preset.
+- **Two new entrances and exits**, for clips and titles: Zoom out (shrinks
+  into place from larger than the frame) and Swing (swings in from a tilt
+  and settles, like a sign on a hook).
 - **AI assistants can ramp speed**: a new `speed_ramp` tool applies any of
   the six speed curve presets.
 

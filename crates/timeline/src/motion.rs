@@ -52,12 +52,17 @@ pub enum MotionKind {
     Bounce,
     /// Turns into place, or turns away.
     Spin,
+    /// Shrinks into place from larger than the frame, or swells away.
+    ZoomOut,
+    /// Swings in from a tilt and settles like a sign on a hook, or swings
+    /// away.
+    Swing,
     /// Letters appear one at a time, or disappear from the end.
     Typewriter,
 }
 
 impl MotionKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Fade,
         Self::SlideUp,
         Self::SlideDown,
@@ -66,12 +71,14 @@ impl MotionKind {
         Self::Pop,
         Self::Bounce,
         Self::Spin,
+        Self::ZoomOut,
+        Self::Swing,
     ];
 
     /// The ones a title can also do. A picture has no letters to reveal, so
     /// the typewriter is a title's alone — offering it on a clip would be a
     /// preset that visibly does nothing.
-    pub const FOR_TEXT: [Self; 9] = [
+    pub const FOR_TEXT: [Self; 11] = [
         Self::Fade,
         Self::SlideUp,
         Self::SlideDown,
@@ -80,6 +87,8 @@ impl MotionKind {
         Self::Pop,
         Self::Bounce,
         Self::Spin,
+        Self::ZoomOut,
+        Self::Swing,
         Self::Typewriter,
     ];
 
@@ -93,6 +102,8 @@ impl MotionKind {
             Self::Pop => "Pop",
             Self::Bounce => "Bounce",
             Self::Spin => "Spin",
+            Self::ZoomOut => "Zoom out",
+            Self::Swing => "Swing",
             Self::Typewriter => "Typewriter",
         }
     }
@@ -137,6 +148,12 @@ const CLIP_TRAVEL: f32 = 1.0;
 
 /// How far a spin turns before settling.
 const SPIN_DEGREES: f32 = 180.0;
+
+/// How much larger a zoom out starts (or ends), times the size it settles at.
+const ZOOM_OUT_FROM: f32 = 1.6;
+
+/// How far a swing tips at its widest.
+const SWING_DEGREES: f32 = 25.0;
 
 /// A title's entrance and exit. Neither, by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -513,6 +530,26 @@ fn apply(
             };
             look.opacity *= eased;
         }
+        MotionKind::ZoomOut => {
+            let swell = 1.0 + (ZOOM_OUT_FROM - 1.0) * (1.0 - eased);
+            look.transform.scale.x *= swell;
+            look.transform.scale.y *= swell;
+            look.opacity *= eased;
+        }
+        MotionKind::Swing => {
+            // A swing that dies away: two and a half sways in the time the
+            // motion takes, shrinking to nothing as it settles. Leaving, the
+            // same backwards, so it starts to rock and swings out.
+            let sway = (1.0 - presence) * (1.0 - presence);
+            let turn = SWING_DEGREES
+                * sway
+                * (presence * std::f32::consts::PI * 5.0).cos();
+            look.transform.rotation_degrees += match edge {
+                Edge::Entering => turn,
+                Edge::Leaving => -turn,
+            };
+            look.opacity *= (presence * 3.0).min(1.0);
+        }
         MotionKind::Pop => {
             let grow = 0.5 + 0.5 * ease_out_back(presence);
             look.transform.scale.x *= grow;
@@ -647,6 +684,29 @@ mod tests {
             .fold(0.0_f32, f32::max);
         assert!(peak > 1.0, "never overshot: peak {peak}");
         assert_eq!(at(pop, 2000).transform.scale.x, 1.0);
+    }
+
+    #[test]
+    fn zoom_out_shrinks_into_place_and_swells_away() {
+        let zoom = animated(MotionKind::ZoomOut, MotionKind::ZoomOut);
+        assert!(at(zoom, 0).transform.scale.x > 1.5, "starts large");
+        assert_eq!(at(zoom, 0).opacity, 0.0);
+        let shrinking: Vec<f32> = (0..10).map(|i| at(zoom, i * 100).transform.scale.x).collect();
+        assert!(shrinking.windows(2).all(|w| w[1] <= w[0]), "{shrinking:?}");
+        assert_eq!(at(zoom, 2000).transform.scale.x, 1.0);
+        assert!(at(zoom, 3900).transform.scale.x > 1.0, "swells as it leaves");
+    }
+
+    #[test]
+    fn swing_rocks_both_ways_and_settles_level() {
+        let swing = animated(MotionKind::Swing, MotionKind::Fade);
+        let turns: Vec<f32> = (0..10)
+            .map(|i| at(swing, i * 100).transform.rotation_degrees)
+            .collect();
+        assert!(turns[0] > 20.0, "starts tipped: {turns:?}");
+        assert!(turns.iter().any(|t| *t < -1.0), "never swung back: {turns:?}");
+        assert!(turns.iter().all(|t| t.abs() <= SWING_DEGREES));
+        assert_eq!(at(swing, 2000).transform.rotation_degrees, 0.0);
     }
 
     #[test]

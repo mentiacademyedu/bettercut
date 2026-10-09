@@ -132,7 +132,9 @@ fn every_motion_is_in_the_right_lists() {
             | MotionKind::SlideLeft
             | MotionKind::Pop
             | MotionKind::Bounce
-            | MotionKind::Spin => (true, true),
+            | MotionKind::Spin
+            | MotionKind::ZoomOut
+            | MotionKind::Swing => (true, true),
             MotionKind::Typewriter => (false, true),
         }
     }
@@ -148,8 +150,8 @@ fn every_motion_is_in_the_right_lists() {
         assert!(title, "{} is missing from the title list", kind.label());
     }
 
-    assert_eq!(MotionKind::ALL.len(), 8);
-    assert_eq!(MotionKind::FOR_TEXT.len(), 9);
+    assert_eq!(MotionKind::ALL.len(), 10);
+    assert_eq!(MotionKind::FOR_TEXT.len(), 11);
 }
 
 /// Two axes, and each has to reach its own flag. A `flag` that returned the

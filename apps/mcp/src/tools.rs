@@ -227,8 +227,8 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "animate_title",
         description: "How a title arrives and leaves: `intro` and `outro` are fade, slide up, \
-                      slide down, slide right, slide left, pop, bounce, spin, typewriter, or \
-                      none; `duration` is each one's length in seconds (default 0.5). \
+                      slide down, slide right, slide left, pop, bounce, spin, zoom out, swing, \
+                      typewriter, or none; `duration` is each one's length in seconds (default 0.5). \
                       `looping` keeps it moving in between: pulse, wiggle, spin, float, or \
                       none. Leave out what should stay. One undo step.",
         schema: || {
