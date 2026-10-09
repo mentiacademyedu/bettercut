@@ -677,10 +677,9 @@ fn zoom_control(ui: &mut egui::Ui, rect: Rect, state: &mut UiState) {
             ui.spacing_mut().slider_rail_height = 3.0;
             ui.spacing_mut().interact_size.y = 18.0;
             if ui
-                .add_enabled_ui(state.can_zoom_out(), |ui| {
+                .add_enabled(state.can_zoom_out(), |ui: &mut egui::Ui| {
                     crate::icons::button_sized(ui, crate::icons::Icon::ZoomOut, false, "Zoom out", 22.0)
                 })
-                .inner
                 .clicked()
             {
                 state.zoom_out();
@@ -695,10 +694,9 @@ fn zoom_control(ui: &mut egui::Ui, rect: Rect, state: &mut UiState) {
                 state.set_zoom_step(step);
             }
             if ui
-                .add_enabled_ui(state.can_zoom_in(), |ui| {
+                .add_enabled(state.can_zoom_in(), |ui: &mut egui::Ui| {
                     crate::icons::button_sized(ui, crate::icons::Icon::ZoomIn, false, "Zoom in", 22.0)
                 })
-                .inner
                 .clicked()
             {
                 state.zoom_in();

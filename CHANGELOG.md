@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### A new look
+
+The whole interface has been redesigned, with every tool, shortcut and
+setting kept:
+
+- **One design system**: a calmer dark theme (and a matching light one) on
+  three grounds, one soft blue accent, hairline borders, and the system's own
+  interface font (Segoe UI on Windows) instead of the thin bundled one.
+- **Drawn icons** in place of rows of word buttons: crisp at any display
+  scale, with the action and its key on hover.
+- **Toolbar**: project, history and Add on the left, the project's name in
+  the middle, Find, Actions, Windows and Export on the right.
+- **Preview**: the picture on the darkest ground with room round it, and its
+  own bar beneath — the timecode (click to type a time), the transport in
+  the middle, and view size, shape, loop, options and full screen.
+- **Timeline**: a tool strip of icons (split, blade, delete, trims, freeze,
+  marker, frame, record), the sequences as tabs, snapping and the magnetic
+  track as toggles; a finer ruler, a shaped playhead, clips labelled at the
+  top left with grip handles on the selected one, and eye and speaker icons
+  on the track headers.
+- **Library**: the tabs as a rail of icons down the left edge, effects,
+  transitions and filters as tiles, and media as cards.
+- **Inspector**: the selected clip as a card with its reset, the tabs as a
+  segmented control, and drawn keyframe and reset buttons on every row.
+
 ### New
 
 - **Voice effects**: Chipmunk, Helium, Deep, Monster, Robot, Alien,

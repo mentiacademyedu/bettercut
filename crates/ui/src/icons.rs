@@ -39,6 +39,7 @@ pub enum Icon {
     More,
     ChevronDown,
     ChevronRight,
+    ChevronLeft,
     // Editing
     Split,
     Blade,
@@ -264,6 +265,9 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, colour: Color32) {
         }
         Icon::ChevronRight => {
             shapes.push(line(&[(6.0, 4.0), (10.0, 8.0), (6.0, 12.0)]));
+        }
+        Icon::ChevronLeft => {
+            shapes.push(line(&[(10.0, 4.0), (6.0, 8.0), (10.0, 12.0)]));
         }
         Icon::Split => {
             // Scissors.
@@ -610,7 +614,7 @@ pub fn labelled_button(
 }
 
 /// Every icon, for the test that draws them all.
-pub const ALL: [Icon; 54] = [
+pub const ALL: [Icon; 55] = [
     Icon::NewFile,
     Icon::Folder,
     Icon::Save,
@@ -637,6 +641,7 @@ pub const ALL: [Icon; 54] = [
     Icon::More,
     Icon::ChevronDown,
     Icon::ChevronRight,
+    Icon::ChevronLeft,
     Icon::Split,
     Icon::Blade,
     Icon::Trash,

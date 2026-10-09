@@ -36,8 +36,10 @@ pub const RADIUS_SMALL: u8 = 4;
 pub const RADIUS: u8 = 6;
 pub const RADIUS_LARGE: u8 = 8;
 
-/// How tall a control is: a button, a field, a slider's row.
-pub const CONTROL_HEIGHT: f32 = 26.0;
+/// How tall a control is: a button, a field, a slider's row. Also what egui
+/// sizes a slider's knob from (two fifths of it), so this keeps the knobs
+/// neat as well as the rows compact.
+pub const CONTROL_HEIGHT: f32 = 22.0;
 /// A square icon-only button.
 pub const ICON_BUTTON: f32 = 28.0;
 /// The toolbar's height, and the transport bar's under the preview.
@@ -404,7 +406,7 @@ pub fn apply(ctx: &egui::Context) {
 
         // Compact, on the four-point grid: an editor shows a lot at once, and
         // every pixel of padding is a pixel taken from the picture.
-        style.spacing.button_padding = egui::vec2(SPACE_M, SPACE_S);
+        style.spacing.button_padding = egui::vec2(SPACE_M, 3.0);
         style.spacing.item_spacing = egui::vec2(SPACE_S + 2.0, SPACE_S + 2.0);
         style.spacing.interact_size = egui::vec2(40.0, CONTROL_HEIGHT);
         style.spacing.menu_margin = egui::Margin::same(6);

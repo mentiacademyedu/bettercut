@@ -203,10 +203,9 @@ pub fn toolbar(
             .undo_label()
             .map_or_else(|| "Nothing to undo".to_owned(), |l| format!("Undo {l}"));
         if ui
-            .add_enabled_ui(editor.can_undo(), |ui| {
+            .add_enabled(editor.can_undo(), |ui: &mut egui::Ui| {
                 icons::button(ui, Icon::Undo, false, &crate::keys::keys(&format!("{undo_label} (Ctrl+Z)")))
             })
-            .inner
             .clicked()
             && let Err(err) = editor.undo()
         {
@@ -217,10 +216,9 @@ pub fn toolbar(
             .redo_label()
             .map_or_else(|| "Nothing to redo".to_owned(), |l| format!("Redo {l}"));
         if ui
-            .add_enabled_ui(editor.can_redo(), |ui| {
+            .add_enabled(editor.can_redo(), |ui: &mut egui::Ui| {
                 icons::button(ui, Icon::Redo, false, &crate::keys::keys(&format!("{redo_label} (Ctrl+Shift+Z)")))
             })
-            .inner
             .clicked()
             && let Err(err) = editor.redo()
         {
@@ -680,7 +678,7 @@ pub fn toolbar(
             }
             ui.add_space(theme::SPACE_XS);
             if ui
-                .add_enabled_ui(state.export_dialog.has_exported(), |ui| {
+                .add_enabled(state.export_dialog.has_exported(), |ui: &mut egui::Ui| {
                     icons::button(
                         ui,
                         Icon::QuickExport,
@@ -688,7 +686,6 @@ pub fn toolbar(
                         "Quick Export: write the same file as last time, to the same folder, with these settings",
                     )
                 })
-                .inner
                 .on_disabled_hover_text("Export once first, and this repeats it")
                 .clicked()
             {
@@ -3709,6 +3706,9 @@ pub fn preview_bar(
     const SKIP: i64 = 10;
     /// The transport's width: four icon buttons, Play, and the gaps.
     const TRANSPORT: f32 = 4.0 * theme::ICON_BUTTON + 34.0 + 4.0 * 4.0;
+    /// What the right-hand group needs: zoom and shape menus, loop, options
+    /// and full screen.
+    const RIGHT: f32 = 200.0;
 
     let bar = ui.max_rect();
     ui.horizontal_centered(|ui| {
@@ -3726,30 +3726,36 @@ pub fn preview_bar(
         // Where the playhead is, first: the number read most often. Click it
         // to type a time.
         timecode_readout(ui, editor, state);
-        ui.label(
-            egui::RichText::new(format!("/ {}", editor.display_time(duration).format_timecode()))
-                .monospace()
-                .color(theme::text_muted()),
-        );
+        // The length beside it, when the bar is wide enough for the transport
+        // and the view controls as well.
+        if bar.width() >= 640.0 {
+            ui.label(
+                egui::RichText::new(format!("/ {}", editor.display_time(duration).format_timecode()))
+                    .monospace()
+                    .color(theme::text_muted()),
+            );
+        }
 
         // The transport, centred under the picture: start, back, play,
         // forward, end.
-        let gap = bar.center().x - TRANSPORT / 2.0 - ui.cursor().left();
-        if gap > 0.0 {
+        // Centred under the picture when there is room; otherwise as far
+        // right as it can go without reaching the right-hand group.
+        let centred = bar.center().x - TRANSPORT / 2.0 - ui.cursor().left();
+        let room = bar.right() - RIGHT - TRANSPORT - ui.cursor().left();
+        let gap = centred.min(room);
+        if gap > theme::SPACE_M {
             ui.add_space(gap);
         } else {
             theme::bar_divider(ui);
         }
         if ui
-            .add_enabled_ui(!at_start, |ui| icons::button(ui, Icon::ToStart, false, "Go to start (Home)"))
-            .inner
+            .add_enabled(!at_start, |ui: &mut egui::Ui| icons::button(ui, Icon::ToStart, false, "Go to start (Home)"))
             .clicked()
         {
             seek_to = Some(TimelineTime::ZERO);
         }
         if ui
-            .add_enabled_ui(!at_start, |ui| icons::button(ui, Icon::Back, false, "Back ten seconds"))
-            .inner
+            .add_enabled(!at_start, |ui: &mut egui::Ui| icons::button(ui, Icon::Back, false, "Back ten seconds"))
             .clicked()
         {
             // Saturating at zero rather than wrapping: a playhead before the
@@ -3772,8 +3778,7 @@ pub fn preview_bar(
             ));
         }
         if ui
-            .add_enabled_ui(playhead < duration, |ui| icons::button(ui, Icon::ToEnd, false, "Go to end (End)"))
-            .inner
+            .add_enabled(playhead < duration, |ui: &mut egui::Ui| icons::button(ui, Icon::ToEnd, false, "Go to end (End)"))
             .clicked()
         {
             seek_to = Some(duration);
@@ -3984,7 +3989,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
         let has_clips = duration > TimelineTime::ZERO;
 
         let split = ui
-            .add_enabled_ui(has_clips, |ui| {
+            .add_enabled(has_clips, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::Split,
@@ -3993,26 +3998,24 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                         "Split: cut the selected clip, or the one under the playhead, at the playhead (S)",
                     ),
                 )
-            })
-            .inner;
+            });
         if split.clicked() {
             crate::shortcuts::split_at_playhead(editor, state);
         }
         let blade = ui
-            .add_enabled_ui(has_clips || state.blade, |ui| {
+            .add_enabled(has_clips || state.blade, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::Blade,
                     state.blade,
                     &crate::keys::keys("Blade: a click on a clip cuts it where you click (B)"),
                 )
-            })
-            .inner;
+            });
         if blade.clicked() {
             state.blade = !state.blade;
         }
         let delete = ui
-            .add_enabled_ui(!state.selected_clips.is_empty(), |ui| {
+            .add_enabled(!state.selected_clips.is_empty(), |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::Trash,
@@ -4021,8 +4024,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                         "Delete the selected clips (Del). Shift+Delete closes the gap",
                     ),
                 )
-            })
-            .inner;
+            });
         if delete.clicked() {
             if ui.input(|i| i.modifiers.shift) {
                 crate::shortcuts::ripple_delete_selection(editor, state);
@@ -4032,7 +4034,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
         }
         theme::bar_divider(ui);
         let trim_start = ui
-            .add_enabled_ui(has_clips, |ui| {
+            .add_enabled(has_clips, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::TrimStart,
@@ -4041,13 +4043,12 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                         "Trim Start: cut away the selected clip before the playhead and close the gap (Q)",
                     ),
                 )
-            })
-            .inner;
+            });
         if trim_start.clicked() {
             crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::Start);
         }
         let trim_end = ui
-            .add_enabled_ui(has_clips, |ui| {
+            .add_enabled(has_clips, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::TrimEnd,
@@ -4056,27 +4057,25 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                         "Trim End: cut away the selected clip after the playhead and close the gap (W)",
                     ),
                 )
-            })
-            .inner;
+            });
         if trim_end.clicked() {
             crate::shortcuts::ripple_trim(editor, state, bettercut_editor_core::TrimEdge::End);
         }
         theme::bar_divider(ui);
         let freeze = ui
-            .add_enabled_ui(has_clips, |ui| {
+            .add_enabled(has_clips, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::Freeze,
                     false,
                     "Freeze: hold the frame under the playhead for 2 seconds, pushing what follows along",
                 )
-            })
-            .inner;
+            });
         if freeze.clicked() {
             freeze_here(editor, state);
         }
         let marker = ui
-            .add_enabled_ui(has_clips, |ui| {
+            .add_enabled(has_clips, |ui: &mut egui::Ui| {
                 icons::button(
                     ui,
                     Icon::Marker,
@@ -4085,8 +4084,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                         "Marker: put one at the playhead, or take away the one there (M)",
                     ),
                 )
-            })
-            .inner;
+            });
         if marker.clicked() {
             match editor.toggle_marker(playhead) {
                 Ok(true) => state.info("Marker added"),
@@ -5523,20 +5521,9 @@ fn master_row<R>(
         let result = control(ui);
 
         let changed = !current.is_default();
-        let button = egui::Button::new(egui::RichText::new("\u{21ba}").color(if changed {
-            theme::clip_text()
-        } else {
-            theme::disabled()
-        }))
-        .frame(false)
-        .min_size(egui::vec2(18.0, 18.0));
-
+        let tip = format!("Reset {} for the whole video", current.kind().to_lowercase());
         if ui
-            .add_enabled(changed, button)
-            .on_hover_text(format!(
-                "Reset {} for the whole video",
-                current.kind().to_lowercase()
-            ))
+            .add_enabled(changed, |ui: &mut egui::Ui| icons::button_sized(ui, Icon::Reset, false, &tip, 18.0))
             .clicked()
         {
             *reset = Some(current);
@@ -10144,39 +10131,57 @@ fn keyed_row<R>(
         // is animated, then reset: the order the eye reads a row in.
         let result = control(ui);
         let state = look.row(current);
-        let (glyph, hint) = match (state.animated, state.at_playhead) {
-            (false, _) => (
-                "○",
+        let hint = match (state.animated, state.at_playhead) {
+            (false, _) => {
                 "Animate this. A keyframe is added here, and another wherever \
-                 you next change it.",
-            ),
-            // ◊ and ♦ rather than the geometric diamonds ◇ and ◆:
-            // those two are in Hack only, and a button draws with the
-            // proportional family, so they came out as empty boxes. See
-            // tests/glyphs.rs, which now catches that class of bug.
-            (true, false) => ("◊", "Add a keyframe at the playhead"),
-            (true, true) => ("♦", "Remove the keyframe at the playhead"),
+                 you next change it."
+            }
+            (true, false) => "Add a keyframe at the playhead",
+            (true, true) => "Remove the keyframe at the playhead",
         };
 
-        let colour = if state.animated {
-            theme::keyframe()
-        } else {
-            theme::disabled()
-        };
-        let button = egui::Button::new(egui::RichText::new(glyph).color(colour))
-            .frame(false)
-            .min_size(egui::vec2(18.0, 18.0));
-
-        // No playhead over the clip means no frame to key at, so the button is
-        // shown disabled with the reason rather than hidden — a control that
-        // vanishes is harder to understand than one that explains itself.
-        let response = ui.add_enabled(look.source_time.is_some(), button);
-        let response = if look.source_time.is_some() {
+        // A drawn diamond: hollow and grey when the control is fixed, hollow
+        // in the keyframe colour when it is animated, solid when a key sits
+        // at the playhead. No playhead over the clip means no frame to key
+        // at, so it is shown disabled with the reason rather than hidden — a
+        // control that vanishes is harder to understand than one that
+        // explains itself.
+        let enabled = look.source_time.is_some();
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(18.0, 18.0),
+            if enabled { egui::Sense::click() } else { egui::Sense::hover() },
+        );
+        if ui.is_rect_visible(rect) {
+            if enabled && response.hovered() {
+                ui.painter().rect_filled(rect, theme::RADIUS_SMALL, theme::hover());
+            }
+            let colour = if !enabled {
+                theme::text_faint()
+            } else if state.animated {
+                theme::keyframe()
+            } else {
+                theme::text_muted()
+            };
+            let c = rect.center();
+            let r = 4.5;
+            let diamond = vec![
+                egui::pos2(c.x, c.y - r),
+                egui::pos2(c.x + r, c.y),
+                egui::pos2(c.x, c.y + r),
+                egui::pos2(c.x - r, c.y),
+            ];
+            ui.painter().add(egui::Shape::convex_polygon(
+                diamond,
+                if state.at_playhead { colour } else { egui::Color32::TRANSPARENT },
+                egui::Stroke::new(1.3, colour),
+            ));
+        }
+        let response = if enabled {
             response.on_hover_text(hint)
         } else {
-            response.on_disabled_hover_text("Move the playhead over this clip to add a keyframe")
+            response.on_hover_text("Move the playhead over this clip to add a keyframe")
         };
-        if response.clicked() {
+        if enabled && response.clicked() {
             *toggle = Some(current);
         }
 
@@ -10186,20 +10191,12 @@ fn keyed_row<R>(
         // the row does not change width as values change and the button does
         // not appear under a cursor that was aiming at the slider.
         let changed = !current.is_default() || look.row(current).animated;
-        let button = egui::Button::new(egui::RichText::new("↺").color(if changed {
-            theme::clip_text()
-        } else {
-            theme::disabled()
-        }))
-        .frame(false)
-        .min_size(egui::vec2(18.0, 18.0));
-
-        let response = ui.add_enabled(changed, button);
-        if response
-            .on_hover_text(format!(
-                "Reset {} to its default, and remove its keyframes",
-                current.kind().to_lowercase()
-            ))
+        let tip = format!(
+            "Reset {} to its default, and remove its keyframes",
+            current.kind().to_lowercase()
+        );
+        if ui
+            .add_enabled(changed, |ui: &mut egui::Ui| icons::button_sized(ui, Icon::Reset, false, &tip, 18.0))
             .clicked()
         {
             *reset = Some(current);
@@ -10544,15 +10541,17 @@ fn animation_summary(
             .color(theme::keyframe()),
         );
         if ui
-            .add_enabled(previous.is_some(), egui::Button::new("◀").frame(false))
-            .on_hover_text("Previous keyframe")
+            .add_enabled(previous.is_some(), |ui: &mut egui::Ui| {
+                icons::button_sized(ui, Icon::ChevronLeft, false, "Previous keyframe", 22.0)
+            })
             .clicked()
         {
             jump_to = previous;
         }
         if ui
-            .add_enabled(next.is_some(), egui::Button::new("▶").frame(false))
-            .on_hover_text("Next keyframe")
+            .add_enabled(next.is_some(), |ui: &mut egui::Ui| {
+                icons::button_sized(ui, Icon::ChevronRight, false, "Next keyframe", 22.0)
+            })
             .clicked()
         {
             jump_to = next;

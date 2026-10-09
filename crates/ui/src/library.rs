@@ -243,7 +243,16 @@ fn two_to_a_row<'a, T>(
 /// A library button in a [`two_to_a_row`] cell: picked out when `on`, and
 /// draggable onto the timeline.
 fn cell_button(ui: &mut egui::Ui, on: bool, label: &str, width: f32) -> egui::Response {
-    cell(ui, egui::Button::selectable(on, label), width)
+    // A tile: the control surface with a hairline edge, lit in the accent
+    // when it is on the selected clip.
+    let p = theme::palette();
+    cell(
+        ui,
+        egui::Button::new(egui::RichText::new(label).color(if on { p.text_strong } else { p.text }))
+            .fill(if on { p.accent.gamma_multiply(0.28) } else { p.control })
+            .stroke(egui::Stroke::new(1.0, if on { p.accent } else { p.control_edge })),
+        width,
+    )
 }
 
 /// Any button in a [`two_to_a_row`] cell, draggable.
@@ -255,7 +264,7 @@ fn cell(ui: &mut egui::Ui, button: egui::Button, width: f32) -> egui::Response {
         ui.add(
             button
                 .wrap_mode(egui::TextWrapMode::Wrap)
-                .min_size(egui::vec2(width, 26.0))
+                .min_size(egui::vec2(width, 30.0))
                 .sense(egui::Sense::click_and_drag()),
         )
     })
