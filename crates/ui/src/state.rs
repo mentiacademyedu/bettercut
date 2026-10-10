@@ -754,8 +754,11 @@ pub struct UiState {
     /// When an assistant last called through the live link, for that window
     /// to say whether one is connected. Set by the desktop shell.
     pub assistant_seen: Option<std::time::Instant>,
-    /// How adding bettercut to Claude went, written by the thread that did it.
+    /// How adding bettercut to an assistant went, written by the thread
+    /// that did it.
     pub assistant_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Which assistant app that window is showing the setup for.
+    pub assistant_app: crate::assistant::App,
     /// A newer bettercut, once the day's check has found one (`crate::updates`).
     pub update_found: crate::updates::Found,
     /// The command palette (Ctrl+K): open, what is typed, and which row is
@@ -1108,6 +1111,7 @@ impl Default for UiState {
             assistant_open: false,
             assistant_seen: None,
             assistant_note: Default::default(),
+            assistant_app: crate::assistant::App::ClaudeCode,
             update_found: Default::default(),
             palette_open: false,
             palette_query: String::new(),

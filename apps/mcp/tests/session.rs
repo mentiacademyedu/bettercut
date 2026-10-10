@@ -2394,3 +2394,130 @@ fn an_assistant_changes_a_voice() {
     let (said, failed) = client.tool("voice_effect", json!({ "clip_ids": [shot], "effect": "dalek" }));
     assert!(failed && said.contains("helium"), "{said}");
 }
+
+/// Every tool's arguments are plain enough for any client: Gemini and
+/// OpenAI's models refuse some JSON Schema (a list without `items`, a type
+/// that is a list of types, `additionalProperties` as a schema), and OpenAI
+/// takes only short names of letters, digits, `_` and `-`.
+#[test]
+fn every_tool_is_described_in_a_way_any_client_takes() {
+    fn plain(schema: &Value, at: &str) {
+        let kind = schema["type"].as_str();
+        assert!(
+            kind.is_some() || schema.get("enum").is_some(),
+            "{at} has no single type: {schema}"
+        );
+        for refused in ["anyOf", "oneOf", "allOf", "$ref", "additionalProperties"] {
+            assert!(schema.get(refused).is_none(), "{at} uses {refused}");
+        }
+        if kind == Some("array") {
+            assert!(schema.get("items").is_some(), "{at} is a list of nothing said");
+            plain(&schema["items"], &format!("{at}[]"));
+        }
+        if let Some(properties) = schema["properties"].as_object() {
+            for (name, property) in properties {
+                plain(property, &format!("{at}.{name}"));
+            }
+            for required in schema["required"].as_array().into_iter().flatten() {
+                let required = required.as_str().unwrap_or("");
+                assert!(properties.contains_key(required), "{at} needs {required}, not described");
+            }
+        }
+    }
+    for compact in [false, true] {
+        let mut client = Client::new();
+        if compact {
+            client.server = Server::compact();
+        }
+        let list = client.request("tools/list", json!({}));
+        for tool in list["result"]["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            assert!(
+                name.len() <= 64
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{name}"
+            );
+            assert!(tool["description"].as_str().unwrap().len() <= 1024, "{name}");
+            assert_eq!(tool["inputSchema"]["type"], "object", "{name}");
+            plain(&tool["inputSchema"], name);
+        }
+    }
+}
+
+/// A compact server lists few enough tools for Cursor (about 40, all
+/// servers together), and still reaches every one.
+#[test]
+fn a_compact_server_lists_the_common_tools_and_finds_the_rest() {
+    let mut client = Client::new();
+    client.server = Server::compact();
+    let init = client.request("initialize", json!({ "protocolVersion": "2025-06-18" }));
+    assert!(
+        init["result"]["instructions"].as_str().unwrap().contains("find_tools"),
+        "{init}"
+    );
+    let list = client.request("tools/list", json!({}));
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.len() <= 36, "{} tools: {names:?}", names.len());
+    for wanted in ["new_project", "add_to_timeline", "export", "find_tools", "use_tool"] {
+        assert!(names.contains(&wanted), "{wanted}: {names:?}");
+    }
+    assert!(!names.contains(&"green_screen"));
+    // The full server does not list the two finders.
+    let full = Client::new().request("tools/list", json!({}));
+    assert!(!full.to_string().contains("\"use_tool\""));
+
+    // Found by what it does, with the arguments it takes.
+    let found: Value =
+        serde_json::from_str(&client.ok("find_tools", json!({ "query": "green screen background" })))
+            .unwrap();
+    let first = &found["tools"][0];
+    assert_eq!(first["name"], "green_screen", "{found}");
+    assert!(first["inputSchema"]["properties"].is_object());
+    // No query: every other tool, briefly.
+    let all: Value = serde_json::from_str(&client.ok("find_tools", json!({}))).unwrap();
+    let all = all["tools"].as_array().unwrap();
+    assert!(all.len() > 40, "{}", all.len());
+    assert!(all.iter().all(|t| t.get("inputSchema").is_none()));
+
+    // Run through use_tool exactly as if called by name.
+    let dir = std::env::temp_dir().join(format!("bettercut-mcp-compact-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    client.ok(
+        "use_tool",
+        json!({ "name": "new_project", "arguments": { "path": dir.join("p.vproj").display().to_string() } }),
+    );
+    client.ok("use_tool", json!({ "name": "add_colour", "arguments": { "color": "#203040", "at": 0.0 } }));
+    let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
+    assert!(described.to_string().contains("clip_id"), "{described}");
+    let (said, is_error) = client.tool("use_tool", json!({ "name": "use_tool" }));
+    assert!(is_error && said.contains("find_tools"), "{said}");
+    let (_, is_error) = client.tool("use_tool", json!({ "name": "no_such_tool" }));
+    assert!(is_error);
+}
+
+/// Messages sent as one list (protocol 2025-03-26) are answered as one
+/// list; answers and notifications in it get none; resource lists are
+/// empty rather than an error.
+#[test]
+fn a_list_of_messages_is_answered_as_a_list() {
+    let mut server = Server::new();
+    let reply = server
+        .handle_line(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},
+                {"jsonrpc":"2.0","method":"notifications/initialized"},
+                {"jsonrpc":"2.0","id":2,"method":"resources/list"}]"#,
+        )
+        .unwrap();
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    let replies = reply.as_array().unwrap();
+    assert_eq!(replies.len(), 2, "{reply}");
+    assert_eq!(replies[1]["result"]["resources"], json!([]));
+    // An answer to a request the server never made gets nothing back.
+    assert!(server.handle_line(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#).is_none());
+}

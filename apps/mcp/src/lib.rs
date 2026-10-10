@@ -33,12 +33,22 @@ describe_project gives the clip ids every edit takes, and preview_frame shows th
 to the project file until save_project. For a long export, pass wait false and follow \
 export_status. Edits that belong together go in one batch, so one undo takes them back.";
 
+/// What a compact server adds to its instructions.
+const COMPACT_INSTRUCTIONS: &str = " Only the common tools are listed: find_tools finds the \
+others by what they do (speed ramps, green screen, voice effects, beats, stickers and more), \
+and use_tool runs one.";
+
 /// Serve one client on standard input and output until it goes away: what
 /// `bettercut-mcp` does, and `bettercut --mcp` (for an AppImage, which has
-/// one program to run).
+/// one program to run). `--compact` lists only the common tools, for
+/// clients that take only so many.
 pub fn serve_stdio() {
     use std::io::{BufRead, Write};
-    let mut server = Server::new();
+    let mut server = if std::env::args().any(|arg| arg == "--compact") {
+        Server::compact()
+    } else {
+        Server::new()
+    };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -62,6 +72,8 @@ pub fn serve_stdio() {
 #[derive(Default)]
 pub struct Server {
     session: tools::Session,
+    /// Listing only the common tools; see [`Server::compact`].
+    compact: bool,
 }
 
 impl Server {
@@ -69,11 +81,23 @@ impl Server {
         Self::default()
     }
 
+    /// A server that lists only the common tools, and `find_tools` and
+    /// `use_tool` for the rest: for clients that take only so many tools
+    /// (Cursor's limit is about 40, for every server together). Every tool
+    /// can still be called by name.
+    pub fn compact() -> Self {
+        Self {
+            compact: true,
+            ..Self::default()
+        }
+    }
+
     /// A server that looks for the app's window in `file` (see [`live`])
     /// rather than the usual place: for tests.
     pub fn with_live_file(file: std::path::PathBuf) -> Self {
         Self {
             session: tools::Session::with_live_file(file),
+            compact: false,
         }
     }
 
@@ -116,15 +140,37 @@ impl Server {
                 ));
             }
         };
-        // A notification has no id and gets no answer, whatever it says.
+        // Protocol revision 2025-03-26 let a client send several messages as
+        // one list, answered with one list.
+        if let Value::Array(messages) = message {
+            let replies: Vec<Value> = messages
+                .iter()
+                .filter_map(|m| self.handle(m))
+                .filter_map(|reply| serde_json::from_str(&reply).ok())
+                .collect();
+            return (!replies.is_empty())
+                .then(|| serde_json::to_string(&replies).unwrap_or_default());
+        }
+        self.handle(&message)
+    }
+
+    fn handle(&mut self, message: &Value) -> Option<String> {
+        // A notification has no id and gets no answer, whatever it says; nor
+        // does an answer to a request (this server makes none).
         let id = message.get("id").cloned()?;
+        message.get("method")?;
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let params = message.get("params").cloned().unwrap_or(Value::Null);
 
         let reply = match method {
-            "initialize" => Ok(initialize(&params)),
+            "initialize" => Ok(initialize(&params, self.compact)),
             "ping" => Ok(json!({})),
+            "tools/list" if self.compact => Ok(json!({ "tools": tools::list_compact() })),
             "tools/list" => Ok(json!({ "tools": tools::list() })),
+            // Not offered, but some clients ask anyway; an empty list is a
+            // calmer answer than an error in their log.
+            "resources/list" => Ok(json!({ "resources": [] })),
+            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
             "tools/call" => self.call(&params),
             "prompts/list" => Ok(json!({ "prompts": prompts::list() })),
             "prompts/get" => prompts::get(
@@ -157,6 +203,27 @@ impl Server {
         if !tools::exists(name) {
             return Err((-32602, format!("no tool {name}")));
         }
+        if name == "find_tools" {
+            let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
+            return Ok(json!({
+                "content": [{ "type": "text", "text": tools::find(query) }],
+                "isError": false,
+            }));
+        }
+        if name == "use_tool" {
+            let inner = arguments.get("name").and_then(Value::as_str).unwrap_or("");
+            if inner == "use_tool" || inner == "find_tools" || !tools::exists(inner) {
+                return Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("no tool {inner:?}; find_tools lists them"),
+                    }],
+                    "isError": true,
+                }));
+            }
+            let inner_arguments = arguments.get("arguments").cloned().unwrap_or(json!({}));
+            return self.call(&json!({ "name": inner, "arguments": inner_arguments }));
+        }
         Ok(match self.session.call(name, &arguments) {
             Ok(tools::Reply::Text(text)) => {
                 json!({ "content": [{ "type": "text", "text": text }], "isError": false })
@@ -175,7 +242,7 @@ impl Server {
     }
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(params: &Value, compact: bool) -> Value {
     let asked = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -192,7 +259,11 @@ fn initialize(params: &Value) -> Value {
             "prompts": { "listChanged": false },
         },
         "serverInfo": { "name": "bettercut", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": INSTRUCTIONS,
+        "instructions": if compact {
+            format!("{INSTRUCTIONS}{COMPACT_INSTRUCTIONS}")
+        } else {
+            INSTRUCTIONS.to_owned()
+        },
     })
 }
 

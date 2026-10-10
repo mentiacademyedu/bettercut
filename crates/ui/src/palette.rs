@@ -483,7 +483,7 @@ pub const ACTIONS: &[Action] = &[
     },
     Action {
         name: "Connect an AI Assistant",
-        hint: "Claude or another assistant, editing with you in this window",
+        hint: "Claude, Copilot, Cursor, Codex, Gemini or another assistant, editing with you",
         run: |_, s| s.assistant_open = true,
     },
     Action {

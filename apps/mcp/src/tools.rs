@@ -362,7 +362,10 @@ const TOOLS: &[Tool] = &[
                 json!({
                     "template_id": { "type": "string" },
                     "at": { "type": "number", "minimum": 0 },
-                    "fills": { "type": "object", "additionalProperties": { "type": "string" } }
+                    "fills": {
+                        "type": "object",
+                        "description": "Text for the template's slots, by slot id"
+                    }
                 }),
                 &["template_id"],
             )
@@ -1179,22 +1182,135 @@ fn object(properties: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": properties, "required": required })
 }
 
+fn tool_json(tool: &Tool) -> Value {
+    json!({
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": (tool.schema)(),
+    })
+}
+
 /// The tools, as `tools/list` reports them.
 pub fn list() -> Vec<Value> {
+    TOOLS.iter().map(tool_json).collect()
+}
+
+/// What a compact server lists: the tools most edits need. Some clients take
+/// only so many tools (Cursor about 40, all servers together), so this keeps
+/// well under that; the rest stay callable, found with `find_tools` and run
+/// with `use_tool`.
+pub const CORE: &[&str] = &[
+    "attach_to_app",
+    "detach_from_app",
+    "new_project",
+    "open_project",
+    "save_project",
+    "describe_project",
+    "import_media",
+    "add_to_timeline",
+    "add_title",
+    "style_title",
+    "split_clip",
+    "delete_clip",
+    "move_clip",
+    "trim_clip",
+    "set_transform",
+    "adjust_colour",
+    "set_volume",
+    "set_speed",
+    "add_transition",
+    "apply_filter",
+    "set_effect",
+    "add_captions",
+    "get_selection",
+    "select_clips",
+    "set_playhead",
+    "preview_frame",
+    "undo",
+    "redo",
+    "history",
+    "batch",
+    "export",
+    "export_status",
+];
+
+/// The two tools only a compact server lists, which reach the others.
+const FINDERS: &[Tool] = &[
+    Tool {
+        name: "find_tools",
+        description: "Only the common tools are listed; there are about fifty more — speed \
+                      ramps, green screen, voice effects, beats, silences, stickers, shapes, \
+                      timers, chapters, templates and so on. Say what you want to do in a few \
+                      words (`query`) and get the tools that do it, with the arguments each \
+                      takes; run one with use_tool. With no query, every tool's name and what \
+                      it is for.",
+        schema: || object(json!({ "query": { "type": "string" } }), &[]),
+    },
+    Tool {
+        name: "use_tool",
+        description: "Run any bettercut tool by `name` — one find_tools found — with its \
+                      `arguments`, exactly as if it were called directly.",
+        schema: || {
+            object(
+                json!({
+                    "name": { "type": "string" },
+                    "arguments": { "type": "object" }
+                }),
+                &["name"],
+            )
+        },
+    },
+];
+
+/// The tools, as a compact server's `tools/list` reports them.
+pub fn list_compact() -> Vec<Value> {
     TOOLS
         .iter()
-        .map(|tool| {
-            json!({
-                "name": tool.name,
-                "description": tool.description,
-                "inputSchema": (tool.schema)(),
-            })
-        })
+        .filter(|tool| CORE.contains(&tool.name))
+        .chain(FINDERS)
+        .map(tool_json)
         .collect()
 }
 
+/// `find_tools`: the tools a compact server does not list that match
+/// `query`, best first, with their arguments — or, with no query (or no
+/// match), every unlisted tool's name and first sentence.
+pub fn find(query: &str) -> String {
+    let words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    let others = || TOOLS.iter().filter(|tool| !CORE.contains(&tool.name));
+    let mut scored: Vec<(usize, &Tool)> = others()
+        .map(|tool| {
+            let name = tool.name.replace('_', " ");
+            let text = format!("{name} {}", tool.description).to_lowercase();
+            // A word in the name counts for more than one in the description.
+            let score = words
+                .iter()
+                .map(|w| usize::from(text.contains(w.as_str())) + 2 * usize::from(name.contains(w.as_str())))
+                .sum();
+            (score, tool)
+        })
+        .filter(|(score, _)| *score > 0)
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    if scored.is_empty() {
+        let all: Vec<Value> = others()
+            .map(|tool| {
+                let first = tool.description.split(". ").next().unwrap_or(tool.description);
+                json!({ "name": tool.name, "description": first })
+            })
+            .collect();
+        return serde_json::to_string_pretty(&json!({ "tools": all })).unwrap_or_default();
+    }
+    let found: Vec<Value> = scored.iter().take(8).map(|(_, tool)| tool_json(tool)).collect();
+    serde_json::to_string_pretty(&json!({ "tools": found })).unwrap_or_default()
+}
+
 pub fn exists(name: &str) -> bool {
-    TOOLS.iter().any(|tool| tool.name == name)
+    TOOLS.iter().chain(FINDERS).any(|tool| tool.name == name)
 }
 
 impl Session {

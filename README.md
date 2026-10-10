@@ -80,7 +80,8 @@ automatically so scrubbing stays smooth.
 
 bettercut includes an [MCP](https://modelcontextprotocol.io) server,
 `bettercut-mcp`, installed beside the app. An assistant that speaks MCP —
-Claude, or any other client — can create and open projects, import media,
+Claude, GitHub Copilot, Cursor, Codex, Gemini, or any other client — can create
+and open projects, import media,
 place clips, add titles, split, delete, undo and export, through the same
 undoable edit commands the interface uses. Projects it saves open in the app
 like any other; nothing is written until it calls `save_project`.
@@ -96,11 +97,24 @@ claude mcp add bettercut -- /Applications/bettercut.app/Contents/MacOS/bettercut
 claude mcp add bettercut -- ~/Applications/bettercut-x86_64.AppImage --mcp
 ```
 
-Or, in the app, **Windows → AI Assistant** shows the exact command for your
-install, ready to copy, and whether an assistant is connected.
+Or, in the app, **Windows → AI Assistant**: pick your assistant app and it
+shows the exact setup for your install, ready to copy, with a button that adds
+it for you where the app keeps its servers in a settings file (a copy of the
+file is kept first), and says whether an assistant is connected.
 
-**Claude Desktop and other clients** take the same program in their server
-list, for example in `claude_desktop_config.json`:
+**Other clients** take the same program in their server list:
+
+| App | Where | Shape |
+|---|---|---|
+| Claude Desktop | `claude_desktop_config.json` | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` | `mcpServers`, with `--compact` |
+| VS Code (Copilot) | the user folder's `mcp.json` | `servers`, `"type": "stdio"` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers`, with `--compact` |
+| Codex | `~/.codex/config.toml` | `[mcp_servers.bettercut]` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Zed | its `settings.json` | `context_servers` |
+| LM Studio, Kiro | `~/.lmstudio/mcp.json`, `~/.kiro/settings/mcp.json` | `mcpServers` |
+| opencode | `~/.config/opencode/opencode.json` | `mcp`, `"type": "local"` |
 
 ```json
 {
@@ -111,6 +125,14 @@ list, for example in `claude_desktop_config.json`:
   }
 }
 ```
+
+**Clients with a tool limit.** Cursor takes about 40 tools and Windsurf 100,
+across every server. `bettercut-mcp --compact` (`bettercut --mcp --compact` for
+the AppImage) lists only the 32 everyday tools, plus `find_tools`, which finds
+the rest by what they do, with their arguments, and `use_tool`, which runs one.
+Every tool can still be called by name. The tool schemas avoid what some models
+refuse (lists without `items`, `anyOf`, `additionalProperties`), and a test
+keeps it that way.
 
 The tools: `new_project`, `open_project`, `save_project`, `describe_project`,
 `import_media`, `add_to_timeline`, `add_title`, `style_title`, `split_clip`,

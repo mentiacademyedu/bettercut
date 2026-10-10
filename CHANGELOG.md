@@ -29,6 +29,17 @@ setting kept:
 
 ### New
 
+- **Any AI assistant, not just Claude**: **Windows → AI Assistant** now sets
+  up Cursor, VS Code (Copilot), Windsurf, Codex, Gemini CLI, Zed, LM Studio,
+  Kiro and opencode as well as Claude: pick the app, then copy its exact setup
+  or press **Add** (its settings are kept, with a copy saved first).
+- **A compact server for clients with a tool limit**: Cursor takes about 40
+  tools and Windsurf 100, so `bettercut-mcp --compact` lists the 32 everyday
+  tools, and `find_tools` and `use_tool` reach the other 51. The app sets it
+  up this way for those two.
+- **Tool descriptions every model takes**: no schema features Gemini or
+  OpenAI's models refuse, checked by a test. The server also answers a list
+  of messages sent at once, and the resource lists some clients ask for.
 - **Voice effects**: Chipmunk, Helium, Deep, Monster, Robot, Alien,
   Telephone, Radio, Megaphone, Cave and Echo, one click each in the Audio
   tab. Select a sound clip, or a video with sound. Each sets the pitch,
