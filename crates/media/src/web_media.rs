@@ -1,29 +1,112 @@
-//! The web build's stand-in for [`crate::ffmpeg`]: the same names, none of
-//! FFmpeg.
+//! The web build's stand-in for [`crate::ffmpeg`]: the same names, the
+//! browser's own decoders.
 //!
 //! FFmpeg is a native library and does not link into WebAssembly, so in a
 //! browser `crate::ffmpeg` is this file (`lib.rs` swaps it in by path).
 //! Everything else is written against the `MediaProber` / `MediaDecoder`
-//! traits and the plain types in [`crate::codecs`], so it compiles unchanged;
-//! here, every file is refused, cleanly, with an error that says why.
+//! traits and the plain types in [`crate::codecs`], so it compiles unchanged.
 //!
-//! What still works in a browser is everything bettercut makes itself —
-//! colours, gradients, titles, shapes, generated sound. Decoding real video
-//! here is the browser's own codecs' job (WebCodecs), behind the same traits.
+//! Files reach a browser as `File`s, not paths: the page hands each one to
+//! `js/browser_media.js`, which names it `/browser/<n>/<file name>` and opens
+//! it with the browser's own decoders (a `<video>` element, or
+//! `createImageBitmap` for a photo). That name is the asset's path, and
+//! probing and decoding read through it. Decoding is asynchronous there, so
+//! a frame not decoded yet is an error for now — the track is skipped for one
+//! redraw — or the last frame there was, which [`VideoFrame::timestamp`]
+//! marks as not the one asked for, so it is never kept as that one. When the
+//! right frame arrives, [`browser::changes`] moves on and the app draws again.
+//!
+//! Not here yet: sound, export, proxies, chapters.
 
 use std::path::Path;
 
-use bettercut_foundation::{FrameRate, MediaTime};
+use bettercut_foundation::{FrameRate, MediaTime, TICKS_PER_SECOND};
+use wasm_bindgen::prelude::*;
 
-use crate::decoder::{AudioBuffer, CancellationToken, MediaDecoder, MediaProber, SeekMode, VideoFrame};
+use crate::decoder::{
+    AudioBuffer, CancellationToken, FrameStorage, MediaDecoder, MediaProber, SeekMode, VideoFrame,
+};
 use crate::error::MediaError;
-use crate::MediaAsset;
+use crate::{ColorMetadata, MediaAsset, MediaKind};
 
 pub use crate::codecs::{
     AUDIO_BITRATES_KBPS, ChapterMark, DEFAULT_AUDIO_BITRATE, EncodeTarget, EncoderChoice,
     EncoderKind, EncoderProbe, ExportFormat, MAX_AUDIO_BITRATE, MIN_AUDIO_BITRATE, PRORES,
     RateControl, VideoCodec,
 };
+
+#[wasm_bindgen(module = "/js/browser_media.js")]
+extern "C" {
+    fn bc_take_ready() -> js_sys::Array;
+    fn bc_drop_point() -> JsValue;
+    fn bc_changes() -> u32;
+    fn bc_busy() -> bool;
+    fn bc_pick_files(accept: &str);
+    fn bc_probe(path: &str) -> JsValue;
+    fn bc_frame(path: &str, seconds: f64) -> JsValue;
+}
+
+/// The page's side of files: what the app calls each frame.
+pub mod browser {
+    use super::*;
+
+    /// Files given to the page whose details are now known, ready to import.
+    pub fn take_ready() -> Vec<std::path::PathBuf> {
+        bc_take_ready()
+            .iter()
+            .filter_map(|v| v.as_string())
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    /// Where the last files were dropped, in page pixels — `None` when they
+    /// came from the file picker.
+    pub fn drop_point() -> Option<(f32, f32)> {
+        let point = bc_drop_point();
+        if point.is_null() || point.is_undefined() {
+            return None;
+        }
+        Some((number(&point, "x") as f32, number(&point, "y") as f32))
+    }
+
+    /// A count that moves on whenever a frame or a file arrives: when it has
+    /// changed since the last look, the preview is drawn again.
+    pub fn changes() -> u32 {
+        bc_changes()
+    }
+
+    /// Whether anything is still loading or decoding, so the app keeps
+    /// looking for it.
+    pub fn busy() -> bool {
+        bc_busy()
+    }
+
+    /// Open the browser's file picker. What is chosen arrives later, through
+    /// [`take_ready`].
+    pub fn pick_files(extensions: &[&str]) {
+        let accept: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
+        bc_pick_files(&accept.join(","));
+    }
+}
+
+fn field(object: &JsValue, name: &str) -> JsValue {
+    js_sys::Reflect::get(object, &JsValue::from_str(name)).unwrap_or(JsValue::UNDEFINED)
+}
+
+fn number(object: &JsValue, name: &str) -> f64 {
+    field(object, name).as_f64().unwrap_or(0.0)
+}
+
+fn path_str(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn seconds_of(time: MediaTime) -> f64 {
+    time.ticks() as f64 / TICKS_PER_SECOND as f64
+}
+
+/// The rate assumed for browser video: a `<video>` element does not say.
+const ASSUMED_RATE: FrameRate = FrameRate::FPS_30;
 
 /// The rate everything is mixed at: the same as the desktop build's.
 pub const INTERNAL_SAMPLE_RATE: i32 = 48_000;
@@ -35,13 +118,48 @@ fn unsupported(path: &Path) -> MediaError {
     MediaError::UnsupportedFormat(path.to_path_buf())
 }
 
-/// Opens nothing yet: every file is refused.
+/// Reads what the browser found out about a file the page was given.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FfmpegProber;
 
 impl MediaProber for FfmpegProber {
     fn probe(&self, path: &Path) -> Result<MediaAsset, MediaError> {
-        Err(unsupported(path))
+        let details = bc_probe(&path_str(path));
+        if details.is_undefined() || details.is_null() {
+            return Err(MediaError::FileNotFound(path.to_path_buf()));
+        }
+        if let Some(error) = field(&details, "error").as_string() {
+            return Err(MediaError::DecodeFailed(format!(
+                "{}: {error}",
+                path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+            )));
+        }
+        let kind = match field(&details, "kind").as_string().as_deref() {
+            Some("image") => MediaKind::Image,
+            Some("audio") => MediaKind::Audio,
+            _ => MediaKind::Video,
+        };
+        let duration = MediaTime::from_millis((number(&details, "duration") * 1000.0) as i64);
+        let mut asset = MediaAsset::new(kind, path, duration);
+        if let Some(name) = field(&details, "name").as_string() {
+            asset.file_name = name;
+        }
+        asset.file_size = number(&details, "size") as u64;
+        let (width, height) = (number(&details, "width") as u32, number(&details, "height") as u32);
+        match kind {
+            MediaKind::Video => {
+                asset = asset.with_video(width, height, ASSUMED_RATE);
+                // Already turned to RGB by the browser, in sRGB.
+                asset.color = ColorMetadata::srgb();
+            }
+            MediaKind::Image => {
+                asset.width = width;
+                asset.height = height;
+                asset.color = ColorMetadata::srgb();
+            }
+            MediaKind::Audio => {}
+        }
+        Ok(asset)
     }
 }
 
@@ -55,66 +173,117 @@ impl FfmpegProber {
     }
 }
 
-/// A decoder that never opens.
+/// Frames from the browser's decoder for one file.
 #[derive(Debug, Default)]
-pub struct FfmpegDecoder;
+pub struct FfmpegDecoder {
+    path: Option<String>,
+    /// Where the next `decode_frame` reads: the last seek.
+    at: MediaTime,
+    width: u32,
+    height: u32,
+    video: bool,
+}
 
 impl FfmpegDecoder {
     pub fn new(_threads: u32) -> Result<Self, MediaError> {
-        Ok(Self)
+        Ok(Self::default())
     }
     pub fn width(&self) -> u32 {
-        0
+        self.width
     }
     pub fn height(&self) -> u32 {
-        0
+        self.height
     }
     pub fn has_video(&self) -> bool {
-        false
+        self.video
     }
     pub fn has_audio(&self) -> bool {
         false
+    }
+
+    /// The frame at `at`, or the last one there was while it is fetched.
+    fn frame(&self, at: MediaTime) -> Result<Option<VideoFrame>, MediaError> {
+        let path = self.path.as_deref().ok_or(MediaError::NotOpen)?;
+        let found = bc_frame(path, seconds_of(at));
+        if found.is_undefined() || found.is_null() {
+            return Err(MediaError::DecodeFailed("not decoded yet".to_owned()));
+        }
+        let width = number(&found, "width") as u32;
+        let height = number(&found, "height") as u32;
+        let data = js_sys::Uint8ClampedArray::from(field(&found, "data")).to_vec();
+        // Not the frame asked for: stamped a tick off, so nothing keeps it
+        // as that one.
+        let exact = field(&found, "exact").as_bool().unwrap_or(false);
+        let timestamp = if exact {
+            at
+        } else {
+            MediaTime::from_ticks(at.ticks() - 1)
+        };
+        Ok(Some(VideoFrame {
+            timestamp,
+            width,
+            height,
+            color: ColorMetadata::srgb(),
+            storage: FrameStorage::System {
+                data,
+                stride: width * 4,
+            },
+        }))
     }
 }
 
 impl MediaDecoder for FfmpegDecoder {
     fn open(&mut self, asset: &MediaAsset) -> Result<(), MediaError> {
-        Err(unsupported(&asset.path))
+        let path = path_str(&asset.path);
+        let details = bc_probe(&path);
+        if details.is_undefined() || details.is_null() {
+            return Err(MediaError::FileNotFound(asset.path.clone()));
+        }
+        self.width = asset.width;
+        self.height = asset.height;
+        self.video = asset.kind.has_video();
+        self.path = Some(path);
+        self.at = MediaTime::ZERO;
+        Ok(())
     }
-    fn seek(&mut self, _timestamp: MediaTime, _mode: SeekMode) -> Result<(), MediaError> {
-        Err(MediaError::NotOpen)
+    fn seek(&mut self, timestamp: MediaTime, _mode: SeekMode) -> Result<(), MediaError> {
+        self.at = timestamp;
+        Ok(())
     }
     fn decode_frame(
         &mut self,
         _cancel: &dyn CancellationToken,
     ) -> Result<Option<VideoFrame>, MediaError> {
-        Err(MediaError::NotOpen)
+        self.frame(self.at)
     }
     fn decode_frame_at(
         &mut self,
-        _target: MediaTime,
+        target: MediaTime,
         _cancel: &dyn CancellationToken,
     ) -> Result<Option<VideoFrame>, MediaError> {
-        Err(MediaError::NotOpen)
+        self.at = target;
+        self.frame(target)
     }
+    /// Never a position: every request is answered by time, so the caller
+    /// always seeks.
     fn position(&self) -> Option<MediaTime> {
         None
     }
     fn frame_duration(&self) -> MediaTime {
-        MediaTime::ZERO
+        MediaTime::from_frames(1, ASSUMED_RATE).unwrap_or(MediaTime::ZERO)
     }
     fn decode_audio(
         &mut self,
         _cancel: &dyn CancellationToken,
     ) -> Result<Option<AudioBuffer>, MediaError> {
-        Err(MediaError::NotOpen)
+        Ok(None)
     }
     fn duration(&self) -> MediaTime {
         MediaTime::ZERO
     }
 }
 
-/// No proxies in a browser: there is nothing to make them from yet.
+/// No proxies in a browser: the frames are preview-sized already.
 pub fn generate_proxy(
     asset: &MediaAsset,
     _output: &Path,
@@ -131,7 +300,7 @@ pub fn probe_all(_target: EncodeTarget) -> Vec<EncoderProbe> {
     Vec::new()
 }
 
-/// No file to read chapters from.
+/// No chapters read in a browser.
 pub fn probe_chapters(path: &Path) -> Result<Vec<ChapterMark>, MediaError> {
     Err(unsupported(path))
 }
@@ -169,7 +338,7 @@ impl VideoWriter {
     }
 }
 
-/// Choosing a file's streams: plain logic, the same as the desktop build's.
+/// Choosing a file's streams: the browser does it, so nothing is chosen here.
 pub mod streams {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct StreamInfo {
@@ -190,7 +359,6 @@ pub mod streams {
         Other,
     }
 
-    /// No streams are ever read in a browser yet.
     pub fn choose(_streams: &[StreamInfo]) -> (Option<i32>, Option<i32>) {
         (None, None)
     }

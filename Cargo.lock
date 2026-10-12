@@ -612,12 +612,14 @@ name = "bettercut-media"
 version = "0.6.10"
 dependencies = [
  "bettercut-foundation",
+ "js-sys",
  "rusty_ffmpeg",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",
+ "wasm-bindgen",
 ]
 
 [[package]]

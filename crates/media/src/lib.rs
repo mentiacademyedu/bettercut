@@ -15,6 +15,9 @@ pub mod error;
 // In a browser, FFmpeg does not link: the same names, from a stand-in.
 #[cfg_attr(target_arch = "wasm32", path = "web_media.rs")]
 pub mod ffmpeg;
+/// Files the page was given, in the web build.
+#[cfg(target_arch = "wasm32")]
+pub use ffmpeg::browser;
 pub mod generated;
 pub mod generated_sound;
 pub mod image_sequence;

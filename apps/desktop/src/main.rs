@@ -515,6 +515,29 @@ impl App {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl App {
+    /// Frames the browser decoded since the last look mean the picture may
+    /// be out of date: draw it again. While anything is still loading or
+    /// decoding, keep looking, since the browser does not wake the app.
+    fn browser_media(&mut self, ctx: &egui::Context) {
+        use bettercut_editor_core::media::browser;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEEN: AtomicU32 = AtomicU32::new(0);
+        let changes = browser::changes();
+        if SEEN.swap(changes, Ordering::Relaxed) != changes {
+            if let Some(preview) = self.preview.as_mut() {
+                preview.invalidate_render();
+            }
+            self.ui.needs_repaint = true;
+            ctx.request_repaint();
+        }
+        if browser::busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+    }
+}
+
 /// A recording of the window in progress (`BETTERCUT_RECORD`).
 struct Recording {
     dir: std::path::PathBuf,
@@ -587,6 +610,9 @@ impl eframe::App for App {
                 self.ui.info(format!("An assistant: {tool}"));
             }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        self.browser_media(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);

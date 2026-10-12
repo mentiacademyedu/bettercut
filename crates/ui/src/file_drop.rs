@@ -17,6 +17,10 @@ use crate::state::UiState;
 ///
 /// `timeline` is where the timeline panel is on screen this frame.
 pub fn handle(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeline: egui::Rect) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        browser(ctx, editor, state, timeline);
+    }
     let (hovering, dropped, pointer) = ctx.input(|i| {
         let dropped: Vec<std::path::PathBuf> = i
             .raw
@@ -41,6 +45,27 @@ pub fn handle(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, tim
     }
 
     let imported = crate::panels::import_paths(editor, state, &dropped);
+    if over_timeline && !imported.is_empty() {
+        place_all(editor, state, &imported);
+    }
+    state.needs_repaint = true;
+}
+
+/// The web build: files dropped on the page or picked arrive once the
+/// browser has opened them (`bettercut_media::browser`), not through egui —
+/// which would copy every byte of them into memory first.
+#[cfg(target_arch = "wasm32")]
+fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeline: egui::Rect) {
+    use bettercut_editor_core::media::browser;
+    let ready = browser::take_ready();
+    if ready.is_empty() {
+        return;
+    }
+    // Page pixels to the interface's points.
+    let zoom = ctx.zoom_factor();
+    let over_timeline = browser::drop_point()
+        .is_some_and(|(x, y)| timeline.contains(egui::pos2(x / zoom, y / zoom)));
+    let imported = crate::panels::import_paths(editor, state, &ready);
     if over_timeline && !imported.is_empty() {
         place_all(editor, state, &imported);
     }

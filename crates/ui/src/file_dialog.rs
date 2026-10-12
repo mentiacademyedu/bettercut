@@ -4,7 +4,9 @@
 //! dialog that hands back a path — a page gets files dropped on it or
 //! chosen through an `<input>`, and their bytes, never where they live — so
 //! in the web build every dialog is answered "cancelled", and files come in
-//! by being dropped on the window instead.
+//! by being dropped on the window instead. Picking media opens the
+//! browser's own picker; what is chosen arrives a moment later, the same way
+//! dropped files do (`crate::file_drop`).
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use rfd::FileDialog;
@@ -16,15 +18,21 @@ pub use web::FileDialog;
 mod web {
     use std::path::PathBuf;
 
-    /// The desktop dialog's builder, every one of which is cancelled.
+    /// The desktop dialog's builder. Picking several files opens the
+    /// browser's picker and answers "cancelled" for now; everything else is
+    /// cancelled.
     #[derive(Default)]
-    pub struct FileDialog;
+    pub struct FileDialog {
+        extensions: Vec<String>,
+    }
 
     impl FileDialog {
         pub fn new() -> Self {
-            Self
+            Self::default()
         }
-        pub fn add_filter(self, _name: impl Into<String>, _extensions: &[impl ToString]) -> Self {
+        pub fn add_filter(mut self, _name: impl Into<String>, extensions: &[impl ToString]) -> Self {
+            self.extensions
+                .extend(extensions.iter().map(ToString::to_string));
             self
         }
         pub fn set_title(self, _title: impl Into<String>) -> Self {
@@ -40,6 +48,8 @@ mod web {
             None
         }
         pub fn pick_files(self) -> Option<Vec<PathBuf>> {
+            let extensions: Vec<&str> = self.extensions.iter().map(String::as_str).collect();
+            bettercut_editor_core::media::browser::pick_files(&extensions);
             None
         }
         pub fn pick_folder(self) -> Option<PathBuf> {

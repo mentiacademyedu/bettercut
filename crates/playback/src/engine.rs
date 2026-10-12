@@ -3004,6 +3004,13 @@ impl PlaybackEngine {
             .frames
             .decode(asset, source_time, SeekMode::Precise, &NeverCancelled)?;
 
+        // In a browser, a frame still being fetched comes back as the last
+        // one there was, stamped as not the one asked for: shown, but never
+        // kept as this one (`bettercut_media`'s `web_media`).
+        if cfg!(target_arch = "wasm32") && frame.timestamp != source_time {
+            return Ok(frame);
+        }
+
         // Key the cache by the frame's *actual* timestamp as well, so a later
         // request landing on the same frame is a hit even if it asks for a
         // slightly different instant.

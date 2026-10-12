@@ -37,3 +37,8 @@ expect_used = "warn"
 # uses `src/web_media.rs` in its place.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusty_ffmpeg = { version = "0.17", features = ["use_prebuilt_binding", "ffmpeg8_1"] }
+
+# The browser's own decoders, through `js/browser_media.js` (`src/web_media.rs`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"

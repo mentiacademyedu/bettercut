@@ -32,16 +32,76 @@
       text-align: center;
       pointer-events: none;
     }
+    /* Files held over the page. */
+    #drop {
+      position: absolute;
+      inset: 12px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed #748cfa;
+      border-radius: 10px;
+      background: rgba(17, 19, 24, 0.6);
+      color: #e5e7ed;
+      font-size: 16px;
+      pointer-events: none;
+    }
+    #drop.on {
+      display: flex;
+    }
   </style>
 </head>
 <body>
   <canvas id="bettercut"></canvas>
   <p id="status">Loading bettercut…</p>
+  <div id="drop">Drop to import — onto the timeline to add it there too</div>
   <script type="module">
     import init from './bettercut.js';
     // Whole stack traces in the console when something panics.
     Error.stackTraceLimit = 60;
-    init().catch((err) => {
+
+    // Files dropped on the page go to the app's media layer as they are —
+    // the browser's own File, read when needed — rather than through egui,
+    // which would copy every byte of them into memory first. So the page
+    // takes the drag before the canvas sees it.
+    const drop = document.getElementById('drop');
+    const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    window.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      drop.classList.add('on');
+    }, true);
+    window.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget === null) drop.classList.remove('on');
+      e.stopPropagation();
+    }, true);
+    window.addEventListener('drop', (e) => {
+      drop.classList.remove('on');
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      globalThis.bettercutMedia?.dropped([...e.dataTransfer.files], e.clientX, e.clientY);
+    }, true);
+
+    // `?media=<url>[&media=<url>…]`: open files from this site as if they
+    // were dropped on the timeline — for a demo, or for testing.
+    async function openFromAddress() {
+      const urls = new URLSearchParams(location.search).getAll('media');
+      const files = [];
+      for (const url of urls) {
+        const response = await fetch(url);
+        if (!response.ok) continue;
+        const blob = await response.blob();
+        files.push(new File([blob], url.split('/').pop(), { type: blob.type }));
+      }
+      if (files.length) {
+        globalThis.bettercutMedia?.dropped(files, innerWidth / 2, innerHeight * 0.85);
+      }
+    }
+
+    init().then(openFromAddress).catch((err) => {
       document.getElementById('status').textContent =
         'bettercut could not start in this browser: ' + err;
     });
