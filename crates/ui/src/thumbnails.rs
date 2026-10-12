@@ -30,6 +30,10 @@ pub struct ThumbnailStore {
     /// Filmstrip sheets, kept in their own map because a clip wants the strip
     /// and the browser wants the poster, and neither substitutes for the other.
     strips: HashMap<MediaId, Slot>,
+    /// The web build: where each file the page was given is, so its
+    /// pictures are read from the page instead of the cache.
+    #[cfg(target_arch = "wasm32")]
+    browser_files: HashMap<MediaId, std::path::PathBuf>,
 }
 
 impl ThumbnailStore {
@@ -45,6 +49,43 @@ impl ThumbnailStore {
     pub fn invalidate(&mut self, media: MediaId) {
         self.slots.remove(&media);
         self.strips.remove(&media);
+    }
+
+    /// The web build: `media` is the page's file at `path`, whose pictures
+    /// the page makes. Every "not yet" is forgotten, so whatever has arrived
+    /// since is picked up.
+    #[cfg(target_arch = "wasm32")]
+    pub fn browser_file(&mut self, media: MediaId, path: &std::path::Path) {
+        self.browser_files.insert(media, path.to_path_buf());
+        self.slots.retain(|_, slot| matches!(slot, Slot::Ready(_)));
+        self.strips.retain(|_, slot| matches!(slot, Slot::Ready(_)));
+    }
+
+    /// The web build's pictures: made by the page, not read from a cache.
+    #[cfg(target_arch = "wasm32")]
+    fn browser_picture(
+        &self,
+        ctx: &egui::Context,
+        media: MediaId,
+        name: &str,
+        strip: bool,
+    ) -> Option<egui::TextureHandle> {
+        use bettercut_editor_core::media::browser;
+        let path = self.browser_files.get(&media)?;
+        let picture = if strip {
+            browser::filmstrip(path)?
+        } else {
+            browser::poster(path)?
+        };
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [picture.width as usize, picture.height as usize],
+            &picture.rgba,
+        );
+        Some(ctx.load_texture(
+            format!("{name}-{media:?}"),
+            image,
+            egui::TextureOptions::LINEAR,
+        ))
     }
 
     /// The filmstrip sheet for a clip, loading it on first request (§53).
@@ -69,6 +110,10 @@ impl ThumbnailStore {
     }
 
     fn load_strip(&self, ctx: &egui::Context, media: MediaId) -> Option<egui::TextureHandle> {
+        #[cfg(target_arch = "wasm32")]
+        if self.browser_files.contains_key(&media) {
+            return self.browser_picture(ctx, media, "strip", true);
+        }
         let cache = self.cache.as_ref()?;
         let path = cache.layout().filmstrip_file(
             media,
@@ -116,6 +161,10 @@ impl ThumbnailStore {
     }
 
     fn load(&self, ctx: &egui::Context, media: MediaId) -> Option<egui::TextureHandle> {
+        #[cfg(target_arch = "wasm32")]
+        if self.browser_files.contains_key(&media) {
+            return self.browser_picture(ctx, media, "thumb", false);
+        }
         let cache = self.cache.as_ref()?;
         let path = cache.layout().thumbnail_file(media, self.width);
         if !path.exists() {

@@ -529,6 +529,18 @@ impl App {
             if let Some(preview) = self.preview.as_mut() {
                 preview.invalidate_render();
             }
+            // Thumbnails and filmstrips the page has made since.
+            let files: Vec<_> = self
+                .editor
+                .project()
+                .media
+                .iter()
+                .filter(|asset| asset.path.starts_with("/browser"))
+                .map(|asset| (asset.id, asset.path.clone()))
+                .collect();
+            for (id, path) in files {
+                self.ui.thumbnails.browser_file(id, &path);
+            }
             self.ui.needs_repaint = true;
             ctx.request_repaint();
         }

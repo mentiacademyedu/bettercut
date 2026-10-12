@@ -44,6 +44,8 @@ extern "C" {
     fn bc_pick_files(accept: &str);
     fn bc_probe(path: &str) -> JsValue;
     fn bc_frame(path: &str, seconds: f64) -> JsValue;
+    fn bc_poster(path: &str) -> JsValue;
+    fn bc_filmstrip(path: &str) -> JsValue;
 }
 
 /// The page's side of files: what the app calls each frame.
@@ -79,6 +81,35 @@ pub mod browser {
     /// looking for it.
     pub fn busy() -> bool {
         bc_busy()
+    }
+
+    /// A small picture made by the page: RGBA, `width` by `height`.
+    pub struct Picture {
+        pub width: u32,
+        pub height: u32,
+        pub rgba: Vec<u8>,
+    }
+
+    fn picture(found: &JsValue) -> Option<Picture> {
+        if found.is_undefined() || found.is_null() {
+            return None;
+        }
+        Some(Picture {
+            width: number(found, "width") as u32,
+            height: number(found, "height") as u32,
+            rgba: js_sys::Uint8ClampedArray::from(field(found, "data")).to_vec(),
+        })
+    }
+
+    /// The media browser's thumbnail for a file, once the page has made it.
+    pub fn poster(path: &std::path::Path) -> Option<Picture> {
+        picture(&bc_poster(&path_str(path)))
+    }
+
+    /// The timeline's filmstrip sheet for a file, once the page has made it:
+    /// the desktop's layout, `bettercut_playback::TILES` tiles side by side.
+    pub fn filmstrip(path: &std::path::Path) -> Option<Picture> {
+        picture(&bc_filmstrip(&path_str(path)))
     }
 
     /// Open the browser's file picker. What is chosen arrives later, through

@@ -20,6 +20,12 @@
 const PREVIEW_WIDTH = 1280;
 // Decoded frames kept per file, newest last.
 const FRAMES_KEPT = 24;
+// The media browser's thumbnails, and the timeline's filmstrip: TILES
+// tiles of TILE_WIDTH, side by side in one sheet — the desktop's layout
+// (`bettercut_playback::filmstrip_job`).
+const POSTER_WIDTH = 160;
+const TILES = 32;
+const TILE_WIDTH = 64;
 // How long one frame is assumed to cover, for matching a request to a frame
 // caught while playing: a `<video>` does not say its rate.
 const FRAME_MS = 1000 / 30;
@@ -76,10 +82,63 @@ function keep(entry, ms, frame) {
   changes += 1;
 }
 
+// Poster and filmstrip, from a second `<video>` so the one the preview
+// reads from is never moved: a tile at the centre of each of TILES equal
+// stretches, as the desktop samples them, and the poster a tenth of the way
+// in, past any fade from black.
+function makePictures(entry) {
+  const video = document.createElement('video');
+  video.muted = true;
+  video.preload = 'auto';
+  const duration = entry.details.duration;
+  const height = Math.max(1, Math.round((TILE_WIDTH * entry.details.height) / entry.details.width));
+  const sheet = new OffscreenCanvas(TILES * TILE_WIDTH, height);
+  const context = sheet.getContext('2d', { willReadFrequently: true });
+  let tile = -1; // -1: the poster
+  const next = () => {
+    tile += 1;
+    if (tile >= TILES) {
+      entry.strip = {
+        width: sheet.width,
+        height: sheet.height,
+        data: context.getImageData(0, 0, sheet.width, sheet.height).data,
+      };
+      video.removeAttribute('src');
+      video.load();
+      changes += 1;
+      return;
+    }
+    video.currentTime = (duration * (2 * tile + 1)) / (2 * TILES);
+  };
+  video.addEventListener('seeked', () => {
+    if (tile < 0) {
+      entry.poster = grabWidth(video, video.videoWidth, video.videoHeight, POSTER_WIDTH);
+      changes += 1;
+    } else {
+      context.drawImage(video, tile * TILE_WIDTH, 0, TILE_WIDTH, height);
+    }
+    next();
+  });
+  video.addEventListener('loadedmetadata', () => {
+    video.currentTime = duration / 10;
+  }, { once: true });
+  video.src = entry.url;
+}
+
+function grabWidth(source, width, height, target) {
+  const w = Math.min(target, width);
+  const h = Math.max(1, Math.round((height * w) / width));
+  const canvas = new OffscreenCanvas(w, h);
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(source, 0, 0, w, h);
+  return { width: w, height: h, data: context.getImageData(0, 0, w, h).data };
+}
+
 function openImage(entry) {
   createImageBitmap(entry.file)
     .then((bitmap) => {
       entry.still = grab(bitmap, bitmap.width, bitmap.height);
+      entry.poster = grabWidth(bitmap, bitmap.width, bitmap.height, POSTER_WIDTH);
       finish(entry, {
         kind: 'image',
         width: bitmap.width,
@@ -108,6 +167,7 @@ function openVideo(entry) {
         height: video.videoHeight,
         duration: Number.isFinite(video.duration) ? video.duration : 0,
       });
+      if (entry.details.kind === 'video' && entry.details.duration > 0) makePictures(entry);
     },
     { once: true },
   );
@@ -193,6 +253,8 @@ function add(file) {
     wanted: null,
     last: null,
     still: null,
+    poster: null,
+    strip: null,
     playing: false,
     askedMs: null,
     askedAt: 0,
@@ -264,6 +326,16 @@ export function bc_probe(path) {
   const entry = files.get(path);
   if (!entry || !entry.details) return undefined;
   return { ...entry.details, size: entry.file.size, name: entry.file.name };
+}
+
+// The media browser's thumbnail, { width, height, data }, once made.
+export function bc_poster(path) {
+  return files.get(path)?.poster ?? undefined;
+}
+
+// The timeline's filmstrip sheet, { width, height, data }, once made.
+export function bc_filmstrip(path) {
+  return files.get(path)?.strip ?? undefined;
 }
 
 // The frame at `seconds`: { width, height, data, exact }, or undefined when
