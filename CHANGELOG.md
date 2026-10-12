@@ -29,6 +29,10 @@ setting kept:
 
 ### New
 
+- **bettercut in a browser, first steps**: the app now also builds for the
+  web (`docs\build-web.ps1`): the same interface and the same GPU preview,
+  on WebGPU, from about 4 MB to download. Early: it edits colours, titles,
+  shapes and the sample project, but cannot open video or keep work yet.
 - **Any AI assistant, not just Claude**: **Windows → AI Assistant** now sets
   up Cursor, VS Code (Copilot), Windsurf, Codex, Gemini CLI, Zed, LM Studio,
   Kiro and opencode as well as Claude: pick the app, then copy its exact setup

@@ -8,9 +8,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod asset;
+pub mod codecs;
 pub mod color;
 pub mod decoder;
 pub mod error;
+// In a browser, FFmpeg does not link: the same names, from a stand-in.
+#[cfg_attr(target_arch = "wasm32", path = "web_media.rs")]
 pub mod ffmpeg;
 pub mod generated;
 pub mod generated_sound;

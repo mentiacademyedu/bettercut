@@ -310,7 +310,7 @@ fn list(ui: &mut egui::Ui, state: &mut UiState, dialog: &mut TemplateDialog) {
         .button("Add template file…")
         .on_hover_text("Check a template (.json) and add it to your templates")
         .clicked()
-        && let Some(file) = rfd::FileDialog::new()
+        && let Some(file) = crate::file_dialog::FileDialog::new()
             .add_filter("template", &["json"])
             .pick_file()
     {

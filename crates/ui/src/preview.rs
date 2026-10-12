@@ -63,7 +63,7 @@ pub struct Preview {
     consecutive_on_time: u32,
     /// When quality last changed. §17: *"do not change quality more than once
     /// per second, or the preview will visibly oscillate."*
-    last_quality_change: std::time::Instant,
+    last_quality_change: bettercut_editor_core::foundation::clock::Instant,
     dropped_total: u64,
     has_content: bool,
     /// Playback state last frame, so stopping can trigger a full-quality
@@ -82,7 +82,7 @@ pub struct Preview {
     /// A J/L shuttle at any speed but normal forward play (`crate::shuttle`):
     /// the rate, and when the playhead was last moved for it. Silent, and
     /// driven from here rather than by the audio clock.
-    shuttle: Option<(i32, std::time::Instant)>,
+    shuttle: Option<(i32, bettercut_editor_core::foundation::clock::Instant)>,
 
     /// Normal playback repeats the in-to-out range — or the whole sequence,
     /// without marks — instead of stopping at its end.
@@ -160,7 +160,7 @@ impl Preview {
             snapshot_id: None,
             consecutive_drops: 0,
             consecutive_on_time: 0,
-            last_quality_change: std::time::Instant::now(),
+            last_quality_change: bettercut_editor_core::foundation::clock::Instant::now(),
             dropped_total: 0,
             has_content: false,
             was_playing: false,
@@ -292,7 +292,7 @@ impl Preview {
             1 => self.set_playing(editor, true),
             _ => {
                 self.set_playing(editor, false);
-                self.shuttle = Some((rate, std::time::Instant::now()));
+                self.shuttle = Some((rate, bettercut_editor_core::foundation::clock::Instant::now()));
             }
         }
     }
@@ -355,7 +355,7 @@ impl Preview {
     pub fn seek_to(&mut self, position: TimelineTime) {
         // A shuttle carries on from where the playhead was moved to.
         if let Some((_, since)) = &mut self.shuttle {
-            *since = std::time::Instant::now();
+            *since = bettercut_editor_core::foundation::clock::Instant::now();
         }
         self.clock.seek_to(position);
         if let Some(mixer) = &self.mixer {
@@ -418,7 +418,7 @@ impl Preview {
         self.clock.tick();
 
         if let Some((rate, since)) = self.shuttle {
-            let now = std::time::Instant::now();
+            let now = bettercut_editor_core::foundation::clock::Instant::now();
             let end = editor
                 .active_sequence()
                 .map_or(TimelineTime::ZERO, |s| s.duration());
@@ -714,7 +714,7 @@ impl Preview {
         }
         tracing::info!(from = ?self.quality, to = ?next, "{direction} preview quality");
         self.quality = next;
-        self.last_quality_change = std::time::Instant::now();
+        self.last_quality_change = bettercut_editor_core::foundation::clock::Instant::now();
         self.consecutive_drops = 0;
         self.consecutive_on_time = 0;
     }

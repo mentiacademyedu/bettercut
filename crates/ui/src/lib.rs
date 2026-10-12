@@ -13,6 +13,7 @@ pub mod crash;
 pub mod disk_change;
 pub mod effects;
 pub mod export_dialog;
+pub mod file_dialog;
 pub mod export_presets;
 pub mod export_queue;
 pub mod file_details;

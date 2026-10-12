@@ -1793,7 +1793,7 @@ fn destination_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
             .button("🗁")
             .on_hover_text("Choose the folder to save into")
             .clicked()
-            && let Some(chosen) = rfd::FileDialog::new()
+            && let Some(chosen) = crate::file_dialog::FileDialog::new()
                 .add_filter("Video", &["mp4", "mov"])
                 .add_filter("Sound", &["wav"])
                 .set_file_name(format!(

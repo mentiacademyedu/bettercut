@@ -537,6 +537,7 @@ dependencies = [
  "egui",
  "tracing",
  "tracing-subscriber",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -583,6 +584,7 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -685,6 +687,7 @@ version = "0.6.10"
 dependencies = [
  "bettercut-foundation",
  "cosmic-text",
+ "epaint_default_fonts",
  "serde",
  "tempfile",
  "thiserror 2.0.20",

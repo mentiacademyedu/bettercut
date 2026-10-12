@@ -69,7 +69,7 @@ pub fn install_hook(dir: PathBuf) {
             |l| format!("{}:{}", l.file(), l.line()),
         );
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-        let when = std::time::SystemTime::now()
+        let when = bettercut_editor_core::foundation::clock::system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let mut text = report(&message, &location, &backtrace, when);

@@ -9,6 +9,13 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 uuid.workspace = true
+# The clock in a browser (`clock`); std's own everywhere else.
+web-time = "1"
+
+# In a browser there is no OS random source; uuid takes it from JavaScript's
+# crypto.getRandomValues instead (the web build, `apps/web`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 serde_json.workspace = true

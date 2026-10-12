@@ -563,7 +563,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             .clicked()
         {
             ui.close();
-            let seed = std::time::SystemTime::now()
+            let seed = bettercut_editor_core::foundation::clock::system_now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos() as u64);
             match editor.shuffle_clips(&selected, seed) {

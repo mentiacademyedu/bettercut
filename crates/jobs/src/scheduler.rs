@@ -208,8 +208,10 @@ impl JobScheduler {
             }
         }
 
+        // A browser has no threads: there, jobs wait in the queue, and the
+        // web build makes nothing that needs one yet.
         assert!(
-            !workers.is_empty(),
+            !workers.is_empty() || cfg!(target_arch = "wasm32"),
             "the job scheduler needs at least one worker thread"
         );
 

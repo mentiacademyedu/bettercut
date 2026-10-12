@@ -16,7 +16,6 @@ bettercut-jobs.workspace = true
 bettercut-cache.workspace = true
 egui.workspace = true
 eframe.workspace = true
-rfd = "0.15"
 # One saved title style a line, as JSON: a `TextStyle` is a nested thing, and
 # the looks file's tab-separated columns would not hold it honestly.
 serde_json.workspace = true
@@ -34,3 +33,7 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# The system's open and save dialogs; a browser has none (`file_dialog`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.15"

@@ -178,8 +178,8 @@ pub const KEEP_UNSAVED_AT_MOST: usize = 50;
 pub fn prune_unsaved() -> usize {
     let doomed = stale_sessions(
         &unsaved_sessions(),
-        std::time::SystemTime::now(),
-        &format!("{}-", std::process::id()),
+        bettercut_foundation::clock::system_now(),
+        &format!("{}-", bettercut_foundation::places::process_id()),
     );
 
     let mut removed = 0;

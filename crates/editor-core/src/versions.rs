@@ -152,7 +152,7 @@ fn prune(folder: &Path, stem: &str, keep: usize) -> std::io::Result<()> {
 
 /// Seconds since 1970, now.
 pub fn now_seconds() -> u64 {
-    std::time::SystemTime::now()
+    bettercut_foundation::clock::system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }

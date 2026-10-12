@@ -18,6 +18,7 @@ use std::path::PathBuf;
 /// that exists is used for regular text; a bold face beside it, when found,
 /// is used for strong text.
 fn candidates() -> Vec<(PathBuf, Option<PathBuf>)> {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut out = Vec::new();
     #[cfg(target_os = "windows")]
     {

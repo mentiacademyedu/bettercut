@@ -6,7 +6,9 @@
 //! metadata read. When it changes, a small window offers to load the new
 //! version or keep the one on screen; the app's own saves never raise it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use bettercut_editor_core::foundation::clock::Instant;
 
 use bettercut_editor_core::Editor;
 

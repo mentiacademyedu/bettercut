@@ -65,6 +65,23 @@ impl TextRenderer {
     /// the seam that closes this when the assets exist.
     pub fn new() -> Self {
         let mut fonts = FontSystem::new();
+        // A browser lends a page none of its fonts: the web build draws with
+        // the faces the interface already carries, so a title is never blank.
+        #[cfg(target_arch = "wasm32")]
+        for face in [
+            epaint_default_fonts::UBUNTU_LIGHT,
+            epaint_default_fonts::HACK_REGULAR,
+            epaint_default_fonts::NOTO_EMOJI_REGULAR,
+        ] {
+            fonts.db_mut().load_font_data(face.to_vec());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let db = fonts.db_mut();
+            db.set_sans_serif_family("Ubuntu");
+            db.set_serif_family("Ubuntu");
+            db.set_monospace_family("Hack");
+        }
         // Fonts the user imported, so every renderer — the preview's and every
         // export's — can draw them.
         let imported = user_fonts_dir();

@@ -23,69 +23,22 @@
 
 use std::path::Path;
 
-use bettercut_foundation::MediaTime;
-
 use rusty_ffmpeg::ffi;
 
 use crate::error::MediaError;
 
-use bettercut_foundation::FrameRate;
-
 use super::INTERNAL_SAMPLE_RATE;
 use super::encode::{Muxer, drain_encoder};
 use super::encoders::{
-    EncodeTarget, EncoderChoice, RateControl, VideoCodec, av_rational, open_best, open_prores,
+    EncodeTarget, EncoderChoice, av_rational, open_best, open_prores,
     open_vp9_alpha,
 };
 use super::raii::{CodecContext, Frame, Scaler};
 
-/// How the output is to be written.
-/// A chapter to write into the file: what players list, and what a viewer
-/// jumps between. Times are in the file's own timeline, from its first
-/// frame; a mark past the end of the file is dropped by the muxer, not by us.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChapterMark {
-    pub title: String,
-    pub start: MediaTime,
-    pub end: MediaTime,
-}
-
-/// The sound's bitrate when none is asked for: 192 kb/s is the deliverable,
-/// not a proxy — the difference from 128 is audible on music and costs half
-/// a megabyte a minute.
-pub const DEFAULT_AUDIO_BITRATE: i64 = 192_000;
-/// What AAC is worth encoding at: below 64 kb/s it is a phone line, above
-/// 320 it is bits the format cannot use.
-pub const MIN_AUDIO_BITRATE: i64 = 64_000;
-pub const MAX_AUDIO_BITRATE: i64 = 320_000;
-/// The choices the export dialog offers, in kb/s.
-pub const AUDIO_BITRATES_KBPS: [i64; 5] = [96, 128, 192, 256, 320];
-
-#[derive(Debug, Clone, Copy)]
-pub struct ExportFormat {
-    pub width: u32,
-    pub height: u32,
-    /// The exact ratio §9 stores — 30000/1001, not 29.97. Rounding it puts a
-    /// long export's audio adrift by the end.
-    pub frame_rate: FrameRate,
-    pub codec: VideoCodec,
-    /// Video bits per second, or `None` to derive one from the format.
-    pub bitrate: Option<i64>,
-    pub rate_control: RateControl,
-    /// Channels of audio, or zero for a silent file.
-    pub channels: usize,
-    /// The sound's bits per second, or `None` for [`DEFAULT_AUDIO_BITRATE`].
-    pub audio_bitrate: Option<i64>,
-    /// §15.1: FFmpeg never gets every core, not even for the last job running.
-    pub threads: u32,
-    /// A see-through background: VP9 with an alpha plane (write to a `.webm`
-    /// path), no sound — WebM carries no AAC. The frames pushed must then be
-    /// straight, not premultiplied, alpha.
-    pub transparent: bool,
-    /// A ProRes 422 HQ master (write to a `.mov` path): 10-bit 4:2:2, the
-    /// codec's own quality, sound as AAC. Ignored with `transparent`.
-    pub prores: bool,
-}
+pub use crate::codecs::{
+    AUDIO_BITRATES_KBPS, ChapterMark, DEFAULT_AUDIO_BITRATE, ExportFormat, MAX_AUDIO_BITRATE,
+    MIN_AUDIO_BITRATE,
+};
 
 /// An open output file, accepting frames until [`Self::finish`].
 pub struct VideoWriter {

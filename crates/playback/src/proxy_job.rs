@@ -210,9 +210,9 @@ mod tests {
         let output = job.output_path().to_path_buf();
         scheduler.submit(Box::new(job));
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = bettercut_foundation::clock::Instant::now() + std::time::Duration::from_secs(60);
         let mut finished = false;
-        while std::time::Instant::now() < deadline && !finished {
+        while bettercut_foundation::clock::Instant::now() < deadline && !finished {
             match events.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(bettercut_jobs::JobEvent::Finished { .. }) => finished = true,
                 Ok(bettercut_jobs::JobEvent::Failed { message, .. }) => {
@@ -253,8 +253,8 @@ mod tests {
         let job = ProxyJob::new(&asset, ProxyResolution::P360, &cache, 1).expect("a job");
         scheduler.submit(Box::new(job));
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while std::time::Instant::now() < deadline {
+        let deadline = bettercut_foundation::clock::Instant::now() + std::time::Duration::from_secs(60);
+        while bettercut_foundation::clock::Instant::now() < deadline {
             match events.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(bettercut_jobs::JobEvent::Finished { .. }) => break,
                 Ok(bettercut_jobs::JobEvent::Failed { message, .. }) => {

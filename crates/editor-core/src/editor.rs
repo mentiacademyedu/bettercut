@@ -28,7 +28,11 @@ use crate::ops;
 /// A per-process id, so two instances editing unsaved projects do not write
 /// into the same recovery directory and produce a nonsense replay.
 fn session_id() -> String {
-    format!("{}-{}", std::process::id(), SequenceId::new().short())
+    format!(
+        "{}-{}",
+        bettercut_foundation::places::process_id(),
+        SequenceId::new().short()
+    )
 }
 
 /// Commands applied so far inside [`Editor::staged`].
@@ -1744,7 +1748,7 @@ impl Editor {
             // Written out first so what is kept is the project as it stands,
             // unsaved work and all, rather than whatever is on disk.
             let kept =
-                std::env::temp_dir().join(format!("bettercut-restore-{}.vproj", session_id()));
+                bettercut_foundation::places::temp_dir().join(format!("bettercut-restore-{}.vproj", session_id()));
             if bettercut_project_format::save(&self.project, &kept).is_ok()
                 && let Ok(bytes) = std::fs::read(&kept)
             {

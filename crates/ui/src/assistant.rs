@@ -9,7 +9,9 @@
 //! saying whether an assistant has been heard from.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use bettercut_editor_core::foundation::clock::Instant;
 
 use crate::state::UiState;
 use crate::theme;

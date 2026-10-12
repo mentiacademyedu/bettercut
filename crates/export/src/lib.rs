@@ -366,6 +366,8 @@ pub fn export(
         if cancel.is_cancelled() {
             // Drop the writer without finishing, then remove the file: a
             // cancelled export must not leave something that looks finished.
+            // (The web build's stand-in writer holds nothing to close.)
+            #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
             drop(writer);
             let _ = std::fs::remove_file(&settings.path);
             return Err(ExportError::Cancelled);

@@ -64,7 +64,7 @@ pub enum PlaybackClock {
     /// No device. Time comes from `Instant`, pumped by the UI each frame.
     Monotonic {
         clock: Arc<AudioClock>,
-        last_tick: std::cell::Cell<std::time::Instant>,
+        last_tick: std::cell::Cell<bettercut_foundation::clock::Instant>,
     },
 }
 
@@ -82,7 +82,7 @@ impl PlaybackClock {
                     Self::Monotonic {
                         // 48 kHz so positions stay tick-exact (§9).
                         clock: Arc::new(AudioClock::new(48_000, 2)),
-                        last_tick: std::cell::Cell::new(std::time::Instant::now()),
+                        last_tick: std::cell::Cell::new(bettercut_foundation::clock::Instant::now()),
                     },
                     None,
                 )
@@ -118,7 +118,7 @@ impl PlaybackClock {
             return;
         };
 
-        let now = std::time::Instant::now();
+        let now = bettercut_foundation::clock::Instant::now();
         let elapsed = now.duration_since(last_tick.get());
         last_tick.set(now);
 
@@ -141,14 +141,14 @@ impl PlaybackClock {
         // Reset the fallback's reference point, so time spent paused is not
         // credited to the clock the moment it resumes.
         if let Self::Monotonic { last_tick, .. } = self {
-            last_tick.set(std::time::Instant::now());
+            last_tick.set(bettercut_foundation::clock::Instant::now());
         }
         self.clock().set_playing(playing);
     }
 
     pub fn seek_to(&self, position: TimelineTime) {
         if let Self::Monotonic { last_tick, .. } = self {
-            last_tick.set(std::time::Instant::now());
+            last_tick.set(bettercut_foundation::clock::Instant::now());
         }
         self.clock().seek_to(position);
     }
@@ -165,7 +165,7 @@ mod tests {
         let clock = Arc::new(AudioClock::new(48_000, 2));
         let fallback = PlaybackClock::Monotonic {
             clock: Arc::clone(&clock),
-            last_tick: std::cell::Cell::new(std::time::Instant::now()),
+            last_tick: std::cell::Cell::new(bettercut_foundation::clock::Instant::now()),
         };
 
         fallback.tick();
@@ -191,7 +191,7 @@ mod tests {
         let clock = Arc::new(AudioClock::new(48_000, 2));
         let fallback = PlaybackClock::Monotonic {
             clock,
-            last_tick: std::cell::Cell::new(std::time::Instant::now()),
+            last_tick: std::cell::Cell::new(bettercut_foundation::clock::Instant::now()),
         };
 
         fallback.seek_to(TimelineTime::from_seconds(12));

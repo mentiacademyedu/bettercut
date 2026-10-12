@@ -23,3 +23,7 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+# The web build's start: awaiting the page's canvas (`web_main`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"

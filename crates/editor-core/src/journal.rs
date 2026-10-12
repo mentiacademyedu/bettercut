@@ -59,7 +59,7 @@ pub const JOURNAL_FILE: &str = "journal.log";
 /// launch.
 pub fn unsaved_root() -> PathBuf {
     std::env::var_os("BETTERCUT_RECOVERY_ROOT").map_or_else(
-        || std::env::temp_dir().join("bettercut").join(RECOVERY_DIR),
+        || bettercut_foundation::places::temp_dir().join("bettercut").join(RECOVERY_DIR),
         PathBuf::from,
     )
 }
@@ -118,7 +118,7 @@ pub struct Journal {
     paths: RecoveryPaths,
     file: Option<File>,
     since_snapshot: u32,
-    last_snapshot: std::time::Instant,
+    last_snapshot: bettercut_foundation::clock::Instant,
     /// Seconds before a snapshot is forced: [`SNAPSHOT_EVERY_SECONDS`]
     /// unless the interface asked otherwise.
     snapshot_every_seconds: u64,
@@ -133,7 +133,7 @@ impl Journal {
             paths,
             file: None,
             since_snapshot: 0,
-            last_snapshot: std::time::Instant::now(),
+            last_snapshot: bettercut_foundation::clock::Instant::now(),
             snapshot_every_seconds: SNAPSHOT_EVERY_SECONDS,
             write_failures: 0,
         }
@@ -268,7 +268,7 @@ impl Journal {
         }
 
         self.since_snapshot = 0;
-        self.last_snapshot = std::time::Instant::now();
+        self.last_snapshot = bettercut_foundation::clock::Instant::now();
         tracing::debug!(clips = project.clip_count(), "autosave snapshot written");
         Ok(())
     }

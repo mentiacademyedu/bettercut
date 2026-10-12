@@ -730,7 +730,7 @@ pub struct UiState {
     /// When the project file was last looked at for changes made by another
     /// program, and whether one is waiting for an answer
     /// (`crate::disk_change`).
-    pub disk_checked: Option<std::time::Instant>,
+    pub disk_checked: Option<bettercut_editor_core::foundation::clock::Instant>,
     pub disk_changed: bool,
     /// The question was answered for closing the window: close it now.
     pub quit_now: bool,
@@ -753,7 +753,7 @@ pub struct UiState {
     pub assistant_open: bool,
     /// When an assistant last called through the live link, for that window
     /// to say whether one is connected. Set by the desktop shell.
-    pub assistant_seen: Option<std::time::Instant>,
+    pub assistant_seen: Option<bettercut_editor_core::foundation::clock::Instant>,
     /// How adding bettercut to an assistant went, written by the thread
     /// that did it.
     pub assistant_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,

@@ -8,6 +8,11 @@
 //!   3. pumps events and asks `bettercut-ui` to draw a frame.
 //!
 //! All editing logic lives below it (§86). Nothing here touches `Project`.
+//!
+//! The same shell is the web build: compiled to WebAssembly, `main` starts
+//! the app in the page's canvas instead of a window (`web_main`), and what a
+//! browser cannot do — threads, the live link for assistants, the update
+//! check — is left out.
 
 // Release builds are GUI apps: no console window should flash on launch.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -15,6 +20,7 @@
 use bettercut_editor_core::{Editor, EventReceiver};
 use bettercut_ui::UiState;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     // `bettercut --mcp`: be the MCP server instead of the window. An AppImage
     // runs one program, so this is how an assistant reaches bettercut-mcp
@@ -93,10 +99,80 @@ fn main() -> eframe::Result {
     )
 }
 
+/// The web build: start in the page's `<canvas id="bettercut">`, and say
+/// on the page, in place of the loading line, if it cannot.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+
+    let Some(document) = eframe::web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let say = {
+        let document = document.clone();
+        move |text: &str| {
+            if let Some(status) = document.get_element_by_id("status") {
+                status.set_text_content(Some(text));
+            }
+        }
+    };
+    let Some(canvas) = document
+        .get_element_by_id("bettercut")
+        .and_then(|e| e.dyn_into::<eframe::web_sys::HtmlCanvasElement>().ok())
+    else {
+        say("The page has no canvas for bettercut.");
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let started = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| {
+                    bettercut_ui::fonts::install(&cc.egui_ctx);
+                    bettercut_ui::theme::apply(&cc.egui_ctx);
+                    Ok(Box::new(App::new(None, cc)))
+                }),
+            )
+            .await;
+        match started {
+            Ok(()) => {
+                if let Some(status) = document.get_element_by_id("status") {
+                    status.remove();
+                }
+            }
+            Err(err) => say(&format!("bettercut could not start here: {err:?}")),
+        }
+    });
+}
+
+/// Whether a start-up option is on: the environment variable on the
+/// desktop, the word in the page's address (`?sample`) on the web.
+fn asked_for(variable: &str, word: &str) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = variable;
+        eframe::web_sys::window()
+            .and_then(|w| w.location().search().ok())
+            .is_some_and(|query| {
+                query
+                    .trim_start_matches('?')
+                    .split('&')
+                    .any(|part| part.split('=').next() == Some(word))
+            })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = word;
+        std::env::var_os(variable).is_some()
+    }
+}
+
 /// §49: structured logs, `INFO` by default, overridable with `RUST_LOG`.
 ///
 /// To the console and to a file: a release build has no console, so without
 /// the file a tester's logs went nowhere. The run before is kept beside it.
+#[cfg(not(target_arch = "wasm32"))]
 fn init_logging() {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -161,7 +237,7 @@ struct App {
     frames: u32,
     /// The running export's job and when it began, to say how long is left.
     /// Keyed by job, so the next export in the queue starts its own clock.
-    export_began: Option<(u64, std::time::Instant)>,
+    export_began: Option<(u64, bettercut_editor_core::foundation::clock::Instant)>,
     /// The live link: an assistant using bettercut-mcp, attached to this
     /// window, edits this project. `None` if it could not listen.
     live: Option<bettercut_mcp::live::Listener>,
@@ -296,6 +372,7 @@ impl App {
         // session old enough to prune is still one the scan will offer. The
         // thread is detached and may be killed at exit; pruning is idempotent
         // and picks up where it left off next launch.
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::spawn(bettercut_editor_core::prune_unsaved);
 
         if ui.pending_recovery.is_some() {
@@ -330,9 +407,9 @@ impl App {
             ui.info(message);
         }
 
-        // `BETTERCUT_SAMPLE`: the sample edit, a clip selected, nothing in
+        // `BETTERCUT_SAMPLE` (`?sample` on the web): the sample edit, a clip selected, nothing in
         // the way — the interface as it looks mid-edit, for a screenshot.
-        if std::env::var_os("BETTERCUT_SAMPLE").is_some() {
+        if asked_for("BETTERCUT_SAMPLE", "sample") {
             let (mut sample, sample_events) = Editor::new_project("Sample");
             if bettercut_ui::sample::build(&mut sample).is_ok() {
                 editor = sample;
@@ -367,7 +444,8 @@ impl App {
 
         // Not for a screenshot run, which must not take over the live file
         // of a window the person has open.
-        let live = if screenshot.is_none() {
+        // No live link in a browser: a page cannot listen for connections.
+        let live = if screenshot.is_none() && cfg!(not(target_arch = "wasm32")) {
             let ctx = cc.egui_ctx.clone();
             match bettercut_mcp::live::Listener::start(
                 bettercut_mcp::live::live_file(),
@@ -385,7 +463,7 @@ impl App {
 
         let record = std::env::var_os("BETTERCUT_RECORD").map(|dir| Recording {
             dir: std::path::PathBuf::from(dir),
-            began: std::time::Instant::now(),
+            began: bettercut_editor_core::foundation::clock::Instant::now(),
             length: std::time::Duration::from_secs(
                 std::env::var("BETTERCUT_RECORD_SECONDS")
                     .ok()
@@ -398,10 +476,11 @@ impl App {
 
         // Once a day, whether a newer bettercut is out (`bettercut_ui::updates`).
         // Not for a screenshot or a recording, which want the app as it is.
-        let now = std::time::SystemTime::now()
+        let now = bettercut_editor_core::foundation::clock::system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         if ui.prefs.check_updates
+            && cfg!(not(target_arch = "wasm32"))
             && screenshot.is_none()
             && record.is_none()
             && bettercut_ui::updates::due(ui.prefs.last_update_check, now)
@@ -439,10 +518,10 @@ impl App {
 /// A recording of the window in progress (`BETTERCUT_RECORD`).
 struct Recording {
     dir: std::path::PathBuf,
-    began: std::time::Instant,
+    began: bettercut_editor_core::foundation::clock::Instant,
     length: std::time::Duration,
     /// When the last picture was asked for.
-    last: Option<std::time::Instant>,
+    last: Option<bettercut_editor_core::foundation::clock::Instant>,
     count: u32,
 }
 
@@ -455,7 +534,7 @@ impl Recording {
     fn frame(&mut self, ctx: &egui::Context) {
         if self.last.is_none_or(|at| at.elapsed() >= Self::EVERY) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-            self.last = Some(std::time::Instant::now());
+            self.last = Some(bettercut_editor_core::foundation::clock::Instant::now());
         }
         let shots: Vec<_> = ctx.input(|i| {
             i.raw
@@ -498,7 +577,7 @@ impl eframe::App for App {
             }
             if served.any {
                 self.ui.needs_repaint = true;
-                self.ui.assistant_seen = Some(std::time::Instant::now());
+                self.ui.assistant_seen = Some(bettercut_editor_core::foundation::clock::Instant::now());
                 // One more frame once it counts as quiet, so the status
                 // bar's "assistant connected" goes when it should.
                 ui.ctx()
@@ -745,7 +824,7 @@ impl eframe::App for App {
         self.ui.export_progress = export.map(|(_, fraction)| fraction);
         self.export_began = export.map(|(job, _)| match self.export_began {
             Some((running, began)) if running == job.0 => (running, began),
-            _ => (job.0, std::time::Instant::now()),
+            _ => (job.0, bettercut_editor_core::foundation::clock::Instant::now()),
         });
         self.ui.export_elapsed = self
             .export_began

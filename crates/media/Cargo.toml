@@ -17,7 +17,6 @@ tracing.workspace = true
 #
 # `use_prebuilt_binding` means no LLVM/libclang is needed to build this project.
 # See docs/adr/002-ffmpeg-backend.md for why this rather than rsmpeg.
-rusty_ffmpeg = { version = "0.17", features = ["use_prebuilt_binding", "ffmpeg8_1"] }
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -33,3 +32,8 @@ unsafe_code = "allow"
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# FFmpeg is native code and does not link into WebAssembly; the web build
+# uses `src/web_media.rs` in its place.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusty_ffmpeg = { version = "0.17", features = ["use_prebuilt_binding", "ffmpeg8_1"] }

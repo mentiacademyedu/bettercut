@@ -2015,7 +2015,7 @@ fn relink_one(editor: &mut Editor, state: &mut UiState, media: MediaId) {
         .map(|m| m.file_name.clone())
         .unwrap_or_default();
 
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .set_title(format!("Locate {name}"))
         .pick_file()
     else {
@@ -2048,7 +2048,7 @@ fn relink_one(editor: &mut Editor, state: &mut UiState, media: MediaId) {
 
 /// §66 "locate folder": relink everything that moved together.
 fn relink_folder(editor: &mut Editor, state: &mut UiState) {
-    let Some(folder) = rfd::FileDialog::new()
+    let Some(folder) = crate::file_dialog::FileDialog::new()
         .set_title("Locate the folder your media moved to")
         .pick_folder()
     else {
@@ -4107,7 +4107,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                 )
                 .on_hover_text("Save the frame under the playhead as a full-size PNG")
                 .clicked()
-                && let Some(path) = rfd::FileDialog::new()
+                && let Some(path) = crate::file_dialog::FileDialog::new()
                     .add_filter("PNG picture", &["png"])
                     .set_file_name(still_file_name(&editor.project().name, playhead))
                     .save_file()
@@ -4125,7 +4125,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                     "A grid of frames across the video, saved as one PNG. Uses the marked range when there is one",
                 )
                 .clicked()
-                && let Some(path) = rfd::FileDialog::new()
+                && let Some(path) = crate::file_dialog::FileDialog::new()
                     .add_filter("PNG picture", &["png"])
                     .set_file_name(format!("{} contact sheet.png", editor.project().name.trim()))
                     .save_file()
@@ -8422,7 +8422,7 @@ fn clip_lut(
     }
 
     if import
-        && let Some(path) = rfd::FileDialog::new()
+        && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("LUT", &["cube"])
             .pick_file()
     {
@@ -10008,7 +10008,7 @@ fn family_picker(
         .button("Import Font…")
         .on_hover_text("Add a .ttf or .otf font file, to use in any title")
         .clicked()
-        && let Some(path) = rfd::FileDialog::new()
+        && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("Fonts", &["ttf", "otf", "ttc"])
             .pick_file()
     {
@@ -11837,7 +11837,7 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             }
             // An assistant working in this window, so its edits are no
             // surprise; a click opens how it is connected.
-            if crate::assistant::is_connected(state.assistant_seen, std::time::Instant::now()) {
+            if crate::assistant::is_connected(state.assistant_seen, bettercut_editor_core::foundation::clock::Instant::now()) {
                 ui.separator();
                 if ui
                     .add(
@@ -11863,7 +11863,20 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             // Loudest thing in the bar, because it is the only thing here that
             // means work is at risk.
             let failures = editor.autosave_failures();
-            if failures > 0 {
+            if cfg!(target_arch = "wasm32") {
+                // The web build has nowhere to keep recovery data yet: said
+                // once, plainly, rather than as a count of failures.
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("in your browser — not kept yet")
+                        .small()
+                        .strong()
+                        .color(theme::error_text()),
+                )
+                .on_hover_text(
+                    "This web version cannot save or recover work yet. Use the desktop app for anything you want to keep.",
+                );
+            } else if failures > 0 {
                 ui.separator();
                 ui.label(
                     egui::RichText::new(autosave_warning(failures))
@@ -11910,7 +11923,7 @@ pub fn new_project(editor: &mut Editor, state: &mut UiState) {
 
 /// Read a subtitle file onto the timeline (§27, Milestone 10).
 pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("subtitles", &["srt", "vtt"])
         .pick_file()
     else {
@@ -11925,7 +11938,7 @@ pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
 
 /// Write the caption lane back out.
 pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("SubRip", &["srt"])
         .add_filter("WebVTT", &["vtt"])
         .add_filter("Transcript (plain text)", &["txt"])
@@ -11947,7 +11960,7 @@ pub fn open_project(editor: &mut Editor, state: &mut UiState) {
         state.pending_switch = Some(crate::save_prompt::Switch::Open);
         return;
     }
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("bettercut project", &["vproj"])
         .pick_file()
     else {
@@ -12027,7 +12040,7 @@ pub fn copy_file_name(project_name: &str) -> String {
 
 /// Save under a new name, and keep working in the new file.
 pub fn save_project_as(editor: &mut Editor, state: &mut UiState) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("bettercut project", &["vproj"])
         .set_file_name(format!("{}.vproj", editor.project().name))
         .save_file()
@@ -12050,7 +12063,7 @@ pub fn save_project_as(editor: &mut Editor, state: &mut UiState) {
 /// The originals are left alone (§2), so this is safe to point at a drive that
 /// turns out to be too small: what fits is copied and the rest is reported.
 pub fn collect_files(editor: &mut Editor, state: &mut UiState) {
-    let Some(folder) = rfd::FileDialog::new()
+    let Some(folder) = crate::file_dialog::FileDialog::new()
         .set_title("Collect the project and its files into…")
         .pick_folder()
     else {
@@ -12086,7 +12099,7 @@ fn readable_bytes(bytes: u64) -> String {
 
 /// Write a copy of the project somewhere else, and stay in this one.
 pub fn save_copy(editor: &mut Editor, state: &mut UiState) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("bettercut project", &["vproj"])
         .set_file_name(copy_file_name(&editor.project().name))
         .save_file()
@@ -12109,7 +12122,7 @@ pub fn save_project(editor: &mut Editor, state: &mut UiState) {
     let result = if editor.path().is_some() {
         editor.save()
     } else {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("bettercut project", &["vproj"])
             .set_file_name("Untitled.vproj")
             .save_file()
@@ -12131,7 +12144,7 @@ pub fn save_project(editor: &mut Editor, state: &mut UiState) {
 }
 
 fn import_media(editor: &mut Editor, state: &mut UiState) {
-    let Some(paths) = rfd::FileDialog::new()
+    let Some(paths) = crate::file_dialog::FileDialog::new()
         .add_filter(
             "media",
             &[
@@ -12150,7 +12163,7 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
 /// Ask for one frame of a numbered run and import the whole run as one clip
 /// at the sequence's rate, so it lands on the grid it will play on.
 fn import_image_sequence(editor: &mut Editor, state: &mut UiState) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter(
             "still images",
             &[

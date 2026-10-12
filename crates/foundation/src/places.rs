@@ -32,6 +32,27 @@ pub fn cache_home() -> PathBuf {
     })
 }
 
+/// The system's temporary folder. In a browser, which has no file system
+/// (and whose `std::env::temp_dir` panics), a made-up one: what is written
+/// there fails like any other write, and is handled as such.
+pub fn temp_dir() -> PathBuf {
+    if cfg!(target_arch = "wasm32") {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// This process's id, for naming its own files. In a browser, which has
+/// none (and whose `std::process::id` panics), zero.
+pub fn process_id() -> u32 {
+    if cfg!(target_arch = "wasm32") {
+        0
+    } else {
+        std::process::id()
+    }
+}
+
 /// Which convention to follow. A parameter rather than a `cfg!` inside the
 /// function, so every platform's answer can be tested on any of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +103,7 @@ pub fn resolve(platform: Platform, kind: Kind, var: &dyn Fn(&str) -> Option<OsSt
             set("XDG_CACHE_HOME").or_else(|| home.map(|h| h.join(".cache")))
         }
     };
-    let root = base.unwrap_or_else(std::env::temp_dir).join("bettercut");
+    let root = base.unwrap_or_else(temp_dir).join("bettercut");
     match kind {
         Kind::Cache => root.join("cache"),
         Kind::Data | Kind::Local => root,
