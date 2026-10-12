@@ -505,6 +505,58 @@ export function bc_filmstrip(path) {
   return files.get(path)?.strip ?? undefined;
 }
 
+// Export's frames: a `<video>` of their own, so an export never moves the
+// one the preview reads from, sought to every frame asked for — exact, at
+// full size, never "the last one there was".
+function exportVideo(entry) {
+  const video = document.createElement('video');
+  video.muted = true;
+  video.preload = 'auto';
+  const exporting = { video, ready: false, seeking: null, wanted: null, frame: null };
+  const go = (ms) => {
+    exporting.seeking = ms;
+    exporting.wanted = null;
+    // Half a millisecond in, so a frame starting on this very millisecond is
+    // the one shown rather than the one before it.
+    video.currentTime = (ms + 0.5) / 1000;
+  };
+  exporting.go = go;
+  video.addEventListener(
+    'loadeddata',
+    () => {
+      exporting.ready = true;
+      if (exporting.wanted !== null) go(exporting.wanted);
+    },
+    { once: true },
+  );
+  video.addEventListener('seeked', () => {
+    const ms = exporting.seeking;
+    exporting.seeking = null;
+    if (ms !== null && video.videoWidth > 0) {
+      exporting.frame = { ms, picture: grabWidth(video, video.videoWidth, video.videoHeight, Infinity) };
+    }
+    if (exporting.wanted !== null && exporting.wanted !== ms) go(exporting.wanted);
+  });
+  video.src = entry.url;
+  return exporting;
+}
+
+// The frame at `seconds` exactly, for an export: { width, height, data,
+// exact }, or undefined while it is being fetched — ask again.
+export function bc_frame_exact(path, seconds) {
+  const entry = files.get(path);
+  if (!entry) return undefined;
+  if (entry.still) return { ...entry.still, exact: true };
+  if (!entry.video) return undefined;
+  const ms = Math.max(0, Math.round(seconds * 1000));
+  entry.exporting ??= exportVideo(entry);
+  const exporting = entry.exporting;
+  if (exporting.frame && exporting.frame.ms === ms) return { ...exporting.frame.picture, exact: true };
+  if (exporting.ready && exporting.seeking === null) exporting.go(ms);
+  else exporting.wanted = ms;
+  return undefined;
+}
+
 // The frame at `seconds`: { width, height, data, exact }, or undefined when
 // nothing of this file has been decoded yet. Not exact means it is the last
 // frame there was, shown while the right one is fetched.

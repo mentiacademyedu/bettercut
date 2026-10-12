@@ -48,7 +48,32 @@ impl Readback {
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
     ) -> Vec<u8> {
-        let (width, height) = (self.resolution.width, self.resolution.height);
+        let mapped = self.begin(device, queue, texture);
+        // Export is not racing a frame deadline, so waiting for the copy is the
+        // simple correct thing. A pipelined version would overlap the encode of
+        // frame N with the render of N+1; that is a speed-up to make once the
+        // whole path is measured, not a correctness question.
+        if let Err(err) = device.poll(wgpu::PollType::wait_indefinitely()) {
+            tracing::error!(?err, "readback poll failed; frame will be black");
+            self.buffer.unmap();
+            let (width, height) = (self.resolution.width, self.resolution.height);
+            return vec![0; (width * height * 4) as usize];
+        }
+        debug_assert!(mapped.load(std::sync::atomic::Ordering::Acquire));
+        self.finish()
+    }
+
+    /// Start copying the target texture out. The answer is ready — for
+    /// [`Self::finish`] — once the returned flag is set: at once after a
+    /// waiting poll, or, in a browser, on some later turn of its event loop.
+    pub fn begin(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let height = self.resolution.height;
+        let width = self.resolution.width;
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("export readback encoder"),
@@ -76,17 +101,18 @@ impl Readback {
         );
         queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = self.buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        // Export is not racing a frame deadline, so waiting for the copy is the
-        // simple correct thing. A pipelined version would overlap the encode of
-        // frame N with the render of N+1; that is a speed-up to make once the
-        // whole path is measured, not a correctness question.
-        if let Err(err) = device.poll(wgpu::PollType::wait_indefinitely()) {
-            tracing::error!(?err, "readback poll failed; frame will be black");
-            return vec![0; (width * height * 4) as usize];
-        }
+        let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = std::sync::Arc::clone(&mapped);
+        self.buffer.slice(..).map_async(wgpu::MapMode::Read, move |_| {
+            done.store(true, std::sync::atomic::Ordering::Release);
+        });
+        mapped
+    }
 
+    /// The copied frame, tightly packed, once [`Self::begin`]'s flag is set.
+    pub fn finish(&mut self) -> Vec<u8> {
+        let (width, height) = (self.resolution.width, self.resolution.height);
+        let slice = self.buffer.slice(..);
         let row_bytes = (width * 4) as usize;
         let mut out = Vec::with_capacity(row_bytes * height as usize);
         match slice.get_mapped_range() {

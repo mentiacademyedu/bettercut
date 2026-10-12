@@ -21,6 +21,7 @@ pub use ffmpeg::browser;
 pub mod generated;
 pub mod generated_sound;
 pub mod image_sequence;
+pub mod mp4_mux;
 pub mod proxy;
 
 pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, fit_within};

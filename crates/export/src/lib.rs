@@ -47,7 +47,8 @@ use bettercut_media::{
 /// Re-exported so callers choose a codec without depending on the media crate.
 pub use bettercut_media::{RateControl, VideoCodec};
 use bettercut_playback::{
-    AudioMixer, AudioPlan, FrameSource, LayerSource, TextFrames, layer_requests, layer_transform,
+    AudioMixer, AudioPlan, FrameSource, LayerRequest, LayerSource, TextFrames, layer_requests,
+    layer_transform,
 };
 use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, Layer, RenderConfig, wgpu};
@@ -63,6 +64,8 @@ mod job;
 mod readback;
 mod still;
 mod wav;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 pub use bounce::{BounceJob, only_this_lane, track_span};
 pub use colour_match::{ColourMatchJob, MatchedGrade, auto_level, colour_match};
@@ -73,6 +76,8 @@ pub use gif::{GIF_ENCODER, GifWriter, MAX_COLOURS, export_gif, frame_delay, quan
 pub use job::{ExportJob, Outcome};
 pub use still::{FrameGrabJob, RenderedFrame, StillJob, render_still, save_still, write_png};
 pub use wav::{WAV_ENCODER, WavWriter, export_sound};
+#[cfg(target_arch = "wasm32")]
+pub use web::{WebExport, WebProgress};
 
 /// What to export, and where.
 #[derive(Debug, Clone)]
@@ -443,9 +448,30 @@ fn render_frame(
 ) -> Result<Vec<u8>, ExportError> {
     // The same rule the preview uses (§46), not a second copy of it.
     let requests = layer_requests(project, sequence, position);
+    let decoded = decode_layers(project, sequence, &requests, seek, frames, titles, cancel, false)
+        .unwrap_or_default();
+    composite_layers(sequence, position, &decoded, compositor)?;
+    Ok(readback.read(device, queue, compositor.target()))
+}
 
+/// Every layer's picture at one instant, from `layer_requests`.
+///
+/// A layer that cannot be read is left out (§50). `wait` is the web build's
+/// export, whose frames arrive later than they are asked for: there, a frame
+/// still on its way means `None` — ask again — rather than a layer left out.
+#[allow(clippy::too_many_arguments)]
+fn decode_layers<'a>(
+    project: &Project,
+    sequence: &Sequence,
+    requests: &'a [LayerRequest],
+    seek: SeekMode,
+    frames: &mut FrameSource,
+    titles: &mut TextFrames,
+    cancel: &dyn CancellationToken,
+    wait: bool,
+) -> Option<Vec<(&'a LayerRequest, std::sync::Arc<bettercut_media::VideoFrame>)>> {
     let mut decoded = Vec::with_capacity(requests.len());
-    for request in &requests {
+    for request in requests {
         match request.source {
             LayerSource::Media(media) => {
                 let Some(asset) = project.media_asset(media) else {
@@ -457,6 +483,11 @@ fn render_frame(
                 let at = asset.frame_time(request.source_time);
                 match frames.decode(asset, at, seek, cancel) {
                     Ok(frame) => decoded.push((request, frame)),
+                    Err(bettercut_playback::PlaybackError::Media(err))
+                        if wait && still_coming(&err) =>
+                    {
+                        return None;
+                    }
                     Err(err) => {
                         // §50: one unreadable file must not abort a long
                         // export. The clip is missing from that frame and the
@@ -507,6 +538,28 @@ fn render_frame(
         }
     }
 
+    Some(decoded)
+}
+
+/// Whether a decode error only means the frame is on its way (the web build).
+#[cfg(target_arch = "wasm32")]
+fn still_coming(err: &bettercut_media::MediaError) -> bool {
+    bettercut_media::browser::is_not_yet(err)
+}
+
+/// Native decoding answers at once: there is nothing to wait for.
+#[cfg(not(target_arch = "wasm32"))]
+fn still_coming(_err: &bettercut_media::MediaError) -> bool {
+    false
+}
+
+/// Composite one instant's decoded layers into `compositor`'s target.
+fn composite_layers(
+    sequence: &Sequence,
+    position: TimelineTime,
+    decoded: &[(&LayerRequest, std::sync::Arc<bettercut_media::VideoFrame>)],
+    compositor: &mut Compositor,
+) -> Result<(), ExportError> {
     let layers: Vec<Layer<'_>> = decoded
         .iter()
         .map(|(request, frame)| Layer {
@@ -543,7 +596,7 @@ fn render_frame(
     // §46: the same adjustment the preview shows, on the same finished image.
     compositor.set_grain_seed(bettercut_playback::grain_seed(sequence, position));
     compositor.composite_graded(&layers, &grades, sequence.master)?;
-    Ok(readback.read(device, queue, compositor.target()))
+    Ok(())
 }
 
 /// Audio channels the output should have.

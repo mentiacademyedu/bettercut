@@ -241,6 +241,23 @@ struct App {
     /// The live link: an assistant using bettercut-mcp, attached to this
     /// window, edits this project. `None` if it could not listen.
     live: Option<bettercut_mcp::live::Listener>,
+    /// The web build's exports, which run on this thread a step a frame.
+    #[cfg(target_arch = "wasm32")]
+    web_exports: WebExports,
+}
+
+/// The web build's exports: the one running, the ones waiting their turn,
+/// and the page's GPU they render on.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct WebExports {
+    running: Option<bettercut_export::WebExport>,
+    waiting: std::collections::VecDeque<(
+        bettercut_editor_core::project_format::Project,
+        bettercut_editor_core::foundation::SequenceId,
+        bettercut_export::ExportSettings,
+    )>,
+    gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
 }
 
 impl App {
@@ -517,6 +534,14 @@ impl App {
             frames: 0,
             export_began: None,
             live,
+            #[cfg(target_arch = "wasm32")]
+            web_exports: WebExports {
+                gpu: cc
+                    .wgpu_render_state
+                    .as_ref()
+                    .map(|state| (state.device.clone(), state.queue.clone())),
+                ..WebExports::default()
+            },
         }
     }
 }
@@ -548,6 +573,70 @@ const KEEP_EVERY: f64 = 2.0;
 
 #[cfg(target_arch = "wasm32")]
 impl App {
+    /// The web build's export: start the next one waiting, step the one
+    /// running, and show how far it has got with a way to stop it.
+    fn run_web_export(&mut self, ctx: &egui::Context) {
+        use bettercut_export::{WebExport, WebProgress};
+        let exports = &mut self.web_exports;
+        if exports.running.is_none()
+            && let Some((project, sequence, settings)) = exports.waiting.pop_front()
+        {
+            let Some((device, queue)) = exports.gpu.clone() else {
+                self.ui.error("Export needs the GPU, and this browser did not give one");
+                return;
+            };
+            match WebExport::start(project, sequence, settings, device, queue) {
+                Ok(export) => {
+                    self.ui.info(format!("Exporting {}", export.name()));
+                    exports.running = Some(export);
+                }
+                Err(err) => self.ui.error(format!("Could not export {err}")),
+            }
+        }
+        let Some(export) = exports.running.as_mut() else {
+            return;
+        };
+        match export.step() {
+            WebProgress::Working { done, total } => {
+                let name = export.name();
+                let mut stop = false;
+                egui::Window::new("Exporting")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -96.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!("{name} — frame {done} of {total}"));
+                        ui.add(
+                            egui::ProgressBar::new(done as f32 / total.max(1) as f32)
+                                .show_percentage()
+                                .desired_width(320.0),
+                        );
+                        ui.label(
+                            egui::RichText::new("Keep this tab open: the browser makes the file here.")
+                                .small()
+                                .weak(),
+                        );
+                        stop = ui.button("Stop").clicked();
+                    });
+                if stop {
+                    export.cancel();
+                    exports.running = None;
+                    self.ui.info("Export stopped");
+                }
+                ctx.request_repaint();
+            }
+            WebProgress::Finished { name, frames } => {
+                exports.running = None;
+                self.ui
+                    .info(format!("Exported {name} ({frames} frames) — it is in your downloads"));
+            }
+            WebProgress::Failed(why) => {
+                exports.running = None;
+                self.ui.error(format!("Export failed: {why}"));
+            }
+        }
+    }
+
     /// Keep the project in the browser, every [`KEEP_EVERY`] seconds when it
     /// has changed — the web build's save and autosave both, until there is
     /// a Save that writes a file. Not the sample: it is a demo, and keeping
@@ -711,6 +800,8 @@ impl eframe::App for App {
         self.browser_media(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         self.keep_in_browser(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.run_web_export(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
@@ -987,6 +1078,8 @@ impl eframe::App for App {
         // starting an export needs the job scheduler and the scheduler belongs
         // to the shell. §74: it runs on a worker, never on this thread.
         let exporting = self.proxies.export_in_flight().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let exporting = exporting || self.web_exports.running.is_some();
         let mut dialog = std::mem::take(&mut self.ui.export_dialog);
         let requested = bettercut_ui::export_dialog::show(
             ui.ctx(),
@@ -1015,6 +1108,16 @@ impl eframe::App for App {
                     Ok((project, sequence))
                 });
             match copied {
+                // In a browser: queued here, and run a step a frame.
+                #[cfg(target_arch = "wasm32")]
+                Ok((project, sequence)) => {
+                    let _ = (index, files);
+                    self.web_exports
+                        .waiting
+                        .push_back((project, sequence, request.settings));
+                    self.ui.needs_repaint = true;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 Ok((project, sequence)) => {
                     let cover_path = (!request.settings.sound_only).then(|| {
                         bettercut_editor_core::cover::cover_path_for(&request.settings.path)

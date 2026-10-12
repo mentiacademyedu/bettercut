@@ -50,6 +50,10 @@ pub struct FrameSource {
     threads: u32,
     /// How far the last decode landed from what was asked for.
     last_seek_error: MediaTime,
+    /// The web build's export: decoders that answer only with the frame
+    /// asked for (`FfmpegDecoder::wait_for_exact_frames`).
+    #[cfg(target_arch = "wasm32")]
+    exact_only: bool,
 }
 
 impl FrameSource {
@@ -60,7 +64,18 @@ impl FrameSource {
             proxy: None,
             threads: threads.max(1),
             last_seek_error: MediaTime::ZERO,
+            #[cfg(target_arch = "wasm32")]
+            exact_only: false,
         }
+    }
+
+    /// The web build: every decoder opened from now on answers only with the
+    /// frame asked for, or "not yet" — what an export needs, where a frame
+    /// that is nearly right is a wrong frame in the file.
+    #[cfg(target_arch = "wasm32")]
+    pub fn wait_for_exact_frames(&mut self) {
+        self.exact_only = true;
+        self.decoders.clear();
     }
 
     pub fn set_proxy_source(&mut self, proxy: Option<ProxySource>) {
@@ -121,6 +136,10 @@ impl FrameSource {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let mut decoder = FfmpegDecoder::new(threads)?;
+                #[cfg(target_arch = "wasm32")]
+                if self.exact_only {
+                    decoder.wait_for_exact_frames();
+                }
                 decoder.open(&opened)?;
                 entry.insert(decoder)
             }

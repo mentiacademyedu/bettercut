@@ -19,7 +19,13 @@
 //! Sound is decoded whole by the page when a file is opened, at 48 kHz, and
 //! read from there in blocks.
 //!
-//! Not here yet: export, proxies, chapters.
+//! Export goes through the browser's encoders (`js/browser_export.js`,
+//! [`browser::export`]) into an MP4 written by [`crate::mp4_mux`], and its
+//! frames are fetched exactly — a decoder told to
+//! [`FfmpegDecoder::wait_for_exact_frames`] answers "not yet"
+//! ([`browser::is_not_yet`]) rather than with a stand-in.
+//!
+//! Not here yet: proxies, chapters.
 
 use std::path::Path;
 
@@ -47,6 +53,7 @@ extern "C" {
     fn bc_pick_files(accept: &str);
     fn bc_probe(path: &str) -> JsValue;
     fn bc_frame(path: &str, seconds: f64) -> JsValue;
+    fn bc_frame_exact(path: &str, seconds: f64) -> JsValue;
     fn bc_poster(path: &str) -> JsValue;
     fn bc_sound(path: &str, from: f64, frames: u32) -> JsValue;
     fn bc_filmstrip(path: &str) -> JsValue;
@@ -55,9 +62,171 @@ extern "C" {
     fn bc_keep_project(json: &str, paths: Vec<String>);
 }
 
+#[wasm_bindgen(module = "/js/browser_export.js")]
+extern "C" {
+    fn bc_export_start(width: u32, height: u32, rate_num: u32, rate_den: u32, bitrate: u32, channels: u32);
+    fn bc_export_state() -> String;
+    fn bc_export_has_room() -> bool;
+    fn bc_export_sound_codec() -> Option<String>;
+    fn bc_export_frame(rgba: &[u8], width: u32, height: u32, index: u32, key: bool);
+    fn bc_export_sound(planes: js_sys::Array);
+    fn bc_export_finish();
+    fn bc_export_take() -> JsValue;
+    fn bc_export_cancel();
+    fn bc_download(bytes: &[u8], name: &str, kind: &str);
+}
+
+/// What a decoder told to wait for exact frames says while one is on its way.
+const NOT_YET: &str = "not decoded yet";
+
 /// The page's side of files: what the app calls each frame.
 pub mod browser {
     use super::*;
+
+    /// Whether `err` only means the frame asked for is still on its way: ask
+    /// again on a later frame.
+    pub fn is_not_yet(err: &MediaError) -> bool {
+        matches!(err, MediaError::DecodeFailed(message) if message == NOT_YET)
+    }
+
+    /// Hand the person a file, as a download called `name`.
+    pub fn download(bytes: &[u8], name: &str, kind: &str) {
+        bc_download(bytes, name, kind);
+    }
+
+    /// The browser's encoders, for an export. One at a time; nothing here
+    /// waits — the app calls again on its next frame.
+    pub mod export {
+        use super::super::*;
+
+        /// Open the encoders: H.264 at `width` × `height`, and sound when
+        /// `channels` is more than none and the browser can make AAC or Opus.
+        pub fn start(width: u32, height: u32, rate: FrameRate, bitrate: u32, channels: u32) {
+            bc_export_start(
+                width,
+                height,
+                rate.as_rational().num() as u32,
+                rate.as_rational().den() as u32,
+                bitrate,
+                channels,
+            );
+        }
+
+        /// Where the encoders are.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum State {
+            Starting,
+            Ready,
+            Finishing,
+            Done,
+            Failed(String),
+            /// None started, or cancelled.
+            Idle,
+        }
+
+        pub fn state() -> State {
+            let state = bc_export_state();
+            match state.as_str() {
+                "starting" => State::Starting,
+                "ready" => State::Ready,
+                "finishing" => State::Finishing,
+                "done" => State::Done,
+                "none" | "cancelled" => State::Idle,
+                other => State::Failed(other.strip_prefix("failed: ").unwrap_or(other).to_owned()),
+            }
+        }
+
+        /// Whether the video encoder will take another frame now.
+        pub fn has_room() -> bool {
+            bc_export_has_room()
+        }
+
+        /// Whether the export carries sound, once started.
+        pub fn sound_codec() -> Option<String> {
+            bc_export_sound_codec()
+        }
+
+        /// Frame `index`, tightly packed RGBA.
+        pub fn frame(rgba: &[u8], width: u32, height: u32, index: u32, key: bool) {
+            bc_export_frame(rgba, width, height, index, key);
+        }
+
+        /// The next stretch of sound, one plane a channel.
+        pub fn sound(planes: &[Vec<f32>]) {
+            let array = js_sys::Array::new();
+            for plane in planes {
+                array.push(&js_sys::Float32Array::from(plane.as_slice()));
+            }
+            bc_export_sound(array);
+        }
+
+        /// No more frames: let the encoders finish.
+        pub fn finish() {
+            bc_export_finish();
+        }
+
+        pub fn cancel() {
+            bc_export_cancel();
+        }
+
+        /// What the encoders made.
+        pub struct Encoded {
+            /// The H.264 decoder configuration (`avcC`).
+            pub video_description: Vec<u8>,
+            /// Each frame, in order, and whether it is a keyframe.
+            pub video: Vec<(Vec<u8>, bool)>,
+            pub sound: Option<EncodedSound>,
+        }
+
+        pub struct EncodedSound {
+            /// `"aac"` or `"opus"`.
+            pub codec: String,
+            pub description: Option<Vec<u8>>,
+            pub channels: u16,
+            /// Each packet, and how long it lasts in microseconds.
+            pub chunks: Vec<(Vec<u8>, f64)>,
+        }
+
+        fn bytes(value: &JsValue) -> Option<Vec<u8>> {
+            (!value.is_null() && !value.is_undefined())
+                .then(|| js_sys::Uint8Array::new(value).to_vec())
+        }
+
+        /// Everything the encoders made, once [`State::Done`]; handed over once.
+        pub fn take() -> Option<Encoded> {
+            let taken = bc_export_take();
+            if taken.is_null() || taken.is_undefined() {
+                return None;
+            }
+            let video = field(&taken, "video");
+            let chunks = js_sys::Array::from(&field(&video, "chunks"))
+                .iter()
+                .filter_map(|chunk| {
+                    Some((
+                        bytes(&field(&chunk, "data"))?,
+                        field(&chunk, "key").as_bool().unwrap_or(false),
+                    ))
+                })
+                .collect();
+            let sound = field(&taken, "sound");
+            let sound = (!sound.is_null() && !sound.is_undefined()).then(|| EncodedSound {
+                codec: field(&sound, "codec").as_string().unwrap_or_default(),
+                description: bytes(&field(&sound, "description")),
+                channels: number(&sound, "channels") as u16,
+                chunks: js_sys::Array::from(&field(&sound, "chunks"))
+                    .iter()
+                    .filter_map(|chunk| {
+                        Some((bytes(&field(&chunk, "data"))?, number(&chunk, "duration")))
+                    })
+                    .collect(),
+            });
+            Some(Encoded {
+                video_description: bytes(&field(&video, "description")).unwrap_or_default(),
+                video: chunks,
+                sound,
+            })
+        }
+    }
 
     /// Files given to the page whose details are now known, ready to import.
     pub fn take_ready() -> Vec<std::path::PathBuf> {
@@ -256,11 +425,20 @@ pub struct FfmpegDecoder {
     height: u32,
     video: bool,
     audio: bool,
+    /// An export's decoder: only the frame asked for, or "not yet".
+    exact_only: bool,
 }
 
 impl FfmpegDecoder {
     pub fn new(_threads: u32) -> Result<Self, MediaError> {
         Ok(Self::default())
+    }
+
+    /// Answer only with the frame asked for, at full size — an export's
+    /// decoder — and while it is on its way, with an error
+    /// [`browser::is_not_yet`] recognises, never a stand-in.
+    pub fn wait_for_exact_frames(&mut self) {
+        self.exact_only = true;
     }
     pub fn width(&self) -> u32 {
         self.width
@@ -278,9 +456,13 @@ impl FfmpegDecoder {
     /// The frame at `at`, or the last one there was while it is fetched.
     fn frame(&self, at: MediaTime) -> Result<Option<VideoFrame>, MediaError> {
         let path = self.path.as_deref().ok_or(MediaError::NotOpen)?;
-        let found = bc_frame(path, seconds_of(at));
+        let found = if self.exact_only {
+            bc_frame_exact(path, seconds_of(at))
+        } else {
+            bc_frame(path, seconds_of(at))
+        };
         if found.is_undefined() || found.is_null() {
-            return Err(MediaError::DecodeFailed("not decoded yet".to_owned()));
+            return Err(MediaError::DecodeFailed(NOT_YET.to_owned()));
         }
         let width = number(&found, "width") as u32;
         let height = number(&found, "height") as u32;

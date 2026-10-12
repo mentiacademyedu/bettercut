@@ -1776,6 +1776,14 @@ fn row<R>(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui) ->
 /// a control. `🗁` is in egui's documented emoji set, and `tests/glyphs.rs`
 /// checks it against the family that draws it.
 fn destination_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
+    // In a browser: the downloads, and only the name to choose.
+    if cfg!(target_arch = "wasm32") {
+        row(ui, "Export to", |ui| {
+            ui.label("Your browser's downloads")
+                .on_hover_text("The finished file is downloaded, like any file from a website.");
+        });
+        return;
+    }
     row(ui, "Export to", |ui| {
         let mut shown = dialog.path().map_or_else(
             || "(no folder chosen)".to_owned(),
@@ -2284,12 +2292,20 @@ fn safe_file_name(name: &str) -> String {
 
 /// Beside the project, or the user's Videos folder.
 fn default_folder(editor: &Editor) -> std::path::PathBuf {
+    // In a browser a file goes where its downloads go, which the page never
+    // learns: this only names it.
+    if cfg!(target_arch = "wasm32") {
+        return std::path::PathBuf::from(BROWSER_DOWNLOADS);
+    }
     editor
         .path()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .or_else(videos_directory)
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(bettercut_editor_core::foundation::places::temp_dir)
 }
+
+/// The web build's stand-in for a folder: the browser's downloads.
+const BROWSER_DOWNLOADS: &str = "/Downloads";
 
 fn videos_directory() -> Option<std::path::PathBuf> {
     // No extra dependency for one path: the home directory plus the
