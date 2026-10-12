@@ -43,6 +43,12 @@ const PLAYBACK_STEP_MS = 250;
 // Quiet this long while playing, and the video is paused again.
 const IDLE_MS = 400;
 
+// What is kept between visits: every file the open project uses, and the
+// project itself, in IndexedDB — which holds a `File` as it is.
+const DATABASE = 'bettercut';
+const FILES = 'files'; // path -> File
+const PROJECTS = 'projects'; // 'current' -> the project's JSON
+
 const files = new Map(); // path -> entry
 const order = []; // entries in the order they were given, until handed over
 const ready = []; // paths ready to import, in that order
@@ -300,9 +306,14 @@ function frameAt(entry, ms) {
 // ---- what the page calls --------------------------------------------------
 
 // A file dropped on the page or picked: open it, and hand it to the app once
-// its details are known. Returns the name the app knows it by.
-function add(file) {
-  const path = `/browser/${nextId++}/${file.name}`;
+// its details are known. Returns the name the app knows it by. A file kept
+// from last time comes with its name, and is not handed over again: the
+// project it is in already has it.
+function add(file, keptAs) {
+  const kept = keptAs !== undefined;
+  const id = kept ? Number(keptAs.split('/')[2]) : nextId;
+  nextId = Math.max(nextId, id + 1);
+  const path = kept ? keptAs : `/browser/${id}/${file.name}`;
   const entry = {
     path,
     file,
@@ -323,11 +334,81 @@ function add(file) {
     idle: null,
   };
   files.set(path, entry);
-  order.push(entry);
+  if (!kept) order.push(entry);
   pending += 1;
   if (entry.kind === 'image') openImage(entry);
   else openVideo(entry);
   return path;
+}
+
+// ---- kept between visits ---------------------------------------------------
+
+let database = null;
+let storedProject = null;
+const stored = new Set(); // paths of the files kept
+
+function request(r) {
+  return new Promise((resolve, reject) => {
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+function openDatabase() {
+  const opening = indexedDB.open(DATABASE, 1);
+  opening.onupgradeneeded = () => {
+    opening.result.createObjectStore(FILES);
+    opening.result.createObjectStore(PROJECTS);
+  };
+  return request(opening);
+}
+
+// Before the app starts: the project kept last time, and every file it
+// uses, opened again under the names it knows them by.
+async function restore() {
+  try {
+    database = await openDatabase();
+    const read = database.transaction([FILES, PROJECTS]);
+    const [project, paths, kept] = await Promise.all([
+      request(read.objectStore(PROJECTS).get('current')),
+      request(read.objectStore(FILES).getAllKeys()),
+      request(read.objectStore(FILES).getAll()),
+    ]);
+    storedProject = typeof project === 'string' ? project : null;
+    paths.forEach((path, i) => {
+      stored.add(path);
+      add(kept[i], path);
+    });
+  } catch (err) {
+    console.warn('bettercut: nothing kept in this browser could be read', err);
+  }
+}
+
+// The project as it is now, and the files it uses: kept, and every other
+// file kept before let go.
+function keepProject(json, paths) {
+  if (!database) return;
+  const wanted = new Set(paths);
+  const write = database.transaction([FILES, PROJECTS], 'readwrite');
+  write.objectStore(PROJECTS).put(json, 'current');
+  for (const path of wanted) {
+    const entry = files.get(path);
+    if (!stored.has(path) && entry) {
+      write.objectStore(FILES).put(entry.file, path);
+      stored.add(path);
+    }
+  }
+  for (const path of [...stored]) {
+    if (!wanted.has(path)) {
+      write.objectStore(FILES).delete(path);
+      stored.delete(path);
+    }
+  }
+  // Asked once: kept through the browser clearing space, if it agrees.
+  if (navigator.storage?.persist && !keepProject.asked) {
+    keepProject.asked = true;
+    navigator.storage.persist();
+  }
 }
 
 // Where the last files were dropped, in page pixels, or null when they came
@@ -348,6 +429,7 @@ function pickFiles(accept) {
 
 globalThis.bettercutMedia = {
   add,
+  restore,
   dropped(files, x, y) {
     dropPoint = { x, y };
     for (const file of files) add(file);
@@ -378,6 +460,15 @@ export function bc_busy() {
     if (entry.seeking !== null || entry.playing) return true;
   }
   return false;
+}
+
+// The project kept last time, as JSON, or null.
+export function bc_stored_project() {
+  return storedProject;
+}
+
+export function bc_keep_project(json, paths) {
+  keepProject(json, paths);
 }
 
 export function bc_pick_files(accept) {

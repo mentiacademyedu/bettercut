@@ -43,15 +43,9 @@ struct ProjectFile {
 pub fn save(project: &Project, path: impl AsRef<Path>) -> Result<(), ProjectError> {
     let path = path.as_ref();
 
-    let file = ProjectFile {
-        version: SCHEMA_VERSION,
-        app_version: env!("CARGO_PKG_VERSION").to_owned(),
-        project: project.clone(),
-    };
-
     // Serialize before touching the filesystem: a serialization failure must not
     // leave a stray temp file behind.
-    let json = serde_json::to_vec_pretty(&file).map_err(ProjectError::Serialize)?;
+    let json = to_json(project)?;
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -104,6 +98,17 @@ pub fn save(project: &Project, path: impl AsRef<Path>) -> Result<(), ProjectErro
     Ok(())
 }
 
+/// A project as the contents of a `.vproj` file, for somewhere that is not a
+/// file — the web build keeps it in the browser.
+pub fn to_json(project: &Project) -> Result<Vec<u8>, ProjectError> {
+    let file = ProjectFile {
+        version: SCHEMA_VERSION,
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        project: project.clone(),
+    };
+    serde_json::to_vec_pretty(&file).map_err(ProjectError::Serialize)
+}
+
 /// Read a project, migrating it forward if it was written by an older build.
 pub fn load(path: impl AsRef<Path>) -> Result<Project, ProjectError> {
     let path = path.as_ref();
@@ -119,11 +124,17 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, ProjectError> {
         }
     })?;
 
+    from_json(&bytes)
+}
+
+/// A project from the contents of a `.vproj` file, migrated forward if an
+/// older build wrote it.
+pub fn from_json(bytes: &[u8]) -> Result<Project, ProjectError> {
     // §37 makes the project file human-readable and therefore hand-editable.
     // Windows editors routinely add a UTF-8 BOM when saving, and serde_json
     // rejects it with "expected value at line 1 column 1" — an error that gives
     // a user no idea what is wrong with a file that looks perfectly fine.
-    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
 
     // Parse as generic JSON first so the version can be checked and migrations
     // applied before the payload has to match today's `Project` shape.

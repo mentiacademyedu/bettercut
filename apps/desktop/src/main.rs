@@ -299,12 +299,18 @@ impl App {
                     Editor::new_project("Untitled")
                 }
             },
-            None => Editor::new_project("Untitled"),
+            None => kept_in_browser().unwrap_or_else(|| Editor::new_project("Untitled")),
         };
 
         // How often the recovery journal snapshots: the machine's setting.
         let mut editor = editor;
         editor.set_autosave_seconds(autosave_seconds);
+
+        // The web build: work kept from last time is opened straight into,
+        // not introduced all over again.
+        if cfg!(target_arch = "wasm32") && !editor.project().media.is_empty() {
+            ui.welcome_open = false;
+        }
 
         // §44: the decoder thread cap and cache budget come from the detected
         // hardware, not from a constant.
@@ -515,8 +521,78 @@ impl App {
     }
 }
 
+/// The web build: the project kept in this browser last time, if there is
+/// one and it can be read.
+#[cfg(target_arch = "wasm32")]
+fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
+    use bettercut_editor_core::project_format;
+    let json = bettercut_editor_core::media::browser::stored_project()?;
+    match project_format::from_json(json.as_bytes()) {
+        Ok(project) => Some(Editor::from_project(project)),
+        Err(err) => {
+            tracing::error!(%err, "the project kept in this browser could not be read");
+            None
+        }
+    }
+}
+
+/// The desktop opens what it is asked to, or starts afresh.
+#[cfg(not(target_arch = "wasm32"))]
+fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
+    None
+}
+
+/// How often the web build keeps the project in the browser, in seconds.
+#[cfg(target_arch = "wasm32")]
+const KEEP_EVERY: f64 = 2.0;
+
 #[cfg(target_arch = "wasm32")]
 impl App {
+    /// Keep the project in the browser, every [`KEEP_EVERY`] seconds when it
+    /// has changed — the web build's save and autosave both, until there is
+    /// a Save that writes a file. Not the sample: it is a demo, and keeping
+    /// it would put it in place of the person's own work.
+    fn keep_in_browser(&mut self, ctx: &egui::Context) {
+        use bettercut_editor_core::project_format;
+        use std::hash::{Hash, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static KEPT_AT: AtomicU64 = AtomicU64::new(0);
+        static KEPT: AtomicU64 = AtomicU64::new(0);
+
+        // Looked at again even when nothing else wakes the app, so the last
+        // change is kept too.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(KEEP_EVERY));
+        let now = ctx.input(|i| i.time);
+        if now - f64::from_bits(KEPT_AT.load(Ordering::Relaxed)) < KEEP_EVERY
+            || asked_for("BETTERCUT_SAMPLE", "sample")
+        {
+            return;
+        }
+        KEPT_AT.store(now.to_bits(), Ordering::Relaxed);
+
+        let project = self.editor.project();
+        let json = match project_format::to_json(project) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::error!(%err, "could not keep the project in this browser");
+                return;
+            }
+        };
+        let mut hasher = std::hash::DefaultHasher::new();
+        json.hash(&mut hasher);
+        let hash = hasher.finish();
+        if KEPT.swap(hash, Ordering::Relaxed) == hash {
+            return;
+        }
+        let paths = project
+            .media
+            .iter()
+            .filter(|asset| asset.path.starts_with("/browser"))
+            .map(|asset| asset.path.to_string_lossy().into_owned())
+            .collect();
+        bettercut_editor_core::media::browser::keep_project(&String::from_utf8_lossy(&json), paths);
+    }
+
     /// Frames the browser decoded since the last look mean the picture may
     /// be out of date: draw it again. While anything is still loading or
     /// decoding, keep looking, since the browser does not wake the app.
@@ -633,6 +709,8 @@ impl eframe::App for App {
 
         #[cfg(target_arch = "wasm32")]
         self.browser_media(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.keep_in_browser(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);

@@ -11864,18 +11864,14 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             // means work is at risk.
             let failures = editor.autosave_failures();
             if cfg!(target_arch = "wasm32") {
-                // The web build has nowhere to keep recovery data yet: said
-                // once, plainly, rather than as a count of failures.
+                // The web build keeps the project in the browser rather than
+                // in a file with a recovery journal beside it: said once,
+                // plainly, rather than as a count of failures.
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("in your browser — not kept yet")
-                        .small()
-                        .strong()
-                        .color(theme::error_text()),
-                )
-                .on_hover_text(
-                    "This web version cannot save or recover work yet. Use the desktop app for anything you want to keep.",
-                );
+                ui.label(egui::RichText::new("kept in this browser").small().weak())
+                    .on_hover_text(
+                        "Your project and its files are kept in this browser as you work, and open again next time. Clearing the site's data removes them, and another browser or computer has its own. Use the desktop app for anything you can't lose.",
+                    );
             } else if failures > 0 {
                 ui.separator();
                 ui.label(

@@ -51,6 +51,8 @@ extern "C" {
     fn bc_sound(path: &str, from: f64, frames: u32) -> JsValue;
     fn bc_filmstrip(path: &str) -> JsValue;
     fn bc_peaks(path: &str) -> JsValue;
+    fn bc_stored_project() -> Option<String>;
+    fn bc_keep_project(json: &str, paths: Vec<String>);
 }
 
 /// The page's side of files: what the app calls each frame.
@@ -126,6 +128,17 @@ pub mod browser {
             return None;
         }
         Some(js_sys::Int8Array::from(found).to_vec())
+    }
+
+    /// The project kept in this browser last time, as `.vproj` JSON.
+    pub fn stored_project() -> Option<String> {
+        bc_stored_project()
+    }
+
+    /// Keep this project in the browser, and the page's files at `paths` —
+    /// the ones it uses — letting go of any other file kept before.
+    pub fn keep_project(json: &str, paths: Vec<String>) {
+        bc_keep_project(json, paths);
     }
 
     /// Open the browser's file picker. What is chosen arrives later, through

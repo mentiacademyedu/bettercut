@@ -124,10 +124,16 @@
       }
     }
 
-    init().then(openFromAddress).catch((err) => {
-      document.getElementById('status').textContent =
-        'bettercut could not start in this browser: ' + err;
-    });
+    // What was kept in this browser last time is read before the app
+    // starts, so the project it opens has its files.
+    globalThis.bettercutMedia
+      .restore()
+      .then(() => init())
+      .then(openFromAddress)
+      .catch((err) => {
+        document.getElementById('status').textContent =
+          'bettercut could not start in this browser: ' + err;
+      });
   </script>
 </body>
 </html>

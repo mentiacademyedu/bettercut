@@ -8,7 +8,7 @@ pub mod project;
 pub mod settings;
 
 pub use error::ProjectError;
-pub use file::{PROJECT_EXTENSION, SCHEMA_VERSION, load, save};
+pub use file::{PROJECT_EXTENSION, SCHEMA_VERSION, from_json, load, save, to_json};
 pub use project::{LutAsset, Project};
 pub use settings::{
     MAX_PHOTO_LENGTH, MAX_TRANSITION_LENGTH, MIN_PHOTO_LENGTH, MIN_TRANSITION_LENGTH,
