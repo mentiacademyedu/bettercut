@@ -484,8 +484,12 @@ impl Preview {
     /// quarter of each dimension. On a 1080p sequence that is 480x270 stretched
     /// across the panel, which reads as "the preview is broken" rather than as
     /// an adaptive quality system doing its job.
+    ///
+    /// The web build always draws full size: its frames come from the
+    /// browser already preview-sized, and what makes them late is the
+    /// browser decoding them, which a smaller composite does nothing for.
     fn render_quality(&self) -> PreviewQuality {
-        if self.clock.is_playing() {
+        if self.clock.is_playing() && !cfg!(target_arch = "wasm32") {
             self.quality
         } else {
             PreviewQuality::Full
