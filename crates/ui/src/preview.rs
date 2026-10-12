@@ -516,6 +516,10 @@ impl Preview {
     /// change nothing it cares about.
     fn pump_audio(&mut self, editor: &Editor) {
         self.send_plan(editor);
+        // The web build's mixer has no thread: it mixes here, once a frame.
+        if let Some(mixer) = &self.mixer {
+            mixer.pump();
+        }
     }
 
     fn send_plan(&mut self, editor: &Editor) {

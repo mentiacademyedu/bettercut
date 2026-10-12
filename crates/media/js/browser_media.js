@@ -26,6 +26,11 @@ const FRAMES_KEPT = 24;
 const POSTER_WIDTH = 160;
 const TILES = 32;
 const TILE_WIDTH = 64;
+// Sound is decoded whole, at the editor's 48 kHz, when a file is opened;
+// files larger than this are opened without their sound rather than held in
+// memory twice.
+const SOUND_RATE = 48000;
+const MAX_SOUND_FILE = 1536 * 1024 * 1024;
 // How long one frame is assumed to cover, for matching a request to a frame
 // caught while playing: a `<video>` does not say its rate.
 const FRAME_MS = 1000 / 30;
@@ -150,7 +155,28 @@ function openImage(entry) {
     .catch((err) => finish(entry, { error: String(err) }));
 }
 
+// The file's sound, decoded by the browser into planes of 48 kHz samples:
+// `entry.sound` is { planes, frames }, or 'none'.
+function decodeSound(entry) {
+  if (entry.file.size > MAX_SOUND_FILE) {
+    entry.sound = 'none';
+    return Promise.resolve();
+  }
+  return entry.file
+    .arrayBuffer()
+    .then((bytes) => new OfflineAudioContext(2, 1, SOUND_RATE).decodeAudioData(bytes))
+    .then((buffer) => {
+      const planes = [];
+      for (let c = 0; c < Math.min(2, buffer.numberOfChannels); c++) planes.push(buffer.getChannelData(c));
+      entry.sound = planes.length ? { planes, frames: buffer.length } : 'none';
+    })
+    .catch(() => {
+      entry.sound = 'none';
+    });
+}
+
 function openVideo(entry) {
+  const sound = decodeSound(entry);
   const video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
@@ -161,13 +187,18 @@ function openVideo(entry) {
     'loadedmetadata',
     () => {
       const hasPicture = video.videoWidth > 0 && video.videoHeight > 0;
-      finish(entry, {
-        kind: hasPicture && entry.kind !== 'audio' ? 'video' : 'audio',
-        width: video.videoWidth,
-        height: video.videoHeight,
-        duration: Number.isFinite(video.duration) ? video.duration : 0,
+      // Handed over once the sound is known too: whether there is any is
+      // part of what the editor is told.
+      sound.then(() => {
+        finish(entry, {
+          kind: hasPicture && entry.kind !== 'audio' ? 'video' : 'audio',
+          width: video.videoWidth,
+          height: video.videoHeight,
+          duration: Number.isFinite(video.duration) ? video.duration : 0,
+          channels: entry.sound === 'none' ? 0 : entry.sound.planes.length,
+        });
+        if (entry.details.kind === 'video' && entry.details.duration > 0) makePictures(entry);
       });
-      if (entry.details.kind === 'video' && entry.details.duration > 0) makePictures(entry);
     },
     { once: true },
   );
@@ -255,6 +286,7 @@ function add(file) {
     still: null,
     poster: null,
     strip: null,
+    sound: null,
     playing: false,
     askedMs: null,
     askedAt: 0,
@@ -326,6 +358,15 @@ export function bc_probe(path) {
   const entry = files.get(path);
   if (!entry || !entry.details) return undefined;
   return { ...entry.details, size: entry.file.size, name: entry.file.name };
+}
+
+// `frames` samples of sound from sample `from`, as one Float32Array per
+// channel; null past the end, or for a file with no sound.
+export function bc_sound(path, from, frames) {
+  const sound = files.get(path)?.sound;
+  if (!sound || sound === 'none' || from >= sound.frames) return null;
+  const end = Math.min(sound.frames, from + frames);
+  return sound.planes.map((plane) => plane.subarray(from, end));
 }
 
 // The media browser's thumbnail, { width, height, data }, once made.

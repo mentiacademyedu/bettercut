@@ -34,9 +34,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use bettercut_foundation::{MediaId, MediaTime, TICKS_PER_AUDIO_SAMPLE, TimelineTime};
 use bettercut_media::{FfmpegDecoder, MediaAsset};
@@ -588,6 +587,10 @@ const SCRUB_MS: usize = 80;
 pub struct MixerThread {
     sender: Option<Sender<Message>>,
     handle: Option<JoinHandle<()>>,
+    /// The web build, which has no threads: the mixer itself, run on the UI
+    /// thread by [`Self::pump`].
+    #[cfg(target_arch = "wasm32")]
+    local: std::cell::RefCell<MixLoop>,
     limited: Arc<AtomicU64>,
     pushed: Arc<AtomicU64>,
     /// The last block's peak level per side, as `f32` bits in an atomic.
@@ -610,7 +613,7 @@ pub struct MixerThread {
 impl MixerThread {
     /// Start the thread. It idles, blocked on its channel, until told to play.
     pub fn spawn(sink: bettercut_audio::AudioSink, decoder_threads: u32) -> std::io::Result<Self> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel::<Message>();
         let limited = Arc::new(AtomicU64::new(0));
         let pushed = Arc::new(AtomicU64::new(0));
         let peak_left = Arc::new(AtomicU32::new(0));
@@ -619,6 +622,24 @@ impl MixerThread {
         let momentary = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
         let lanes = Arc::new(crate::lane_meters::LaneMeters::new());
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            drop((sender, receiver));
+            Ok(Self {
+                sender: None,
+                handle: None,
+                local: std::cell::RefCell::new(MixLoop::new(sink, decoder_threads)),
+                limited,
+                pushed,
+                peak_left,
+                peak_right,
+                short_term,
+                momentary,
+                lanes,
+            })
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         let handle = {
             let limited = Arc::clone(&limited);
             let pushed = Arc::clone(&pushed);
@@ -645,6 +666,7 @@ impl MixerThread {
                 })?
         };
 
+        #[cfg(not(target_arch = "wasm32"))]
         Ok(Self {
             sender: Some(sender),
             handle: Some(handle),
@@ -720,7 +742,31 @@ impl MixerThread {
         self.pushed.load(Ordering::Relaxed)
     }
 
+    /// Top up the device's ring: the web build's mixer, which has no
+    /// thread of its own, is run here once a frame. Nothing to do elsewhere.
+    pub fn pump(&self) {
+        #[cfg(target_arch = "wasm32")]
+        if let Ok(mut local) = self.local.try_borrow_mut() {
+            local.pump(&Reports {
+                limited: &self.limited,
+                pushed: &self.pushed,
+                peaks: (&self.peak_left, &self.peak_right),
+                loudness: (&self.short_term, &self.momentary),
+                lanes: &self.lanes,
+            });
+        }
+    }
+
     fn send(&self, message: Message) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Ok(mut local) = self.local.try_borrow_mut() {
+                local.apply(message);
+            }
+            self.pump();
+            return;
+        }
+        #[cfg_attr(target_arch = "wasm32", allow(unreachable_code))]
         if let Some(sender) = &self.sender
             && sender.send(message).is_err()
         {
@@ -750,6 +796,7 @@ impl Drop for MixerThread {
 /// One bundle rather than seven arguments, because they travel together and
 /// always will: every one of them is a number the thread writes and nobody
 /// waits on (§20a.2, §54).
+#[derive(Clone, Copy)]
 struct Reports<'a> {
     limited: &'a AtomicU64,
     pushed: &'a AtomicU64,
@@ -761,78 +808,79 @@ struct Reports<'a> {
     lanes: &'a crate::lane_meters::LaneMeters,
 }
 
-fn run(
-    receiver: Receiver<Message>,
-    mut sink: bettercut_audio::AudioSink,
-    decoder_threads: u32,
-    reports: Reports<'_>,
-) {
-    let Reports {
-        limited,
-        pushed,
-        peaks,
-        loudness,
-        lanes,
-    } = reports;
-    let mut mixer = AudioMixer::new(decoder_threads);
-    let mut plan = Arc::new(AudioPlan::default());
-    let mut playing = false;
-    let mut filled_to = TimelineTime::ZERO;
+/// The mixer's state and its two moves: take a message, and top up the
+/// device's ring. The thread (`run`) takes messages as they come and tops up
+/// every few milliseconds; the web build, which has no threads, does both on
+/// the UI thread, once a frame (`MixerThread::pump`).
+struct MixLoop {
+    sink: bettercut_audio::AudioSink,
+    mixer: AudioMixer,
+    plan: Arc<AudioPlan>,
+    playing: bool,
+    filled_to: TimelineTime,
     // The live meter, made once: §20a.2 forbids allocating on this thread,
     // and this is the only place its ring is sized.
-    let mut meter = bettercut_audio::loudness::LiveLoudness::new(2);
-    let report = |meter: &bettercut_audio::loudness::LiveLoudness| {
-        let store = |slot: &AtomicU32, value: Option<f32>| {
-            slot.store(value.unwrap_or(f32::NAN).to_bits(), Ordering::Relaxed);
-        };
-        store(loudness.0, meter.short_term());
-        store(loudness.1, meter.momentary());
-    };
+    meter: bettercut_audio::loudness::LiveLoudness,
     // Where the last scrub asked to be heard from, if one is waiting.
-    let mut scrub_at: Option<TimelineTime> = None;
-
-    let channels = sink.channels();
+    scrub_at: Option<TimelineTime>,
+    channels: usize,
     // Allocated once, here. The real-time rule against allocating (§20a.2)
     // binds the device callback, not this thread — but a mixer that allocates
     // per block is one that stutters under memory pressure for no reason.
-    let mut block = vec![0.0_f32; BLOCK_FRAMES * channels.max(1)];
-    let block_ticks = TimelineTime::from_ticks(BLOCK_FRAMES as i64 * TICKS_PER_AUDIO_SAMPLE);
+    block: Vec<f32>,
+    block_ticks: TimelineTime,
+}
 
-    loop {
-        // Paused: block until told something, at no cost. Playing: wake often
-        // enough that the 150 ms ring never runs low — every 5 ms is thirty
-        // chances to top it up before it could empty.
-        let first = if playing {
-            match receiver.recv_timeout(Duration::from_millis(5)) {
-                Ok(message) => Some(message),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-        } else {
-            match receiver.recv() {
-                Ok(message) => Some(message),
-                Err(_) => return,
-            }
-        };
-
-        // Everything queued, in order: a seek sent after a plan must land
-        // after it.
-        for message in first
-            .into_iter()
-            .chain(std::iter::from_fn(|| receiver.try_recv().ok()))
-        {
-            match message {
-                Message::Plan(next) => {
-                    mixer.retain_current(&next);
-                    plan = next;
-                }
-                Message::Seek(position) => filled_to = position,
-                Message::Playing(now) => playing = now,
-                Message::Scrub(position) => scrub_at = Some(position),
-            }
+impl MixLoop {
+    fn new(sink: bettercut_audio::AudioSink, decoder_threads: u32) -> Self {
+        let channels = sink.channels();
+        Self {
+            sink,
+            mixer: AudioMixer::new(decoder_threads),
+            plan: Arc::new(AudioPlan::default()),
+            playing: false,
+            filled_to: TimelineTime::ZERO,
+            meter: bettercut_audio::loudness::LiveLoudness::new(2),
+            scrub_at: None,
+            channels,
+            block: vec![0.0_f32; BLOCK_FRAMES * channels.max(1)],
+            block_ticks: TimelineTime::from_ticks(BLOCK_FRAMES as i64 * TICKS_PER_AUDIO_SAMPLE),
         }
+    }
 
-        if !playing || channels == 0 {
+    fn apply(&mut self, message: Message) {
+        match message {
+            Message::Plan(next) => {
+                self.mixer.retain_current(&next);
+                self.plan = next;
+            }
+            Message::Seek(position) => self.filled_to = position,
+            Message::Playing(now) => self.playing = now,
+            Message::Scrub(position) => self.scrub_at = Some(position),
+        }
+    }
+
+    fn report_loudness(&self, reports: &Reports<'_>) {
+        let store = |slot: &AtomicU32, value: Option<f32>| {
+            slot.store(value.unwrap_or(f32::NAN).to_bits(), Ordering::Relaxed);
+        };
+        store(reports.loudness.0, self.meter.short_term());
+        store(reports.loudness.1, self.meter.momentary());
+    }
+
+    /// Fill the ring as far as it will take, or — stopped — answer the
+    /// latest scrub.
+    fn pump(&mut self, reports: &Reports<'_>) {
+        let Reports {
+            limited,
+            pushed,
+            peaks,
+            lanes,
+            ..
+        } = *reports;
+        let channels = self.channels;
+
+        if !self.playing || channels == 0 {
             // Silence reads as silence: a meter frozen at the last level of a
             // paused mix looks like sound that is not there.
             peaks.0.store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -842,24 +890,26 @@ fn run(
             lanes.silence();
             // And a stopped mixer is measuring nothing, rather than still
             // showing what was playing when it stopped.
-            meter.reset();
-            report(&meter);
+            self.meter.reset();
+            self.report_loudness(reports);
 
             // A scrub: one short burst from where the playhead now is. Only
             // the *latest* one — a fast drag asks for dozens a second, and
             // playing every one of them would fall further behind the hand
             // with each.
-            if let Some(position) = scrub_at.take()
+            if let Some(position) = self.scrub_at.take()
                 && channels > 0
             {
-                let frames = SCRUB_MS * sink.sample_rate() as usize / 1000;
+                let frames = SCRUB_MS * self.sink.sample_rate() as usize / 1000;
                 // Nothing queued but this: the ring is otherwise idle while
                 // stopped, and a backlog of bursts is exactly what makes a
                 // scrub feel detached from the pointer.
-                if sink.vacant_frames() >= frames {
+                if self.sink.vacant_frames() >= frames {
                     let mut burst = vec![0.0_f32; frames * channels];
-                    mixer.mix_block(&plan, position, frames, channels, &mut burst);
-                    let clamped = bettercut_audio::finish(&mut burst, plan.master_volume) as u64;
+                    self.mixer
+                        .mix_block(&self.plan, position, frames, channels, &mut burst);
+                    let clamped =
+                        bettercut_audio::finish(&mut burst, self.plan.master_volume) as u64;
                     if clamped > 0 {
                         limited.fetch_add(clamped, Ordering::Relaxed);
                     }
@@ -877,46 +927,89 @@ fn run(
                     let (left, right) = bettercut_audio::peaks(&burst, channels);
                     peaks.0.store(left.to_bits(), Ordering::Relaxed);
                     peaks.1.store(right.to_bits(), Ordering::Relaxed);
-                    lanes.publish(mixer.lane_peaks());
-                    sink.push(&burst);
+                    lanes.publish(self.mixer.lane_peaks());
+                    self.sink.push(&burst);
                 }
             }
-            continue;
+            return;
         }
         // Playing: whatever scrub was asked for is answered by the playback
         // itself.
-        scrub_at = None;
+        self.scrub_at = None;
 
-        while sink.vacant_frames() >= BLOCK_FRAMES {
-            block.fill(0.0);
-            mixer.mix_block(&plan, filled_to, BLOCK_FRAMES, channels, &mut block);
+        while self.sink.vacant_frames() >= BLOCK_FRAMES {
+            self.block.fill(0.0);
+            self.mixer.mix_block(
+                &self.plan,
+                self.filled_to,
+                BLOCK_FRAMES,
+                channels,
+                &mut self.block,
+            );
 
             // §20a.4's final stage: master gain, then the limiter.
-            let clamped = bettercut_audio::finish(&mut block, plan.master_volume) as u64;
+            let clamped = bettercut_audio::finish(&mut self.block, self.plan.master_volume) as u64;
             if clamped > 0 {
                 limited.fetch_add(clamped, Ordering::Relaxed);
             }
 
-            let (left, right) = bettercut_audio::peaks(&block, channels);
+            let (left, right) = bettercut_audio::peaks(&self.block, channels);
             peaks.0.store(left.to_bits(), Ordering::Relaxed);
             peaks.1.store(right.to_bits(), Ordering::Relaxed);
             // The lanes that made that block, before it is summed away.
-            lanes.publish(mixer.lane_peaks());
+            lanes.publish(self.mixer.lane_peaks());
 
             // The same block the device is about to hear, through the meter:
             // what is reported is what is played (§46).
-            meter.push_interleaved(&block, channels);
-            report(&meter);
+            self.meter.push_interleaved(&self.block, channels);
+            self.report_loudness(reports);
 
-            let accepted = sink.push(&block);
+            let accepted = self.sink.push(&self.block);
             pushed.fetch_add((accepted / channels) as u64, Ordering::Relaxed);
-            filled_to += block_ticks;
+            self.filled_to += self.block_ticks;
 
-            if accepted < block.len() {
+            if accepted < self.block.len() {
                 // The device has not drained yet. Try again on the next wake
                 // rather than spinning here.
                 break;
             }
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run(
+    receiver: mpsc::Receiver<Message>,
+    sink: bettercut_audio::AudioSink,
+    decoder_threads: u32,
+    reports: Reports<'_>,
+) {
+    let mut mix = MixLoop::new(sink, decoder_threads);
+    loop {
+        // Paused: block until told something, at no cost. Playing: wake often
+        // enough that the 150 ms ring never runs low — every 5 ms is thirty
+        // chances to top it up before it could empty.
+        let first = if mix.playing {
+            match receiver.recv_timeout(std::time::Duration::from_millis(5)) {
+                Ok(message) => Some(message),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match receiver.recv() {
+                Ok(message) => Some(message),
+                Err(_) => return,
+            }
+        };
+
+        // Everything queued, in order: a seek sent after a plan must land
+        // after it.
+        for message in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| receiver.try_recv().ok()))
+        {
+            mix.apply(message);
+        }
+        mix.pump(&reports);
     }
 }

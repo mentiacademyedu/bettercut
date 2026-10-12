@@ -60,6 +60,24 @@
     // Whole stack traces in the console when something panics.
     Error.stackTraceLimit = 60;
 
+    // Browsers start sound paused until the person does something on the
+    // page. The app's audio output is made at start-up, before that, so
+    // every one made is remembered and woken at the first click or key.
+    const contexts = [];
+    const Original = window.AudioContext;
+    if (Original) {
+      window.AudioContext = class extends Original {
+        constructor(...args) {
+          super(...args);
+          contexts.push(this);
+        }
+      };
+      const wake = () => {
+        for (const context of contexts) if (context.state === 'suspended') context.resume();
+      };
+      for (const kind of ['pointerdown', 'keydown']) window.addEventListener(kind, wake, true);
+    }
+
     // Files dropped on the page go to the app's media layer as they are —
     // the browser's own File, read when needed — rather than through egui,
     // which would copy every byte of them into memory first. So the page

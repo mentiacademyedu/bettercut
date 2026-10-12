@@ -34,7 +34,7 @@ setting kept:
   on WebGPU, from about 4 MB to download. Video, photos and sound files
   dropped on the page (or chosen with Import) open with the browser's own
   decoders — no upload, nothing leaves the computer — and play at full frame
-  rate. Early: no sound, export or saving yet.
+  rate, with their sound. Early: no export or saving yet.
 - **Any AI assistant, not just Claude**: **Windows → AI Assistant** now sets
   up Cursor, VS Code (Copilot), Windsurf, Codex, Gemini CLI, Zed, LM Studio,
   Kiro and opencode as well as Claude: pick the app, then copy its exact setup

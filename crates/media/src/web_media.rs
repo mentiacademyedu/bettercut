@@ -16,11 +16,14 @@
 //! marks as not the one asked for, so it is never kept as that one. When the
 //! right frame arrives, [`browser::changes`] moves on and the app draws again.
 //!
-//! Not here yet: sound, export, proxies, chapters.
+//! Sound is decoded whole by the page when a file is opened, at 48 kHz, and
+//! read from there in blocks.
+//!
+//! Not here yet: export, proxies, chapters.
 
 use std::path::Path;
 
-use bettercut_foundation::{FrameRate, MediaTime, TICKS_PER_SECOND};
+use bettercut_foundation::{FrameRate, MediaTime, TICKS_PER_AUDIO_SAMPLE, TICKS_PER_SECOND};
 use wasm_bindgen::prelude::*;
 
 use crate::decoder::{
@@ -45,6 +48,7 @@ extern "C" {
     fn bc_probe(path: &str) -> JsValue;
     fn bc_frame(path: &str, seconds: f64) -> JsValue;
     fn bc_poster(path: &str) -> JsValue;
+    fn bc_sound(path: &str, from: f64, frames: u32) -> JsValue;
     fn bc_filmstrip(path: &str) -> JsValue;
 }
 
@@ -136,6 +140,9 @@ fn seconds_of(time: MediaTime) -> f64 {
     time.ticks() as f64 / TICKS_PER_SECOND as f64
 }
 
+/// Sound read per `decode_audio`: 100 ms at 48 kHz.
+const SOUND_BLOCK: u32 = 4800;
+
 /// The rate assumed for browser video: a `<video>` element does not say.
 const ASSUMED_RATE: FrameRate = FrameRate::FPS_30;
 
@@ -190,6 +197,16 @@ impl MediaProber for FfmpegProber {
             }
             MediaKind::Audio => {}
         }
+        let channels = number(&details, "channels") as u16;
+        if channels > 0 {
+            asset = asset.with_audio(INTERNAL_SAMPLE_RATE as u32, channels);
+            // Which codec the browser does not say; that there is one is
+            // what the editor goes by.
+            asset.audio_codec = Some("browser".to_owned());
+        }
+        if kind == MediaKind::Video {
+            asset.video_codec = Some("browser".to_owned());
+        }
         Ok(asset)
     }
 }
@@ -213,6 +230,7 @@ pub struct FfmpegDecoder {
     width: u32,
     height: u32,
     video: bool,
+    audio: bool,
 }
 
 impl FfmpegDecoder {
@@ -229,7 +247,7 @@ impl FfmpegDecoder {
         self.video
     }
     pub fn has_audio(&self) -> bool {
-        false
+        self.audio
     }
 
     /// The frame at `at`, or the last one there was while it is fetched.
@@ -273,6 +291,7 @@ impl MediaDecoder for FfmpegDecoder {
         self.width = asset.width;
         self.height = asset.height;
         self.video = asset.kind.has_video();
+        self.audio = asset.audio_channels.is_some_and(|c| c > 0);
         self.path = Some(path);
         self.at = MediaTime::ZERO;
         Ok(())
@@ -307,7 +326,27 @@ impl MediaDecoder for FfmpegDecoder {
         &mut self,
         _cancel: &dyn CancellationToken,
     ) -> Result<Option<AudioBuffer>, MediaError> {
-        Ok(None)
+        let path = self.path.as_deref().ok_or(MediaError::NotOpen)?;
+        let from = self.at.ticks().max(0) / TICKS_PER_AUDIO_SAMPLE;
+        let found = bc_sound(path, from as f64, SOUND_BLOCK);
+        if found.is_null() || found.is_undefined() {
+            return Ok(None);
+        }
+        let planes: Vec<Vec<f32>> = js_sys::Array::from(&found)
+            .iter()
+            .map(|plane| js_sys::Float32Array::from(plane).to_vec())
+            .collect();
+        let frames = planes.first().map_or(0, Vec::len);
+        if frames == 0 {
+            return Ok(None);
+        }
+        let timestamp = MediaTime::from_ticks(from * TICKS_PER_AUDIO_SAMPLE);
+        self.at = MediaTime::from_ticks((from + frames as i64) * TICKS_PER_AUDIO_SAMPLE);
+        Ok(Some(AudioBuffer {
+            timestamp,
+            planes,
+            sample_rate: INTERNAL_SAMPLE_RATE as u32,
+        }))
     }
     fn duration(&self) -> MediaTime {
         MediaTime::ZERO
