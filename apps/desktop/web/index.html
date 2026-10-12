@@ -55,17 +55,17 @@
   <canvas id="bettercut"></canvas>
   <p id="status">Loading bettercut…</p>
   <div id="drop">Drop to import — onto the timeline to add it there too</div>
-  <script type="module">
-    import init from './bettercut.js';
-    // Whole stack traces in the console when something panics.
-    Error.stackTraceLimit = 60;
-
+  <script>
     // Browsers start sound paused until the person does something on the
     // page. The app's audio output is made at start-up, before that, so
-    // every one made is remembered and woken at the first click or key.
-    const contexts = [];
-    const Original = window.AudioContext;
-    if (Original) {
+    // every one made is remembered and woken at the first click or key —
+    // and playback, whose clock is that output, moves only once it is.
+    // A plain script, so this runs before the module below: the app's glue
+    // takes its own copy of AudioContext as soon as it is imported.
+    (() => {
+      const contexts = [];
+      const Original = window.AudioContext;
+      if (!Original) return;
       window.AudioContext = class extends Original {
         constructor(...args) {
           super(...args);
@@ -76,7 +76,12 @@
         for (const context of contexts) if (context.state === 'suspended') context.resume();
       };
       for (const kind of ['pointerdown', 'keydown']) window.addEventListener(kind, wake, true);
-    }
+    })();
+  </script>
+  <script type="module">
+    import init from './bettercut.js';
+    // Whole stack traces in the console when something panics.
+    Error.stackTraceLimit = 60;
 
     // Files dropped on the page go to the app's media layer as they are —
     // the browser's own File, read when needed — rather than through egui,
