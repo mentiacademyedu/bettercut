@@ -50,6 +50,7 @@ extern "C" {
     fn bc_poster(path: &str) -> JsValue;
     fn bc_sound(path: &str, from: f64, frames: u32) -> JsValue;
     fn bc_filmstrip(path: &str) -> JsValue;
+    fn bc_peaks(path: &str) -> JsValue;
 }
 
 /// The page's side of files: what the app calls each frame.
@@ -114,6 +115,17 @@ pub mod browser {
     /// the desktop's layout, `bettercut_playback::TILES` tiles side by side.
     pub fn filmstrip(path: &std::path::Path) -> Option<Picture> {
         picture(&bc_filmstrip(&path_str(path)))
+    }
+
+    /// The timeline's waveform for a file, once the page has made it: the
+    /// lowest and highest of each of `bettercut_cache::PEAKS_PER_SECOND`
+    /// buckets a second, interleaved.
+    pub fn peaks(path: &std::path::Path) -> Option<Vec<i8>> {
+        let found = bc_peaks(&path_str(path));
+        if found.is_undefined() || found.is_null() {
+            return None;
+        }
+        Some(js_sys::Int8Array::from(found).to_vec())
     }
 
     /// Open the browser's file picker. What is chosen arrives later, through

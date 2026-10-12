@@ -30,6 +30,10 @@ const TILE_WIDTH = 64;
 // files larger than this are opened without their sound rather than held in
 // memory twice.
 const SOUND_RATE = 48000;
+// The timeline's waveform: the desktop's layout (`bettercut_cache::Waveform`),
+// this many buckets a second, each the lowest and highest of the sound
+// folded to mono, as signed bytes.
+const PEAKS_PER_SECOND = 200;
 const MAX_SOUND_FILE = 1536 * 1024 * 1024;
 // How long one frame is assumed to cover, for matching a request to a frame
 // caught while playing: a `<video>` does not say its rate.
@@ -157,6 +161,30 @@ function openImage(entry) {
 
 // The file's sound, decoded by the browser into planes of 48 kHz samples:
 // `entry.sound` is { planes, frames }, or 'none'.
+// Min and max of each bucket, interleaved, worked out as the desktop's
+// waveform job does: mono mixdown, scaled by 127 and cut toward zero.
+function peaksOf(planes, frames) {
+  const perBucket = Math.max(1, Math.floor(SOUND_RATE / PEAKS_PER_SECOND));
+  const buckets = Math.ceil(frames / perBucket);
+  const peaks = new Int8Array(buckets * 2);
+  const share = 1 / planes.length;
+  for (let b = 0; b < buckets; b++) {
+    let low = 0;
+    let high = 0;
+    const end = Math.min(frames, (b + 1) * perBucket);
+    for (let i = b * perBucket; i < end; i++) {
+      let sum = 0;
+      for (const plane of planes) sum += plane[i];
+      const scaled = Math.trunc(Math.max(-1, Math.min(1, sum * share)) * 127);
+      if (scaled < low) low = scaled;
+      if (scaled > high) high = scaled;
+    }
+    peaks[2 * b] = low;
+    peaks[2 * b + 1] = high;
+  }
+  return peaks;
+}
+
 function decodeSound(entry) {
   if (entry.file.size > MAX_SOUND_FILE) {
     entry.sound = 'none';
@@ -169,6 +197,7 @@ function decodeSound(entry) {
       const planes = [];
       for (let c = 0; c < Math.min(2, buffer.numberOfChannels); c++) planes.push(buffer.getChannelData(c));
       entry.sound = planes.length ? { planes, frames: buffer.length } : 'none';
+      if (planes.length) entry.peaks = peaksOf(planes, buffer.length);
     })
     .catch(() => {
       entry.sound = 'none';
@@ -287,6 +316,7 @@ function add(file) {
     poster: null,
     strip: null,
     sound: null,
+    peaks: null,
     playing: false,
     askedMs: null,
     askedAt: 0,
@@ -367,6 +397,11 @@ export function bc_sound(path, from, frames) {
   if (!sound || sound === 'none' || from >= sound.frames) return null;
   const end = Math.min(sound.frames, from + frames);
   return sound.planes.map((plane) => plane.subarray(from, end));
+}
+
+// The waveform, min and max of each bucket interleaved, once made.
+export function bc_peaks(path) {
+  return files.get(path)?.peaks ?? undefined;
 }
 
 // The media browser's thumbnail, { width, height, data }, once made.

@@ -520,12 +520,19 @@ impl App {
     /// Frames the browser decoded since the last look mean the picture may
     /// be out of date: draw it again. While anything is still loading or
     /// decoding, keep looking, since the browser does not wake the app.
+    ///
+    /// Looked at again, too, when the project's media changes: a file's
+    /// last news from the page can come before it is imported, and its
+    /// pictures and waveform are found only once it is.
     fn browser_media(&mut self, ctx: &egui::Context) {
         use bettercut_editor_core::media::browser;
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
         static SEEN: AtomicU32 = AtomicU32::new(0);
+        static SEEN_MEDIA: AtomicUsize = AtomicUsize::new(0);
         let changes = browser::changes();
-        if SEEN.swap(changes, Ordering::Relaxed) != changes {
+        let media = self.editor.project().media.len();
+        let news = SEEN.swap(changes, Ordering::Relaxed) != changes;
+        if SEEN_MEDIA.swap(media, Ordering::Relaxed) != media || news {
             if let Some(preview) = self.preview.as_mut() {
                 preview.invalidate_render();
             }
@@ -540,6 +547,7 @@ impl App {
                 .collect();
             for (id, path) in files {
                 self.ui.thumbnails.browser_file(id, &path);
+                self.ui.waveforms.browser_file(id, &path);
             }
             self.ui.needs_repaint = true;
             ctx.request_repaint();

@@ -20,6 +20,10 @@ pub struct WaveformStore {
     cache: Option<Arc<CacheStore>>,
     /// `None` means "looked, not there yet".
     loaded: HashMap<MediaId, Option<Arc<Waveform>>>,
+    /// The web build: where each file the page was given is, so its peaks
+    /// are read from the page instead of the cache.
+    #[cfg(target_arch = "wasm32")]
+    browser_files: HashMap<MediaId, std::path::PathBuf>,
 }
 
 impl WaveformStore {
@@ -45,7 +49,30 @@ impl WaveformStore {
         self.loaded.get(&media).and_then(Clone::clone)
     }
 
+    /// The web build: `media` is the page's file at `path`, whose peaks the
+    /// page works out. Every "not yet" is forgotten, so whatever has arrived
+    /// since is picked up.
+    #[cfg(target_arch = "wasm32")]
+    pub fn browser_file(&mut self, media: MediaId, path: &std::path::Path) {
+        self.browser_files.insert(media, path.to_path_buf());
+        self.loaded.retain(|_, waveform| waveform.is_some());
+    }
+
     fn load(&self, media: MediaId) -> Option<Arc<Waveform>> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(path) = self.browser_files.get(&media) {
+            let peaks = bettercut_editor_core::media::browser::peaks(path)?;
+            let peaks = peaks
+                .chunks_exact(2)
+                .map(|pair| bettercut_cache::Peak {
+                    min: pair[0],
+                    max: pair[1],
+                })
+                .collect();
+            return Waveform::new(bettercut_cache::PEAKS_PER_SECOND, peaks)
+                .ok()
+                .map(Arc::new);
+        }
         let cache = self.cache.as_ref()?;
         let path = cache.layout().waveform_file(media);
         if !path.exists() {
