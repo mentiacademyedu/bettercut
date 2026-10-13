@@ -42,7 +42,7 @@ impl UserPrefs {
     /// Read the settings kept in `file`, or the defaults when there is no
     /// file yet.
     pub fn stored_in(file: PathBuf) -> Self {
-        let mut prefs = std::fs::read_to_string(&file)
+        let mut prefs = crate::kept::read(&file)
             .map(|text| parse(&text))
             .unwrap_or_default();
         prefs.file = Some(file);
@@ -62,10 +62,7 @@ impl UserPrefs {
         let Some(file) = &self.file else {
             return Ok(());
         };
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(file, render(self)).map_err(|e| e.to_string())
+        crate::kept::write(file, &render(self)).map_err(|e| e.to_string())
     }
 }
 

@@ -58,7 +58,7 @@ pub struct UserExports {
 
 impl UserExports {
     pub fn stored_in(file: PathBuf) -> Self {
-        let presets = std::fs::read_to_string(&file)
+        let presets = crate::kept::read(&file)
             .map(|text| parse(&text))
             .unwrap_or_default();
         Self {
@@ -123,10 +123,7 @@ impl UserExports {
         let Some(file) = &self.file else {
             return;
         };
-        if let Some(parent) = file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(file, render(&self.presets));
+        let _ = crate::kept::write(file, &render(&self.presets));
     }
 }
 

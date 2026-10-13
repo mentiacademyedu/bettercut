@@ -28,7 +28,7 @@ pub struct Keymap {
 impl Keymap {
     /// The map kept in `file`, reading whatever is there now.
     pub fn stored_in(file: PathBuf) -> Self {
-        let moved = std::fs::read_to_string(&file)
+        let moved = crate::kept::read(&file)
             .map(|text| parse(&text))
             .unwrap_or_default();
         Self {
@@ -97,10 +97,7 @@ impl Keymap {
             .iter()
             .map(|(from, to)| format!("{}={}\n", from.name(), to.name()))
             .collect();
-        let written = file
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(file, text));
+        let written = crate::kept::write(file, &text);
         if let Err(err) = written {
             tracing::warn!(file = %file.display(), %err, "could not save the keyboard shortcuts");
         }

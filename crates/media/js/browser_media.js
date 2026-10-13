@@ -560,6 +560,26 @@ export function bc_keep_project(json, paths) {
   keepProject(json, paths);
 }
 
+// The editor's small files (settings, looks, presets), kept in this
+// browser's local storage under their paths; null when there is none, or
+// storage is closed to this page.
+export function bc_setting(path) {
+  try {
+    return localStorage.getItem('bettercut:' + path);
+  } catch (_) {
+    return null;
+  }
+}
+
+export function bc_keep_setting(path, text) {
+  try {
+    localStorage.setItem('bettercut:' + path, text);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 export function bc_pick_files(accept) {
   pickFiles(accept);
 }

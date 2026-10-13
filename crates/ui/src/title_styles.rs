@@ -46,7 +46,7 @@ impl UserTitleStyles {
     /// A file that is missing or garbled is simply no saved styles: this is a
     /// convenience, and refusing to start the editor over it would not be.
     pub fn stored_in(file: PathBuf) -> Self {
-        let styles = std::fs::read_to_string(&file)
+        let styles = crate::kept::read(&file)
             .map(|text| parse(&text))
             .unwrap_or_default();
         Self {
@@ -114,10 +114,7 @@ impl UserTitleStyles {
         let Some(file) = &self.file else {
             return;
         };
-        if let Some(parent) = file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(file, render(&self.styles));
+        let _ = crate::kept::write(file, &render(&self.styles));
     }
 }
 

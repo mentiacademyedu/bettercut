@@ -54,6 +54,8 @@ extern "C" {
     fn bc_probe(path: &str) -> JsValue;
     fn bc_frame(path: &str, seconds: f64) -> JsValue;
     fn bc_frame_exact(path: &str, seconds: f64) -> JsValue;
+    fn bc_setting(path: &str) -> Option<String>;
+    fn bc_keep_setting(path: &str, text: &str) -> bool;
     fn bc_poster(path: &str) -> JsValue;
     fn bc_sound(path: &str, from: f64, frames: u32) -> JsValue;
     fn bc_filmstrip(path: &str) -> JsValue;
@@ -87,6 +89,17 @@ pub mod browser {
     /// again on a later frame.
     pub fn is_not_yet(err: &MediaError) -> bool {
         matches!(err, MediaError::DecodeFailed(message) if message == NOT_YET)
+    }
+
+    /// One of the editor's small files kept in this browser, by its path.
+    pub fn setting(path: &str) -> Option<String> {
+        bc_setting(path)
+    }
+
+    /// Keep one of the editor's small files in this browser; false when the
+    /// browser would not.
+    pub fn keep_setting(path: &str, text: &str) -> bool {
+        bc_keep_setting(path, text)
     }
 
     /// Hand the person a file, as a download called `name`.
