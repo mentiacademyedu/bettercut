@@ -508,24 +508,38 @@ export function bc_filmstrip(path) {
 // Export's frames: a `<video>` of their own, so an export never moves the
 // one the preview reads from, sought to every frame asked for — exact, at
 // full size, never "the last one there was".
+//
+// The same file can be two layers at once (a clip on two tracks, a picture
+// in picture), each wanting its own frame: so the last few frames are kept,
+// and every frame asked for is fetched in turn. Remembering only one, the
+// layers would take it from each other forever and the export never move.
+const EXACT_KEPT = 4;
+// A seek not answered in this long is asked again.
+const EXACT_PATIENCE_MS = 3000;
+
 function exportVideo(entry) {
   const video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
-  const exporting = { video, ready: false, seeking: null, wanted: null, frame: null };
+  const exporting = { video, ready: false, seeking: null, since: 0, wanted: [], frames: new Map() };
   const go = (ms) => {
     exporting.seeking = ms;
-    exporting.wanted = null;
+    exporting.since = performance.now();
     // Half a millisecond in, so a frame starting on this very millisecond is
     // the one shown rather than the one before it.
     video.currentTime = (ms + 0.5) / 1000;
   };
+  const next = () => {
+    exporting.wanted = exporting.wanted.filter((ms) => !exporting.frames.has(ms));
+    if (exporting.wanted.length) go(exporting.wanted[0]);
+  };
   exporting.go = go;
+  exporting.next = next;
   video.addEventListener(
     'loadeddata',
     () => {
       exporting.ready = true;
-      if (exporting.wanted !== null) go(exporting.wanted);
+      next();
     },
     { once: true },
   );
@@ -533,9 +547,16 @@ function exportVideo(entry) {
     const ms = exporting.seeking;
     exporting.seeking = null;
     if (ms !== null && video.videoWidth > 0) {
-      exporting.frame = { ms, picture: grabWidth(video, video.videoWidth, video.videoHeight, Infinity) };
+      const picture = grabWidth(video, video.videoWidth, video.videoHeight, Infinity);
+      if (picture) {
+        exporting.frames.delete(ms);
+        exporting.frames.set(ms, picture);
+        while (exporting.frames.size > EXACT_KEPT) {
+          exporting.frames.delete(exporting.frames.keys().next().value);
+        }
+      }
     }
-    if (exporting.wanted !== null && exporting.wanted !== ms) go(exporting.wanted);
+    next();
   });
   video.src = entry.url;
   return exporting;
@@ -551,9 +572,16 @@ export function bc_frame_exact(path, seconds) {
   const ms = Math.max(0, Math.round(seconds * 1000));
   entry.exporting ??= exportVideo(entry);
   const exporting = entry.exporting;
-  if (exporting.frame && exporting.frame.ms === ms) return { ...exporting.frame.picture, exact: true };
-  if (exporting.ready && exporting.seeking === null) exporting.go(ms);
-  else exporting.wanted = ms;
+  const kept = exporting.frames.get(ms);
+  if (kept) return { ...kept, exact: true };
+  if (!exporting.wanted.includes(ms)) exporting.wanted.push(ms);
+  if (!exporting.ready) return undefined;
+  if (exporting.seeking === null) {
+    exporting.next();
+  } else if (performance.now() - exporting.since > EXACT_PATIENCE_MS) {
+    // The browser dropped this seek: ask again rather than wait forever.
+    exporting.go(exporting.seeking);
+  }
   return undefined;
 }
 
