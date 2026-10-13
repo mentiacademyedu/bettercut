@@ -34,7 +34,8 @@ setting kept:
   on WebGPU, from about 4 MB to download. Video, photos and sound files
   dropped on the page (or chosen with Import) open with the browser's own
   decoders — no upload, nothing leaves the computer — and play at full frame
-  rate, with their sound and waveforms. Your project and its files are kept
+  rate, with their sound and waveforms; an MP4 or MOV's own frame rate is
+  read from the file (others are taken as 30). Your project and its files are kept
   in the browser as you work and open again next time, and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders and
   downloads it.

@@ -337,8 +337,29 @@ fn seconds_of(time: MediaTime) -> f64 {
 /// Sound read per `decode_audio`: 100 ms at 48 kHz.
 const SOUND_BLOCK: u32 = 4800;
 
-/// The rate assumed for browser video: a `<video>` element does not say.
+/// The rate assumed for browser video the page could not read one from
+/// (anything but an MP4 or MOV): a `<video>` element does not say.
 const ASSUMED_RATE: FrameRate = FrameRate::FPS_30;
+
+/// The rate the page read from the file's own tables — frames over their
+/// length, so a phone's slightly uneven 29.97 comes out as 29.98 — taken
+/// as the standard rate it is within 0.2% of, else as it is.
+fn rate_from(num: f64, den: f64) -> Option<FrameRate> {
+    if !(num.is_finite() && den.is_finite() && num >= 1.0 && den >= 1.0) {
+        return None;
+    }
+    let fps = num / den;
+    if !(1.0..=1000.0).contains(&fps) {
+        return None;
+    }
+    let off = |rate: &FrameRate| (rate.as_f64() - fps).abs() / rate.as_f64();
+    // The nearest: 24 is within 0.2% of 23.976 too.
+    FrameRate::SUPPORTED
+        .into_iter()
+        .filter(|rate| off(rate) <= 0.002)
+        .min_by(|a, b| off(a).total_cmp(&off(b)))
+        .or_else(|| FrameRate::new((fps * 1000.0).round() as i64, 1000))
+}
 
 /// The rate everything is mixed at: the same as the desktop build's.
 pub const INTERNAL_SAMPLE_RATE: i32 = 48_000;
@@ -380,7 +401,9 @@ impl MediaProber for FfmpegProber {
         let (width, height) = (number(&details, "width") as u32, number(&details, "height") as u32);
         match kind {
             MediaKind::Video => {
-                asset = asset.with_video(width, height, ASSUMED_RATE);
+                let rate = rate_from(number(&details, "rateNum"), number(&details, "rateDen"))
+                    .unwrap_or(ASSUMED_RATE);
+                asset = asset.with_video(width, height, rate);
                 // Already turned to RGB by the browser, in sRGB.
                 asset.color = ColorMetadata::srgb();
             }
@@ -427,6 +450,8 @@ pub struct FfmpegDecoder {
     audio: bool,
     /// An export's decoder: only the frame asked for, or "not yet".
     exact_only: bool,
+    /// The file's rate, as probed.
+    rate: Option<FrameRate>,
 }
 
 impl FfmpegDecoder {
@@ -497,6 +522,7 @@ impl MediaDecoder for FfmpegDecoder {
         }
         self.width = asset.width;
         self.height = asset.height;
+        self.rate = asset.frame_rate;
         self.video = asset.kind.has_video();
         self.audio = asset.audio_channels.is_some_and(|c| c > 0);
         self.path = Some(path);
@@ -527,7 +553,7 @@ impl MediaDecoder for FfmpegDecoder {
         None
     }
     fn frame_duration(&self) -> MediaTime {
-        MediaTime::from_frames(1, ASSUMED_RATE).unwrap_or(MediaTime::ZERO)
+        MediaTime::from_frames(1, self.rate.unwrap_or(ASSUMED_RATE)).unwrap_or(MediaTime::ZERO)
     }
     fn decode_audio(
         &mut self,

@@ -35,9 +35,11 @@ const SOUND_RATE = 48000;
 // folded to mono, as signed bytes.
 const PEAKS_PER_SECOND = 200;
 const MAX_SOUND_FILE = 1536 * 1024 * 1024;
-// How long one frame is assumed to cover, for matching a request to a frame
-// caught while playing: a `<video>` does not say its rate.
+// How long one frame covers when the file does not say (not an MP4 or
+// MOV), for matching a request to a frame caught while playing.
 const FRAME_MS = 1000 / 30;
+// The most of an MP4's header read to find its frame rate.
+const MAX_MOOV = 64 * 1024 * 1024;
 // Requests this close after the last, and later in the file, are playback.
 const PLAYBACK_STEP_MS = 250;
 // Quiet this long while playing, and the video is paused again.
@@ -72,6 +74,89 @@ function finish(entry, details) {
   pending -= 1;
   while (order.length && order[0].details) ready.push(order.shift().path);
   changes += 1;
+}
+
+// ---- the frame rate, from an MP4 or MOV's own tables -------------------------
+//
+// A `<video>` does not say its rate, but the file does: the video track's
+// sample table holds how many frames there are and how long they last.
+// { num, den } frames a second, or null for anything else.
+
+async function bytesAt(file, from, length) {
+  return new DataView(await file.slice(from, from + length).arrayBuffer());
+}
+
+// The boxes in `view` from `start` to `end`: [{ type, at, size }] — `at` is
+// where the box's contents begin.
+function boxesIn(view, start, end) {
+  const boxes = [];
+  let at = start;
+  while (at + 8 <= end) {
+    let size = view.getUint32(at);
+    const type = String.fromCharCode(view.getUint8(at + 4), view.getUint8(at + 5), view.getUint8(at + 6), view.getUint8(at + 7));
+    let header = 8;
+    if (size === 1) {
+      if (at + 16 > end) break;
+      size = Number(view.getBigUint64(at + 8));
+      header = 16;
+    } else if (size === 0) {
+      size = end - at;
+    }
+    if (size < header || at + size > end) break;
+    boxes.push({ type, at: at + header, end: at + size });
+    at += size;
+  }
+  return boxes;
+}
+
+function child(view, box, type) {
+  return box && boxesIn(view, box.at, box.end).find((b) => b.type === type);
+}
+
+async function frameRateOf(file) {
+  // Find the movie header among the file's top-level boxes.
+  let at = 0;
+  let moov = null;
+  while (at + 8 <= file.size) {
+    const head = await bytesAt(file, at, 16);
+    if (head.byteLength < 8) break;
+    let size = head.getUint32(0);
+    const type = String.fromCharCode(head.getUint8(4), head.getUint8(5), head.getUint8(6), head.getUint8(7));
+    if (at === 0 && type !== 'ftyp' && type !== 'moov' && type !== 'wide' && type !== 'mdat' && type !== 'free') return null;
+    if (size === 1 && head.byteLength >= 16) size = Number(head.getBigUint64(8));
+    else if (size === 0) size = file.size - at;
+    if (size < 8) return null;
+    if (type === 'moov') {
+      if (size > MAX_MOOV) return null;
+      moov = await bytesAt(file, at, size);
+      break;
+    }
+    at += size;
+  }
+  if (!moov) return null;
+  for (const trak of boxesIn(moov, 8, moov.byteLength).filter((b) => b.type === 'trak')) {
+    const mdia = child(moov, trak, 'mdia');
+    const hdlr = child(moov, mdia, 'hdlr');
+    if (!hdlr || hdlr.at + 12 > hdlr.end) continue;
+    const handler = String.fromCharCode(...[8, 9, 10, 11].map((i) => moov.getUint8(hdlr.at + i)));
+    if (handler !== 'vide') continue;
+    const mdhd = child(moov, mdia, 'mdhd');
+    if (!mdhd) continue;
+    const timescale = moov.getUint32(mdhd.at + (moov.getUint8(mdhd.at) === 1 ? 20 : 12));
+    const stts = child(moov, child(moov, child(moov, mdia, 'minf'), 'stbl'), 'stts');
+    if (!stts || !timescale) continue;
+    const entries = moov.getUint32(stts.at + 4);
+    let frames = 0;
+    let ticks = 0;
+    for (let i = 0; i < entries && stts.at + 16 + i * 8 <= stts.end; i++) {
+      const count = moov.getUint32(stts.at + 8 + i * 8);
+      frames += count;
+      ticks += count * moov.getUint32(stts.at + 12 + i * 8);
+    }
+    // A single still picture in a movie says nothing of a rate.
+    if (frames > 1 && ticks > 0) return { num: frames * timescale, den: ticks };
+  }
+  return null;
 }
 
 function scaled(width, height) {
@@ -212,6 +297,7 @@ function decodeSound(entry) {
 
 function openVideo(entry) {
   const sound = decodeSound(entry);
+  const rate = frameRateOf(entry.file).catch(() => null);
   const video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
@@ -224,8 +310,11 @@ function openVideo(entry) {
       const hasPicture = video.videoWidth > 0 && video.videoHeight > 0;
       // Handed over once the sound is known too: whether there is any is
       // part of what the editor is told.
-      sound.then(() => {
+      Promise.all([sound, rate]).then(([, rate]) => {
+        if (rate) entry.frameMs = (1000 * rate.den) / rate.num;
         finish(entry, {
+          rateNum: rate ? rate.num : 0,
+          rateDen: rate ? rate.den : 0,
           kind: hasPicture && entry.kind !== 'audio' ? 'video' : 'audio',
           width: video.videoWidth,
           height: video.videoHeight,
@@ -298,7 +387,7 @@ function frameAt(entry, ms) {
   let best = null;
   for (const f of entry.frames) {
     if (f.ms === ms) return f;
-    if (f.ms <= ms && ms - f.ms < FRAME_MS && (!best || f.ms > best.ms)) best = f;
+    if (f.ms <= ms && ms - f.ms < (entry.frameMs ?? FRAME_MS) && (!best || f.ms > best.ms)) best = f;
   }
   return best;
 }
