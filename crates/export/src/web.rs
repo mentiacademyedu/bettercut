@@ -11,7 +11,8 @@
 //! H.264 and AAC or Opus (`bettercut_media::browser::export`); and
 //! [`bettercut_media::mp4_mux`] writes the MP4, which is handed to the person
 //! as a download. Sound only is the mix as a WAV, as on the desktop, made a
-//! block a step.
+//! block a step; a GIF is the same frames given to the desktop's own GIF
+//! writer rather than the browser's encoders.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,6 +82,8 @@ pub struct WebExport {
     samples_written: i64,
     key_every: u64,
     stage: Stage,
+    /// A GIF being written, instead of the browser's encoders.
+    gif: Option<Box<crate::gif::GifWriter<std::io::Cursor<Vec<u8>>>>>,
 }
 
 /// The H.264 rate the desktop picks when none is given: 0.2 bits a pixel
@@ -101,10 +104,8 @@ impl WebExport {
         device: wgpu::Device,
         queue: wgpu::Queue,
     ) -> Result<Self, ExportError> {
-        let unsupported = if settings.sound_only {
+        let unsupported = if settings.sound_only || settings.gif {
             None
-        } else if settings.gif {
-            Some("a GIF")
         } else if settings.image_sequence {
             Some("a folder of pictures")
         } else if settings.transparent {
@@ -116,7 +117,7 @@ impl WebExport {
         };
         if let Some(what) = unsupported {
             return Err(ExportError::Write(format!(
-                "{what} — in a browser, export makes MP4 (H.264) and WAV files for now"
+                "{what} — in a browser, export makes MP4 (H.264), GIF and WAV files for now"
             )));
         }
 
@@ -141,7 +142,7 @@ impl WebExport {
                 return Err(ExportError::NoSound);
             }
             usize::from(crate::wav::CHANNELS)
-        } else if settings.picture_only {
+        } else if settings.picture_only || settings.gif {
             0
         } else {
             audio_channels(&sequence)
@@ -165,8 +166,22 @@ impl WebExport {
             audio.normalise_to(settings.range, target, &NeverCancelled);
         }
 
+        // A GIF: its own writer, and no encoders to wait for.
+        let gif = if settings.gif {
+            let writer = crate::gif::GifWriter::new(
+                std::io::Cursor::new(Vec::new()),
+                settings.resolution.width.min(u32::from(u16::MAX)) as u16,
+                settings.resolution.height.min(u32::from(u16::MAX)) as u16,
+            )
+            .map_err(|err| ExportError::Write(err.to_string()))?;
+            Some(Box::new(writer))
+        } else {
+            None
+        };
         // Sound only: counted in blocks, and no encoders to wait for.
-        let (total, stage) = if settings.sound_only {
+        let (total, stage) = if gif.is_some() {
+            (total, Stage::Rendering)
+        } else if settings.sound_only {
             let writer = crate::wav::WavWriter::new(std::io::Cursor::new(Vec::new()))
                 .map_err(|err| ExportError::Write(err.to_string()))?;
             let samples = span / TICKS_PER_AUDIO_SAMPLE;
@@ -205,6 +220,7 @@ impl WebExport {
             samples_written: 0,
             key_every,
             stage,
+            gif,
         })
     }
 
@@ -218,7 +234,7 @@ impl WebExport {
 
     /// Stop, and throw away what was made.
     pub fn cancel(&mut self) {
-        if matches!(self.stage, Stage::Sound(_)) {
+        if matches!(self.stage, Stage::Sound(_)) || self.gif.is_some() {
             self.stage = Stage::Over(WebProgress::Failed("cancelled".to_owned()));
             return;
         }
@@ -268,7 +284,7 @@ impl WebExport {
                 _ => Ok(false),
             },
             Stage::Rendering => {
-                if !encoders::has_room() {
+                if self.gif.is_none() && !encoders::has_room() {
                     return Ok(false);
                 }
                 let position = self.position(self.index);
@@ -299,6 +315,18 @@ impl WebExport {
                     return Ok(false);
                 }
                 let rgba = self.readback.finish();
+                if let Some(gif) = self.gif.as_mut() {
+                    let delay = crate::gif::frame_delay(self.index, self.ticks_per_frame);
+                    gif.push(&rgba, delay)
+                        .map_err(|err| ExportError::Write(err.to_string()))?;
+                    self.index += 1;
+                    return if self.index == self.total {
+                        self.finish_gif()
+                    } else {
+                        self.stage = Stage::Rendering;
+                        Ok(true)
+                    };
+                }
                 encoders::frame(
                     &rgba,
                     self.settings.resolution.width,
@@ -337,6 +365,25 @@ impl WebExport {
             Stage::Sound(_) => self.mix_block(),
             Stage::Over(_) => Ok(false),
         }
+    }
+
+    /// The GIF finished and downloaded.
+    fn finish_gif(&mut self) -> Result<bool, ExportError> {
+        let Some(gif) = self.gif.take() else {
+            return Ok(false);
+        };
+        let file = gif
+            .finish()
+            .map_err(|err| ExportError::Write(err.to_string()))?
+            .into_inner();
+        let name = self.name();
+        browser::download(&file, &name, "image/gif");
+        tracing::info!(name, bytes = file.len(), frames = self.total, "web GIF export finished");
+        self.stage = Stage::Over(WebProgress::Finished {
+            name,
+            frames: self.total,
+        });
+        Ok(false)
     }
 
     /// Sound only: the next block of the mix into the WAV, and the WAV

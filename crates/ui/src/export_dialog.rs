@@ -2046,8 +2046,8 @@ fn container_row(ui: &mut egui::Ui, dialog: &mut ExportDialog) {
             .width(FIELD_WIDTH)
             .show_ui(ui, |ui| {
                 for (index, (name, hint)) in CONTAINERS.iter().enumerate() {
-                    // A browser makes an MP4 or the sound as a WAV, for now.
-                    if cfg!(target_arch = "wasm32") && index != 0 && index != SOUND_ONLY {
+                    // A browser makes an MP4, a GIF or the sound as a WAV, for now.
+                    if cfg!(target_arch = "wasm32") && ![0, SOUND_ONLY, GIF].contains(&index) {
                         continue;
                     }
                     if ui
