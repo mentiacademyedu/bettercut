@@ -39,7 +39,7 @@ setting kept:
   in the browser as you work and open again next time — with your settings,
   saved looks, title styles, export presets and shortcuts — and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders and
-  downloads it — and keeps going while you look at another tab. **Save**
+  downloads it — decoding an MP4 or MOV in order, faster than real time for 1080p — and keeps going while you look at another tab. **Save**
   downloads the project as a `.vproj` file, and **Open** (or dropping one on
   the page) opens it again; files it uses that this browser no longer has show
   as missing until they are dropped or imported again.

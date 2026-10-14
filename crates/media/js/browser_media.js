@@ -185,25 +185,7 @@ async function webmFrameRateOf(file) {
 async function frameRateOf(file) {
   const magic = await bytesAt(file, 0, 4);
   if (magic.byteLength === 4 && magic.getUint32(0) === 0x1a45dfa3) return webmFrameRateOf(file);
-  // Find the movie header among the file's top-level boxes.
-  let at = 0;
-  let moov = null;
-  while (at + 8 <= file.size) {
-    const head = await bytesAt(file, at, 16);
-    if (head.byteLength < 8) break;
-    let size = head.getUint32(0);
-    const type = String.fromCharCode(head.getUint8(4), head.getUint8(5), head.getUint8(6), head.getUint8(7));
-    if (at === 0 && type !== 'ftyp' && type !== 'moov' && type !== 'wide' && type !== 'mdat' && type !== 'free') return null;
-    if (size === 1 && head.byteLength >= 16) size = Number(head.getBigUint64(8));
-    else if (size === 0) size = file.size - at;
-    if (size < 8) return null;
-    if (type === 'moov') {
-      if (size > MAX_MOOV) return null;
-      moov = await bytesAt(file, at, size);
-      break;
-    }
-    at += size;
-  }
+  const moov = await moovOf(file);
   if (!moov) return null;
   for (const trak of boxesIn(moov, 8, moov.byteLength).filter((b) => b.type === 'trak')) {
     const mdia = child(moov, trak, 'mdia');
@@ -228,6 +210,30 @@ async function frameRateOf(file) {
     if (frames > 1 && ticks > 0) return { num: frames * timescale, den: ticks };
   }
   return null;
+}
+
+// An MP4 or MOV's movie header (the `moov` box, header included), or null.
+async function moovOf(file) {
+  // Find it among the file's top-level boxes.
+  let at = 0;
+  let moov = null;
+  while (at + 8 <= file.size) {
+    const head = await bytesAt(file, at, 16);
+    if (head.byteLength < 8) break;
+    let size = head.getUint32(0);
+    const type = String.fromCharCode(head.getUint8(4), head.getUint8(5), head.getUint8(6), head.getUint8(7));
+    if (at === 0 && type !== 'ftyp' && type !== 'moov' && type !== 'wide' && type !== 'mdat' && type !== 'free') return null;
+    if (size === 1 && head.byteLength >= 16) size = Number(head.getBigUint64(8));
+    else if (size === 0) size = file.size - at;
+    if (size < 8) return null;
+    if (type === 'moov') {
+      if (size > MAX_MOOV) return null;
+      moov = await bytesAt(file, at, size);
+      break;
+    }
+    at += size;
+  }
+  return moov;
 }
 
 function scaled(width, height) {
@@ -738,9 +744,461 @@ export function bc_filmstrip(path) {
   return files.get(path)?.strip ?? undefined;
 }
 
-// Export's frames: a `<video>` of their own, so an export never moves the
-// one the preview reads from, sought to every frame asked for — exact, at
-// full size, never "the last one there was".
+// ---- export's frames, decoded in order --------------------------------------
+//
+// Seeking a `<video>` to each frame decodes again from the keyframe before it,
+// every time. An export wants every frame, in order: so an MP4 or MOV's own
+// sample tables say where each frame's bytes are, and the browser's
+// VideoDecoder decodes them one after another — several times faster. What
+// this cannot read — another container, a codec this browser cannot decode,
+// a picture the file turns (a phone held upright) — is sought frame by frame.
+
+// Samples queued in the decoder at most: enough that it never waits for
+// more before giving out a frame (an H.264 decoder may hold up to 16).
+const DECODE_AHEAD = 20;
+// Frames decoded ahead of what was asked for, made ready for the next asks.
+const DECODED_AHEAD = 6;
+// Not asked for in this long, and the decoder and its frames are let go.
+const DECODER_IDLE_MS = 5000;
+
+function bytesOf(view, box) {
+  return new Uint8Array(view.buffer, view.byteOffset + box.at, box.end - box.at).slice();
+}
+
+const hex2 = (n) => n.toString(16).padStart(2, '0');
+
+// What VideoDecoder needs to be told of a sample entry: { codec,
+// description }, or null for a codec not handled here.
+function decoderConfigOf(view, entry) {
+  // A visual sample entry's own fields take 78 bytes; its boxes follow.
+  const config = (type) => boxesIn(view, entry.at + 78, entry.end).find((b) => b.type === type);
+  if (entry.type === 'avc1' || entry.type === 'avc3') {
+    const c = config('avcC');
+    if (!c) return null;
+    const [p, k, l] = [1, 2, 3].map((i) => view.getUint8(c.at + i));
+    return { codec: `avc1.${hex2(p)}${hex2(k)}${hex2(l)}`, description: bytesOf(view, c) };
+  }
+  if (entry.type === 'hvc1' || entry.type === 'hev1') {
+    const c = config('hvcC');
+    if (!c) return null;
+    const first = view.getUint8(c.at + 1);
+    let flags = view.getUint32(c.at + 2);
+    let reversed = 0;
+    for (let i = 0; i < 32; i++) {
+      reversed = (reversed << 1) | (flags & 1);
+      flags >>>= 1;
+    }
+    const constraints = [];
+    for (let i = 0; i < 6; i++) constraints.push(view.getUint8(c.at + 6 + i));
+    while (constraints.length && constraints[constraints.length - 1] === 0) constraints.pop();
+    const parts = [
+      `${entry.type}.${['', 'A', 'B', 'C'][first >> 6]}${first & 0x1f}`,
+      (reversed >>> 0).toString(16),
+      `${(first >> 5) & 1 ? 'H' : 'L'}${view.getUint8(c.at + 12)}`,
+      ...constraints.map((b) => b.toString(16)),
+    ];
+    return { codec: parts.join('.'), description: bytesOf(view, c) };
+  }
+  if (entry.type === 'av01') {
+    const c = config('av1C');
+    if (!c) return null;
+    const [a, b] = [1, 2].map((i) => view.getUint8(c.at + i));
+    const depth = (b >> 6) & 1 ? ((b >> 5) & 1 ? 12 : 10) : 8;
+    const level = String(a & 0x1f).padStart(2, '0');
+    return { codec: `av01.${a >> 5}.${level}${b >> 7 ? 'H' : 'M'}.${String(depth).padStart(2, '0')}`, description: bytesOf(view, c) };
+  }
+  if (entry.type === 'vp09') {
+    const c = config('vpcC');
+    if (!c) return null;
+    const two = (n) => String(n).padStart(2, '0');
+    return { codec: `vp09.${two(view.getUint8(c.at + 4))}.${two(view.getUint8(c.at + 5))}.${two(view.getUint8(c.at + 6) >> 4)}` };
+  }
+  return null;
+}
+
+// The video track's samples, from an MP4 or MOV's tables: where each one's
+// bytes are, when it is shown (microseconds, as the `<video>` shows it —
+// edit list applied), and whether it is a keyframe. null when there is no
+// such track this can decode.
+async function videoSamplesOf(file) {
+  const moov = await moovOf(file);
+  if (!moov) return null;
+  const whole = { at: 8, end: moov.byteLength };
+  const mvhd = child(moov, whole, 'mvhd');
+  const movieScale = mvhd ? moov.getUint32(mvhd.at + (moov.getUint8(mvhd.at) === 1 ? 20 : 12)) : 0;
+  for (const trak of boxesIn(moov, 8, moov.byteLength).filter((b) => b.type === 'trak')) {
+    const mdia = child(moov, trak, 'mdia');
+    const hdlr = child(moov, mdia, 'hdlr');
+    if (!hdlr || hdlr.at + 12 > hdlr.end) continue;
+    if (String.fromCharCode(...[8, 9, 10, 11].map((i) => moov.getUint8(hdlr.at + i))) !== 'vide') continue;
+
+    // A picture the file turns or flips is shown turned by a `<video>`, not
+    // by a decoder: left to the `<video>`.
+    const tkhd = child(moov, trak, 'tkhd');
+    if (tkhd) {
+      const m = tkhd.at + (moov.getUint8(tkhd.at) === 1 ? 52 : 40);
+      const [a, b, c, d] = [0, 4, 12, 16].map((i) => moov.getInt32(m + i));
+      if (a !== 0x10000 || b !== 0 || c !== 0 || d !== 0x10000) return null;
+    }
+
+    const mdhd = child(moov, mdia, 'mdhd');
+    const stbl = child(moov, child(moov, mdia, 'minf'), 'stbl');
+    const table = (type) => child(moov, stbl, type);
+    const [stsd, stts, stsz, stsc] = ['stsd', 'stts', 'stsz', 'stsc'].map(table);
+    const chunks = table('stco') ?? table('co64');
+    if (!mdhd || !stsd || !stts || !stsz || !stsc || !chunks) return null;
+    const timescale = moov.getUint32(mdhd.at + (moov.getUint8(mdhd.at) === 1 ? 20 : 12));
+    const entry = boxesIn(moov, stsd.at + 8, stsd.end)[0];
+    const config = entry && decoderConfigOf(moov, entry);
+    if (!timescale || !config) return null;
+
+    const count = moov.getUint32(stsz.at + 8);
+    const sameSize = moov.getUint32(stsz.at + 4);
+    const size = new Float64Array(count);
+    for (let i = 0; i < count; i++) size[i] = sameSize || moov.getUint32(stsz.at + 12 + i * 4);
+
+    // Decode times, from the run lengths of stts.
+    const dts = new Float64Array(count);
+    const dur = new Float64Array(count);
+    let i = 0;
+    let t = 0;
+    for (let e = 0, n = moov.getUint32(stts.at + 4); e < n && i < count; e++) {
+      const run = moov.getUint32(stts.at + 8 + e * 8);
+      const delta = moov.getUint32(stts.at + 12 + e * 8);
+      for (let r = 0; r < run && i < count; r++, i++) {
+        dts[i] = t;
+        dur[i] = delta;
+        t += delta;
+      }
+    }
+
+    // Shown at decode time plus the composition offset, less where the edit
+    // list starts, plus any empty edit before it.
+    const pts = new Float64Array(count);
+    const ctts = table('ctts');
+    if (ctts) {
+      const signed = moov.getUint8(ctts.at) === 1;
+      let s = 0;
+      for (let e = 0, n = moov.getUint32(ctts.at + 4); e < n && s < count; e++) {
+        const run = moov.getUint32(ctts.at + 8 + e * 8);
+        const offset = signed ? moov.getInt32(ctts.at + 12 + e * 8) : moov.getUint32(ctts.at + 12 + e * 8);
+        for (let r = 0; r < run && s < count; r++, s++) pts[s] = offset;
+      }
+    }
+    let start = 0;
+    let delay = 0;
+    const elst = child(moov, child(moov, trak, 'edts'), 'elst');
+    if (elst) {
+      const wide = moov.getUint8(elst.at) === 1;
+      const step = wide ? 20 : 12;
+      for (let e = 0, n = moov.getUint32(elst.at + 4); e < n; e++) {
+        const at = elst.at + 8 + e * step;
+        if (at + step > elst.end) break;
+        const length = wide ? Number(moov.getBigUint64(at)) : moov.getUint32(at);
+        const from = wide ? Number(moov.getBigInt64(at + 8)) : moov.getInt32(at + 4);
+        if (from === -1) {
+          delay += movieScale ? length / movieScale : 0;
+          continue;
+        }
+        start = from;
+        break;
+      }
+    }
+    const time = new Float64Array(count);
+    const byTime = new Map();
+    for (let s = 0; s < count; s++) {
+      time[s] = Math.round(((dts[s] + pts[s] - start) / timescale + delay) * 1e6);
+      byTime.set(time[s], s);
+      dur[s] = Math.round((dur[s] / timescale) * 1e6);
+    }
+
+    // Where each sample's bytes are: chunk by chunk, as many samples a chunk
+    // as stsc says.
+    const offset = new Float64Array(count);
+    const wideChunks = chunks.type === 'co64';
+    const chunkCount = moov.getUint32(chunks.at + 4);
+    const runs = moov.getUint32(stsc.at + 4);
+    let s = 0;
+    for (let r = 0; r < runs && s < count; r++) {
+      const first = moov.getUint32(stsc.at + 8 + r * 12);
+      const perChunk = moov.getUint32(stsc.at + 12 + r * 12);
+      const last = r + 1 < runs ? moov.getUint32(stsc.at + 8 + (r + 1) * 12) - 1 : chunkCount;
+      for (let c = first; c <= last && s < count; c++) {
+        let at = wideChunks
+          ? Number(moov.getBigUint64(chunks.at + 8 + (c - 1) * 8))
+          : moov.getUint32(chunks.at + 8 + (c - 1) * 4);
+        for (let k = 0; k < perChunk && s < count; k++, s++) {
+          offset[s] = at;
+          at += size[s];
+        }
+      }
+    }
+
+    const key = new Uint8Array(count);
+    const stss = table('stss');
+    if (stss) {
+      for (let e = 0, n = moov.getUint32(stss.at + 4); e < n; e++) {
+        const sample = moov.getUint32(stss.at + 8 + e * 4) - 1;
+        if (sample < count) key[sample] = 1;
+      }
+    } else {
+      key.fill(1);
+    }
+    const keys = [];
+    for (let k = 0; k < count; k++) if (key[k]) keys.push(k);
+    const shown = [...Array(count).keys()].sort((a, b) => time[a] - time[b]);
+    if (!count || !keys.length || keys[0] !== 0) return null;
+    return {
+      config: {
+        ...config,
+        codedWidth: moov.getUint16(entry.at + 24),
+        codedHeight: moov.getUint16(entry.at + 26),
+        // Each frame out as soon as it can be, not when the decoder likes.
+        optimizeForLatency: true,
+      },
+      count, offset, size, time, dur, key, keys, byTime, shown,
+    };
+  }
+  return null;
+}
+
+// The last sample shown at or before `us`, or the first.
+function sampleAt(track, us) {
+  let lo = 0;
+  let hi = track.shown.length - 1;
+  let found = track.shown[0];
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (track.time[track.shown[mid]] <= us) {
+      found = track.shown[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+// The keyframe decoding has to start from to reach sample `k`.
+function keyBefore(track, k) {
+  let lo = 0;
+  let hi = track.keys.length - 1;
+  let found = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (track.keys[mid] <= k) {
+      found = track.keys[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+// A decoded frame as RGBA, sRGB, at its display size; the frame is closed.
+async function pictureOf(frame) {
+  const width = frame.displayWidth;
+  const height = frame.displayHeight;
+  try {
+    if (frame.visibleRect && frame.visibleRect.width === width && frame.visibleRect.height === height) {
+      try {
+        const data = new Uint8ClampedArray(width * height * 4);
+        await frame.copyTo(data, { format: 'RGBA', colorSpace: 'srgb' });
+        return { width, height, data };
+      } catch (_) {
+        // This browser cannot convert as it copies: drawn instead.
+      }
+    }
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(frame, 0, 0, width, height);
+    return { width, height, data: context.getImageData(0, 0, width, height).data };
+  } finally {
+    frame.close();
+  }
+}
+
+function openDecoding(entry) {
+  const d = {
+    state: 'opening', // then 'ready', or 'none': seek instead
+    track: null,
+    decoder: null,
+    epoch: 0,
+    next: 0, // the next sample to give the decoder, in decode order
+    lastOut: -Infinity, // the time of the last frame out since a restart
+    reading: false,
+    flushed: false,
+    wanted: [], // samples asked for, not yet had
+    askedTime: -Infinity, // when the sample last asked for is shown
+    converting: new Set(),
+    pictures: new Map(), // sample -> picture, the last few asked for
+    askedAt: performance.now(),
+    idle: null,
+  };
+  (async () => {
+    if (typeof VideoDecoder === 'undefined') throw new Error('no VideoDecoder');
+    const track = await videoSamplesOf(entry.file);
+    if (!track) throw new Error('not a track this decodes');
+    const support = await VideoDecoder.isConfigSupported(track.config);
+    if (!support.supported) throw new Error(`cannot decode ${track.config.codec}`);
+    d.track = track;
+    d.file = entry.file;
+    restart(d, 0);
+    d.state = 'ready';
+    d.idle = setInterval(() => {
+      if (performance.now() - d.askedAt > DECODER_IDLE_MS) {
+        closeDecoding(d);
+        if (entry.decoding === d) entry.decoding = undefined;
+      }
+    }, DECODER_IDLE_MS / 2);
+    pump(d);
+  })().catch(() => {
+    closeDecoding(d);
+  });
+  return d;
+}
+
+function closeDecoding(d) {
+  d.state = 'none';
+  clearInterval(d.idle);
+  try {
+    d.decoder?.close();
+  } catch (_) {
+    // Closed already.
+  }
+}
+
+// Decode again from sample `from`, a keyframe.
+function restart(d, from) {
+  d.epoch += 1;
+  d.reading = false;
+  d.flushed = false;
+  d.next = from;
+  d.lastOut = -Infinity;
+  try {
+    d.decoder?.close();
+  } catch (_) {
+    // Closed already.
+  }
+  d.decoder = new VideoDecoder({
+    output: (frame) => decoded(d, frame),
+    error: () => closeDecoding(d),
+  });
+  d.decoder.configure(d.track.config);
+}
+
+function convert(d, k, frame) {
+  d.converting.add(k);
+  pictureOf(frame)
+    .then((picture) => {
+      d.converting.delete(k);
+      d.pictures.set(k, picture);
+      while (d.pictures.size > EXACT_KEPT + DECODED_AHEAD) d.pictures.delete(d.pictures.keys().next().value);
+      changes += 1;
+    })
+    .catch(() => closeDecoding(d));
+}
+
+function decoded(d, frame) {
+  const k = d.track.byTime.get(frame.timestamp);
+  d.lastOut = Math.max(d.lastOut, frame.timestamp);
+  if (k === undefined) {
+    frame.close();
+  } else if (d.wanted.includes(k)) {
+    d.wanted = d.wanted.filter((w) => w !== k);
+    convert(d, k, frame);
+  } else if (d.track.time[k] > d.askedTime && !d.pictures.has(k) && !d.converting.has(k)) {
+    // Likely the next asked for: made ready now.
+    convert(d, k, frame);
+  } else {
+    frame.close();
+  }
+  pump(d);
+}
+
+// Frames made ready, or being made, past the last one asked for.
+function ahead(d) {
+  let n = 0;
+  for (const k of d.pictures.keys()) if (d.track.time[k] > d.askedTime) n++;
+  for (const k of d.converting) if (d.track.time[k] > d.askedTime) n++;
+  return n;
+}
+
+// Give the decoder what it needs next: from a keyframe again when what is
+// wanted has gone by or lies past the next keyframe, and onward otherwise.
+function pump(d) {
+  if (d.state !== 'ready') return;
+  const track = d.track;
+  d.wanted = d.wanted.filter((k) => !d.pictures.has(k) && !d.converting.has(k));
+  if (d.wanted.length) {
+    const first = d.wanted.reduce((a, b) => (track.time[a] <= track.time[b] ? a : b));
+    const key = keyBefore(track, first);
+    if (track.time[first] <= d.lastOut || d.next < key) {
+      // Gone by again and again: this decoder does not give it, so seek.
+      d.restarts = d.restartedFor === first ? d.restarts + 1 : 0;
+      d.restartedFor = first;
+      if (d.restarts > 2) {
+        closeDecoding(d);
+        return;
+      }
+      restart(d, key);
+    }
+  }
+  feed(d);
+}
+
+async function feed(d) {
+  if (d.reading || d.state !== 'ready') return;
+  d.reading = true;
+  const epoch = d.epoch;
+  const track = d.track;
+  try {
+    while (
+      d.state === 'ready' &&
+      d.next < track.count &&
+      d.decoder.decodeQueueSize < DECODE_AHEAD &&
+      (d.wanted.length > 0 || ahead(d) < DECODED_AHEAD)
+    ) {
+      const k = d.next++;
+      const data = await d.file.slice(track.offset[k], track.offset[k] + track.size[k]).arrayBuffer();
+      if (epoch !== d.epoch || d.state !== 'ready') return;
+      d.decoder.decode(
+        new EncodedVideoChunk({
+          type: track.key[k] ? 'key' : 'delta',
+          timestamp: track.time[k],
+          duration: track.dur[k],
+          data,
+        }),
+      );
+    }
+    // The last frames come out only once the decoder is told there are no more.
+    if (d.state === 'ready' && d.next >= track.count && !d.flushed && d.wanted.length) {
+      d.flushed = true;
+      d.decoder.flush().catch(() => {});
+    }
+  } finally {
+    if (epoch === d.epoch) d.reading = false;
+  }
+}
+
+// The frame at `ms` from the decoder, or undefined while it is coming.
+function decodedAt(d, ms) {
+  d.askedAt = performance.now();
+  // Half a millisecond in, as the `<video>` is sought.
+  const k = sampleAt(d.track, (ms + 0.5) * 1000);
+  d.askedTime = d.track.time[k];
+  const picture = d.pictures.get(k);
+  if (picture) return picture;
+  if (!d.wanted.includes(k) && !d.converting.has(k)) d.wanted.push(k);
+  pump(d);
+  return undefined;
+}
+
+// Export's frames, when they cannot be decoded in order: a `<video>` of
+// their own, so an export never moves the one the preview reads from, sought
+// to every frame asked for — exact, at full size, never "the last one there
+// was".
 //
 // The same file can be two layers at once (a clip on two tracks, a picture
 // in picture), each wanting its own frame: so the last few frames are kept,
@@ -803,6 +1261,15 @@ export function bc_frame_exact(path, seconds) {
   if (entry.still) return { ...entry.still, exact: true };
   if (!entry.video) return undefined;
   const ms = Math.max(0, Math.round(seconds * 1000));
+  // Decoded in order where this can; sought frame by frame where not.
+  entry.decoding ??= openDecoding(entry);
+  const decoding = entry.decoding;
+  if (decoding.state === 'opening') return undefined;
+  if (decoding.state === 'ready') {
+    const picture = decodedAt(decoding, ms);
+    if (picture) return { ...picture, exact: true };
+    if (decoding.state === 'ready') return undefined;
+  }
   entry.exporting ??= exportVideo(entry);
   const exporting = entry.exporting;
   const kept = exporting.frames.get(ms);
