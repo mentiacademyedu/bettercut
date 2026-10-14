@@ -25,7 +25,7 @@ use bettercut_media::{NeverCancelled, SeekMode, VideoCodec};
 use bettercut_playback::{FrameSource, TextFrames, layer_requests};
 use bettercut_project_format::Project;
 use bettercut_renderer::{Compositor, RenderConfig, wgpu};
-use bettercut_timeline::Sequence;
+use bettercut_timeline::{ColorAdjust, Sequence};
 
 use crate::readback::Readback;
 use crate::{AudioMixdown, ExportError, ExportSettings, audio_channels, composite_layers, decode_layers};
@@ -84,6 +84,96 @@ pub struct WebExport {
     stage: Stage,
     /// A GIF being written, instead of the browser's encoders.
     gif: Option<Box<crate::gif::GifWriter<std::io::Cursor<Vec<u8>>>>>,
+}
+
+/// Auto Level or a colour match in a browser: the clip's own frame decoded,
+/// and for a match the frame under the playhead rendered without the clip,
+/// each when it is ready, then the same maths as the desktop's job.
+pub struct WebGrade {
+    asset: bettercut_media::MediaAsset,
+    at: bettercut_foundation::MediaTime,
+    frames: FrameSource,
+    sample: Option<bettercut_timeline::colour_match::FrameSample>,
+    reference: Option<WebStill>,
+    reference_stats: Option<bettercut_timeline::colour_match::FrameStats>,
+}
+
+impl WebGrade {
+    /// Auto Level `clip`: a neutral grade from its own middle frame.
+    pub fn auto_level(project: &Project, sequence: SequenceId, clip: bettercut_foundation::ClipId) -> Result<Self, String> {
+        let (asset, at) = crate::colour_match::clip_middle(project, sequence, clip)?;
+        let mut frames = FrameSource::new(1);
+        frames.wait_for_exact_frames();
+        Ok(Self {
+            asset,
+            at,
+            frames,
+            sample: None,
+            reference: None,
+            reference_stats: None,
+        })
+    }
+
+    /// Match `clip` to the frame at `at`, rendered without the clip.
+    pub fn colour_match(
+        project: &Project,
+        sequence: SequenceId,
+        clip: bettercut_foundation::ClipId,
+        at: TimelineTime,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Self, String> {
+        let without = crate::colour_match::without_clip(project, sequence, clip)?;
+        let mut copy = project.clone();
+        if let Some(slot) = copy.sequences.iter_mut().find(|s| s.id == sequence) {
+            *slot = without;
+        }
+        let reference =
+            WebStill::start(copy, sequence, at, device, queue).map_err(|e| e.to_string())?;
+        let mut grade = Self::auto_level(project, sequence, clip)?;
+        grade.reference = Some(reference);
+        Ok(grade)
+    }
+
+    /// Do what is ready. The grade once both frames are in; `None` while
+    /// either is still coming.
+    pub fn step(&mut self) -> Option<Result<ColorAdjust, String>> {
+        if self.sample.is_none() {
+            match self.frames.decode(&self.asset, self.at, SeekMode::Precise, &NeverCancelled) {
+                Ok(frame) => match crate::colour_match::sample_of(&frame) {
+                    Ok(sample) => self.sample = Some(sample),
+                    Err(err) => return Some(Err(err)),
+                },
+                Err(bettercut_playback::PlaybackError::Media(err)) if browser::is_not_yet(&err) => {}
+                Err(err) => return Some(Err(err.to_string())),
+            }
+        }
+        if let Some(reference) = self.reference.as_mut()
+            && self.reference_stats.is_none()
+        {
+            match reference.step()? {
+                Ok((width, height, rgba)) => {
+                    let Some(sample) =
+                        bettercut_timeline::colour_match::FrameSample::from_rgba(&rgba, width, height)
+                    else {
+                        return Some(Err("the frame under the playhead could not be read".to_owned()));
+                    };
+                    let stats = sample.stats();
+                    if stats.luma < crate::colour_match::EMPTY_REFERENCE {
+                        return Some(Err("there is no picture under the playhead to match to".to_owned()));
+                    }
+                    self.reference_stats = Some(stats);
+                }
+                Err(err) => return Some(Err(err.to_string())),
+            }
+        }
+        let sample = self.sample.as_ref()?;
+        Some(Ok(match &self.reference_stats {
+            Some(reference) => bettercut_timeline::colour_match::match_grade(sample, reference),
+            None if self.reference.is_none() => bettercut_timeline::colour_match::auto_grade(sample),
+            None => return None,
+        }))
+    }
 }
 
 /// A rendered frame: width, height, and tightly packed RGBA.

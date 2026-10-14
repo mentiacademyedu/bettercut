@@ -266,6 +266,13 @@ struct WebExports {
     gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
     /// Single frames being rendered, and what each is for.
     stills: Vec<(bettercut_export::WebStill, WebStillFor)>,
+    /// Auto Levels and colour matches being worked out: the clip, the
+    /// label of the undo step, and the work.
+    grades: Vec<(
+        bettercut_editor_core::foundation::ClipId,
+        &'static str,
+        bettercut_export::WebGrade,
+    )>,
 }
 
 impl App {
@@ -642,6 +649,66 @@ impl App {
         }
     }
 
+    /// Start Auto Level on `clip`, or with `at`, a colour match to the frame
+    /// there.
+    fn web_grade(
+        &mut self,
+        clip: bettercut_editor_core::foundation::ClipId,
+        at: Option<bettercut_editor_core::foundation::TimelineTime>,
+    ) {
+        let (project, sequence) = match self.editor.export_copy(None) {
+            Ok(copy) => copy,
+            Err(err) => {
+                self.ui.error(err.to_string());
+                return;
+            }
+        };
+        let started = match (at, self.web_exports.gpu.clone()) {
+            (None, _) => {
+                self.ui.info("Setting levels from the clip's own frame");
+                bettercut_export::WebGrade::auto_level(&project, sequence, clip)
+                    .map(|grade| ("Auto Level", grade))
+            }
+            (Some(at), Some((device, queue))) => {
+                self.ui.info("Matching the clip to the frame under the playhead");
+                bettercut_export::WebGrade::colour_match(&project, sequence, clip, at, device, queue)
+                    .map(|grade| ("Colour Match", grade))
+            }
+            (Some(_), None) => Err("matching needs the GPU, and this browser did not give one".to_owned()),
+        };
+        match started {
+            Ok((label, grade)) => self.web_exports.grades.push((clip, label, grade)),
+            Err(err) => self.ui.error(err),
+        }
+    }
+
+    /// Step the Auto Levels and colour matches, and apply each that is done.
+    fn run_web_grades(&mut self, ctx: &egui::Context) {
+        let mut grades = std::mem::take(&mut self.web_exports.grades);
+        grades.retain_mut(|(clip, label, work)| {
+            let Some(result) = work.step() else {
+                return true;
+            };
+            match result {
+                Ok(grade) => match self.editor.set_clip_grade(*clip, grade, label) {
+                    Ok(()) => self.ui.info(if *label == "Auto Level" {
+                        "Levels set"
+                    } else {
+                        "Colour matched"
+                    }),
+                    Err(err) => self.ui.error(err.to_string()),
+                },
+                Err(err) => self.ui.error(err),
+            }
+            self.ui.needs_repaint = true;
+            false
+        });
+        if !grades.is_empty() {
+            ctx.request_repaint();
+        }
+        self.web_exports.grades = grades;
+    }
+
     /// Step the frames being rendered, and hand each to what asked for it.
     fn run_web_stills(&mut self, ctx: &egui::Context) {
         let mut stills = std::mem::take(&mut self.web_exports.stills);
@@ -948,6 +1015,8 @@ impl eframe::App for App {
         self.run_web_export(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         self.run_web_stills(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.run_web_grades(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
@@ -1434,12 +1503,11 @@ impl eframe::App for App {
 
         // A colour match: worked out in the background, applied when it
         // arrives (below), as one undo step.
-        if let Some(clip) = self
-            .ui
-            .auto_level_request
-            .take()
-            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Auto Level"))
-        {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(clip) = self.ui.auto_level_request.take() {
+            self.web_grade(clip, None);
+        }
+        if let Some(clip) = self.ui.auto_level_request.take() {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
                     self.ui.info("Setting levels from the clip's own frame");
@@ -1451,12 +1519,11 @@ impl eframe::App for App {
                 Err(err) => self.ui.error(err.to_string()),
             }
         }
-        if let Some((clip, at)) = self
-            .ui
-            .colour_match_request
-            .take()
-            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Colour matching"))
-        {
+        #[cfg(target_arch = "wasm32")]
+        if let Some((clip, at)) = self.ui.colour_match_request.take() {
+            self.web_grade(clip, Some(at));
+        }
+        if let Some((clip, at)) = self.ui.colour_match_request.take() {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
                     self.ui

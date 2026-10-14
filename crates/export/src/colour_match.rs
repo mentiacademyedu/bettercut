@@ -27,7 +27,7 @@ pub type MatchedGrade = Arc<Mutex<Option<(ClipId, ColorAdjust, &'static str)>>>;
 /// Less than this average luma is a reference with nothing in it — an empty
 /// stretch of timeline renders black — and matching to black would only
 /// crush the clip.
-const EMPTY_REFERENCE: f32 = 0.002;
+pub(crate) const EMPTY_REFERENCE: f32 = 0.002;
 
 /// Match `clip`'s grade to the frame at `reference_at`.
 pub struct ColourMatchJob {
@@ -120,23 +120,7 @@ pub fn colour_match(
     reference_at: TimelineTime,
     cancel: &dyn CancellationToken,
 ) -> Result<ColorAdjust, String> {
-    let Some(original) = project.sequence(sequence) else {
-        return Err("that sequence is no longer in the project".to_owned());
-    };
-    let Some(track) = original
-        .video_tracks
-        .iter()
-        .find(|t| t.get(clip).is_some())
-        .map(|t| t.id)
-    else {
-        return Err("only a picture clip can be colour matched".to_owned());
-    };
-
-    // The reference, without the clip being matched.
-    let mut without = original.clone();
-    if let Some(t) = without.video_track_mut(track) {
-        let _ = t.remove(clip);
-    }
+    let without = without_clip(project, sequence, clip)?;
     let (size, rgba) =
         render_still(project, &without, reference_at, cancel).map_err(|e| e.to_string())?;
     let reference = FrameSample::from_rgba(&rgba, size.width, size.height)
@@ -148,6 +132,32 @@ pub fn colour_match(
 
     let sample = clip_sample(project, sequence, clip, cancel)?;
     Ok(match_grade(&sample, &reference))
+}
+
+/// The sequence as it would be without `clip`: what a colour match is
+/// measured against, so a playhead resting on the clip matches it to what
+/// lies beneath rather than to itself.
+pub(crate) fn without_clip(
+    project: &Project,
+    sequence: SequenceId,
+    clip: ClipId,
+) -> Result<bettercut_timeline::Sequence, String> {
+    let Some(original) = project.sequence(sequence) else {
+        return Err("that sequence is no longer in the project".to_owned());
+    };
+    let Some(track) = original
+        .video_tracks
+        .iter()
+        .find(|t| t.get(clip).is_some())
+        .map(|t| t.id)
+    else {
+        return Err("only a picture clip can be colour matched".to_owned());
+    };
+    let mut without = original.clone();
+    if let Some(t) = without.video_track_mut(track) {
+        let _ = t.remove(clip);
+    }
+    Ok(without)
 }
 
 /// The grade that brings `clip` to a neutral exposure and balance, from its
@@ -169,6 +179,20 @@ fn clip_sample(
     clip: ClipId,
     cancel: &dyn CancellationToken,
 ) -> Result<FrameSample, String> {
+    let (asset, at) = clip_middle(project, sequence, clip)?;
+    let mut frames = FrameSource::new(2);
+    let frame = frames
+        .decode(&asset, at, SeekMode::Precise, cancel)
+        .map_err(|e| e.to_string())?;
+    sample_of(&frame)
+}
+
+/// The clip's file, and where in it the clip's middle is.
+pub(crate) fn clip_middle(
+    project: &Project,
+    sequence: SequenceId,
+    clip: ClipId,
+) -> Result<(bettercut_media::MediaAsset, bettercut_foundation::MediaTime), String> {
     let Some(original) = project.sequence(sequence) else {
         return Err("that sequence is no longer in the project".to_owned());
     };
@@ -180,15 +204,11 @@ fn clip_sample(
     };
     let middle =
         TimelineTime::from_ticks((video.timeline.start.ticks() + video.timeline.end.ticks()) / 2);
-    let mut frames = FrameSource::new(2);
-    let frame = frames
-        .decode(
-            asset,
-            video.source_time_at(middle),
-            SeekMode::Precise,
-            cancel,
-        )
-        .map_err(|e| e.to_string())?;
+    Ok((asset.clone(), video.source_time_at(middle)))
+}
+
+/// A decoded frame, sampled for its colour.
+pub(crate) fn sample_of(frame: &bettercut_media::VideoFrame) -> Result<FrameSample, String> {
     let FrameStorage::System { data, stride } = &frame.storage else {
         return Err("the clip's frame is not in system memory".to_owned());
     };

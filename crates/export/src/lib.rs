@@ -77,7 +77,7 @@ pub use job::{ExportJob, Outcome};
 pub use still::{FrameGrabJob, RenderedFrame, StillJob, png_bytes, render_still, save_still, write_png};
 pub use wav::{WAV_ENCODER, WavWriter, export_sound};
 #[cfg(target_arch = "wasm32")]
-pub use web::{WebExport, WebProgress, WebStill};
+pub use web::{WebExport, WebGrade, WebProgress, WebStill};
 
 /// What to export, and where.
 #[derive(Debug, Clone)]
