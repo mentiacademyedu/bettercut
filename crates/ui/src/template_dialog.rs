@@ -310,6 +310,7 @@ fn list(ui: &mut egui::Ui, state: &mut UiState, dialog: &mut TemplateDialog) {
         .button("Add template file…")
         .on_hover_text("Check a template (.json) and add it to your templates")
         .clicked()
+        && !crate::panels::not_in_browser(state, "Adding a template file")
         && let Some(file) = crate::file_dialog::FileDialog::new()
             .add_filter("template", &["json"])
             .pick_file()

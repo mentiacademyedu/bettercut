@@ -2097,6 +2097,9 @@ fn relink_one(editor: &mut Editor, state: &mut UiState, media: MediaId) {
 
 /// §66 "locate folder": relink everything that moved together.
 fn relink_folder(editor: &mut Editor, state: &mut UiState) {
+    if not_in_browser(state, "Locating a folder") {
+        return;
+    }
     let Some(folder) = crate::file_dialog::FileDialog::new()
         .set_title("Locate the folder your media moved to")
         .pick_folder()
@@ -4182,6 +4185,7 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                     "A grid of frames across the video, saved as one PNG. Uses the marked range when there is one",
                 )
                 .clicked()
+                && !not_in_browser(state, "A contact sheet")
                 && let Some(path) = crate::file_dialog::FileDialog::new()
                     .add_filter("PNG picture", &["png"])
                     .set_file_name(format!("{} contact sheet.png", editor.project().name.trim()))
@@ -8479,6 +8483,7 @@ fn clip_lut(
     }
 
     if import
+        && !not_in_browser(state, "Importing a LUT")
         && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("LUT", &["cube"])
             .pick_file()
@@ -10065,6 +10070,7 @@ fn family_picker(
         .button("Import Font…")
         .on_hover_text("Add a .ttf or .otf font file, to use in any title")
         .clicked()
+        && !not_in_browser(state, "Importing a font")
         && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("Fonts", &["ttf", "otf", "ttc"])
             .pick_file()
@@ -11964,6 +11970,18 @@ fn autosave_warning(failures: u32) -> String {
 
 // ---- actions -------------------------------------------------------------
 
+/// In a browser, say that `what` is not there yet, and answer true: the
+/// caller stops. Things that need a file dialog or a background job the page
+/// cannot run say so, rather than doing nothing when pressed.
+pub fn not_in_browser(state: &mut UiState, what: &str) -> bool {
+    if cfg!(target_arch = "wasm32") {
+        state.info(format!("{what} is not in the browser version yet — the desktop app has it"));
+        true
+    } else {
+        false
+    }
+}
+
 /// Whether leaving this project for another must ask about unsaved work
 /// first. In a browser every project is kept as it is — kept now, before
 /// leaving — and comes back from Open Recent, so there is nothing to lose.
@@ -11987,6 +12005,9 @@ pub fn new_project(editor: &mut Editor, state: &mut UiState) {
 
 /// Read a subtitle file onto the timeline (§27, Milestone 10).
 pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
+    if not_in_browser(state, "Importing captions") {
+        return;
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("subtitles", &["srt", "vtt"])
         .pick_file()
@@ -12002,6 +12023,9 @@ pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
 
 /// Write the caption lane back out.
 pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
+    if not_in_browser(state, "Exporting captions") {
+        return;
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("SubRip", &["srt"])
         .add_filter("WebVTT", &["vtt"])
@@ -12199,6 +12223,9 @@ pub fn save_project_as(editor: &mut Editor, state: &mut UiState) {
 /// The originals are left alone (§2), so this is safe to point at a drive that
 /// turns out to be too small: what fits is copied and the rest is reported.
 pub fn collect_files(editor: &mut Editor, state: &mut UiState) {
+    if not_in_browser(state, "Collecting files into a folder") {
+        return;
+    }
     let Some(folder) = crate::file_dialog::FileDialog::new()
         .set_title("Collect the project and its files into…")
         .pick_folder()
@@ -12326,6 +12353,9 @@ fn import_media(editor: &mut Editor, state: &mut UiState) {
 /// Ask for one frame of a numbered run and import the whole run as one clip
 /// at the sequence's rate, so it lands on the grid it will play on.
 fn import_image_sequence(editor: &mut Editor, state: &mut UiState) {
+    if not_in_browser(state, "Importing a numbered picture sequence") {
+        return;
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter(
             "still images",

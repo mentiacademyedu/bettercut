@@ -1306,7 +1306,12 @@ impl eframe::App for App {
         // Render in place: the marked stretch baked to a file on the
         // scheduler, like any other export (§74), and remembered when it
         // lands (below, with the other finished jobs).
-        if let Some(range) = self.ui.render_request.take() {
+        if let Some(range) = self
+            .ui
+            .render_request
+            .take()
+            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Rendering in place"))
+        {
             match bettercut_ui::render::render_job(&self.editor, range) {
                 Ok((job, path, fingerprint)) => {
                     self.ui.info("Rendering the marked stretch");
@@ -1318,7 +1323,12 @@ impl eframe::App for App {
 
         // Bouncing a sound lane to one clip: mixed on the scheduler, put down
         // when it lands (below, with the other finished jobs).
-        if let Some(track) = self.ui.bounce_request.take() {
+        if let Some(track) = self
+            .ui
+            .bounce_request
+            .take()
+            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Bouncing a sound lane"))
+        {
             match bettercut_ui::bounce::bounce_job(&self.editor, track) {
                 Ok(job) => self.proxies.submit_bounce(job),
                 Err(err) => self.ui.error(err),
@@ -1410,7 +1420,12 @@ impl eframe::App for App {
 
         // A colour match: worked out in the background, applied when it
         // arrives (below), as one undo step.
-        if let Some(clip) = self.ui.auto_level_request.take() {
+        if let Some(clip) = self
+            .ui
+            .auto_level_request
+            .take()
+            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Auto Level"))
+        {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
                     self.ui.info("Setting levels from the clip's own frame");
@@ -1422,7 +1437,12 @@ impl eframe::App for App {
                 Err(err) => self.ui.error(err.to_string()),
             }
         }
-        if let Some((clip, at)) = self.ui.colour_match_request.take() {
+        if let Some((clip, at)) = self
+            .ui
+            .colour_match_request
+            .take()
+            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Colour matching"))
+        {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
                     self.ui

@@ -353,6 +353,9 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
 /// Ask where, then write the markers there. The format follows the extension
 /// chosen.
 fn export_marker_file(editor: &Editor, state: &mut UiState) {
+    if crate::panels::not_in_browser(state, "Exporting markers") {
+        return;
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("CSV (spreadsheet)", &["csv"])
         .add_filter("EDL (another editor)", &["edl"])
@@ -369,6 +372,9 @@ fn export_marker_file(editor: &Editor, state: &mut UiState) {
 
 /// Ask which CSV, then add its markers.
 fn import_marker_file(editor: &mut Editor, state: &mut UiState) {
+    if crate::panels::not_in_browser(state, "Importing markers") {
+        return;
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("CSV", &["csv", "txt"])
         .pick_file()
