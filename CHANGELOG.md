@@ -31,7 +31,8 @@ setting kept:
 
 - **bettercut in a browser, first steps**: the app now also builds for the
   web (`docs\build-web.ps1`): the same interface and the same GPU preview,
-  on WebGPU, from about 4 MB to download. Video, photos and sound files
+  on WebGPU — or WebGL2 where a browser has none, so Firefox runs it too —
+  from about 4 MB to download. Video, photos and sound files
   dropped on the page (or chosen with Import) open with the browser's own
   decoders — no upload, nothing leaves the computer — and play at full frame
   rate, with their sound and waveforms (an MP4 or MOV's sound read a piece at

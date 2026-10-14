@@ -290,6 +290,14 @@ fn stsd(track: &Mp4Track) -> Vec<u8> {
             body.extend_from_slice(&0x0018u16.to_be_bytes()); // colour, no alpha
             body.extend_from_slice(&0xffffu16.to_be_bytes());
             body.extend_from_slice(&boxed(b"avcC", avcc));
+            // BT.709, limited range — what the frames were converted to
+            // before encoding — said outright, so no player has to guess.
+            let mut colour = b"nclx".to_vec();
+            colour.extend_from_slice(&1u16.to_be_bytes()); // primaries: BT.709
+            colour.extend_from_slice(&1u16.to_be_bytes()); // transfer: BT.709
+            colour.extend_from_slice(&1u16.to_be_bytes()); // matrix: BT.709
+            colour.push(0); // limited range
+            body.extend_from_slice(&boxed(b"colr", &colour));
             boxed(b"avc1", &body)
         }
         Mp4TrackKind::Aac {

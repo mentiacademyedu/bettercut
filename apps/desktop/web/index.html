@@ -137,11 +137,17 @@
       }
     }
 
-    // The editor draws with WebGPU. A browser without it would leave the
-    // page loading for ever, so it is told plainly instead.
-    async function hasWebGpu() {
+    // The editor draws with WebGPU, or WebGL2 where a browser has no WebGPU.
+    // A browser with neither would leave the page loading for ever, so it is
+    // told plainly instead.
+    async function canDraw() {
       try {
-        return Boolean(navigator.gpu && (await navigator.gpu.requestAdapter()));
+        if (navigator.gpu && (await navigator.gpu.requestAdapter())) return true;
+      } catch (_) {
+        // No WebGPU: WebGL2, then.
+      }
+      try {
+        return Boolean(document.createElement('canvas').getContext('webgl2'));
       } catch (_) {
         return false;
       }
@@ -149,12 +155,12 @@
 
     // What was kept in this browser last time is read before the app
     // starts, so the project it opens has its files.
-    hasWebGpu()
+    canDraw()
       .then((ok) => {
         if (!ok) {
           throw new Error(
-            'it needs WebGPU, which this browser does not offer (or has turned off). ' +
-              'Chrome or Edge on a computer run it; so do recent Firefox on Windows and Safari 26 — ' +
+            'it needs WebGPU or WebGL2, and this browser offers neither (or has them turned off). ' +
+              'Chrome, Edge, Firefox and Safari on a computer run it — ' +
               'or download the desktop app from bettercut.dev.',
           );
         }

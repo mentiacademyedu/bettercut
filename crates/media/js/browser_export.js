@@ -120,15 +120,66 @@ export function bc_export_sound_codec() {
 }
 
 // Frame `index`, RGBA, `width` × `height`.
+// RGBA, as rendered, to I420 in BT.709 limited range — the colours the MP4
+// says it holds. Converted here rather than by the encoder: each browser's
+// encoder converts its own way, and says nothing of which.
+function toI420(rgba, width, height) {
+  const cw = (width + 1) >> 1;
+  const ch = (height + 1) >> 1;
+  const out = new Uint8Array(width * height + 2 * cw * ch);
+  const u0 = width * height;
+  const v0 = u0 + cw * ch;
+  // Fixed point, 16 fractional bits: Y = 16 + 219·(0.2126 R + 0.7152 G +
+  // 0.0722 B), and the colour differences scaled to 224, as BT.709 has it.
+  const yr = Math.round(65536 * 0.2126 * 219 / 255);
+  const yg = Math.round(65536 * 0.7152 * 219 / 255);
+  const yb = Math.round(65536 * 0.0722 * 219 / 255);
+  const ur = Math.round(65536 * (-0.2126 / 1.8556) * 224 / 255);
+  const ug = Math.round(65536 * (-0.7152 / 1.8556) * 224 / 255);
+  const ub = Math.round(65536 * (0.9278 / 1.8556) * 224 / 255);
+  const vr = Math.round(65536 * (0.7874 / 1.5748) * 224 / 255);
+  const vg = Math.round(65536 * (-0.7152 / 1.5748) * 224 / 255);
+  const vb = Math.round(65536 * (-0.0722 / 1.5748) * 224 / 255);
+  const half = 32768;
+  for (let y = 0; y < height; y++) {
+    let p = y * width * 4;
+    let q = y * width;
+    for (let x = 0; x < width; x++, p += 4, q++) {
+      out[q] = (16 * 65536 + yr * rgba[p] + yg * rgba[p + 1] + yb * rgba[p + 2] + half) >> 16;
+    }
+  }
+  // Each chroma sample from the average of the 2×2 pixels it covers.
+  for (let y = 0; y < ch; y++) {
+    const y1 = Math.min(height - 1, 2 * y + 1);
+    for (let x = 0; x < cw; x++) {
+      const x1 = Math.min(width - 1, 2 * x + 1);
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (const [px, py] of [[2 * x, 2 * y], [x1, 2 * y], [2 * x, y1], [x1, y1]]) {
+        const p = (py * width + px) * 4;
+        r += rgba[p];
+        g += rgba[p + 1];
+        b += rgba[p + 2];
+      }
+      // The sums are four pixels: a quarter of each coefficient.
+      out[u0 + y * cw + x] = (128 * 65536 + ((ur * r + ug * g + ub * b) >> 2) + half) >> 16;
+      out[v0 + y * cw + x] = (128 * 65536 + ((vr * r + vg * g + vb * b) >> 2) + half) >> 16;
+    }
+  }
+  return out;
+}
+
 export function bc_export_frame(rgba, width, height, index, key) {
   if (!job || job.state !== 'ready') return;
   const micros = (n) => Math.round((n * 1e6 * job.rateDen) / job.rateNum);
-  const frame = new VideoFrame(rgba, {
-    format: 'RGBA',
+  const frame = new VideoFrame(toI420(rgba, width, height), {
+    format: 'I420',
     codedWidth: width,
     codedHeight: height,
     timestamp: micros(index),
     duration: micros(index + 1) - micros(index),
+    colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
   });
   job.video.encode(frame, { keyFrame: key });
   frame.close();

@@ -95,6 +95,14 @@ impl Preview {
         cache_bytes: usize,
         decoder_threads: u32,
     ) -> Result<Self, bettercut_renderer::RenderError> {
+        // A GPU that cannot view one texture in two formats (WebGL2, in a
+        // browser without WebGPU): every compositor hands egui a copy.
+        let view_formats = render_state
+            .adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(bettercut_renderer::wgpu::DownlevelFlags::VIEW_FORMATS);
+        bettercut_renderer::compositor::use_present_copy(!view_formats);
         let resolution =
             PreviewQuality::default().apply(bettercut_editor_core::timeline::Resolution::HD_1080);
         let compositor = Compositor::new(

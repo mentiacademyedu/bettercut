@@ -236,6 +236,60 @@ impl WebGrade {
     }
 }
 
+/// The H.264 setup (an `avcC` record) the MP4 carries: the encoder's own when
+/// it holds together, else one built from the parameter sets in the first
+/// frame. Firefox's has been seen with the SPS's first byte doubled, which a
+/// player reads as an SPS that does not parse; its frames carry good ones.
+fn avc_config(description: Vec<u8>, first_frame: Option<&[u8]>) -> Vec<u8> {
+    if avc_config_holds(&description) {
+        return description;
+    }
+    let Some(frame) = first_frame else {
+        return description;
+    };
+    // The frame's NAL units, each behind a 4-byte length.
+    let (mut sps, mut pps) = (None, None);
+    let mut at = 0;
+    while at + 4 <= frame.len() {
+        let length = u32::from_be_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]) as usize;
+        let Some(unit) = frame.get(at + 4..at + 4 + length) else {
+            break;
+        };
+        match unit.first().map(|header| header & 0x1f) {
+            Some(7) if sps.is_none() => sps = Some(unit),
+            Some(8) if pps.is_none() => pps = Some(unit),
+            _ => {}
+        }
+        at += 4 + length;
+    }
+    let (Some(sps), Some(pps)) = (sps, pps) else {
+        return description;
+    };
+    if sps.len() < 4 {
+        return description;
+    }
+    let mut config = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
+    config.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    config.extend_from_slice(sps);
+    config.push(1);
+    config.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    config.extend_from_slice(pps);
+    config
+}
+
+/// Whether an `avcC` record's first SPS is an SPS that agrees with the
+/// record's own profile and level.
+fn avc_config_holds(config: &[u8]) -> bool {
+    if config.len() < 8 || config[0] != 1 || config[5] & 0x1f == 0 {
+        return false;
+    }
+    let length = u16::from_be_bytes([config[6], config[7]]) as usize;
+    let Some(sps) = config.get(8..8 + length) else {
+        return false;
+    };
+    sps.len() >= 4 && sps[0] & 0x1f == 7 && sps[1..4] == config[1..4]
+}
+
 /// A rendered frame: width, height, and tightly packed RGBA.
 pub type StillFrame = (u32, u32, Vec<u8>);
 
@@ -733,7 +787,10 @@ impl WebExport {
             kind: Mp4TrackKind::Video {
                 width: self.settings.resolution.width,
                 height: self.settings.resolution.height,
-                avcc: encoded.video_description,
+                avcc: avc_config(
+                    encoded.video_description,
+                    encoded.video.first().map(|(data, _)| data.as_slice()),
+                ),
             },
             timescale: rate.num() as u32,
             samples: encoded

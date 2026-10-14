@@ -97,6 +97,11 @@ pub struct Compositor {
     target_view: wgpu::TextureView,
     /// The same texture seen as [`Compositor::PRESENT_FORMAT`].
     present_view: wgpu::TextureView,
+    /// Where the finished frame is drawn for `present_view`, on a GPU that
+    /// cannot view one texture in two formats ([`use_present_copy`]), and
+    /// the pipeline that draws it (`present.wgsl`).
+    present_copy: Option<wgpu::Texture>,
+    present_pipeline: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// A second copy of the finished frame, made on request
     /// ([`Compositor::keep_snapshot`]).
     ///
@@ -170,7 +175,8 @@ impl Compositor {
         queue: wgpu::Queue,
         config: RenderConfig,
     ) -> Result<Self, RenderError> {
-        let (target, target_view, present_view) = create_target(&device, config.resolution)?;
+        let (target, target_view, present_view, present_copy) =
+            create_target(&device, config.resolution)?;
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("composite sampler"),
@@ -331,6 +337,8 @@ impl Compositor {
             target,
             target_view,
             present_view,
+            present_copy,
+            present_pipeline: None,
             snapshot: None,
             pipelines,
             layer_bind_group,
@@ -367,6 +375,105 @@ impl Compositor {
         &self.target
     }
 
+    /// On a GPU without two-format views: draw the finished frame's raw
+    /// bytes into the texture egui is handed. A copy would do on any other
+    /// GPU, but WebGL will not copy between sRGB and plain textures.
+    fn draw_present_copy(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let Some(copy) = &self.present_copy else {
+            return;
+        };
+        let (pipeline, layout) = self.present_pipeline.get_or_insert_with(|| {
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("present copy"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
+            });
+            let layout = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("present copy"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    }],
+                });
+            let pipeline_layout = self
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("present copy"),
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
+                });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("present copy"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: Self::PRESENT_FORMAT,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            (pipeline, layout)
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("present copy"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&self.target_view),
+            }],
+        });
+        let view = copy.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("present copy"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The texture behind [`Self::present_view`]: the target itself, or the
+    /// copy drawn from it on a GPU without two-format views.
+    pub fn present_texture(&self) -> &wgpu::Texture {
+        self.present_copy.as_ref().unwrap_or(&self.target)
+    }
+
     /// Keep the frame just composited, so the next one can be shown beside it.
     ///
     /// The kept copy lives until the next call; a compositor that is never
@@ -378,17 +485,20 @@ impl Compositor {
             .as_ref()
             .is_some_and(|(texture, _)| texture.size() == size);
         if !matches {
+            // Kept as the raw bytes directly where a texture cannot be
+            // viewed in two formats: a copy between the two is allowed.
+            let copied = PRESENT_COPY.load(std::sync::atomic::Ordering::Relaxed);
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("composite snapshot"),
                 size,
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: Self::FORMAT,
+                format: if copied { Self::PRESENT_FORMAT } else { Self::FORMAT },
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[Self::PRESENT_FORMAT],
+                view_formats: if copied { &[] } else { &[Self::PRESENT_FORMAT] },
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("composite snapshot view"),
@@ -405,7 +515,10 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("snapshot copy"),
             });
-        encoder.copy_texture_to_texture(self.target.as_image_copy(), texture.as_image_copy(), size);
+        // Without two-format views the snapshot is kept as raw bytes, from
+        // the copy egui is handed: WebGL copies only between like formats.
+        let source = self.present_copy.as_ref().unwrap_or(&self.target);
+        encoder.copy_texture_to_texture(source.as_image_copy(), texture.as_image_copy(), size);
         self.queue.submit(Some(encoder.finish()));
         Ok(())
     }
@@ -523,10 +636,11 @@ impl Compositor {
         if resolution == self.config.resolution {
             return Ok(false);
         }
-        let (target, view, present_view) = create_target(&self.device, resolution)?;
+        let (target, view, present_view, present_copy) = create_target(&self.device, resolution)?;
         self.target = target;
         self.target_view = view;
         self.present_view = present_view;
+        self.present_copy = present_copy;
         self.config.resolution = resolution;
         Ok(true)
     }
@@ -1025,6 +1139,7 @@ impl Compositor {
             spent.extend(source);
         }
 
+        self.draw_present_copy(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // Hold the textures until the next composite: the GPU may still be
@@ -1248,10 +1363,28 @@ impl Compositor {
 /// cinematic bars at 192, rounding to 208.
 const UNIFORM_SIZE: u64 = 320;
 
-fn create_target(
-    device: &wgpu::Device,
-    resolution: Resolution,
-) -> Result<(wgpu::Texture, wgpu::TextureView, wgpu::TextureView), RenderError> {
+/// Set for a GPU that cannot view one texture in two formats — WebGL2, where
+/// a browser has no WebGPU — so the frame handed to egui is a copy rather
+/// than a second view (`use_present_copy`).
+static PRESENT_COPY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Hand egui a copy of each finished frame rather than a second view of it:
+/// for a GPU without `DownlevelFlags::VIEW_FORMATS`. Once, before the first
+/// compositor is made.
+pub fn use_present_copy(copy: bool) {
+    PRESENT_COPY.store(copy, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The target, its view, the view egui is handed, and — where that has to be
+/// a copy — the texture it is copied into.
+type Target = (
+    wgpu::Texture,
+    wgpu::TextureView,
+    wgpu::TextureView,
+    Option<wgpu::Texture>,
+);
+
+fn create_target(device: &wgpu::Device, resolution: Resolution) -> Result<Target, RenderError> {
     if resolution.width == 0 || resolution.height == 0 {
         return Err(RenderError::InvalidResolution {
             width: resolution.width,
@@ -1259,13 +1392,15 @@ fn create_target(
         });
     }
 
+    let size = wgpu::Extent3d {
+        width: resolution.width,
+        height: resolution.height,
+        depth_or_array_layers: 1,
+    };
+    let copied = PRESENT_COPY.load(std::sync::atomic::Ordering::Relaxed);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("composite target"),
-        size: wgpu::Extent3d {
-            width: resolution.width,
-            height: resolution.height,
-            depth_or_array_layers: 1,
-        },
+        size,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1276,16 +1411,33 @@ fn create_target(
             | wgpu::TextureUsages::COPY_SRC,
         // Permits the second, non-sRGB view below. Reinterpreting the same
         // bytes costs nothing at run time.
-        view_formats: &[Compositor::PRESENT_FORMAT],
+        view_formats: if copied { &[] } else { &[Compositor::PRESENT_FORMAT] },
     });
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    if copied {
+        // The raw bytes, copied in after every composite.
+        let copy = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("composite target (raw bytes, for egui)"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Compositor::PRESENT_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let present_view = copy.create_view(&wgpu::TextureViewDescriptor::default());
+        return Ok((texture, view, present_view, Some(copy)));
+    }
     let present_view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("composite target (raw bytes, for egui)"),
         format: Some(Compositor::PRESENT_FORMAT),
         ..Default::default()
     });
-    Ok((texture, view, present_view))
+    Ok((texture, view, present_view, None))
 }
 
 /// Build one layer's uniform block.
