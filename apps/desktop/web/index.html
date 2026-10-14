@@ -108,6 +108,19 @@
       globalThis.bettercutMedia?.dropped([...e.dataTransfer.files], e.clientX, e.clientY);
     }, true);
 
+    // The editor's Ctrl shortcuts — the palette (K), duplicate (D), and the
+    // rest — are the browser's too: search, bookmark, history, the address
+    // bar. Kept for the editor while the page has focus. Copy, cut and paste,
+    // refresh, new and closed tabs and the developer tools stay the
+    // browser's; Ctrl+O, P and S the canvas already keeps.
+    const editorKeys = new Set(['k', 'd', 'h', 'l', 'g', 'f', 'j', 'e', 'b', 'u', 'y']);
+    window.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (e.shiftKey && ['i', 'j', 'c'].includes(key)) return;
+      if (editorKeys.has(key)) e.preventDefault();
+    }, true);
+
     // `?media=<url>[&media=<url>…]`: open files from this site as if they
     // were dropped on the timeline — for a demo, or for testing.
     async function openFromAddress() {
