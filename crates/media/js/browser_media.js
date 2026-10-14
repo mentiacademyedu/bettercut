@@ -249,6 +249,73 @@ function grab(source, width, height) {
   return { width: w, height: h, data: context.getImageData(0, 0, w, h).data };
 }
 
+// ---- frames copied off the page's thread ------------------------------------
+//
+// Copying a decoded frame into memory is the slow step of showing it — 10 to
+// 20 ms for HD — and on the page's own thread it holds up everything drawn
+// meanwhile, every frame of playback. So the frame is handed over as a
+// VideoFrame to a Worker, which scales and copies it; this thread only hands
+// it over. Where that cannot be done, it is copied here as before.
+
+const COPIER = `onmessage = (e) => {
+  const { id, frame, width, height } = e.data;
+  try {
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(frame, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    postMessage({ id, width, height, data }, [data.buffer]);
+  } catch (err) {
+    postMessage({ id, error: String(err) });
+  } finally {
+    frame.close();
+  }
+};`;
+let copier = null;
+let copierBroken = false;
+let copyNext = 0;
+const copying = new Map(); // id -> resolve
+
+function copierOf() {
+  if (!copier) {
+    copier = new Worker(URL.createObjectURL(new Blob([COPIER], { type: 'text/javascript' })));
+    copier.onmessage = (e) => {
+      const { id, error, ...picture } = e.data;
+      const resolve = copying.get(id);
+      copying.delete(id);
+      if (error) copierBroken = true;
+      resolve?.(error ? null : picture);
+    };
+  }
+  return copier;
+}
+
+// The frame `video` shows now, at preview size: a Promise of { width,
+// height, data }, or of null if it could not be copied.
+function grabLater(video) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!copierBroken && typeof VideoFrame !== 'undefined') {
+    let frame = null;
+    try {
+      frame = new VideoFrame(video, { timestamp: 0 });
+    } catch (_) {
+      // Not this frame: copied here instead.
+    }
+    // A frame the file turns is left to the `<video>`, which turns it.
+    if (frame && frame.displayWidth === width && frame.displayHeight === height) {
+      const [w, h] = scaled(width, height);
+      const id = copyNext++;
+      return new Promise((resolve) => {
+        copying.set(id, resolve);
+        copierOf().postMessage({ id, frame, width: w, height: h }, [frame]);
+      });
+    }
+    frame?.close();
+  }
+  return Promise.resolve(grab(video, width, height));
+}
+
 function keep(entry, ms, frame) {
   const frames = entry.frames;
   const at = frames.findIndex((f) => f.ms === ms);
@@ -713,7 +780,9 @@ function openVideo(entry) {
     if (entry.playing) return;
     const ms = entry.seeking;
     entry.seeking = null;
-    if (ms !== null && video.videoWidth > 0) keep(entry, ms, grab(video, video.videoWidth, video.videoHeight));
+    if (ms !== null && video.videoWidth > 0) {
+      grabLater(video).then((picture) => picture && keep(entry, ms, picture));
+    }
     // Asked for somewhere else meanwhile: go there next.
     if (!entry.playing && entry.wanted !== null && entry.wanted !== ms) seek(entry, entry.wanted);
   });
@@ -733,7 +802,8 @@ function play(entry, ms) {
   video.currentTime = ms / 1000;
   const caught = (_now, metadata) => {
     if (!entry.playing) return;
-    keep(entry, Math.round(metadata.mediaTime * 1000), grab(video, video.videoWidth, video.videoHeight));
+    const ms = Math.round(metadata.mediaTime * 1000);
+    grabLater(video).then((picture) => picture && keep(entry, ms, picture));
     video.requestVideoFrameCallback(caught);
   };
   video.requestVideoFrameCallback(caught);
@@ -1050,7 +1120,7 @@ export function bc_changes() {
 }
 
 export function bc_busy() {
-  if (pending > 0) return true;
+  if (pending > 0 || copying.size > 0) return true;
   for (const entry of files.values()) {
     if (entry.seeking !== null || entry.playing) return true;
   }
