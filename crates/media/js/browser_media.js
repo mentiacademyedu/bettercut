@@ -1099,6 +1099,30 @@ function given(files) {
   }
 }
 
+// Files picked for what they say rather than as media — captions, markers:
+// their bytes, read, and handed to the app with what they were picked for.
+const picked = [];
+
+function pickBytes(accept, purpose) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  if (accept) input.accept = accept;
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (!file) return;
+    pending += 1;
+    file
+      .arrayBuffer()
+      .then((bytes) => picked.push([purpose, file.name, new Uint8Array(bytes)]))
+      .catch((err) => console.warn('bettercut: the file could not be read', err))
+      .finally(() => {
+        pending -= 1;
+        changes += 1;
+      });
+  });
+  input.click();
+}
+
 function pickFiles(accept, multiple) {
   const input = document.createElement('input');
   input.type = 'file';
@@ -1179,6 +1203,15 @@ export function bc_keep_setting(path, text) {
   } catch (_) {
     return false;
   }
+}
+
+export function bc_pick_bytes(accept, purpose) {
+  pickBytes(accept, purpose);
+}
+
+// Files picked for a purpose since the last look: [purpose, name, bytes].
+export function bc_take_given() {
+  return picked.splice(0, picked.length);
 }
 
 export function bc_pick_files(accept, multiple) {

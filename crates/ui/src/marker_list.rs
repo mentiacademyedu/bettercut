@@ -353,9 +353,16 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
 /// Ask where, then write the markers there. The format follows the extension
 /// chosen.
 fn export_marker_file(editor: &Editor, state: &mut UiState) {
-    if crate::panels::not_in_browser(state, "Exporting markers") {
-        return;
+    // In a browser: a CSV, downloaded.
+    #[cfg(target_arch = "wasm32")]
+    match editor.markers_text(bettercut_editor_core::timeline::MarkerFileFormat::Csv) {
+        Ok((text, count)) => {
+            bettercut_editor_core::media::browser::download(text.as_bytes(), "markers.csv", "text/csv");
+            state.info(format!("Wrote {count} markers to markers.csv — it is in your downloads"));
+        }
+        Err(err) => state.error(format!("Could not write the markers: {err}")),
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("CSV (spreadsheet)", &["csv"])
         .add_filter("EDL (another editor)", &["edl"])
@@ -364,6 +371,7 @@ fn export_marker_file(editor: &Editor, state: &mut UiState) {
     else {
         return;
     };
+    #[cfg(not(target_arch = "wasm32"))]
     match editor.export_markers(&path) {
         Ok(count) => state.info(format!("Wrote {count} markers to {}", path.display())),
         Err(err) => state.error(format!("Could not write the markers: {err}")),
@@ -372,15 +380,20 @@ fn export_marker_file(editor: &Editor, state: &mut UiState) {
 
 /// Ask which CSV, then add its markers.
 fn import_marker_file(editor: &mut Editor, state: &mut UiState) {
-    if crate::panels::not_in_browser(state, "Importing markers") {
-        return;
+    // In a browser, the picked file's text arrives later (`crate::file_drop`).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (editor, state);
+        bettercut_editor_core::media::browser::pick_bytes(&["csv", "txt"], "markers");
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("CSV", &["csv", "txt"])
         .pick_file()
     else {
         return;
     };
+    #[cfg(not(target_arch = "wasm32"))]
     match editor.import_markers(&path) {
         Ok(0) => {
             state.info("No markers found in that file — it needs a timecode or seconds column")

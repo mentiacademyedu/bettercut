@@ -57,6 +57,24 @@ pub fn handle(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, tim
 #[cfg(target_arch = "wasm32")]
 fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeline: egui::Rect) {
     use bettercut_editor_core::media::browser;
+    // Files picked for what is in them, not as media.
+    for (purpose, name, bytes) in browser::take_given() {
+        match purpose.as_str() {
+            "captions" => match editor.import_caption_bytes(bytes, &name) {
+                Ok(count) => state.info(format!("Imported {count} captions")),
+                Err(err) => state.error(format!("Could not import captions: {err}")),
+            },
+            "markers" => match editor.import_marker_text(&String::from_utf8_lossy(&bytes)) {
+                Ok(0) => state.info(
+                    "No markers found in that file — it needs a timecode or seconds column",
+                ),
+                Ok(count) => state.info(format!("Added {count} markers")),
+                Err(err) => state.error(format!("Could not read the markers: {err}")),
+            },
+            _ => {}
+        }
+        state.needs_repaint = true;
+    }
     for path in browser::take_opened() {
         crate::panels::open_project_at(editor, state, &path);
         state.needs_repaint = true;

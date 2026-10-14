@@ -60,7 +60,12 @@ impl Format {
 /// is common enough — tools rename rather than convert — and the header says so
 /// unambiguously.
 pub fn read(path: &Path) -> Result<Parsed, CaptionError> {
-    let bytes = std::fs::read(path)?;
+    parse_bytes(std::fs::read(path)?)
+}
+
+/// A caption file's bytes, read as [`read`] reads a file — for one that came
+/// some other way than from a path (the web build's file picker).
+pub fn parse_bytes(bytes: Vec<u8>) -> Result<Parsed, CaptionError> {
     let text = String::from_utf8(bytes).map_err(|_| CaptionError::NotText)?;
 
     let looks_like_vtt = text
@@ -78,13 +83,17 @@ pub fn read(path: &Path) -> Result<Parsed, CaptionError> {
 
 /// Write captions in `format`.
 pub fn write(path: &Path, segments: &[CaptionSegment], format: Format) -> Result<(), CaptionError> {
-    let text = match format {
+    std::fs::write(path, text(segments, format))?;
+    Ok(())
+}
+
+/// The captions as `format`'s text, as [`write`] writes it.
+pub fn text(segments: &[CaptionSegment], format: Format) -> String {
+    match format {
         Format::SubRip => srt::write(segments),
         Format::WebVtt => vtt::write(segments),
         Format::Transcript => transcript(segments),
-    };
-    std::fs::write(path, text)?;
-    Ok(())
+    }
 }
 
 /// The captions as reading text: `[m:ss] words` a line, `[h:mm:ss]` past

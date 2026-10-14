@@ -53,6 +53,8 @@ extern "C" {
     fn bc_sound_coming() -> bool;
     fn bc_pick_files(accept: &str, multiple: bool);
     fn bc_take_opened() -> js_sys::Array;
+    fn bc_pick_bytes(accept: &str, purpose: &str);
+    fn bc_take_given() -> js_sys::Array;
     fn bc_opened_text(path: &str) -> Option<String>;
     fn bc_file_size(path: &str) -> f64;
     fn bc_probe(path: &str) -> JsValue;
@@ -389,6 +391,30 @@ pub mod browser {
     fn pick(extensions: &[&str], multiple: bool) {
         let accept: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
         bc_pick_files(&accept.join(","), multiple);
+    }
+
+    /// Open the picker for one file to be read for `purpose` — captions,
+    /// markers — rather than imported as media. It arrives through
+    /// [`take_given`].
+    pub fn pick_bytes(extensions: &[&str], purpose: &str) {
+        let accept: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
+        bc_pick_bytes(&accept.join(","), purpose);
+    }
+
+    /// Files picked through [`pick_bytes`] since the last look: what each
+    /// was for, its name and its bytes.
+    pub fn take_given() -> Vec<(String, String, Vec<u8>)> {
+        bc_take_given()
+            .iter()
+            .filter_map(|item| {
+                let item = js_sys::Array::from(&item);
+                Some((
+                    item.get(0).as_string()?,
+                    item.get(1).as_string()?,
+                    js_sys::Uint8Array::new(&item.get(2)).to_vec(),
+                ))
+            })
+            .collect()
     }
 
     /// Project files dropped on the page or picked since the last look, by

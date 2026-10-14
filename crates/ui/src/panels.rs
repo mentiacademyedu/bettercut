@@ -12005,9 +12005,13 @@ pub fn new_project(editor: &mut Editor, state: &mut UiState) {
 
 /// Read a subtitle file onto the timeline (§27, Milestone 10).
 pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
-    if not_in_browser(state, "Importing captions") {
-        return;
+    // In a browser, the picked file's bytes arrive later (`crate::file_drop`).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (editor, state);
+        bettercut_editor_core::media::browser::pick_bytes(&["srt", "vtt"], "captions");
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("subtitles", &["srt", "vtt"])
         .pick_file()
@@ -12015,6 +12019,7 @@ pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
         return;
     };
 
+    #[cfg(not(target_arch = "wasm32"))]
     match editor.import_captions(&path) {
         Ok(count) => state.info(format!("Imported {count} captions")),
         Err(err) => state.error(format!("Could not import captions: {err}")),
@@ -12023,9 +12028,16 @@ pub fn import_captions(editor: &mut Editor, state: &mut UiState) {
 
 /// Write the caption lane back out.
 pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
-    if not_in_browser(state, "Exporting captions") {
-        return;
+    // In a browser: a SubRip file, downloaded.
+    #[cfg(target_arch = "wasm32")]
+    match editor.captions_text(bettercut_editor_core::captions::Format::SubRip) {
+        Ok((text, count)) => {
+            bettercut_editor_core::media::browser::download(text.as_bytes(), "captions.srt", "text/plain");
+            state.info(format!("Wrote {count} captions to captions.srt — it is in your downloads"));
+        }
+        Err(err) => state.error(format!("Could not export captions: {err}")),
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("SubRip", &["srt"])
         .add_filter("WebVTT", &["vtt"])
@@ -12036,6 +12048,7 @@ pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
         return;
     };
 
+    #[cfg(not(target_arch = "wasm32"))]
     match editor.export_captions(&path) {
         Ok(count) => state.info(format!("Wrote {count} captions to {}", path.display())),
         Err(err) => state.error(format!("Could not export captions: {err}")),

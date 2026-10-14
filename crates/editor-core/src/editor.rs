@@ -2550,12 +2550,27 @@ impl Editor {
     /// "undo the import" is the only thing anyone means after a bad file.
     pub fn import_captions(&mut self, path: &std::path::Path) -> Result<usize, EditorError> {
         let parsed = bettercut_captions::read(path)?;
+        self.import_parsed_captions(parsed, &path.display().to_string())
+    }
+
+    /// A caption file's bytes onto the caption lane, as [`Self::import_captions`]
+    /// puts a file's — for one picked in a browser, which has no path.
+    pub fn import_caption_bytes(&mut self, bytes: Vec<u8>, name: &str) -> Result<usize, EditorError> {
+        let parsed = bettercut_captions::parse_bytes(bytes)?;
+        self.import_parsed_captions(parsed, name)
+    }
+
+    fn import_parsed_captions(
+        &mut self,
+        parsed: bettercut_captions::Parsed,
+        file: &str,
+    ) -> Result<usize, EditorError> {
         if parsed.skipped > 0 {
             // §50: never silently ignore. A third of someone's subtitles
             // missing with no word said is worse than a warning.
             tracing::warn!(
                 skipped = parsed.skipped,
-                file = %path.display(),
+                file,
                 "some caption blocks could not be read"
             );
         }
@@ -2935,15 +2950,23 @@ impl Editor {
     ///
     /// The format comes from the extension. Returns how many were written.
     pub fn export_captions(&self, path: &std::path::Path) -> Result<usize, EditorError> {
+        let (text, count) = self.captions_text(bettercut_captions::Format::of(path))?;
+        std::fs::write(path, text).map_err(|e| EditorError::Io(e.to_string()))?;
+        Ok(count)
+    }
+
+    /// The caption lane as `format`'s text, and how many captions are in it.
+    pub fn captions_text(
+        &self,
+        format: bettercut_captions::Format,
+    ) -> Result<(String, usize), EditorError> {
         let segments = self.caption_segments();
         if segments.is_empty() {
             return Err(EditorError::Captions(
                 bettercut_captions::CaptionError::NoCaptions,
             ));
         }
-        let format = bettercut_captions::Format::of(path);
-        bettercut_captions::write(path, &segments, format)?;
-        Ok(segments.len())
+        Ok((bettercut_captions::text(&segments, format), segments.len()))
     }
 
     /// Move every caption by `delta` — the whole lane, for a subtitle file

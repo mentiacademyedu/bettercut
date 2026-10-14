@@ -16,6 +16,6 @@ pub mod srt;
 pub mod vtt;
 
 pub use error::CaptionError;
-pub use file::{Format, read, write};
+pub use file::{Format, parse_bytes, read, text, write};
 pub use segment::{CaptionSegment, CaptionWord, MIN_DURATION, tidy};
 pub use srt::Parsed;
