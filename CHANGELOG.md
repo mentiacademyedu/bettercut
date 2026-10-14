@@ -39,7 +39,7 @@ setting kept:
   in the browser as you work and open again next time — with your settings,
   saved looks, title styles, export presets and shortcuts — and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders and
-  downloads it.
+  downloads it — and keeps going while you look at another tab.
 - **Any AI assistant, not just Claude**: **Windows → AI Assistant** now sets
   up Cursor, VS Code (Copilot), Windsurf, Codex, Gemini CLI, Zed, LM Studio,
   Kiro and opencode as well as Claude: pick the app, then copy its exact setup

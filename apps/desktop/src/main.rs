@@ -247,11 +247,17 @@ struct App {
 }
 
 /// The web build's exports: the one running, the ones waiting their turn,
-/// and the page's GPU they render on.
+/// and the page's GPU they render on. The one running is shared with the
+/// tick that steps it while the tab is hidden (`browser::while_hidden`).
 #[cfg(target_arch = "wasm32")]
 #[derive(Default)]
 struct WebExports {
-    running: Option<bettercut_export::WebExport>,
+    running: std::rc::Rc<std::cell::RefCell<Option<bettercut_export::WebExport>>>,
+    /// How an export stepped while the tab was hidden ended, told once the
+    /// page is looked at again.
+    ended: std::rc::Rc<std::cell::RefCell<Option<bettercut_export::WebProgress>>>,
+    /// That tick is set going.
+    ticking: bool,
     waiting: std::collections::VecDeque<(
         bettercut_editor_core::project_format::Project,
         bettercut_editor_core::foundation::SequenceId,
@@ -578,7 +584,33 @@ impl App {
     fn run_web_export(&mut self, ctx: &egui::Context) {
         use bettercut_export::{WebExport, WebProgress};
         let exports = &mut self.web_exports;
-        if exports.running.is_none()
+        // Set going with the first export, not before.
+        if !exports.ticking && !exports.waiting.is_empty() {
+            exports.ticking = true;
+            let (running, ended) = (exports.running.clone(), exports.ended.clone());
+            bettercut_editor_core::media::browser::while_hidden(move || {
+                let Ok(mut running) = running.try_borrow_mut() else {
+                    return;
+                };
+                if let Some(export) = running.as_mut() {
+                    let progress = export.step();
+                    if !matches!(progress, WebProgress::Working { .. }) {
+                        *running = None;
+                        *ended.borrow_mut() = Some(progress);
+                    }
+                }
+            });
+        }
+        let ended = exports.ended.borrow_mut().take();
+        match ended {
+            Some(WebProgress::Finished { name, frames }) => self
+                .ui
+                .info(format!("Exported {name} ({frames} frames) — it is in your downloads")),
+            Some(WebProgress::Failed(why)) => self.ui.error(format!("Export failed: {why}")),
+            _ => {}
+        }
+        let mut running = exports.running.borrow_mut();
+        if running.is_none()
             && let Some((project, sequence, settings)) = exports.waiting.pop_front()
         {
             let Some((device, queue)) = exports.gpu.clone() else {
@@ -588,12 +620,12 @@ impl App {
             match WebExport::start(project, sequence, settings, device, queue) {
                 Ok(export) => {
                     self.ui.info(format!("Exporting {}", export.name()));
-                    exports.running = Some(export);
+                    *running = Some(export);
                 }
                 Err(err) => self.ui.error(format!("Could not export {err}")),
             }
         }
-        let Some(export) = exports.running.as_mut() else {
+        let Some(export) = running.as_mut() else {
             return;
         };
         match export.step() {
@@ -612,7 +644,9 @@ impl App {
                                 .desired_width(320.0),
                         );
                         ui.label(
-                            egui::RichText::new("Keep this tab open: the browser makes the file here.")
+                            egui::RichText::new(
+                                "You can look at other tabs meanwhile; closing this one stops it.",
+                            )
                                 .small()
                                 .weak(),
                         );
@@ -620,18 +654,18 @@ impl App {
                     });
                 if stop {
                     export.cancel();
-                    exports.running = None;
+                    *running = None;
                     self.ui.info("Export stopped");
                 }
                 ctx.request_repaint();
             }
             WebProgress::Finished { name, frames } => {
-                exports.running = None;
+                *running = None;
                 self.ui
                     .info(format!("Exported {name} ({frames} frames) — it is in your downloads"));
             }
             WebProgress::Failed(why) => {
-                exports.running = None;
+                *running = None;
                 self.ui.error(format!("Export failed: {why}"));
             }
         }
@@ -1079,7 +1113,7 @@ impl eframe::App for App {
         // to the shell. §74: it runs on a worker, never on this thread.
         let exporting = self.proxies.export_in_flight().is_some();
         #[cfg(target_arch = "wasm32")]
-        let exporting = exporting || self.web_exports.running.is_some();
+        let exporting = exporting || self.web_exports.running.borrow().is_some();
         let mut dialog = std::mem::take(&mut self.ui.export_dialog);
         let requested = bettercut_ui::export_dialog::show(
             ui.ctx(),

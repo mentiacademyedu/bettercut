@@ -76,6 +76,7 @@ extern "C" {
     fn bc_export_take() -> JsValue;
     fn bc_export_cancel();
     fn bc_download(bytes: &[u8], name: &str, kind: &str);
+    fn bc_while_hidden(callback: &Closure<dyn FnMut()>);
 }
 
 /// What a decoder told to wait for exact frames says while one is on its way.
@@ -100,6 +101,16 @@ pub mod browser {
     /// browser would not.
     pub fn keep_setting(path: &str, text: &str) -> bool {
         bc_keep_setting(path, text)
+    }
+
+    /// Call `tick` often while the page's tab is hidden, when the app's own
+    /// frames stop: for work that must go on meanwhile, an export. Once a
+    /// page; later calls do nothing.
+    pub fn while_hidden(tick: impl FnMut() + 'static) {
+        let tick = Closure::<dyn FnMut()>::new(tick);
+        bc_while_hidden(&tick);
+        // Called for as long as the page is open.
+        tick.forget();
     }
 
     /// Hand the person a file, as a download called `name`.

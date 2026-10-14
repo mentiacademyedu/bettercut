@@ -207,6 +207,24 @@ export function bc_export_cancel() {
   job = null;
 }
 
+// Call `callback` about fifty times a second while this tab is hidden. A
+// hidden tab draws nothing, so the app's own frames stop, and its timers
+// are slowed to one a second or less; a worker's are not, and its messages
+// arrive on time — so an export goes on when the person looks at another tab.
+let hiddenTicker = null;
+export function bc_while_hidden(callback) {
+  if (hiddenTicker) return;
+  try {
+    const source = 'setInterval(() => postMessage(0), 20);';
+    hiddenTicker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+  } catch (_) {
+    return;
+  }
+  hiddenTicker.onmessage = () => {
+    if (document.hidden) callback();
+  };
+}
+
 // Hand the person a file, as a download.
 export function bc_download(bytes, name, type) {
   const url = URL.createObjectURL(new Blob([bytes], { type }));
