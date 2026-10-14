@@ -54,6 +54,8 @@ extern "C" {
     fn bc_pick_files(accept: &str, multiple: bool);
     fn bc_take_opened() -> js_sys::Array;
     fn bc_pick_bytes(accept: &str, purpose: &str);
+    fn bc_give_file(bytes: &[u8], name: &str, kind: &str) -> String;
+    fn bc_is_open(path: &str) -> bool;
     fn bc_kept_file(path: &str) -> JsValue;
     fn bc_keep_file(path: &str, bytes: &[u8]) -> bool;
     fn bc_kept_list(prefix: &str) -> js_sys::Array;
@@ -415,6 +417,18 @@ pub mod browser {
     /// Keep one of the editor's own small files in the page, at `path`.
     pub fn keep_file(path: &str, bytes: &[u8]) -> bool {
         bc_keep_file(path, bytes)
+    }
+
+    /// Give the page a file the app made — a bounce — under `name`, as if it
+    /// were dropped but not to be imported by the drop route. The path the
+    /// app knows it by; it can be used once [`is_open`] says so.
+    pub fn give_file(bytes: &[u8], name: &str, kind: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(bc_give_file(bytes, name, kind))
+    }
+
+    /// Whether a file given to the page is open, its details known.
+    pub fn is_open(path: &std::path::Path) -> bool {
+        bc_is_open(&path_str(path))
     }
 
     /// Open the picker for one file to be read for `purpose` — captions,

@@ -266,6 +266,18 @@ struct WebExports {
     gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
     /// Single frames being rendered, and what each is for.
     stills: Vec<(bettercut_export::WebStill, WebStillFor)>,
+    /// Bounces being mixed: the lane, and where its clip will start.
+    bounces: Vec<(
+        bettercut_export::WebExport,
+        bettercut_editor_core::foundation::TrackId,
+        bettercut_editor_core::foundation::TimelineTime,
+    )>,
+    /// Bounces made and given to the page, waiting for it to open them.
+    placing: Vec<(
+        std::path::PathBuf,
+        bettercut_editor_core::foundation::TrackId,
+        bettercut_editor_core::foundation::TimelineTime,
+    )>,
     /// Contact sheets being made, and the name each is downloaded under.
     sheets: Vec<(bettercut_export::WebSheet, String)>,
     /// Auto Levels and colour matches being worked out: the clip, the
@@ -684,6 +696,73 @@ impl App {
         }
     }
 
+    /// Bounce `track` in the page.
+    fn web_bounce(&mut self, track: bettercut_editor_core::foundation::TrackId) {
+        if !self.editor.can_bounce(track) {
+            self.ui.error("That lane is locked, empty, or is not a sound lane");
+            return;
+        }
+        let Some((device, queue)) = self.web_exports.gpu.clone() else {
+            self.ui.error("Bouncing needs the GPU, and this browser did not give one");
+            return;
+        };
+        let name = self.editor.bounce_file(track).file_name().map_or_else(
+            || "bounce.wav".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let started = self
+            .editor
+            .export_copy(None)
+            .map_err(|err| err.to_string())
+            .and_then(|(project, sequence)| {
+                bettercut_export::WebExport::bounce(project, sequence, track, &name, device, queue)
+                    .map_err(|err| err.to_string())
+            });
+        match started {
+            Ok((export, at)) => {
+                self.ui.info("Bouncing the lane to one clip");
+                self.web_exports.bounces.push((export, track, at));
+            }
+            Err(err) => self.ui.error(format!("Could not bounce: {err}")),
+        }
+    }
+
+    /// Step the bounces; place each once the page has its file open.
+    fn run_web_bounces(&mut self, ctx: &egui::Context) {
+        use bettercut_export::WebProgress;
+        let mut bounces = std::mem::take(&mut self.web_exports.bounces);
+        bounces.retain_mut(|(export, track, at)| match export.step() {
+            WebProgress::Working { .. } => true,
+            WebProgress::Finished { name, .. } => {
+                self.web_exports
+                    .placing
+                    .push((std::path::PathBuf::from(name), *track, *at));
+                false
+            }
+            WebProgress::Failed(why) => {
+                self.ui.error(format!("Could not bounce: {why}"));
+                false
+            }
+        });
+        self.web_exports.bounces = bounces;
+        let mut placing = std::mem::take(&mut self.web_exports.placing);
+        placing.retain(|(path, track, at)| {
+            if !bettercut_editor_core::media::browser::is_open(path) {
+                return true;
+            }
+            match self.editor.place_bounce(*track, path, *at) {
+                Ok(_) => self.ui.info("Track bounced to one clip"),
+                Err(err) => self.ui.error(err.to_string()),
+            }
+            self.ui.needs_repaint = true;
+            false
+        });
+        self.web_exports.placing = placing;
+        if !self.web_exports.bounces.is_empty() || !self.web_exports.placing.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
     /// Step the contact sheets, and download each that is done.
     fn run_web_sheets(&mut self, ctx: &egui::Context) {
         let mut sheets = std::mem::take(&mut self.web_exports.sheets);
@@ -1044,6 +1123,8 @@ impl eframe::App for App {
         self.run_web_grades(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         self.run_web_sheets(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.run_web_bounces(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
@@ -1433,12 +1514,11 @@ impl eframe::App for App {
 
         // Bouncing a sound lane to one clip: mixed on the scheduler, put down
         // when it lands (below, with the other finished jobs).
-        if let Some(track) = self
-            .ui
-            .bounce_request
-            .take()
-            .filter(|_| !bettercut_ui::panels::not_in_browser(&mut self.ui, "Bouncing a sound lane"))
-        {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(track) = self.ui.bounce_request.take() {
+            self.web_bounce(track);
+        }
+        if let Some(track) = self.ui.bounce_request.take() {
             match bettercut_ui::bounce::bounce_job(&self.editor, track) {
                 Ok(job) => self.proxies.submit_bounce(job),
                 Err(err) => self.ui.error(err),

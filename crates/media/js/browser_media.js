@@ -859,7 +859,7 @@ function frameAt(entry, ms) {
 // its details are known. Returns the name the app knows it by. A file kept
 // from last time comes with its name, and is not handed over again: the
 // project it is in already has it.
-function add(file, keptAs) {
+function add(file, keptAs, quiet = false) {
   const kept = keptAs !== undefined;
   const id = kept ? Number(keptAs.split('/')[2]) : nextId;
   nextId = Math.max(nextId, id + 1);
@@ -884,7 +884,9 @@ function add(file, keptAs) {
     idle: null,
   };
   files.set(path, entry);
-  if (!kept) order.push(entry);
+  // A file the app made itself (a bounce) is not handed over to import: the
+  // app places it once it is open.
+  if (!kept && !quiet) order.push(entry);
   pending += 1;
   if (entry.kind === 'image') openImage(entry);
   else openVideo(entry);
@@ -1230,6 +1232,18 @@ export function bc_keep_file(path, bytes) {
   if (!database) return false;
   database.transaction(KEPT_FILES, 'readwrite').objectStore(KEPT_FILES).put(copy, path);
   return true;
+}
+
+// A file the app made — a bounced lane's mix — given to the page as if it had
+// been dropped, but not handed back to import. Returns the name the app
+// knows it by.
+export function bc_give_file(bytes, name, type) {
+  return add(new File([bytes], name, { type }), undefined, true);
+}
+
+// Whether a file the page was given is open: its details known.
+export function bc_is_open(path) {
+  return Boolean(files.get(path)?.details);
 }
 
 export function bc_pick_bytes(accept, purpose) {

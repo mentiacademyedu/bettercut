@@ -84,6 +84,8 @@ pub struct WebExport {
     stage: Stage,
     /// A GIF being written, instead of the browser's encoders.
     gif: Option<Box<crate::gif::GifWriter<std::io::Cursor<Vec<u8>>>>>,
+    /// A bounce: the WAV is given to the page as a new file, not downloaded.
+    to_page: bool,
 }
 
 /// A contact sheet in a browser: a frame per tile, each rendered as a
@@ -469,7 +471,34 @@ impl WebExport {
             key_every,
             stage,
             gif,
+            to_page: false,
         })
+    }
+
+    /// Bounce `track`: its mix, alone, as a WAV called `name`, given to the
+    /// page as a new file once made — `WebProgress::Finished` names the path
+    /// the page knows it by. Where it starts on the timeline, with it.
+    pub fn bounce(
+        project: Project,
+        sequence: SequenceId,
+        track: bettercut_foundation::TrackId,
+        name: &str,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<(Self, TimelineTime), ExportError> {
+        let range =
+            crate::bounce::track_span(&project, sequence, track).ok_or(ExportError::NoSound)?;
+        let project =
+            crate::bounce::only_this_lane(project, sequence, track).ok_or(ExportError::NoSound)?;
+        let Some(found) = project.sequence(sequence) else {
+            return Err(ExportError::EmptyRange);
+        };
+        let mut settings = ExportSettings::for_sequence(std::path::PathBuf::from(name), found);
+        settings.sound_only = true;
+        settings.range = range;
+        let mut export = Self::start(project, sequence, settings, device, queue)?;
+        export.to_page = true;
+        Ok((export, range.start))
     }
 
     /// The file's name, as the download will be called.
@@ -661,8 +690,14 @@ impl WebExport {
             return Ok(false);
         };
         let file = writer.finish().map_err(write_failed)?.into_inner();
-        let name = self.name();
-        browser::download(&file, &name, "audio/wav");
+        let mut name = self.name();
+        if self.to_page {
+            name = browser::give_file(&file, &name, "audio/wav")
+                .to_string_lossy()
+                .into_owned();
+        } else {
+            browser::download(&file, &name, "audio/wav");
+        }
         tracing::info!(name, bytes = file.len(), "web sound export finished");
         self.stage = Stage::Over(WebProgress::Finished { name, frames: 0 });
         Ok(false)
