@@ -78,8 +78,9 @@ function finish(entry, details) {
 
 // ---- the frame rate, from an MP4 or MOV's own tables -------------------------
 //
-// A `<video>` does not say its rate, but the file does: the video track's
-// sample table holds how many frames there are and how long they last.
+// A `<video>` does not say its rate, but the file does: an MP4's video
+// track's sample table holds how many frames there are and how long they
+// last; a WebM's track may say how long each frame is.
 // { num, den } frames a second, or null for anything else.
 
 async function bytesAt(file, from, length) {
@@ -113,7 +114,77 @@ function child(view, box, type) {
   return box && boxesIn(view, box.at, box.end).find((b) => b.type === type);
 }
 
+// A Matroska or WebM file keeps a video track's frame length, in
+// nanoseconds, as the track's DefaultDuration — when the muxer wrote it
+// (a browser's own recordings often leave it out: their rate varies).
+const EBML_HEAD = 4 * 1024 * 1024;
+
+// An EBML number at `at`: { value, length }, with the length marker kept
+// for an element's id and taken off for its size. A size of all ones is
+// "unknown" (a live recording's Segment), given as Infinity.
+function ebmlNumber(view, at, keepMarker) {
+  if (at >= view.byteLength) return null;
+  const first = view.getUint8(at);
+  let length = 1;
+  while (length <= 8 && !(first & (0x80 >> (length - 1)))) length++;
+  if (length > 8 || at + length > view.byteLength) return null;
+  let value = keepMarker ? first : first & (0xff >> length);
+  let ones = value === (0xff >> length);
+  for (let i = 1; i < length; i++) {
+    const byte = view.getUint8(at + i);
+    value = value * 256 + byte;
+    ones = ones && byte === 0xff;
+  }
+  if (!keepMarker && ones) value = Infinity;
+  return { value, length };
+}
+
+// The elements in `view` from `start` to `end`: [{ id, at, end }].
+function ebmlIn(view, start, end) {
+  const elements = [];
+  let at = start;
+  while (at < end) {
+    const id = ebmlNumber(view, at, true);
+    const size = id && ebmlNumber(view, at + id.length, false);
+    if (!size) break;
+    const body = at + id.length + size.length;
+    const stop = size.value === Infinity ? end : body + size.value;
+    elements.push({ id: id.value, at: body, end: Math.min(stop, end) });
+    if (stop > end) break;
+    at = stop;
+  }
+  return elements;
+}
+
+function ebmlUint(view, element) {
+  let value = 0;
+  for (let i = element.at; i < element.end; i++) value = value * 256 + view.getUint8(i);
+  return value;
+}
+
+async function webmFrameRateOf(file) {
+  const view = await bytesAt(file, 0, Math.min(file.size, EBML_HEAD));
+  const top = ebmlIn(view, 0, view.byteLength);
+  if (!top.length || top[0].id !== 0x1a45dfa3) return null;
+  const segment = top.find((e) => e.id === 0x18538067);
+  if (!segment) return null;
+  for (const tracks of ebmlIn(view, segment.at, segment.end).filter((e) => e.id === 0x1654ae6b)) {
+    for (const track of ebmlIn(view, tracks.at, tracks.end).filter((e) => e.id === 0xae)) {
+      const fields = ebmlIn(view, track.at, track.end);
+      const type = fields.find((e) => e.id === 0x83);
+      const duration = fields.find((e) => e.id === 0x23e383);
+      if (type && ebmlUint(view, type) === 1 && duration) {
+        const ns = ebmlUint(view, duration);
+        if (ns > 0) return { num: 1e9, den: ns };
+      }
+    }
+  }
+  return null;
+}
+
 async function frameRateOf(file) {
+  const magic = await bytesAt(file, 0, 4);
+  if (magic.byteLength === 4 && magic.getUint32(0) === 0x1a45dfa3) return webmFrameRateOf(file);
   // Find the movie header among the file's top-level boxes.
   let at = 0;
   let moov = null;
