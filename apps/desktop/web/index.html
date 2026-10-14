@@ -137,15 +137,34 @@
       }
     }
 
+    // The editor draws with WebGPU. A browser without it would leave the
+    // page loading for ever, so it is told plainly instead.
+    async function hasWebGpu() {
+      try {
+        return Boolean(navigator.gpu && (await navigator.gpu.requestAdapter()));
+      } catch (_) {
+        return false;
+      }
+    }
+
     // What was kept in this browser last time is read before the app
     // starts, so the project it opens has its files.
-    globalThis.bettercutMedia
-      .restore()
+    hasWebGpu()
+      .then((ok) => {
+        if (!ok) {
+          throw new Error(
+            'it needs WebGPU, which this browser does not offer (or has turned off). ' +
+              'Chrome or Edge on a computer run it; so do recent Firefox on Windows and Safari 26 — ' +
+              'or download the desktop app from bettercut.dev.',
+          );
+        }
+        return globalThis.bettercutMedia.restore();
+      })
       .then(() => init())
       .then(openFromAddress)
       .catch((err) => {
         document.getElementById('status').textContent =
-          'bettercut could not start in this browser: ' + err;
+          'bettercut could not start in this browser: ' + (err?.message ?? err);
       });
   </script>
 </body>
