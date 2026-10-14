@@ -324,7 +324,13 @@ impl MediaJobs {
                 self.thumbnails.insert(id, media);
             }
 
-            if !proxies_enabled || asset.missing || !asset.should_generate_proxy() {
+            // In a browser there is no FFmpeg to make one, and the page's own
+            // decoders play the original: a proxy would wait forever.
+            if cfg!(target_arch = "wasm32")
+                || !proxies_enabled
+                || asset.missing
+                || !asset.should_generate_proxy()
+            {
                 continue;
             }
 
