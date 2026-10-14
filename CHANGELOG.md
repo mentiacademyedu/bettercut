@@ -42,7 +42,8 @@ setting kept:
   last one opens again next time, with your settings,
   saved looks, title styles, export presets and shortcuts — and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders, a GIF,
-  or the sound alone as a WAV, and downloads it — decoding an MP4 or MOV in order, faster than real time for 1080p — and keeps going while you look at another tab. **Save**
+  or the sound alone as a WAV, and downloads it (as **Save Frame** does a
+  full-size PNG; **Copy Frame** and the trim window's pictures work too) — decoding an MP4 or MOV in order, faster than real time for 1080p — and keeps going while you look at another tab. **Save**
   downloads the project as a `.vproj` file, and **Open** (or dropping one on
   the page) opens it again; files it uses that this browser no longer has show
   as missing until they are dropped or imported again.

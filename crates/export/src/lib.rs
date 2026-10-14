@@ -74,10 +74,10 @@ pub use error::ExportError;
 pub use frames::{FRAMES_ENCODER, export_frames, frame_file, frames_folder};
 pub use gif::{GIF_ENCODER, GifWriter, MAX_COLOURS, export_gif, frame_delay, quantize};
 pub use job::{ExportJob, Outcome};
-pub use still::{FrameGrabJob, RenderedFrame, StillJob, render_still, save_still, write_png};
+pub use still::{FrameGrabJob, RenderedFrame, StillJob, png_bytes, render_still, save_still, write_png};
 pub use wav::{WAV_ENCODER, WavWriter, export_sound};
 #[cfg(target_arch = "wasm32")]
-pub use web::{WebExport, WebProgress};
+pub use web::{WebExport, WebProgress, WebStill};
 
 /// What to export, and where.
 #[derive(Debug, Clone)]

@@ -264,6 +264,8 @@ struct WebExports {
         bettercut_export::ExportSettings,
     )>,
     gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
+    /// Single frames being rendered, and what each is for.
+    stills: Vec<(bettercut_export::WebStill, WebStillFor)>,
 }
 
 impl App {
@@ -577,6 +579,20 @@ fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
     None
 }
 
+/// What a frame rendered in the browser is for: the desktop's background
+/// frame jobs, which a page cannot run.
+#[cfg(target_arch = "wasm32")]
+enum WebStillFor {
+    /// Saved as a PNG under this name, as a download.
+    Save(String),
+    /// Copied, to paste anywhere.
+    Copy,
+    /// One side of the cut, for the trim window: the incoming side or not.
+    Trim(bool),
+    /// The scopes' frame.
+    Scope(bettercut_editor_core::foundation::TimelineTime),
+}
+
 /// What a finished web export says: its frames, when it has any — a WAV
 /// has none.
 #[cfg(target_arch = "wasm32")]
@@ -594,6 +610,70 @@ const KEEP_EVERY: f64 = 2.0;
 
 #[cfg(target_arch = "wasm32")]
 impl App {
+    /// Render one frame in the browser, for `purpose`.
+    fn web_still(
+        &mut self,
+        project: bettercut_editor_core::project_format::Project,
+        sequence: bettercut_editor_core::foundation::SequenceId,
+        at: bettercut_editor_core::foundation::TimelineTime,
+        purpose: WebStillFor,
+    ) {
+        let Some((device, queue)) = self.web_exports.gpu.clone() else {
+            self.ui.error("Rendering a frame needs the GPU, and this browser did not give one");
+            return;
+        };
+        match bettercut_export::WebStill::start(project, sequence, at, device, queue) {
+            Ok(still) => self.web_exports.stills.push((still, purpose)),
+            Err(err) => self.ui.error(format!("Could not render the frame: {err}")),
+        }
+    }
+
+    /// Step the frames being rendered, and hand each to what asked for it.
+    fn run_web_stills(&mut self, ctx: &egui::Context) {
+        let mut stills = std::mem::take(&mut self.web_exports.stills);
+        stills.retain_mut(|(still, purpose)| {
+            let Some(result) = still.step() else {
+                return true;
+            };
+            match (result, purpose) {
+                (Ok((width, height, rgba)), WebStillFor::Save(name)) => {
+                    let size = bettercut_editor_core::timeline::Resolution { width, height };
+                    match bettercut_export::png_bytes(size, &rgba) {
+                        Ok(png) => {
+                            bettercut_editor_core::media::browser::download(&png, name, "image/png");
+                            self.ui.info(format!("Saved {name} — it is in your downloads"));
+                        }
+                        Err(err) => self.ui.error(format!("Could not save the frame: {err}")),
+                    }
+                }
+                (Ok((width, height, rgba)), WebStillFor::Copy) => {
+                    ctx.copy_image(egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &rgba,
+                    ));
+                    self.ui.info(format!("Frame copied ({width}×{height})"));
+                }
+                (Ok((width, height, rgba)), WebStillFor::Trim(incoming)) => {
+                    self.ui.trim.arrived(ctx, *incoming, width, height, &rgba);
+                }
+                (Ok((width, height, rgba)), WebStillFor::Scope(at)) => {
+                    self.ui.scopes.arrived(*at, width, height, &rgba);
+                }
+                (Err(err), WebStillFor::Scope(_)) => {
+                    tracing::warn!(%err, "the scopes' frame could not be rendered");
+                    self.ui.scopes.pending = false;
+                }
+                (Err(err), _) => self.ui.error(format!("Could not render the frame: {err}")),
+            }
+            self.ui.needs_repaint = true;
+            false
+        });
+        if !stills.is_empty() {
+            ctx.request_repaint();
+        }
+        self.web_exports.stills = stills;
+    }
+
     /// The web build's export: start the next one waiting, step the one
     /// running, and show how far it has got with a way to stop it.
     fn run_web_export(&mut self, ctx: &egui::Context) {
@@ -852,6 +932,8 @@ impl eframe::App for App {
         self.keep_in_browser(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         self.run_web_export(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.run_web_stills(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
@@ -1204,10 +1286,18 @@ impl eframe::App for App {
         if let Some((path, at)) = self.ui.still_request.take() {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
-                    let job = bettercut_export::StillJob::new(project, sequence, at, path);
                     self.ui
                         .info(format!("Saving the frame at {}", at.format_timecode()));
-                    self.proxies.submit_still(job);
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let name = path
+                            .file_name()
+                            .map_or_else(|| "frame.png".to_owned(), |n| n.to_string_lossy().into_owned());
+                        self.web_still(project, sequence, at, WebStillFor::Save(name));
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.proxies
+                        .submit_still(bettercut_export::StillJob::new(project, sequence, at, path));
                 }
                 Err(err) => self.ui.error(err.to_string()),
             }
@@ -1271,6 +1361,9 @@ impl eframe::App for App {
                 Ok((project, sequence)) => {
                     self.ui
                         .info(format!("Copying the frame at {}", at.format_timecode()));
+                    #[cfg(target_arch = "wasm32")]
+                    self.web_still(project, sequence, at, WebStillFor::Copy);
+                    #[cfg(not(target_arch = "wasm32"))]
                     self.proxies
                         .submit_frame_grab(bettercut_export::FrameGrabJob::new(
                             project, sequence, at,
@@ -1286,6 +1379,9 @@ impl eframe::App for App {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
                     for (is_incoming, at) in [(false, outgoing), (true, incoming)] {
+                        #[cfg(target_arch = "wasm32")]
+                        self.web_still(project.clone(), sequence, at, WebStillFor::Trim(is_incoming));
+                        #[cfg(not(target_arch = "wasm32"))]
                         self.proxies.submit_trim_grab(
                             is_incoming,
                             bettercut_export::FrameGrabJob::new(project.clone(), sequence, at),
@@ -1300,6 +1396,9 @@ impl eframe::App for App {
         if let Some(at) = self.ui.scopes.request.take() {
             match self.editor.export_copy(None) {
                 Ok((project, sequence)) => {
+                    #[cfg(target_arch = "wasm32")]
+                    self.web_still(project, sequence, at, WebStillFor::Scope(at));
+                    #[cfg(not(target_arch = "wasm32"))]
                     self.proxies.submit_scope_grab(
                         at,
                         bettercut_export::FrameGrabJob::new(project, sequence, at),

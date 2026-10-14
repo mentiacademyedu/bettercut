@@ -87,24 +87,28 @@ pub fn save_still(
 
 /// Encode tightly packed RGBA as an 8-bit PNG.
 pub fn write_png(path: &Path, size: Resolution, rgba: &[u8]) -> Result<(), ExportError> {
-    let failed =
-        |err: &dyn std::fmt::Display| ExportError::Write(format!("{}: {err}", path.display()));
-    let file = std::fs::File::create(path).map_err(|err| failed(&err))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), size.width, size.height);
+    let bytes = png_bytes(size, rgba)
+        .map_err(|err| ExportError::Write(format!("{}: {err}", path.display())))?;
+    // Made whole before the file is opened: no half-written PNG, a file that
+    // looks like a picture and is not.
+    std::fs::write(path, bytes).map_err(|err| ExportError::Write(format!("{}: {err}", path.display())))
+}
+
+/// Tightly packed RGBA as the bytes of an 8-bit PNG.
+pub fn png_bytes(size: Resolution, rgba: &[u8]) -> Result<Vec<u8>, ExportError> {
+    let failed = |err: &dyn std::fmt::Display| ExportError::Write(err.to_string());
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, size.width, size.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     // §21a: the working space is sRGB, so say so and no viewer has to guess.
     encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
     let mut writer = encoder.write_header().map_err(|err| failed(&err))?;
-    let result = writer
+    writer
         .write_image_data(rgba)
         .and_then(|()| writer.finish())
-        .map_err(|err| failed(&err));
-    if result.is_err() {
-        // A half-written PNG is a file that looks like a picture and is not.
-        let _ = std::fs::remove_file(path);
-    }
-    result
+        .map_err(|err| failed(&err))?;
+    Ok(out)
 }
 
 /// Saving a still, as a background job: opening a GPU device and seeking a

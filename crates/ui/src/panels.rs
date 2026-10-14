@@ -4156,12 +4156,20 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                 )
                 .on_hover_text("Save the frame under the playhead as a full-size PNG")
                 .clicked()
-                && let Some(path) = crate::file_dialog::FileDialog::new()
-                    .add_filter("PNG picture", &["png"])
-                    .set_file_name(still_file_name(&editor.project().name, playhead))
-                    .save_file()
             {
-                state.still_request = Some((path, playhead));
+                let name = still_file_name(&editor.project().name, playhead);
+                // A browser has no save dialog: the picture is downloaded.
+                let path = if cfg!(target_arch = "wasm32") {
+                    Some(std::path::PathBuf::from(name))
+                } else {
+                    crate::file_dialog::FileDialog::new()
+                        .add_filter("PNG picture", &["png"])
+                        .set_file_name(name)
+                        .save_file()
+                };
+                if let Some(path) = path {
+                    state.still_request = Some((path, playhead));
+                }
             }
             // The whole cut as one picture: a thumbnail hunt, or something to
             // send to someone who cannot open a video.

@@ -86,6 +86,99 @@ pub struct WebExport {
     gif: Option<Box<crate::gif::GifWriter<std::io::Cursor<Vec<u8>>>>>,
 }
 
+/// A rendered frame: width, height, and tightly packed RGBA.
+pub type StillFrame = (u32, u32, Vec<u8>);
+
+/// One frame rendered in a browser — to save, to copy, for the trim window
+/// or the scopes — the frame an export would make there, stepped as an
+/// export is, since nothing here may wait for the decoders or the GPU.
+pub struct WebStill {
+    project: Project,
+    sequence: Sequence,
+    position: TimelineTime,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    compositor: Compositor,
+    readback: Readback,
+    frames: FrameSource,
+    titles: TextFrames,
+    mapped: Option<Arc<AtomicBool>>,
+}
+
+impl WebStill {
+    /// Start rendering `sequence` of `project` at `position`, full size.
+    pub fn start(
+        project: Project,
+        sequence: SequenceId,
+        position: TimelineTime,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Self, ExportError> {
+        let Some(found) = project.sequence(sequence) else {
+            return Err(ExportError::EmptyRange);
+        };
+        let mut sequence = found.clone();
+        // Bakes are files the browser never makes.
+        sequence.renders.clear();
+        let resolution = sequence.resolution;
+        let mut compositor = Compositor::new(
+            device.clone(),
+            queue.clone(),
+            RenderConfig::export_to_texture(resolution),
+        )?;
+        bettercut_playback::load_luts(&project, &mut std::collections::HashSet::new(), |id, lut| {
+            compositor.load_lut(id, lut);
+        });
+        let readback = Readback::new(&device, resolution);
+        let mut frames = FrameSource::new(1);
+        frames.wait_for_exact_frames();
+        Ok(Self {
+            project,
+            sequence,
+            position,
+            device,
+            queue,
+            compositor,
+            readback,
+            frames,
+            titles: TextFrames::new(),
+            mapped: None,
+        })
+    }
+
+    /// Do what is ready. The frame, as width, height and tightly packed
+    /// RGBA, once it is here; `None` while it is still coming.
+    pub fn step(&mut self) -> Option<Result<StillFrame, ExportError>> {
+        let resolution = self.sequence.resolution;
+        if let Some(mapped) = &self.mapped {
+            if !mapped.load(Ordering::Acquire) {
+                let _ = self.device.poll(wgpu::PollType::Poll);
+                return None;
+            }
+            return Some(Ok((resolution.width, resolution.height, self.readback.finish())));
+        }
+        let requests = layer_requests(&self.project, &self.sequence, self.position);
+        let decoded = decode_layers(
+            &self.project,
+            &self.sequence,
+            &requests,
+            SeekMode::Precise,
+            &mut self.frames,
+            &mut self.titles,
+            &NeverCancelled,
+            true,
+        )?;
+        if let Err(err) = composite_layers(&self.sequence, self.position, &decoded, &mut self.compositor) {
+            return Some(Err(err));
+        }
+        self.mapped = Some(
+            self.readback
+                .begin(&self.device, &self.queue, self.compositor.target()),
+        );
+        None
+    }
+}
+
 /// The H.264 rate the desktop picks when none is given: 0.2 bits a pixel
 /// at 30 frames a second, scaled with the rate.
 fn default_bitrate(settings: &ExportSettings) -> u32 {
