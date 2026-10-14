@@ -57,7 +57,29 @@ pub fn handle(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, tim
 #[cfg(target_arch = "wasm32")]
 fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeline: egui::Rect) {
     use bettercut_editor_core::media::browser;
-    let ready = browser::take_ready();
+    for path in browser::take_opened() {
+        crate::panels::open_project_at(editor, state, &path);
+        state.needs_repaint = true;
+    }
+    let mut ready = browser::take_ready();
+    // A file the project is missing, given again: back in its place rather
+    // than imported a second time.
+    let mut found = 0;
+    ready.retain(|path| {
+        let missing = editor
+            .project()
+            .media
+            .iter()
+            .find(|asset| asset.missing && asset.matches_relink_candidate(path))
+            .map(|asset| asset.id);
+        let relinked = missing.is_some_and(|id| editor.relink_media(id, path).is_ok());
+        found += usize::from(relinked);
+        !relinked
+    });
+    if found > 0 {
+        state.info(format!("Found {found} missing file(s)"));
+        state.needs_repaint = true;
+    }
     if ready.is_empty() {
         return;
     }

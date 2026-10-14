@@ -2015,6 +2015,16 @@ fn relink_one(editor: &mut Editor, state: &mut UiState, media: MediaId) {
         .map(|m| m.file_name.clone())
         .unwrap_or_default();
 
+    // In a browser: the picked file arrives later, and takes the missing
+    // one's place if it has its name and size (`crate::file_drop`).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let extension = std::path::Path::new(&name)
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
+        let extensions: Vec<&str> = extension.iter().map(String::as_str).collect();
+        bettercut_editor_core::media::browser::pick_file(&extensions);
+    }
     let Some(path) = crate::file_dialog::FileDialog::new()
         .set_title(format!("Locate {name}"))
         .pick_file()
@@ -11804,10 +11814,14 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let path = editor
-                .path()
-                .map_or_else(|| "unsaved".to_owned(), |p| p.display().to_string());
-            ui.label(egui::RichText::new(path).small().color(theme::disabled()));
+            // A browser keeps no path: "kept in this browser" says where it is.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = editor
+                    .path()
+                    .map_or_else(|| "unsaved".to_owned(), |p| p.display().to_string());
+                ui.label(egui::RichText::new(path).small().color(theme::disabled()));
+            }
             if editor.is_dirty() {
                 ui.separator();
                 ui.label(
@@ -11956,6 +11970,9 @@ pub fn open_project(editor: &mut Editor, state: &mut UiState) {
         state.pending_switch = Some(crate::save_prompt::Switch::Open);
         return;
     }
+    // In a browser, the chosen file arrives later (`crate::file_drop`).
+    #[cfg(target_arch = "wasm32")]
+    bettercut_editor_core::media::browser::pick_file(&["vproj"]);
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("bettercut project", &["vproj"])
         .pick_file()
@@ -11974,6 +11991,46 @@ pub fn open_project_at(editor: &mut Editor, state: &mut UiState, path: &std::pat
         state.pending_switch = Some(crate::save_prompt::Switch::OpenPath(path.to_path_buf()));
         return;
     }
+    #[cfg(target_arch = "wasm32")]
+    open_from_browser(editor, state, path);
+    #[cfg(not(target_arch = "wasm32"))]
+    open_from_disk(editor, state, path);
+}
+
+/// A project file given to the page, opened. Its media are found among the
+/// files this browser keeps; any that are not here come back when they are
+/// dropped or imported again (`crate::file_drop`).
+#[cfg(target_arch = "wasm32")]
+fn open_from_browser(editor: &mut Editor, state: &mut UiState, path: &std::path::Path) {
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let Some(json) = bettercut_editor_core::media::browser::opened_text(path) else {
+        state.error(format!("{name} could not be read"));
+        return;
+    };
+    let mut project = match bettercut_editor_core::project_format::from_json(json.as_bytes()) {
+        Ok(project) => project,
+        Err(err) => {
+            state.error(format!("Could not open {name}: {err}"));
+            return;
+        }
+    };
+    let missing = project.refresh_missing_media();
+    let (opened, _rx) = Editor::from_project(project);
+    *editor = opened;
+    reset_state(state);
+    if missing == 0 {
+        state.info(format!("Opened {name}"));
+    } else {
+        state.info(format!(
+            "Opened {name} — {missing} of its files are not in this browser: drop or import them to bring them back"
+        ));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_from_disk(editor: &mut Editor, state: &mut UiState, path: &std::path::Path) {
     if !path.exists() {
         // Picked from the list and still not there: it has gone for good, as
         // far as this list can tell.
@@ -12034,13 +12091,35 @@ pub fn copy_file_name(project_name: &str) -> String {
     format!("{name} copy.vproj")
 }
 
+/// The web build's Save: the project file goes to the browser's downloads,
+/// named after the project. A copy leaves the project as unsaved as it was.
+#[cfg(target_arch = "wasm32")]
+fn download_project(editor: &mut Editor, state: &mut UiState, file_name: String, copy: bool) {
+    match bettercut_editor_core::project_format::to_json(editor.project()) {
+        Ok(json) => {
+            let name = file_name.replace(['/', '\\'], "-");
+            bettercut_editor_core::media::browser::download(&json, &name, "application/json");
+            if !copy {
+                editor.mark_saved();
+            }
+            state.info(format!(
+                "{name} is in your downloads; the files it uses stay in this browser"
+            ));
+        }
+        Err(err) => state.error(format!("Could not save: {err}")),
+    }
+}
+
 /// Save under a new name, and keep working in the new file.
 pub fn save_project_as(editor: &mut Editor, state: &mut UiState) {
+    // A browser has no save dialog: the file is downloaded instead.
     let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("bettercut project", &["vproj"])
         .set_file_name(format!("{}.vproj", editor.project().name))
         .save_file()
     else {
+        #[cfg(target_arch = "wasm32")]
+        download_project(editor, state, format!("{}.vproj", editor.project().name), false);
         return;
     };
     match editor.save_as(path) {
@@ -12100,6 +12179,8 @@ pub fn save_copy(editor: &mut Editor, state: &mut UiState) {
         .set_file_name(copy_file_name(&editor.project().name))
         .save_file()
     else {
+        #[cfg(target_arch = "wasm32")]
+        download_project(editor, state, copy_file_name(&editor.project().name), true);
         return;
     };
     match editor.save_copy(path) {
@@ -12123,6 +12204,8 @@ pub fn save_project(editor: &mut Editor, state: &mut UiState) {
             .set_file_name("Untitled.vproj")
             .save_file()
         else {
+            #[cfg(target_arch = "wasm32")]
+            download_project(editor, state, format!("{}.vproj", editor.project().name), false);
             return;
         };
         editor.save_as(path)

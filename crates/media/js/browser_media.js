@@ -575,14 +575,49 @@ function keepProject(json, paths) {
 // from the picker.
 let dropPoint = null;
 
-function pickFiles(accept) {
+// Project files dropped or picked: read, and handed to the app to open under
+// a name of their own (`/opened/<n>/<name>`) — not media to import.
+const opened = [];
+const openedText = new Map();
+
+function isProject(file) {
+  return file.name.toLowerCase().endsWith('.vproj');
+}
+
+function openProject(file) {
+  pending += 1;
+  file
+    .text()
+    .then((text) => {
+      // Files given from now on are numbered past the ones the project
+      // names, so none takes the name of one it is missing.
+      for (const [, n] of text.matchAll(/"\/browser\/(\d+)\//g)) nextId = Math.max(nextId, Number(n) + 1);
+      const path = `/opened/${nextId++}/${file.name}`;
+      openedText.set(path, text);
+      opened.push(path);
+    })
+    .catch((err) => console.warn('bettercut: the project file could not be read', err))
+    .finally(() => {
+      pending -= 1;
+      changes += 1;
+    });
+}
+
+function given(files) {
+  for (const file of files) {
+    if (isProject(file)) openProject(file);
+    else add(file);
+  }
+}
+
+function pickFiles(accept, multiple) {
   const input = document.createElement('input');
   input.type = 'file';
-  input.multiple = true;
+  input.multiple = multiple;
   if (accept) input.accept = accept;
   input.addEventListener('change', () => {
     dropPoint = null;
-    for (const file of input.files) add(file);
+    given(input.files);
   });
   input.click();
 }
@@ -592,7 +627,7 @@ globalThis.bettercutMedia = {
   restore,
   dropped(files, x, y) {
     dropPoint = { x, y };
-    for (const file of files) add(file);
+    given(files);
   },
   // For testing: how many frames have been decoded so far.
   get changes() {
@@ -651,8 +686,26 @@ export function bc_keep_setting(path, text) {
   }
 }
 
-export function bc_pick_files(accept) {
-  pickFiles(accept);
+export function bc_pick_files(accept, multiple) {
+  pickFiles(accept, multiple);
+}
+
+// Project files given to the page since the last look, by the names the
+// app opens them under.
+export function bc_take_opened() {
+  return opened.splice(0, opened.length);
+}
+
+// An opened project file's text, once: it is let go of when taken.
+export function bc_opened_text(path) {
+  const text = openedText.get(path) ?? null;
+  openedText.delete(path);
+  return text;
+}
+
+// Whether the page has a file by this name, and how big it is.
+export function bc_file_size(path) {
+  return files.get(path)?.file.size ?? -1;
 }
 
 export function bc_probe(path) {

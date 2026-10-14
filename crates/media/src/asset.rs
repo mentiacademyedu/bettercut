@@ -326,7 +326,7 @@ impl MediaAsset {
     /// Does the file still exist where we last saw it? (§66)
     pub fn exists(&self) -> bool {
         // A made picture has no file to lose.
-        self.generated.is_some() || self.path.exists()
+        self.generated.is_some() || file_size(&self.path).is_some()
     }
 
     /// A candidate relink target: same file name, matching size (§66).
@@ -341,8 +341,17 @@ impl MediaAsset {
         if self.file_size == 0 {
             return true;
         }
-        std::fs::metadata(candidate).is_ok_and(|m| m.len() == self.file_size)
+        file_size(candidate) == Some(self.file_size)
     }
+}
+
+/// The size of the file at `path`, or `None` when there is none there. In a
+/// browser, the files are the ones given to the page.
+pub fn file_size(path: &Path) -> Option<u64> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::browser::file_size(path);
+    #[cfg(not(target_arch = "wasm32"))]
+    std::fs::metadata(path).ok().map(|m| m.len())
 }
 
 /// The Live Photo video that goes with the photo at `path`: a `.mov` (any

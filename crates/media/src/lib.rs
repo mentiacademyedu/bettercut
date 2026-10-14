@@ -24,7 +24,7 @@ pub mod image_sequence;
 pub mod mp4_mux;
 pub mod proxy;
 
-pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, fit_within};
+pub use asset::{MAX_STILL_EDGE, MediaAsset, MediaKind, STILL_DURATION, file_size, fit_within};
 pub use color::{ColorMatrix, ColorMetadata, ColorPrimaries, ColorRange, TransferFunction};
 pub use decoder::{
     AudioBuffer, CancellationToken, FrameStorage, MediaDecoder, MediaProber, NeverCancelled,

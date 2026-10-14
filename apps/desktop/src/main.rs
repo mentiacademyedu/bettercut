@@ -559,7 +559,11 @@ fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
     use bettercut_editor_core::project_format;
     let json = bettercut_editor_core::media::browser::stored_project()?;
     match project_format::from_json(json.as_bytes()) {
-        Ok(project) => Some(Editor::from_project(project)),
+        Ok(mut project) => {
+            // Files the browser has cleared away since show as missing.
+            project.refresh_missing_media();
+            Some(Editor::from_project(project))
+        }
         Err(err) => {
             tracing::error!(%err, "the project kept in this browser could not be read");
             None

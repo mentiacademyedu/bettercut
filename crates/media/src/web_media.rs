@@ -50,7 +50,10 @@ extern "C" {
     fn bc_drop_point() -> JsValue;
     fn bc_changes() -> u32;
     fn bc_busy() -> bool;
-    fn bc_pick_files(accept: &str);
+    fn bc_pick_files(accept: &str, multiple: bool);
+    fn bc_take_opened() -> js_sys::Array;
+    fn bc_opened_text(path: &str) -> Option<String>;
+    fn bc_file_size(path: &str) -> f64;
     fn bc_probe(path: &str) -> JsValue;
     fn bc_frame(path: &str, seconds: f64) -> JsValue;
     fn bc_frame_exact(path: &str, seconds: f64) -> JsValue;
@@ -335,10 +338,40 @@ pub mod browser {
     }
 
     /// Open the browser's file picker. What is chosen arrives later, through
-    /// [`take_ready`].
+    /// [`take_ready`] — or [`take_opened`], for a project file.
     pub fn pick_files(extensions: &[&str]) {
+        pick(extensions, true);
+    }
+
+    /// The picker, for one file.
+    pub fn pick_file(extensions: &[&str]) {
+        pick(extensions, false);
+    }
+
+    fn pick(extensions: &[&str], multiple: bool) {
         let accept: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
-        bc_pick_files(&accept.join(","));
+        bc_pick_files(&accept.join(","), multiple);
+    }
+
+    /// Project files dropped on the page or picked since the last look, by
+    /// the names [`opened_text`] knows them by.
+    pub fn take_opened() -> Vec<std::path::PathBuf> {
+        bc_take_opened()
+            .iter()
+            .filter_map(|v| v.as_string())
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    /// The text of a project file from [`take_opened`]. Given once.
+    pub fn opened_text(path: &std::path::Path) -> Option<String> {
+        bc_opened_text(&path_str(path))
+    }
+
+    /// The size of a file the page has, or `None` when it has no such file.
+    pub fn file_size(path: &std::path::Path) -> Option<u64> {
+        let size = bc_file_size(&path_str(path));
+        (size >= 0.0).then_some(size as u64)
     }
 }
 

@@ -5047,7 +5047,7 @@ impl Editor {
         path: impl AsRef<Path>,
     ) -> Result<(), EditorError> {
         let path = path.as_ref().to_path_buf();
-        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let file_size = bettercut_media::file_size(&path).unwrap_or(0);
         self.dispatch(Command::RelinkMedia {
             media,
             path,
@@ -5211,6 +5211,13 @@ impl Editor {
         self.dirty = false;
         self.events.emit(Event::ProjectSaved);
         Ok(())
+    }
+
+    /// The project was written where this editor keeps no path to it — the
+    /// web build's download: nothing is left unsaved.
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
+        self.events.emit(Event::ProjectSaved);
     }
 
     /// Whether the project file has been written by something else since this
