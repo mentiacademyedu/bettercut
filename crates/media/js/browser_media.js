@@ -327,33 +327,317 @@ function openImage(entry) {
     .catch((err) => finish(entry, { error: String(err) }));
 }
 
-// The file's sound, decoded by the browser into planes of 48 kHz samples:
-// `entry.sound` is { planes, frames }, or 'none'.
+// ---- sound, decoded from an MP4 or MOV's own tables -------------------------
+//
+// The browser's decodeAudioData wants the whole file in memory at once, and
+// a long video is more than a page can hold. So an MP4's sound track is read
+// a piece at a time, decoded with AudioDecoder, brought to 48 kHz a block at
+// a time and kept as 16-bit samples — half the room of the browser's floats.
+// Anything else (and an MP4 whose sound this cannot decode) is given to
+// decodeAudioData whole, as before.
+
+// Brought to 48 kHz this many seconds at a time.
+const SOUND_BLOCK_SECONDS = 10;
+// Source samples either side of a block as it is brought to 48 kHz, so the
+// blocks join without a seam.
+const RESAMPLE_PAD = 512;
+// The sound track is read from the file in runs of about this many bytes.
+const SOUND_READ_BYTES = 1 << 20;
+// Longer than this, a file's sound is not kept: 16-bit stereo at 48 kHz is
+// about 700 MB an hour.
+const MAX_SOUND_SECONDS = 2 * 3600;
+
+// A descriptor in an esds box: { tag, at, end }.
+function descriptorAt(view, at) {
+  const tag = view.getUint8(at);
+  let length = 0;
+  let p = at + 1;
+  for (let i = 0; i < 4; i++) {
+    const b = view.getUint8(p++);
+    length = (length << 7) | (b & 0x7f);
+    if (!(b & 0x80)) break;
+  }
+  return { tag, at: p, end: p + length };
+}
+
+// What AudioDecoder needs to be told of a sound sample entry, or null.
+function soundConfigOf(view, entry) {
+  const version = view.getUint16(entry.at + 8);
+  if (version > 1) return null;
+  const channels = view.getUint16(entry.at + 16);
+  const sampleRate = view.getUint32(entry.at + 24) >>> 16;
+  const boxes = boxesIn(view, entry.at + 28 + (version === 1 ? 16 : 0), entry.end);
+  const find = (type) =>
+    boxes.find((b) => b.type === type) ??
+    boxesIn(view, boxes.find((b) => b.type === 'wave')?.at ?? 0, boxes.find((b) => b.type === 'wave')?.end ?? 0).find(
+      (b) => b.type === type,
+    );
+  if (entry.type === 'mp4a') {
+    const esds = find('esds');
+    if (!esds) return null;
+    const es = descriptorAt(view, esds.at + 4);
+    if (es.tag !== 3) return null;
+    let p = es.at + 2;
+    const flags = view.getUint8(p++);
+    if (flags & 0x80) p += 2;
+    if (flags & 0x40) p += 1 + view.getUint8(p);
+    if (flags & 0x20) p += 2;
+    const dc = descriptorAt(view, p);
+    if (dc.tag !== 4) return null;
+    const type = view.getUint8(dc.at);
+    if (type === 0x6b || type === 0x69) return { codec: 'mp3', sampleRate, numberOfChannels: channels };
+    const dsi = descriptorAt(view, dc.at + 13);
+    if (dsi.tag !== 5 || dsi.end <= dsi.at) return null;
+    const asc = bytesOf(view, dsi);
+    let object = asc[0] >> 3;
+    if (object === 31 && asc.length > 1) object = 32 + (((asc[0] & 7) << 3) | (asc[1] >> 5));
+    if (type !== 0x40 && type !== 0x66 && type !== 0x67) return null;
+    return { codec: `mp4a.40.${type === 0x40 ? object : 2}`, sampleRate, numberOfChannels: channels, description: asc };
+  }
+  if (entry.type === 'Opus') {
+    const dops = find('dOps');
+    if (!dops) return null;
+    // WebCodecs takes Opus's setup as an OpusHead, little-endian, which
+    // the MP4's dOps holds big-endian.
+    const head = new DataView(new ArrayBuffer(19));
+    'OpusHead'.split('').forEach((c, i) => head.setUint8(i, c.charCodeAt(0)));
+    head.setUint8(8, 1);
+    head.setUint8(9, view.getUint8(dops.at + 1));
+    head.setUint16(10, view.getUint16(dops.at + 2), true);
+    head.setUint32(12, view.getUint32(dops.at + 4), true);
+    head.setInt16(16, view.getInt16(dops.at + 8), true);
+    head.setUint8(18, 0);
+    return { codec: 'opus', sampleRate: 48000, numberOfChannels: view.getUint8(dops.at + 1), description: new Uint8Array(head.buffer) };
+  }
+  return null;
+}
+
+// `planes` (Float32Array each) at `rate`, brought to 48 kHz.
+async function to48k(planes, rate) {
+  if (rate === SOUND_RATE) return planes;
+  const length = planes[0].length;
+  const out = Math.max(1, Math.round((length * SOUND_RATE) / rate));
+  const context = new OfflineAudioContext(planes.length, out, SOUND_RATE);
+  const buffer = context.createBuffer(planes.length, length, rate);
+  planes.forEach((plane, c) => buffer.copyToChannel(plane, c));
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(context.destination);
+  source.start(0);
+  const rendered = await context.startRendering();
+  return planes.map((_, c) => rendered.getChannelData(c));
+}
+
+function toInt16(plane) {
+  const out = new Int16Array(plane.length);
+  for (let i = 0; i < plane.length; i++) out[i] = Math.max(-1, Math.min(1, plane[i])) * 32767;
+  return out;
+}
+
+// The sound track of an MP4 or MOV, decoded into `entry.sound`. false when
+// this cannot decode it — decodeAudioData is to try instead.
+async function decodeSoundTrack(entry) {
+  if (typeof AudioDecoder === 'undefined') return false;
+  const moov = await moovOf(entry.file);
+  if (!moov) return false;
+  const { tracks, movieScale } = tracksOf(moov, 'soun');
+  if (!tracks.length) {
+    entry.sound = 'none';
+    return true;
+  }
+  const samples = sampleTableOf(moov, tracks[0], movieScale);
+  const config = samples && soundConfigOf(moov, samples.entry);
+  if (!config || !samples.count) return false;
+  try {
+    if (!(await AudioDecoder.isConfigSupported(config)).supported) return false;
+  } catch (_) {
+    return false;
+  }
+  let ticks = 0;
+  for (let i = 0; i < samples.count; i++) ticks += samples.dur[i];
+  if (ticks / samples.timescale > MAX_SOUND_SECONDS) {
+    console.warn(`bettercut: ${entry.file.name} is too long to keep its sound in this browser`);
+    entry.sound = 'none';
+    return true;
+  }
+
+  const sound = { blocks: [], frames: 0, channels: 0 };
+  // Any empty edit before the sound: silence first.
+  const lead = Math.round(samples.delay * SOUND_RATE);
+  // Source samples are counted from the edit list's start: the encoder's
+  // priming before it is left out. Decoded and not yet brought to 48 kHz:
+  // `pending`, one list of planes a channel, from source sample `base`.
+  let pending = null;
+  let pendingLength = 0;
+  let base = 0;
+  let queued = 0; // source samples given to a block so far
+  let rate = 0;
+  let skip = 0;
+  let failed = null;
+  let work = Promise.resolve();
+
+  // Source samples [from, to), one Float32Array a channel; silence past
+  // what there is.
+  const take = (from, to) =>
+    pending.map((chunks) => {
+      const out = new Float32Array(to - from);
+      let at = base;
+      for (const chunk of chunks) {
+        const lo = Math.max(from, at);
+        const hi = Math.min(to, at + chunk.length);
+        if (hi > lo) out.set(chunk.subarray(lo - at, hi - at), lo - from);
+        at += chunk.length;
+        if (at >= to) break;
+      }
+      return out;
+    });
+  // Let go of source samples before `before`.
+  const drop = (before) => {
+    pending = pending.map((chunks) => {
+      let at = base;
+      const kept = [];
+      for (const chunk of chunks) {
+        if (at + chunk.length > before) kept.push(at >= before ? chunk : chunk.subarray(before - at));
+        at += chunk.length;
+      }
+      return kept;
+    });
+    pendingLength -= before - base;
+    base = before;
+  };
+  // Source samples [from, to) brought to 48 kHz and kept, read with padding
+  // either side so the blocks join without a seam.
+  const block = async (from, to, last) => {
+    const inFrom = Math.max(base, from - RESAMPLE_PAD);
+    const inTo = last ? to : to + RESAMPLE_PAD;
+    const resampled = await to48k(take(inFrom, inTo), rate);
+    const ratio = SOUND_RATE / rate;
+    const outFrom = Math.round(from * ratio);
+    const length = Math.round(to * ratio) - outFrom;
+    const offset = Math.round((from - inFrom) * ratio);
+    const planes = resampled.map((plane) => {
+      const out = new Int16Array(length);
+      out.set(toInt16(plane.subarray(offset, offset + length)));
+      return out;
+    });
+    sound.blocks.push({ start: lead + outFrom, planes });
+    sound.frames = lead + outFrom + length;
+    drop(Math.max(base, to - RESAMPLE_PAD));
+  };
+
+  const decoder = new AudioDecoder({
+    output: (data) => {
+      try {
+        if (!rate) {
+          rate = data.sampleRate;
+          sound.channels = Math.min(2, data.numberOfChannels);
+          pending = Array.from({ length: sound.channels }, () => []);
+          skip = Math.round((samples.start / samples.timescale) * rate);
+        }
+        const frames = data.numberOfFrames;
+        const from = Math.min(skip, frames);
+        skip -= from;
+        if (from < frames) {
+          for (let c = 0; c < sound.channels; c++) {
+            const plane = new Float32Array(frames);
+            data.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+            pending[c].push(from ? plane.subarray(from) : plane);
+          }
+          pendingLength += frames - from;
+        }
+        const blockLength = SOUND_BLOCK_SECONDS * rate;
+        while (base + pendingLength >= queued + blockLength + RESAMPLE_PAD) {
+          const [blockFrom, blockTo] = [queued, queued + blockLength];
+          queued = blockTo;
+          work = work.then(() => block(blockFrom, blockTo, false));
+        }
+      } catch (err) {
+        failed = err;
+      } finally {
+        data.close();
+      }
+    },
+    error: (err) => {
+      failed = err;
+    },
+  });
+  decoder.configure(config);
+
+  // Fed in file order, a run of neighbouring samples read at once.
+  let i = 0;
+  while (i < samples.count && !failed) {
+    let j = i + 1;
+    while (
+      j < samples.count &&
+      samples.offset[j] === samples.offset[j - 1] + samples.size[j - 1] &&
+      samples.offset[j] + samples.size[j] - samples.offset[i] <= SOUND_READ_BYTES
+    ) {
+      j++;
+    }
+    const bytes = new Uint8Array(
+      await entry.file.slice(samples.offset[i], samples.offset[j - 1] + samples.size[j - 1]).arrayBuffer(),
+    );
+    for (let k = i; k < j; k++) {
+      const at = samples.offset[k] - samples.offset[i];
+      decoder.decode(
+        new EncodedAudioChunk({
+          type: 'key',
+          timestamp: Math.round((samples.dts[k] / samples.timescale) * 1e6),
+          duration: Math.round((samples.dur[k] / samples.timescale) * 1e6),
+          data: bytes.subarray(at, at + samples.size[k]),
+        }),
+      );
+    }
+    i = j;
+    // Not too far ahead of the decoder, nor of the blocks still to make.
+    while (decoder.decodeQueueSize > 64) await new Promise((r) => setTimeout(r, 1));
+    await work;
+  }
+  await decoder.flush().catch((err) => {
+    failed ??= err;
+  });
+  decoder.close();
+  await work;
+  if (failed || !rate) return false;
+  if (base + pendingLength > queued) await block(queued, base + pendingLength, true);
+  if (lead > 0) sound.blocks.unshift({ start: 0, planes: Array.from({ length: sound.channels }, () => new Int16Array(lead)) });
+  // The encoder's padding after the end, past what the edit list plays, left out.
+  if (samples.span > 0) sound.frames = Math.min(sound.frames, lead + Math.round(samples.span * SOUND_RATE));
+  entry.sound = sound.channels && sound.frames ? sound : 'none';
+  return true;
+}
+
+// The file's sound at 48 kHz: `entry.sound` is { blocks, frames, channels },
+// each block { start, planes } — one plane a channel, Float32Array as the
+// browser decoded it or Int16Array as kept from a long file — or 'none'.
+
+// One sample of a plane, as a float.
+const sampleOf = (plane, i) => (plane instanceof Int16Array ? plane[i] / 32767 : plane[i]);
+
 // Min and max of each bucket, interleaved, worked out as the desktop's
 // waveform job does: mono mixdown, scaled by 127 and cut toward zero.
-function peaksOf(planes, frames) {
+function peaksOf(sound) {
   const perBucket = Math.max(1, Math.floor(SOUND_RATE / PEAKS_PER_SECOND));
-  const buckets = Math.ceil(frames / perBucket);
+  const buckets = Math.ceil(sound.frames / perBucket);
   const peaks = new Int8Array(buckets * 2);
-  const share = 1 / planes.length;
-  for (let b = 0; b < buckets; b++) {
-    let low = 0;
-    let high = 0;
-    const end = Math.min(frames, (b + 1) * perBucket);
-    for (let i = b * perBucket; i < end; i++) {
+  const share = 1 / sound.channels;
+  for (const { start, planes } of sound.blocks) {
+    const length = planes[0].length;
+    for (let i = 0; i < length; i++) {
       let sum = 0;
-      for (const plane of planes) sum += plane[i];
+      for (const plane of planes) sum += sampleOf(plane, i);
       const scaled = Math.trunc(Math.max(-1, Math.min(1, sum * share)) * 127);
-      if (scaled < low) low = scaled;
-      if (scaled > high) high = scaled;
+      const b = Math.floor((start + i) / perBucket);
+      if (scaled < peaks[2 * b]) peaks[2 * b] = scaled;
+      if (scaled > peaks[2 * b + 1]) peaks[2 * b + 1] = scaled;
     }
-    peaks[2 * b] = low;
-    peaks[2 * b + 1] = high;
   }
   return peaks;
 }
 
-function decodeSound(entry) {
+// The whole file given to the browser's decodeAudioData: for what is not an
+// MP4 or MOV, or whose sound decodeSoundTrack cannot decode.
+function decodeWhole(entry) {
   if (entry.file.size > MAX_SOUND_FILE) {
     entry.sound = 'none';
     return Promise.resolve();
@@ -364,8 +648,18 @@ function decodeSound(entry) {
     .then((buffer) => {
       const planes = [];
       for (let c = 0; c < Math.min(2, buffer.numberOfChannels); c++) planes.push(buffer.getChannelData(c));
-      entry.sound = planes.length ? { planes, frames: buffer.length } : 'none';
-      if (planes.length) entry.peaks = peaksOf(planes, buffer.length);
+      entry.sound = planes.length
+        ? { blocks: [{ start: 0, planes }], frames: buffer.length, channels: planes.length }
+        : 'none';
+    });
+}
+
+function decodeSound(entry) {
+  return decodeSoundTrack(entry)
+    .catch(() => false)
+    .then((done) => (done ? undefined : decodeWhole(entry)))
+    .then(() => {
+      if (entry.sound && entry.sound !== 'none') entry.peaks = peaksOf(entry.sound);
     })
     .catch(() => {
       entry.sound = 'none';
@@ -396,7 +690,7 @@ function openVideo(entry) {
           width: video.videoWidth,
           height: video.videoHeight,
           duration: Number.isFinite(video.duration) ? video.duration : 0,
-          channels: entry.sound === 'none' ? 0 : entry.sound.planes.length,
+          channels: entry.sound === 'none' ? 0 : entry.sound.channels,
         });
         if (entry.details.kind === 'video' && entry.details.duration > 0) makePictures(entry);
       });
@@ -851,7 +1145,20 @@ export function bc_sound(path, from, frames) {
   const sound = files.get(path)?.sound;
   if (!sound || sound === 'none' || from >= sound.frames) return null;
   const end = Math.min(sound.frames, from + frames);
-  return sound.planes.map((plane) => plane.subarray(from, end));
+  const out = Array.from({ length: sound.channels }, () => new Float32Array(end - from));
+  for (const { start, planes } of sound.blocks) {
+    const lo = Math.max(from, start);
+    const hi = Math.min(end, start + planes[0].length);
+    if (hi <= lo) continue;
+    planes.forEach((plane, c) => {
+      if (plane instanceof Int16Array) {
+        for (let i = lo; i < hi; i++) out[c][i - from] = plane[i - start] / 32767;
+      } else {
+        out[c].set(plane.subarray(lo - start, hi - start), lo - from);
+      }
+    });
+  }
+  return out;
 }
 
 // The waveform, min and max of each bucket interleaved, once made.
@@ -941,6 +1248,114 @@ function decoderConfigOf(view, entry) {
   return null;
 }
 
+// The movie's tracks of one kind — 'vide' or 'soun' — and its own timescale.
+function tracksOf(moov, kind) {
+  const mvhd = child(moov, { at: 8, end: moov.byteLength }, 'mvhd');
+  const movieScale = mvhd ? moov.getUint32(mvhd.at + (moov.getUint8(mvhd.at) === 1 ? 20 : 12)) : 0;
+  const found = [];
+  for (const trak of boxesIn(moov, 8, moov.byteLength).filter((b) => b.type === 'trak')) {
+    const hdlr = child(moov, child(moov, trak, 'mdia'), 'hdlr');
+    if (!hdlr || hdlr.at + 12 > hdlr.end) continue;
+    if (String.fromCharCode(...[8, 9, 10, 11].map((i) => moov.getUint8(hdlr.at + i))) === kind) found.push(trak);
+  }
+  return { tracks: found, movieScale };
+}
+
+// A track's sample table: where each sample's bytes are, how long it lasts
+// and when it is decoded (in the track's timescale), its composition offset,
+// and the edit list's start, any empty edit before it and how long the edit
+// plays (seconds; 0 when there is no edit list). null when a table is
+// missing.
+function sampleTableOf(moov, trak, movieScale) {
+  const mdia = child(moov, trak, 'mdia');
+  const mdhd = child(moov, mdia, 'mdhd');
+  const stbl = child(moov, child(moov, mdia, 'minf'), 'stbl');
+  const table = (type) => child(moov, stbl, type);
+  const [stsd, stts, stsz, stsc] = ['stsd', 'stts', 'stsz', 'stsc'].map(table);
+  const chunks = table('stco') ?? table('co64');
+  if (!mdhd || !stsd || !stts || !stsz || !stsc || !chunks) return null;
+  const timescale = moov.getUint32(mdhd.at + (moov.getUint8(mdhd.at) === 1 ? 20 : 12));
+  const entry = boxesIn(moov, stsd.at + 8, stsd.end)[0];
+  if (!timescale || !entry) return null;
+
+  const count = moov.getUint32(stsz.at + 8);
+  const sameSize = moov.getUint32(stsz.at + 4);
+  const size = new Float64Array(count);
+  for (let i = 0; i < count; i++) size[i] = sameSize || moov.getUint32(stsz.at + 12 + i * 4);
+
+  // Decode times, from the run lengths of stts.
+  const dts = new Float64Array(count);
+  const dur = new Float64Array(count);
+  let i = 0;
+  let t = 0;
+  for (let e = 0, n = moov.getUint32(stts.at + 4); e < n && i < count; e++) {
+    const run = moov.getUint32(stts.at + 8 + e * 8);
+    const delta = moov.getUint32(stts.at + 12 + e * 8);
+    for (let r = 0; r < run && i < count; r++, i++) {
+      dts[i] = t;
+      dur[i] = delta;
+      t += delta;
+    }
+  }
+
+  const cts = new Float64Array(count);
+  const ctts = table('ctts');
+  if (ctts) {
+    const signed = moov.getUint8(ctts.at) === 1;
+    let s = 0;
+    for (let e = 0, n = moov.getUint32(ctts.at + 4); e < n && s < count; e++) {
+      const run = moov.getUint32(ctts.at + 8 + e * 8);
+      const offset = signed ? moov.getInt32(ctts.at + 12 + e * 8) : moov.getUint32(ctts.at + 12 + e * 8);
+      for (let r = 0; r < run && s < count; r++, s++) cts[s] = offset;
+    }
+  }
+
+  let start = 0;
+  let delay = 0;
+  let span = 0;
+  const elst = child(moov, child(moov, trak, 'edts'), 'elst');
+  if (elst) {
+    const wide = moov.getUint8(elst.at) === 1;
+    const step = wide ? 20 : 12;
+    for (let e = 0, n = moov.getUint32(elst.at + 4); e < n; e++) {
+      const at = elst.at + 8 + e * step;
+      if (at + step > elst.end) break;
+      const length = wide ? Number(moov.getBigUint64(at)) : moov.getUint32(at);
+      const from = wide ? Number(moov.getBigInt64(at + 8)) : moov.getInt32(at + 4);
+      if (from === -1) {
+        delay += movieScale ? length / movieScale : 0;
+        continue;
+      }
+      start = from;
+      span = movieScale ? length / movieScale : 0;
+      break;
+    }
+  }
+
+  // Where each sample's bytes are: chunk by chunk, as many samples a chunk
+  // as stsc says.
+  const offset = new Float64Array(count);
+  const wideChunks = chunks.type === 'co64';
+  const chunkCount = moov.getUint32(chunks.at + 4);
+  const runs = moov.getUint32(stsc.at + 4);
+  let s = 0;
+  for (let r = 0; r < runs && s < count; r++) {
+    const first = moov.getUint32(stsc.at + 8 + r * 12);
+    const perChunk = moov.getUint32(stsc.at + 12 + r * 12);
+    const last = r + 1 < runs ? moov.getUint32(stsc.at + 8 + (r + 1) * 12) - 1 : chunkCount;
+    for (let c = first; c <= last && s < count; c++) {
+      let at = wideChunks
+        ? Number(moov.getBigUint64(chunks.at + 8 + (c - 1) * 8))
+        : moov.getUint32(chunks.at + 8 + (c - 1) * 4);
+      for (let k = 0; k < perChunk && s < count; k++, s++) {
+        offset[s] = at;
+        at += size[s];
+      }
+    }
+  }
+  return { timescale, entry, count, offset, size, dts, dur, cts, start, delay, span, table };
+}
+
 // The video track's samples, from an MP4 or MOV's tables: where each one's
 // bytes are, when it is shown (microseconds, as the `<video>` shows it —
 // edit list applied), and whether it is a keyframe. null when there is no
@@ -948,15 +1363,8 @@ function decoderConfigOf(view, entry) {
 async function videoSamplesOf(file) {
   const moov = await moovOf(file);
   if (!moov) return null;
-  const whole = { at: 8, end: moov.byteLength };
-  const mvhd = child(moov, whole, 'mvhd');
-  const movieScale = mvhd ? moov.getUint32(mvhd.at + (moov.getUint8(mvhd.at) === 1 ? 20 : 12)) : 0;
-  for (const trak of boxesIn(moov, 8, moov.byteLength).filter((b) => b.type === 'trak')) {
-    const mdia = child(moov, trak, 'mdia');
-    const hdlr = child(moov, mdia, 'hdlr');
-    if (!hdlr || hdlr.at + 12 > hdlr.end) continue;
-    if (String.fromCharCode(...[8, 9, 10, 11].map((i) => moov.getUint8(hdlr.at + i))) !== 'vide') continue;
-
+  const { tracks, movieScale } = tracksOf(moov, 'vide');
+  for (const trak of tracks) {
     // A picture the file turns or flips is shown turned by a `<video>`, not
     // by a decoder: left to the `<video>`.
     const tkhd = child(moov, trak, 'tkhd');
@@ -965,102 +1373,25 @@ async function videoSamplesOf(file) {
       const [a, b, c, d] = [0, 4, 12, 16].map((i) => moov.getInt32(m + i));
       if (a !== 0x10000 || b !== 0 || c !== 0 || d !== 0x10000) return null;
     }
-
-    const mdhd = child(moov, mdia, 'mdhd');
-    const stbl = child(moov, child(moov, mdia, 'minf'), 'stbl');
-    const table = (type) => child(moov, stbl, type);
-    const [stsd, stts, stsz, stsc] = ['stsd', 'stts', 'stsz', 'stsc'].map(table);
-    const chunks = table('stco') ?? table('co64');
-    if (!mdhd || !stsd || !stts || !stsz || !stsc || !chunks) return null;
-    const timescale = moov.getUint32(mdhd.at + (moov.getUint8(mdhd.at) === 1 ? 20 : 12));
-    const entry = boxesIn(moov, stsd.at + 8, stsd.end)[0];
-    const config = entry && decoderConfigOf(moov, entry);
-    if (!timescale || !config) return null;
-
-    const count = moov.getUint32(stsz.at + 8);
-    const sameSize = moov.getUint32(stsz.at + 4);
-    const size = new Float64Array(count);
-    for (let i = 0; i < count; i++) size[i] = sameSize || moov.getUint32(stsz.at + 12 + i * 4);
-
-    // Decode times, from the run lengths of stts.
-    const dts = new Float64Array(count);
-    const dur = new Float64Array(count);
-    let i = 0;
-    let t = 0;
-    for (let e = 0, n = moov.getUint32(stts.at + 4); e < n && i < count; e++) {
-      const run = moov.getUint32(stts.at + 8 + e * 8);
-      const delta = moov.getUint32(stts.at + 12 + e * 8);
-      for (let r = 0; r < run && i < count; r++, i++) {
-        dts[i] = t;
-        dur[i] = delta;
-        t += delta;
-      }
-    }
+    const samples = sampleTableOf(moov, trak, movieScale);
+    if (!samples) return null;
+    const { timescale, entry, count, offset, size, dts, cts, start, delay } = samples;
+    const config = decoderConfigOf(moov, entry);
+    if (!config) return null;
 
     // Shown at decode time plus the composition offset, less where the edit
     // list starts, plus any empty edit before it.
-    const pts = new Float64Array(count);
-    const ctts = table('ctts');
-    if (ctts) {
-      const signed = moov.getUint8(ctts.at) === 1;
-      let s = 0;
-      for (let e = 0, n = moov.getUint32(ctts.at + 4); e < n && s < count; e++) {
-        const run = moov.getUint32(ctts.at + 8 + e * 8);
-        const offset = signed ? moov.getInt32(ctts.at + 12 + e * 8) : moov.getUint32(ctts.at + 12 + e * 8);
-        for (let r = 0; r < run && s < count; r++, s++) pts[s] = offset;
-      }
-    }
-    let start = 0;
-    let delay = 0;
-    const elst = child(moov, child(moov, trak, 'edts'), 'elst');
-    if (elst) {
-      const wide = moov.getUint8(elst.at) === 1;
-      const step = wide ? 20 : 12;
-      for (let e = 0, n = moov.getUint32(elst.at + 4); e < n; e++) {
-        const at = elst.at + 8 + e * step;
-        if (at + step > elst.end) break;
-        const length = wide ? Number(moov.getBigUint64(at)) : moov.getUint32(at);
-        const from = wide ? Number(moov.getBigInt64(at + 8)) : moov.getInt32(at + 4);
-        if (from === -1) {
-          delay += movieScale ? length / movieScale : 0;
-          continue;
-        }
-        start = from;
-        break;
-      }
-    }
     const time = new Float64Array(count);
+    const dur = new Float64Array(count);
     const byTime = new Map();
     for (let s = 0; s < count; s++) {
-      time[s] = Math.round(((dts[s] + pts[s] - start) / timescale + delay) * 1e6);
+      time[s] = Math.round(((dts[s] + cts[s] - start) / timescale + delay) * 1e6);
       byTime.set(time[s], s);
-      dur[s] = Math.round((dur[s] / timescale) * 1e6);
-    }
-
-    // Where each sample's bytes are: chunk by chunk, as many samples a chunk
-    // as stsc says.
-    const offset = new Float64Array(count);
-    const wideChunks = chunks.type === 'co64';
-    const chunkCount = moov.getUint32(chunks.at + 4);
-    const runs = moov.getUint32(stsc.at + 4);
-    let s = 0;
-    for (let r = 0; r < runs && s < count; r++) {
-      const first = moov.getUint32(stsc.at + 8 + r * 12);
-      const perChunk = moov.getUint32(stsc.at + 12 + r * 12);
-      const last = r + 1 < runs ? moov.getUint32(stsc.at + 8 + (r + 1) * 12) - 1 : chunkCount;
-      for (let c = first; c <= last && s < count; c++) {
-        let at = wideChunks
-          ? Number(moov.getBigUint64(chunks.at + 8 + (c - 1) * 8))
-          : moov.getUint32(chunks.at + 8 + (c - 1) * 4);
-        for (let k = 0; k < perChunk && s < count; k++, s++) {
-          offset[s] = at;
-          at += size[s];
-        }
-      }
+      dur[s] = Math.round((samples.dur[s] / timescale) * 1e6);
     }
 
     const key = new Uint8Array(count);
-    const stss = table('stss');
+    const stss = samples.table('stss');
     if (stss) {
       for (let e = 0, n = moov.getUint32(stss.at + 4); e < n; e++) {
         const sample = moov.getUint32(stss.at + 8 + e * 4) - 1;
