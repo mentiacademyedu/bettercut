@@ -593,6 +593,7 @@ async function restore() {
       nextId = Math.max(nextId, Number(String(path).split('/')[2]) + 1 || 0);
     });
     if (storedProject) openKeptFiles(storedProject);
+    measureStorage();
   } catch (err) {
     console.warn('bettercut: nothing kept in this browser could be read', err);
   }
@@ -637,11 +638,43 @@ function keepProject(json, paths) {
       unopened.delete(path);
     }
   }
+  write.oncomplete = measureStorage;
   // Asked once: kept through the browser clearing space, if it agrees.
   if (navigator.storage?.persist && !keepProject.asked) {
     keepProject.asked = true;
     navigator.storage.persist();
   }
+}
+
+// A kept project taken out of this browser, with every kept file no other
+// project uses. Not the one open: it would only be kept again.
+function forgetProject(id) {
+  if (!database || id === currentId || !projects.has(id)) return false;
+  projects.delete(id);
+  const wanted = new Set();
+  for (const project of projects.values()) for (const path of project.paths) wanted.add(path);
+  const write = database.transaction([FILES, PROJECTS], 'readwrite');
+  write.objectStore(PROJECTS).delete(id);
+  for (const path of [...stored]) {
+    if (!wanted.has(path)) {
+      write.objectStore(FILES).delete(path);
+      stored.delete(path);
+      unopened.delete(path);
+    }
+  }
+  write.oncomplete = measureStorage;
+  return true;
+}
+
+// How much of the browser's room this page uses, in bytes; -1 until known.
+let storageUsed = -1;
+function measureStorage() {
+  navigator.storage
+    ?.estimate?.()
+    .then((estimate) => {
+      storageUsed = estimate.usage ?? -1;
+    })
+    .catch(() => {});
 }
 
 // Where the last files were dropped, in page pixels, or null when they came
@@ -779,6 +812,14 @@ export function bc_opened_text(path) {
   openedText.delete(path);
   if (text) openKeptFiles(text);
   return text;
+}
+
+export function bc_forget_project(id) {
+  return forgetProject(id);
+}
+
+export function bc_storage_used() {
+  return storageUsed;
 }
 
 // Every project kept in this browser, the latest worked on first, by the

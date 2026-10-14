@@ -65,6 +65,8 @@ extern "C" {
     fn bc_peaks(path: &str) -> JsValue;
     fn bc_stored_project() -> Option<String>;
     fn bc_kept_projects() -> js_sys::Array;
+    fn bc_forget_project(id: &str) -> bool;
+    fn bc_storage_used() -> f64;
     fn bc_keep_project(json: &str, paths: Vec<String>);
 }
 
@@ -340,6 +342,23 @@ pub mod browser {
             .filter_map(|v| v.as_string())
             .map(std::path::PathBuf::from)
             .collect()
+    }
+
+    /// Take a kept project ([`kept_projects`]) out of this browser, and the
+    /// files no other kept project uses. Whether it was: the project open
+    /// now is not.
+    pub fn forget_project(path: &std::path::Path) -> bool {
+        let mut parts = path.components().skip(2);
+        match parts.next() {
+            Some(id) => bc_forget_project(&id.as_os_str().to_string_lossy()),
+            None => false,
+        }
+    }
+
+    /// How much of the browser's room this page uses, in bytes, once known.
+    pub fn storage_used() -> Option<u64> {
+        let used = bc_storage_used();
+        (used >= 0.0).then_some(used as u64)
     }
 
     /// Keep this project in the browser, beside the others kept, and the

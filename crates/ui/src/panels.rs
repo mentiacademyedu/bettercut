@@ -39,7 +39,10 @@ pub fn toolbar(
             false,
             "Open a project, or one you worked on recently",
         );
-        egui::Popup::menu(&open).show(|ui| {
+        // Open while the bins are clicked: each choice closes it itself.
+        let menu = egui::Popup::menu(&open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        menu.show(|ui| {
             if ui
                 .button("Browse…")
                 .on_hover_text("Choose a project file")
@@ -58,6 +61,7 @@ pub fn toolbar(
                 return;
             }
             let mut chosen = None;
+            let mut remove = None;
             for path in state.recent.paths() {
                 let (name, folder) = crate::recent::menu_label(path);
                 let there = cfg!(target_arch = "wasm32") || path.exists();
@@ -66,17 +70,48 @@ pub fn toolbar(
                 } else {
                     egui::RichText::new(format!("{name} (not found)")).color(theme::disabled())
                 };
-                if ui
-                    .button(text)
-                    .on_hover_text(if there {
-                        folder
-                    } else {
-                        format!("{folder}\nMoved, renamed or on a drive that is not connected")
+                let hover = if there {
+                    folder
+                } else {
+                    format!("{folder}\nMoved, renamed or on a drive that is not connected")
+                };
+                // In a browser, kept projects take its room until removed.
+                let picked = if cfg!(target_arch = "wasm32") {
+                    ui.horizontal(|ui| {
+                        let picked = ui.button(text).on_hover_text(hover).clicked();
+                        if icons::button(
+                            ui,
+                            Icon::Trash,
+                            false,
+                            "Remove from this browser, with its files no other project uses",
+                        )
+                        .clicked()
+                        {
+                            remove = Some(path.clone());
+                        }
+                        picked
                     })
-                    .clicked()
-                {
+                    .inner
+                } else {
+                    ui.button(text).on_hover_text(hover).clicked()
+                };
+                if picked {
                     chosen = Some(path.clone());
                 }
+            }
+            if let Some(path) = remove {
+                remove_kept_project(ui.ctx(), state, &path);
+            }
+            #[cfg(target_arch = "wasm32")]
+            if let Some(used) = bettercut_editor_core::media::browser::storage_used() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Using {} of this browser's room",
+                        readable_bytes(used)
+                    ))
+                    .small()
+                    .color(theme::disabled()),
+                );
             }
             // In a browser the list is the projects kept there, not a
             // list of its own to clear.
@@ -12177,6 +12212,29 @@ pub fn collect_files(editor: &mut Editor, state: &mut UiState) {
         Err(err) => state.error(format!("Could not collect: {err}")),
     }
     state.needs_repaint = true;
+}
+
+/// Take a project kept in the browser out of it — on the second click of
+/// its bin, since its files go too and nothing brings them back.
+fn remove_kept_project(ctx: &egui::Context, state: &mut UiState, path: &std::path::Path) {
+    let armed_id = egui::Id::new("remove kept project");
+    let armed = ctx.data(|d| d.get_temp::<std::path::PathBuf>(armed_id));
+    let (name, _) = crate::recent::menu_label(path);
+    if armed.as_deref() != Some(path) {
+        ctx.data_mut(|d| d.insert_temp(armed_id, path.to_path_buf()));
+        state.info(format!("Click the bin again to remove {name} and its files from this browser"));
+        return;
+    }
+    ctx.data_mut(|d| d.remove::<std::path::PathBuf>(armed_id));
+    #[cfg(target_arch = "wasm32")]
+    if bettercut_editor_core::media::browser::forget_project(path) {
+        state.recent.refresh();
+        state.info(format!("Removed {name} from this browser"));
+    } else {
+        state.error("That is the project open now: open another first");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    state.recent.forget(path);
 }
 
 /// Bytes as something a person reads: "4.2 GB".

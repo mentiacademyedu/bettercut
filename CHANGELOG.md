@@ -36,7 +36,8 @@ setting kept:
   decoders — no upload, nothing leaves the computer — and play at full frame
   rate, with their sound and waveforms; a video's own frame rate is read
   from the file (MP4, MOV, and WebM or MKV when it says; others are taken as 30). Your projects and their files are kept
-  in the browser as you work — every one, under **Open → recent** — and the
+  in the browser as you work — every one, under **Open → recent**, where its bin takes it and its
+  files out again, beside how much room they use — and the
   last one opens again next time, with your settings,
   saved looks, title styles, export presets and shortcuts — and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders and
