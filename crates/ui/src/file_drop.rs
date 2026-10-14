@@ -65,6 +65,16 @@ fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeli
                 Err(err) => state.error(format!("Could not import captions: {err}")),
             },
             "lut" => import_lut(editor, state, &name, &bytes),
+            // Kept by the page among the user's fonts, then loaded as the
+            // desktop loads one it has copied there.
+            "font" => {
+                let folder = bettercut_editor_core::text::user_fonts_dir();
+                let path = folder.join(name.replace(['/', '\\'], "-"));
+                match bettercut_editor_core::foundation::files::write(&path, &bytes) {
+                    Ok(()) => state.font_import = Some(path),
+                    Err(err) => state.error(format!("Could not keep the font: {err}")),
+                }
+            }
             "markers" => match editor.import_marker_text(&String::from_utf8_lossy(&bytes)) {
                 Ok(0) => state.info(
                     "No markers found in that file — it needs a timecode or seconds column",

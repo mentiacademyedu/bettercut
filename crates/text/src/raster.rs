@@ -84,9 +84,10 @@ impl TextRenderer {
         }
         // Fonts the user imported, so every renderer — the preview's and every
         // export's — can draw them.
-        let imported = user_fonts_dir();
-        if imported.is_dir() {
-            fonts.db_mut().load_fonts_dir(&imported);
+        for file in bettercut_foundation::files::list(&user_fonts_dir()) {
+            if let Ok(bytes) = bettercut_foundation::files::read(&file) {
+                fonts.db_mut().load_font_data(bytes);
+            }
         }
         Self {
             fonts,
@@ -97,7 +98,8 @@ impl TextRenderer {
     /// Make the font file at `path` available to this renderer, returning the
     /// families it added.
     pub fn add_font_file(&mut self, path: &std::path::Path) -> Result<Vec<String>, TextError> {
-        let bytes = std::fs::read(path).map_err(|e| TextError::Font(e.to_string()))?;
+        let bytes =
+            bettercut_foundation::files::read(path).map_err(|e| TextError::Font(e.to_string()))?;
         let families = font_families_in(&bytes)?;
         self.fonts.db_mut().load_font_data(bytes);
         Ok(families)
@@ -400,8 +402,13 @@ impl TextRenderer {
 }
 
 /// Where imported fonts are kept for this user: every renderer loads them.
+/// In a browser, the page keeps them (`bettercut_foundation::files`).
 pub fn user_fonts_dir() -> std::path::PathBuf {
-    bettercut_foundation::places::local_home().join("fonts")
+    if cfg!(target_arch = "wasm32") {
+        std::path::PathBuf::from("/files/fonts")
+    } else {
+        bettercut_foundation::places::local_home().join("fonts")
+    }
 }
 
 /// The family names of the faces in a font file's bytes, or why it is not a
@@ -430,14 +437,17 @@ pub fn import_font_into(
     path: &std::path::Path,
     folder: &std::path::Path,
 ) -> Result<(std::path::PathBuf, Vec<String>), TextError> {
-    let bytes = std::fs::read(path).map_err(|e| TextError::Font(e.to_string()))?;
+    let bytes =
+        bettercut_foundation::files::read(path).map_err(|e| TextError::Font(e.to_string()))?;
     let families = font_families_in(&bytes)?;
     let name = path
         .file_name()
         .ok_or_else(|| TextError::Font("the font file has no name".to_owned()))?;
-    std::fs::create_dir_all(folder).map_err(|e| TextError::Font(e.to_string()))?;
     let destination = folder.join(name);
-    std::fs::write(&destination, bytes).map_err(|e| TextError::Font(e.to_string()))?;
+    if destination != path {
+        bettercut_foundation::files::write(&destination, &bytes)
+            .map_err(|e| TextError::Font(e.to_string()))?;
+    }
     Ok((destination, families))
 }
 

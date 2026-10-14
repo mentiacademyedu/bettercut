@@ -9588,6 +9588,12 @@ fn text_properties(
                         restyled = true;
                     }
                 });
+            // A font just imported goes straight onto this title — here, not
+            // in the list, which has closed by the time it arrives.
+            if let Some(name) = state.font_imported.take() {
+                style.family = FontFamily::Named(name);
+                restyled = true;
+            }
         });
 
         ui.horizontal_wrapped(|ui| {
@@ -10076,23 +10082,23 @@ fn family_picker(
     }
 
     // Your own font: copied in, then on offer in every title from now on.
-    if ui
+    let import_font = ui
         .button("Import Font…")
         .on_hover_text("Add a .ttf or .otf font file, to use in any title")
-        .clicked()
-        && !not_in_browser(state, "Importing a font")
+        .clicked();
+    // In a browser, the picked file's bytes arrive later (`crate::file_drop`).
+    #[cfg(target_arch = "wasm32")]
+    if import_font {
+        bettercut_editor_core::media::browser::pick_bytes(&["ttf", "otf", "ttc"], "font");
+    }
+    if import_font
+        && !cfg!(target_arch = "wasm32")
         && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("Fonts", &["ttf", "otf", "ttc"])
             .pick_file()
     {
         state.font_import = Some(path);
     }
-    // A font just imported goes straight onto this title.
-    if let Some(name) = state.font_imported.take() {
-        *family = FontFamily::Named(name);
-        changed = true;
-    }
-
     if state.font_families.is_empty() {
         return changed;
     }

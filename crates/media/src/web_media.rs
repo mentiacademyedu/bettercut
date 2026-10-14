@@ -56,6 +56,7 @@ extern "C" {
     fn bc_pick_bytes(accept: &str, purpose: &str);
     fn bc_kept_file(path: &str) -> JsValue;
     fn bc_keep_file(path: &str, bytes: &[u8]) -> bool;
+    fn bc_kept_list(prefix: &str) -> js_sys::Array;
     fn bc_take_given() -> js_sys::Array;
     fn bc_opened_text(path: &str) -> Option<String>;
     fn bc_file_size(path: &str) -> f64;
@@ -403,6 +404,12 @@ pub mod browser {
             return None;
         }
         Some(js_sys::Uint8Array::new(&found).to_vec())
+    }
+
+    /// The paths of the editor's own small files kept by the page that start
+    /// with `prefix`.
+    pub fn kept_list(prefix: &str) -> Vec<String> {
+        bc_kept_list(prefix).iter().filter_map(|v| v.as_string()).collect()
     }
 
     /// Keep one of the editor's own small files in the page, at `path`.

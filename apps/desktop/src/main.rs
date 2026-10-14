@@ -566,6 +566,7 @@ fn use_browser_files() {
     bettercut_editor_core::foundation::files::use_store(bettercut_editor_core::foundation::files::Store {
         read: browser::kept_file,
         write: browser::keep_file,
+        list: browser::kept_list,
     });
 }
 

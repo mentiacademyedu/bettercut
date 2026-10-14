@@ -1,5 +1,5 @@
-//! The editor's own small files — LUTs a person imports — read and written in
-//! one place, so the web build can keep them too.
+//! The editor's own small files — LUTs and fonts a person imports — read and
+//! written in one place, so the web build can keep them too.
 //!
 //! On the desktop these are files like any other. A browser has no file
 //! system: there, they are kept by the page (in its own storage, read into
@@ -14,6 +14,8 @@ use std::path::Path;
 pub struct Store {
     pub read: fn(&str) -> Option<Vec<u8>>,
     pub write: fn(&str, &[u8]) -> bool,
+    /// Every path kept that starts with this one.
+    pub list: fn(&str) -> Vec<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -43,6 +45,30 @@ pub fn len(path: &Path) -> std::io::Result<u64> {
     return read(path).map(|bytes| bytes.len() as u64);
     #[cfg(not(target_arch = "wasm32"))]
     std::fs::metadata(path).map(|m| m.len())
+}
+
+/// The files directly in `folder`; none when there is no such folder.
+pub fn list(folder: &Path) -> Vec<std::path::PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    return STORE.get().map_or_else(Vec::new, |store| {
+        let prefix = format!("{}/", folder.to_string_lossy().trim_end_matches('/'));
+        (store.list)(&prefix)
+            .into_iter()
+            .filter(|path| !path[prefix.len()..].contains('/'))
+            .map(std::path::PathBuf::from)
+            .collect()
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    std::fs::read_dir(folder).map_or_else(
+        |_| Vec::new(),
+        |entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .collect()
+        },
+    )
 }
 
 /// Keep `bytes` at `path`, making its folder when there is none.

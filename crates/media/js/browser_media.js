@@ -1220,6 +1220,10 @@ export function bc_kept_file(path) {
   return keptFiles.get(path) ?? undefined;
 }
 
+export function bc_kept_list(prefix) {
+  return [...keptFiles.keys()].filter((path) => path.startsWith(prefix));
+}
+
 export function bc_keep_file(path, bytes) {
   const copy = new Uint8Array(bytes);
   keptFiles.set(path, copy);
