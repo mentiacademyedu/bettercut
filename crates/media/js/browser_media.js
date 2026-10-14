@@ -512,6 +512,33 @@ function add(file, keptAs) {
 let database = null;
 let storedProject = null;
 const stored = new Set(); // paths of the files kept
+// Every project kept, by its id: { json, name, modified, paths } — `paths`
+// the kept files it uses. One is the current one, opened at the start.
+const projects = new Map();
+let currentId = null;
+// Kept files not opened yet: those of projects not open. Opened when a
+// project that uses them is.
+const unopened = new Map(); // path -> File
+
+function mediaPathsOf(json) {
+  try {
+    const media = JSON.parse(json).project?.media ?? [];
+    return new Set(media.map((m) => m.path).filter((path) => typeof path === 'string' && path.startsWith('/browser/')));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+// Open the kept files a project uses, as it is opened.
+function openKeptFiles(json) {
+  for (const path of mediaPathsOf(json)) {
+    const file = unopened.get(path);
+    if (file && !files.has(path)) {
+      unopened.delete(path);
+      add(file, path);
+    }
+  }
+}
 
 function request(r) {
   return new Promise((resolve, reject) => {
@@ -529,35 +556,74 @@ function openDatabase() {
   return request(opening);
 }
 
-// Before the app starts: the project kept last time, and every file it
-// uses, opened again under the names it knows them by.
+// Before the app starts: every project kept, and the files of the one open
+// last time, opened again under the names it knows them by.
 async function restore() {
   try {
     database = await openDatabase();
     const read = database.transaction([FILES, PROJECTS]);
-    const [project, paths, kept] = await Promise.all([
-      request(read.objectStore(PROJECTS).get('current')),
+    const [ids, values, paths, kept] = await Promise.all([
+      request(read.objectStore(PROJECTS).getAllKeys()),
+      request(read.objectStore(PROJECTS).getAll()),
       request(read.objectStore(FILES).getAllKeys()),
       request(read.objectStore(FILES).getAll()),
     ]);
-    storedProject = typeof project === 'string' ? project : null;
+    ids.forEach((id, i) => {
+      const value = values[i];
+      if (id === 'current') {
+        // Before there were several, the project itself was kept here.
+        if (typeof value === 'string' && value.startsWith('{')) {
+          const legacy = keptEntry(value, 0);
+          if (legacy) {
+            projects.set(legacy.id, legacy);
+            currentId = legacy.id;
+          }
+        } else if (typeof value === 'string') {
+          currentId ??= value;
+        }
+      } else if (value && typeof value.json === 'string') {
+        projects.set(id, { ...value, paths: mediaPathsOf(value.json) });
+      }
+    });
+    storedProject = projects.get(currentId)?.json ?? null;
     paths.forEach((path, i) => {
       stored.add(path);
-      add(kept[i], path);
+      unopened.set(path, kept[i]);
+      // New files are numbered past every kept one, opened or not.
+      nextId = Math.max(nextId, Number(String(path).split('/')[2]) + 1 || 0);
     });
+    if (storedProject) openKeptFiles(storedProject);
   } catch (err) {
     console.warn('bettercut: nothing kept in this browser could be read', err);
   }
 }
 
-// The project as it is now, and the files it uses: kept, and every other
-// file kept before let go.
+// A project's JSON as kept: { id, json, name, modified, paths }, or null.
+function keptEntry(json, modified) {
+  try {
+    const project = JSON.parse(json).project;
+    if (!project?.id) return null;
+    return { id: String(project.id), json, name: String(project.name ?? 'Untitled'), modified, paths: mediaPathsOf(json) };
+  } catch (_) {
+    return null;
+  }
+}
+
+// The project as it is now, and the files it uses, kept beside every other
+// project kept; a file no kept project uses any more is let go.
 function keepProject(json, paths) {
   if (!database) return;
-  const wanted = new Set(paths);
+  const entry = keptEntry(json, Date.now());
+  if (!entry) return;
+  entry.paths = new Set(paths);
+  projects.set(entry.id, entry);
+  currentId = entry.id;
+  const wanted = new Set();
+  for (const project of projects.values()) for (const path of project.paths) wanted.add(path);
   const write = database.transaction([FILES, PROJECTS], 'readwrite');
-  write.objectStore(PROJECTS).put(json, 'current');
-  for (const path of wanted) {
+  write.objectStore(PROJECTS).put({ json, name: entry.name, modified: entry.modified }, entry.id);
+  write.objectStore(PROJECTS).put(entry.id, 'current');
+  for (const path of entry.paths) {
     const entry = files.get(path);
     if (!stored.has(path) && entry) {
       write.objectStore(FILES).put(entry.file, path);
@@ -568,6 +634,7 @@ function keepProject(json, paths) {
     if (!wanted.has(path)) {
       write.objectStore(FILES).delete(path);
       stored.delete(path);
+      unopened.delete(path);
     }
   }
   // Asked once: kept through the browser clearing space, if it agrees.
@@ -702,11 +769,28 @@ export function bc_take_opened() {
   return opened.splice(0, opened.length);
 }
 
-// An opened project file's text, once: it is let go of when taken.
+// An opened project file's text, once: it is let go of when taken. A
+// project kept in this browser (`/kept/<id>/<name>`) is read from there.
+// Either way, the kept files it uses are opened.
 export function bc_opened_text(path) {
-  const text = openedText.get(path) ?? null;
+  const text = path.startsWith('/kept/')
+    ? (projects.get(path.split('/')[2])?.json ?? null)
+    : (openedText.get(path) ?? null);
   openedText.delete(path);
+  if (text) openKeptFiles(text);
   return text;
+}
+
+// Every project kept in this browser, the latest worked on first, by the
+// names the app opens them under: its name and when it was last worked on,
+// so two called "Untitled" can be told apart.
+export function bc_kept_projects() {
+  const when = (ms) =>
+    ms ? new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'earlier';
+  const plain = (text) => text.replace(/[\\/]/g, '-');
+  return [...projects.entries()]
+    .sort(([, a], [, b]) => b.modified - a.modified)
+    .map(([id, p]) => `/kept/${id}/${plain(p.name)} · ${plain(when(p.modified))}.vproj`);
 }
 
 // Whether the page has a file by this name, and how big it is.

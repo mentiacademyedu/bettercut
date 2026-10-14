@@ -36,7 +36,27 @@ pub struct RecentProjects {
 }
 
 impl RecentProjects {
+    /// The list kept in `file`, reading whatever is there now. In a browser,
+    /// the projects kept there, the latest worked on first.
+    #[cfg(target_arch = "wasm32")]
+    pub fn stored_in(_file: PathBuf) -> Self {
+        Self {
+            paths: bettercut_editor_core::media::browser::kept_projects(),
+            file: None,
+        }
+    }
+
+    /// Read the browser's kept projects again: one may have been added or
+    /// renamed. Nothing on the desktop, where the list is its own.
+    pub fn refresh(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.paths = bettercut_editor_core::media::browser::kept_projects();
+        }
+    }
+
     /// The list kept in `file`, reading whatever is there now.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn stored_in(file: PathBuf) -> Self {
         let paths = std::fs::read_to_string(&file)
             .map(|text| parse(&text))
@@ -106,6 +126,7 @@ impl RecentProjects {
 
 /// The list in a stored file: one path per line, blanks and repeats skipped,
 /// capped — so a hand-edited or damaged file still reads as a sensible list.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn parse(text: &str) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -138,6 +159,9 @@ pub fn menu_label(path: &Path) -> (String, String) {
         || path.display().to_string(),
         |s| s.to_string_lossy().into_owned(),
     );
+    if path.starts_with("/kept") {
+        return (name, "Kept in this browser".to_owned());
+    }
     let folder = path
         .parent()
         .map(|p| p.display().to_string())

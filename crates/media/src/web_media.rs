@@ -64,6 +64,7 @@ extern "C" {
     fn bc_filmstrip(path: &str) -> JsValue;
     fn bc_peaks(path: &str) -> JsValue;
     fn bc_stored_project() -> Option<String>;
+    fn bc_kept_projects() -> js_sys::Array;
     fn bc_keep_project(json: &str, paths: Vec<String>);
 }
 
@@ -331,8 +332,19 @@ pub mod browser {
         bc_stored_project()
     }
 
-    /// Keep this project in the browser, and the page's files at `paths` —
-    /// the ones it uses — letting go of any other file kept before.
+    /// Every project kept in this browser, the latest worked on first, by the
+    /// names [`opened_text`] opens them under.
+    pub fn kept_projects() -> Vec<std::path::PathBuf> {
+        bc_kept_projects()
+            .iter()
+            .filter_map(|v| v.as_string())
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    /// Keep this project in the browser, beside the others kept, and the
+    /// page's files at `paths` — the ones it uses — letting go of any file
+    /// no kept project uses.
     pub fn keep_project(json: &str, paths: Vec<String>) {
         bc_keep_project(json, paths);
     }

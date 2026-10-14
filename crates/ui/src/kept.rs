@@ -5,6 +5,35 @@
 
 use std::path::Path;
 
+use bettercut_editor_core::project_format::Project;
+
+/// Keep `project` in this browser now, beside every other project kept
+/// there, with the files it uses. Whether it was: on the desktop, never —
+/// a project there is kept by saving it.
+#[cfg(target_arch = "wasm32")]
+pub fn keep_project(project: &Project) -> bool {
+    let json = match bettercut_editor_core::project_format::to_json(project) {
+        Ok(json) => json,
+        Err(err) => {
+            tracing::error!(%err, "could not keep the project in this browser");
+            return false;
+        }
+    };
+    let paths = project
+        .media
+        .iter()
+        .filter(|asset| asset.path.starts_with("/browser"))
+        .map(|asset| asset.path.to_string_lossy().into_owned())
+        .collect();
+    bettercut_editor_core::media::browser::keep_project(&String::from_utf8_lossy(&json), paths);
+    true
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn keep_project(_project: &Project) -> bool {
+    false
+}
+
 /// The text kept at `file`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read(file: &Path) -> std::io::Result<String> {

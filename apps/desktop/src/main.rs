@@ -698,12 +698,8 @@ impl App {
         KEPT_AT.store(now.to_bits(), Ordering::Relaxed);
 
         let project = self.editor.project();
-        let json = match project_format::to_json(project) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::error!(%err, "could not keep the project in this browser");
-                return;
-            }
+        let Ok(json) = project_format::to_json(project) else {
+            return;
         };
         let mut hasher = std::hash::DefaultHasher::new();
         json.hash(&mut hasher);
@@ -711,29 +707,34 @@ impl App {
         if KEPT.swap(hash, Ordering::Relaxed) == hash {
             return;
         }
-        let paths = project
-            .media
-            .iter()
-            .filter(|asset| asset.path.starts_with("/browser"))
-            .map(|asset| asset.path.to_string_lossy().into_owned())
-            .collect();
-        bettercut_editor_core::media::browser::keep_project(&String::from_utf8_lossy(&json), paths);
+        if bettercut_ui::kept::keep_project(project) {
+            // A new project, or a new name: the recent list shows it.
+            self.ui.recent.refresh();
+        }
     }
 
     /// Frames the browser decoded since the last look mean the picture may
     /// be out of date: draw it again. While anything is still loading or
     /// decoding, keep looking, since the browser does not wake the app.
     ///
-    /// Looked at again, too, when the project's media changes: a file's
-    /// last news from the page can come before it is imported, and its
-    /// pictures and waveform are found only once it is.
+    /// Looked at again, too, when the project's media changes — or the
+    /// project does, for another kept in the browser: a file's last news
+    /// from the page can come before it is imported, or before the project
+    /// using it is opened, and its pictures and waveform are found only then.
     fn browser_media(&mut self, ctx: &egui::Context) {
         use bettercut_editor_core::media::browser;
-        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+        use std::hash::{Hash, Hasher};
+        use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
         static SEEN: AtomicU32 = AtomicU32::new(0);
-        static SEEN_MEDIA: AtomicUsize = AtomicUsize::new(0);
+        static SEEN_MEDIA: AtomicU64 = AtomicU64::new(0);
         let changes = browser::changes();
-        let media = self.editor.project().media.len();
+        let project = self.editor.project();
+        let mut hasher = std::hash::DefaultHasher::new();
+        project.id.hash(&mut hasher);
+        for asset in &project.media {
+            asset.id.hash(&mut hasher);
+        }
+        let media = hasher.finish();
         let news = SEEN.swap(changes, Ordering::Relaxed) != changes;
         if SEEN_MEDIA.swap(media, Ordering::Relaxed) != media || news {
             if let Some(preview) = self.preview.as_mut() {

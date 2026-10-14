@@ -35,8 +35,9 @@ setting kept:
   dropped on the page (or chosen with Import) open with the browser's own
   decoders — no upload, nothing leaves the computer — and play at full frame
   rate, with their sound and waveforms; a video's own frame rate is read
-  from the file (MP4, MOV, and WebM or MKV when it says; others are taken as 30). Your project and its files are kept
-  in the browser as you work and open again next time — with your settings,
+  from the file (MP4, MOV, and WebM or MKV when it says; others are taken as 30). Your projects and their files are kept
+  in the browser as you work — every one, under **Open → recent** — and the
+  last one opens again next time, with your settings,
   saved looks, title styles, export presets and shortcuts — and **Export** makes
   an MP4 (H.264, with AAC or Opus sound) with the browser's own encoders and
   downloads it — decoding an MP4 or MOV in order, faster than real time for 1080p — and keeps going while you look at another tab. **Save**

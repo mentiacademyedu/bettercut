@@ -60,7 +60,7 @@ pub fn toolbar(
             let mut chosen = None;
             for path in state.recent.paths() {
                 let (name, folder) = crate::recent::menu_label(path);
-                let there = path.exists();
+                let there = cfg!(target_arch = "wasm32") || path.exists();
                 let text = if there {
                     egui::RichText::new(name)
                 } else {
@@ -78,10 +78,14 @@ pub fn toolbar(
                     chosen = Some(path.clone());
                 }
             }
-            ui.separator();
-            if ui.button("Clear list").clicked() {
-                ui.close();
-                state.recent.clear();
+            // In a browser the list is the projects kept there, not a
+            // list of its own to clear.
+            if !cfg!(target_arch = "wasm32") {
+                ui.separator();
+                if ui.button("Clear list").clicked() {
+                    ui.close();
+                    state.recent.clear();
+                }
             }
             if let Some(path) = chosen {
                 ui.close();
@@ -11917,11 +11921,18 @@ fn autosave_warning(failures: u32) -> String {
 
 // ---- actions -------------------------------------------------------------
 
+/// Whether leaving this project for another must ask about unsaved work
+/// first. In a browser every project is kept as it is — kept now, before
+/// leaving — and comes back from Open Recent, so there is nothing to lose.
+pub fn must_ask(editor: &Editor, state: &UiState) -> bool {
+    editor.is_dirty() && !state.discard_ok && !crate::kept::keep_project(editor.project())
+}
+
 pub fn new_project(editor: &mut Editor, state: &mut UiState) {
     // §39/§50: never discard unsaved work silently. Until a proper prompt
     // exists, refuse and say why.
     // Unsaved work: ask, and come back here once it is answered.
-    if editor.is_dirty() && !state.discard_ok {
+    if must_ask(editor, state) {
         state.pending_switch = Some(crate::save_prompt::Switch::New);
         return;
     }
@@ -11966,7 +11977,7 @@ pub fn export_captions(editor: &mut Editor, state: &mut UiState) {
 
 pub fn open_project(editor: &mut Editor, state: &mut UiState) {
     // Unsaved work: ask, and come back here once it is answered.
-    if editor.is_dirty() && !state.discard_ok {
+    if must_ask(editor, state) {
         state.pending_switch = Some(crate::save_prompt::Switch::Open);
         return;
     }
@@ -11987,7 +11998,7 @@ pub fn open_project(editor: &mut Editor, state: &mut UiState) {
 /// project one click away must not make discarding an edit one click away.
 pub fn open_project_at(editor: &mut Editor, state: &mut UiState, path: &std::path::Path) {
     // Unsaved work: ask, and come back here once it is answered.
-    if editor.is_dirty() && !state.discard_ok {
+    if must_ask(editor, state) {
         state.pending_switch = Some(crate::save_prompt::Switch::OpenPath(path.to_path_buf()));
         return;
     }
@@ -12017,6 +12028,13 @@ fn open_from_browser(editor: &mut Editor, state: &mut UiState, path: &std::path:
         }
     };
     let missing = project.refresh_missing_media();
+    // One kept in this browser is listed with when it was worked on: told
+    // by its own name here.
+    let name = if path.starts_with("/kept") {
+        project.name.clone()
+    } else {
+        name
+    };
     let (opened, _rx) = Editor::from_project(project);
     *editor = opened;
     reset_state(state);

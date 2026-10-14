@@ -56,7 +56,7 @@ pub fn build(editor: &mut Editor) -> Result<(), EditorError> {
 /// Replace the open project with the sample — asking first when there is
 /// unsaved work, as a new project does.
 pub fn open(editor: &mut Editor, state: &mut UiState) {
-    if editor.is_dirty() && !state.discard_ok {
+    if crate::panels::must_ask(editor, state) {
         state.pending_switch = Some(crate::save_prompt::Switch::Sample);
         return;
     }
