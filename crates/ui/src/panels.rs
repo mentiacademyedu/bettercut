@@ -4185,13 +4185,20 @@ pub fn timeline_toolbar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiSt
                     "A grid of frames across the video, saved as one PNG. Uses the marked range when there is one",
                 )
                 .clicked()
-                && !not_in_browser(state, "A contact sheet")
-                && let Some(path) = crate::file_dialog::FileDialog::new()
-                    .add_filter("PNG picture", &["png"])
-                    .set_file_name(format!("{} contact sheet.png", editor.project().name.trim()))
-                    .save_file()
             {
-                state.contact_sheet_request = Some(path);
+                let name = format!("{} contact sheet.png", editor.project().name.trim());
+                // A browser has no save dialog: the sheet is downloaded.
+                let path = if cfg!(target_arch = "wasm32") {
+                    Some(std::path::PathBuf::from(name))
+                } else {
+                    crate::file_dialog::FileDialog::new()
+                        .add_filter("PNG picture", &["png"])
+                        .set_file_name(name)
+                        .save_file()
+                };
+                if path.is_some() {
+                    state.contact_sheet_request = path;
+                }
             }
 
             // The cover: the frame that stands for the video, saved as a picture

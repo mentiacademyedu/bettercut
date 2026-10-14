@@ -86,6 +86,64 @@ pub struct WebExport {
     gif: Option<Box<crate::gif::GifWriter<std::io::Cursor<Vec<u8>>>>>,
 }
 
+/// A contact sheet in a browser: a frame per tile, each rendered as a
+/// [`WebStill`] is, laid out as the desktop lays one out.
+pub struct WebSheet {
+    still: WebStill,
+    sheet: Option<crate::contact_sheet::Sheet>,
+    instants: Vec<TimelineTime>,
+    index: usize,
+}
+
+impl WebSheet {
+    pub fn start(
+        project: Project,
+        sequence: SequenceId,
+        settings: &crate::SheetSettings,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Self, ExportError> {
+        let instants = settings.instants();
+        let Some(first) = instants.first().copied() else {
+            return Err(ExportError::EmptyRange);
+        };
+        let Some(found) = project.sequence(sequence) else {
+            return Err(ExportError::EmptyRange);
+        };
+        let sheet = crate::contact_sheet::Sheet::new(settings, found.resolution);
+        Ok(Self {
+            still: WebStill::start(project, sequence, first, device, queue)?,
+            sheet: Some(sheet),
+            instants,
+            index: 0,
+        })
+    }
+
+    /// How many tiles are done, of how many.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.index, self.instants.len())
+    }
+
+    /// Do what is ready. The finished sheet as a PNG's bytes once every tile
+    /// is in; `None` while tiles are still coming.
+    pub fn step(&mut self) -> Option<Result<Vec<u8>, ExportError>> {
+        let (_, _, rgba) = match self.still.step()? {
+            Ok(frame) => frame,
+            Err(err) => return Some(Err(err)),
+        };
+        if let Some(sheet) = self.sheet.as_mut() {
+            sheet.place(self.index, &rgba);
+        }
+        self.index += 1;
+        if let Some(next) = self.instants.get(self.index) {
+            self.still.move_to(*next);
+            return None;
+        }
+        let (size, pixels) = self.sheet.take()?.finish();
+        Some(crate::png_bytes(size, &pixels))
+    }
+}
+
 /// Auto Level or a colour match in a browser: the clip's own frame decoded,
 /// and for a match the frame under the playhead rendered without the clip,
 /// each when it is ready, then the same maths as the desktop's job.
@@ -234,6 +292,13 @@ impl WebStill {
             titles: TextFrames::new(),
             mapped: None,
         })
+    }
+
+    /// Render another instant with the same renderer: what the next
+    /// [`Self::step`]s make.
+    pub fn move_to(&mut self, position: TimelineTime) {
+        self.position = position;
+        self.mapped = None;
     }
 
     /// Do what is ready. The frame, as width, height and tightly packed

@@ -137,6 +137,57 @@ pub fn shrink(rgba: &[u8], from: Resolution, to: Resolution) -> Vec<u8> {
     out
 }
 
+/// A contact sheet being laid out: tiles placed one by one on a grey page.
+pub struct Sheet {
+    pixels: Vec<u8>,
+    size: Resolution,
+    frame_size: Resolution,
+    tile_size: Resolution,
+    columns: u32,
+}
+
+impl Sheet {
+    /// An empty sheet for frames of `frame_size`, as `settings` lays it out.
+    pub fn new(settings: &SheetSettings, frame_size: Resolution) -> Self {
+        let (size, tile_height) = settings.layout(frame_size);
+        let tile_size = Resolution::new(settings.tile_width.max(16), tile_height);
+        // Mid grey behind the tiles: white would blow out a dark cut and black
+        // would hide a dark shot's edges.
+        let mut pixels = vec![40_u8; size.width as usize * size.height as usize * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        Self {
+            pixels,
+            size,
+            frame_size,
+            tile_size,
+            columns: settings.columns.clamp(1, settings.tiles.max(1)),
+        }
+    }
+
+    /// Put frame number `index`, full size RGBA, in its place.
+    pub fn place(&mut self, index: usize, rgba: &[u8]) {
+        let tile = shrink(rgba, self.frame_size, self.tile_size);
+        let (column, row) = (index as u32 % self.columns, index as u32 / self.columns);
+        let left = GUTTER + column * (self.tile_size.width + GUTTER);
+        let top = GUTTER + row * (self.tile_size.height + GUTTER);
+        for y in 0..self.tile_size.height {
+            let from = (y as usize) * self.tile_size.width as usize * 4;
+            let to = ((top + y) as usize * self.size.width as usize + left as usize) * 4;
+            let run = self.tile_size.width as usize * 4;
+            if to + run <= self.pixels.len() && from + run <= tile.len() {
+                self.pixels[to..to + run].copy_from_slice(&tile[from..from + run]);
+            }
+        }
+    }
+
+    /// The finished sheet: its size and RGBA.
+    pub fn finish(self) -> (Resolution, Vec<u8>) {
+        (self.size, self.pixels)
+    }
+}
+
 /// Write the contact sheet described by `settings`.
 ///
 /// Blocking, for a worker thread: it renders a frame per tile, each a seek and
@@ -154,8 +205,7 @@ pub fn contact_sheet(
     }
 
     let frame_size = sequence.resolution;
-    let (sheet_size, tile_height) = settings.layout(frame_size);
-    let tile_size = Resolution::new(settings.tile_width.max(16), tile_height);
+    let mut sheet = Sheet::new(settings, frame_size);
 
     // One device and one compositor for the whole sheet: opening a device per
     // tile is most of the time a sheet takes.
@@ -172,14 +222,6 @@ pub fn contact_sheet(
     let mut frames = FrameSource::new(1);
     let mut titles = TextFrames::new();
 
-    // Mid grey behind the tiles: white would blow out a dark cut and black
-    // would hide a dark shot's edges.
-    let mut sheet = vec![40_u8; sheet_size.width as usize * sheet_size.height as usize * 4];
-    for pixel in sheet.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
-
-    let columns = settings.columns.clamp(1, settings.tiles.max(1));
     for (index, at) in instants.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(ExportError::Cancelled);
@@ -197,19 +239,7 @@ pub fn contact_sheet(
             &queue,
             cancel,
         )?;
-        let tile = shrink(&rgba, frame_size, tile_size);
-
-        let (column, row) = (index as u32 % columns, index as u32 / columns);
-        let left = GUTTER + column * (tile_size.width + GUTTER);
-        let top = GUTTER + row * (tile_height + GUTTER);
-        for y in 0..tile_height {
-            let from = (y as usize) * tile_size.width as usize * 4;
-            let to = ((top + y) as usize * sheet_size.width as usize + left as usize) * 4;
-            let run = tile_size.width as usize * 4;
-            if to + run <= sheet.len() && from + run <= tile.len() {
-                sheet[to..to + run].copy_from_slice(&tile[from..from + run]);
-            }
-        }
+        sheet.place(index, &rgba);
 
         on_progress(ExportProgress {
             frames_done: index as u64 + 1,
@@ -218,6 +248,7 @@ pub fn contact_sheet(
         });
     }
 
+    let (sheet_size, sheet) = sheet.finish();
     crate::write_png(&settings.path, sheet_size, &sheet)?;
     Ok(ExportSummary {
         path: settings.path.clone(),

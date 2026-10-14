@@ -266,6 +266,8 @@ struct WebExports {
     gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
     /// Single frames being rendered, and what each is for.
     stills: Vec<(bettercut_export::WebStill, WebStillFor)>,
+    /// Contact sheets being made, and the name each is downloaded under.
+    sheets: Vec<(bettercut_export::WebSheet, String)>,
     /// Auto Levels and colour matches being worked out: the clip, the
     /// label of the undo step, and the work.
     grades: Vec<(
@@ -682,6 +684,29 @@ impl App {
         }
     }
 
+    /// Step the contact sheets, and download each that is done.
+    fn run_web_sheets(&mut self, ctx: &egui::Context) {
+        let mut sheets = std::mem::take(&mut self.web_exports.sheets);
+        sheets.retain_mut(|(sheet, name)| {
+            let Some(result) = sheet.step() else {
+                return true;
+            };
+            match result {
+                Ok(png) => {
+                    bettercut_editor_core::media::browser::download(&png, name, "image/png");
+                    self.ui.info(format!("Saved {name} — it is in your downloads"));
+                }
+                Err(err) => self.ui.error(format!("Could not make the contact sheet: {err}")),
+            }
+            self.ui.needs_repaint = true;
+            false
+        });
+        if !sheets.is_empty() {
+            ctx.request_repaint();
+        }
+        self.web_exports.sheets = sheets;
+    }
+
     /// Step the Auto Levels and colour matches, and apply each that is done.
     fn run_web_grades(&mut self, ctx: &egui::Context) {
         let mut grades = std::mem::take(&mut self.web_exports.grades);
@@ -1017,6 +1042,8 @@ impl eframe::App for App {
         self.run_web_stills(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         self.run_web_grades(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        self.run_web_sheets(ui.ctx());
 
         // §56: drain the whole queue once per frame, never per event.
         bettercut_ui::consume_events(self.events.drain(), &self.editor, &mut self.ui);
@@ -1433,6 +1460,26 @@ impl eframe::App for App {
                         })
                     });
                     match range {
+                        #[cfg(target_arch = "wasm32")]
+                        Some(range) => {
+                            let name = path.file_name().map_or_else(
+                                || "contact sheet.png".to_owned(),
+                                |n| n.to_string_lossy().into_owned(),
+                            );
+                            let settings = bettercut_export::SheetSettings::of(path, range);
+                            self.ui.info("Making the contact sheet\u{2026}");
+                            let started = self.web_exports.gpu.clone().ok_or_else(|| {
+                                "a contact sheet needs the GPU, and this browser did not give one".to_owned()
+                            }).and_then(|(device, queue)| {
+                                bettercut_export::WebSheet::start(project, sequence, &settings, device, queue)
+                                    .map_err(|err| err.to_string())
+                            });
+                            match started {
+                                Ok(sheet) => self.web_exports.sheets.push((sheet, name)),
+                                Err(err) => self.ui.error(format!("Could not make the contact sheet: {err}")),
+                            }
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
                         Some(range) => {
                             let settings = bettercut_export::SheetSettings::of(path, range);
                             self.ui.info("Making the contact sheet\u{2026}");
