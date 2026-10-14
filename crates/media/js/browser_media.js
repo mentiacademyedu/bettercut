@@ -528,9 +528,17 @@ async function decodeSoundTrack(entry) {
     return true;
   }
 
-  const sound = { blocks: [], frames: 0, channels: 0 };
+  // Handed over now, filled in as it is decoded: the file can be used
+  // meanwhile, its sound arriving behind it (`decoding` until it all has).
+  const sound = { blocks: [], frames: 0, channels: Math.min(2, config.numberOfChannels || 2), decoding: true };
   // Any empty edit before the sound: silence first.
   const lead = Math.round(samples.delay * SOUND_RATE);
+  if (lead > 0) {
+    sound.blocks.push({ start: 0, planes: Array.from({ length: sound.channels }, () => new Int16Array(lead)) });
+    sound.frames = lead;
+  }
+  entry.sound = sound;
+  entry.soundKnown?.();
   // Source samples are counted from the edit list's start: the encoder's
   // priming before it is left out. Decoded and not yet brought to 48 kHz:
   // `pending`, one list of planes a channel, from source sample `base`.
@@ -597,7 +605,6 @@ async function decodeSoundTrack(entry) {
       try {
         if (!rate) {
           rate = data.sampleRate;
-          sound.channels = Math.min(2, data.numberOfChannels);
           pending = Array.from({ length: sound.channels }, () => []);
           skip = Math.round((samples.start / samples.timescale) * rate);
         }
@@ -607,7 +614,8 @@ async function decodeSoundTrack(entry) {
         if (from < frames) {
           for (let c = 0; c < sound.channels; c++) {
             const plane = new Float32Array(frames);
-            data.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+            // Mono said to be stereo: the one channel on both sides.
+            data.copyTo(plane, { planeIndex: Math.min(c, data.numberOfChannels - 1), format: 'f32-planar' });
             pending[c].push(from ? plane.subarray(from) : plane);
           }
           pendingLength += frames - from;
@@ -667,7 +675,6 @@ async function decodeSoundTrack(entry) {
   await work;
   if (failed || !rate) return false;
   if (base + pendingLength > queued) await block(queued, base + pendingLength, true);
-  if (lead > 0) sound.blocks.unshift({ start: 0, planes: Array.from({ length: sound.channels }, () => new Int16Array(lead)) });
   // The encoder's padding after the end, past what the edit list plays, left out.
   if (samples.span > 0) sound.frames = Math.min(sound.frames, lead + Math.round(samples.span * SOUND_RATE));
   entry.sound = sound.channels && sound.frames ? sound : 'none';
@@ -721,8 +728,14 @@ function decodeWhole(entry) {
     });
 }
 
+// The file's sound decoded. Resolves once it is known well enough to hand
+// the file over — whether there is any, and how many channels — which for an
+// MP4 is before it has all been decoded: the rest arrives as the file is used.
 function decodeSound(entry) {
-  return decodeSoundTrack(entry)
+  const known = new Promise((resolve) => {
+    entry.soundKnown = resolve;
+  });
+  decodeSoundTrack(entry)
     .catch(() => false)
     .then((done) => (done ? undefined : decodeWhole(entry)))
     .then(() => {
@@ -730,7 +743,13 @@ function decodeSound(entry) {
     })
     .catch(() => {
       entry.sound = 'none';
+    })
+    .finally(() => {
+      if (entry.sound && entry.sound !== 'none') entry.sound.decoding = false;
+      entry.soundKnown();
+      changes += 1;
     });
+  return known;
 }
 
 function openVideo(entry) {
@@ -1117,6 +1136,12 @@ export function bc_drop_point() {
 
 export function bc_changes() {
   return changes;
+}
+
+// Whether any file's sound is still being decoded: an export waits for it.
+export function bc_sound_coming() {
+  for (const entry of files.values()) if (entry.sound?.decoding) return true;
+  return false;
 }
 
 export function bc_busy() {

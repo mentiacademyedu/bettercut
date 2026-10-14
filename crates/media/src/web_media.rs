@@ -50,6 +50,7 @@ extern "C" {
     fn bc_drop_point() -> JsValue;
     fn bc_changes() -> u32;
     fn bc_busy() -> bool;
+    fn bc_sound_coming() -> bool;
     fn bc_pick_files(accept: &str, multiple: bool);
     fn bc_take_opened() -> js_sys::Array;
     fn bc_opened_text(path: &str) -> Option<String>;
@@ -281,6 +282,12 @@ pub mod browser {
     /// changed since the last look, the preview is drawn again.
     pub fn changes() -> u32 {
         bc_changes()
+    }
+
+    /// Whether any file's sound is still being decoded: a long video is
+    /// handed over before all of it is, and an export waits for the rest.
+    pub fn sound_coming() -> bool {
+        bc_sound_coming()
     }
 
     /// Whether anything is still loading or decoding, so the app keeps

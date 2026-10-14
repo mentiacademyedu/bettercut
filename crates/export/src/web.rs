@@ -232,6 +232,8 @@ impl WebExport {
     fn advance(&mut self) -> Result<bool, ExportError> {
         match &self.stage {
             Stage::Starting => match encoders::state() {
+                // A long video's sound still arriving: exported once it all has.
+                encoders::State::Ready if browser::sound_coming() => Ok(false),
                 encoders::State::Ready => {
                     if self.channels > 0 && encoders::sound_codec().is_none() {
                         tracing::warn!("this browser cannot encode sound; exporting the picture only");
