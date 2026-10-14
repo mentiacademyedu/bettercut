@@ -818,6 +818,9 @@ pub struct UiState {
     /// A frame to save as a PNG, and the instant it was asked for at. Taken by
     /// the shell, which owns the job scheduler the still renders on (§74).
     pub still_request: Option<(std::path::PathBuf, TimelineTime)>,
+    /// The clip a LUT being picked in a browser is for: the file arrives a
+    /// moment later (`crate::file_drop`).
+    pub lut_for: Option<ClipId>,
     /// A contact sheet to render (`bettercut_export::contact_sheet`), taken by
     /// the shell like a still.
     pub contact_sheet_request: Option<std::path::PathBuf>,
@@ -1132,6 +1135,7 @@ impl Default for UiState {
             clip_name_draft: None,
             jump_to: None,
             still_request: None,
+            lut_for: None,
             contact_sheet_request: None,
             waveform_view: crate::waveform_view::WaveformView::default(),
             storyboard_open: false,

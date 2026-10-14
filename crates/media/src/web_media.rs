@@ -54,6 +54,8 @@ extern "C" {
     fn bc_pick_files(accept: &str, multiple: bool);
     fn bc_take_opened() -> js_sys::Array;
     fn bc_pick_bytes(accept: &str, purpose: &str);
+    fn bc_kept_file(path: &str) -> JsValue;
+    fn bc_keep_file(path: &str, bytes: &[u8]) -> bool;
     fn bc_take_given() -> js_sys::Array;
     fn bc_opened_text(path: &str) -> Option<String>;
     fn bc_file_size(path: &str) -> f64;
@@ -391,6 +393,21 @@ pub mod browser {
     fn pick(extensions: &[&str], multiple: bool) {
         let accept: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
         bc_pick_files(&accept.join(","), multiple);
+    }
+
+    /// One of the editor's own small files kept by the page, by its path
+    /// (`bettercut_foundation::files`).
+    pub fn kept_file(path: &str) -> Option<Vec<u8>> {
+        let found = bc_kept_file(path);
+        if found.is_undefined() || found.is_null() {
+            return None;
+        }
+        Some(js_sys::Uint8Array::new(&found).to_vec())
+    }
+
+    /// Keep one of the editor's own small files in the page, at `path`.
+    pub fn keep_file(path: &str, bytes: &[u8]) -> bool {
+        bc_keep_file(path, bytes)
     }
 
     /// Open the picker for one file to be read for `purpose` — captions,

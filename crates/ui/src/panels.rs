@@ -8411,7 +8411,10 @@ fn clip_lut(
         .project()
         .luts
         .iter()
-        .map(|lut| (lut.id, lut.name.clone(), lut.path.exists()))
+        .map(|lut| {
+            let there = bettercut_editor_core::foundation::files::len(&lut.path).is_ok();
+            (lut.id, lut.name.clone(), there)
+        })
         .collect();
     let mut chosen: Option<Option<ClipLut>> = None;
     let mut import = false;
@@ -8482,8 +8485,15 @@ fn clip_lut(
         });
     }
 
+    // In a browser, the picked file's bytes arrive later (`crate::file_drop`),
+    // to be kept by the page and given this clip.
+    #[cfg(target_arch = "wasm32")]
+    if import {
+        state.lut_for = Some(clip);
+        bettercut_editor_core::media::browser::pick_bytes(&["cube"], "lut");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if import
-        && !not_in_browser(state, "Importing a LUT")
         && let Some(path) = crate::file_dialog::FileDialog::new()
             .add_filter("LUT", &["cube"])
             .pick_file()

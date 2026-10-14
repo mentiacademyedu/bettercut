@@ -49,7 +49,8 @@ const IDLE_MS = 400;
 // project itself, in IndexedDB — which holds a `File` as it is.
 const DATABASE = 'bettercut';
 const FILES = 'files'; // path -> File
-const PROJECTS = 'projects'; // 'current' -> the project's JSON
+const PROJECTS = 'projects'; // project id -> { json, name, modified }; 'current' -> an id
+const KEPT_FILES = 'kept'; // path -> bytes: the editor's own small files (LUTs)
 
 const files = new Map(); // path -> entry
 const order = []; // entries in the order they were given, until handed over
@@ -931,26 +932,36 @@ function request(r) {
 }
 
 function openDatabase() {
-  const opening = indexedDB.open(DATABASE, 1);
+  const opening = indexedDB.open(DATABASE, 2);
   opening.onupgradeneeded = () => {
-    opening.result.createObjectStore(FILES);
-    opening.result.createObjectStore(PROJECTS);
+    const db = opening.result;
+    for (const store of [FILES, PROJECTS, KEPT_FILES]) {
+      if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+    }
   };
   return request(opening);
 }
+
+// The editor's own small files (`bettercut_foundation::files`), read whole
+// before the app starts so it can read them without waiting, and kept in
+// the database as they are written.
+const keptFiles = new Map(); // path -> Uint8Array
 
 // Before the app starts: every project kept, and the files of the one open
 // last time, opened again under the names it knows them by.
 async function restore() {
   try {
     database = await openDatabase();
-    const read = database.transaction([FILES, PROJECTS]);
-    const [ids, values, paths, kept] = await Promise.all([
+    const read = database.transaction([FILES, PROJECTS, KEPT_FILES]);
+    const [ids, values, paths, kept, keptPaths, keptBytes] = await Promise.all([
       request(read.objectStore(PROJECTS).getAllKeys()),
       request(read.objectStore(PROJECTS).getAll()),
       request(read.objectStore(FILES).getAllKeys()),
       request(read.objectStore(FILES).getAll()),
+      request(read.objectStore(KEPT_FILES).getAllKeys()),
+      request(read.objectStore(KEPT_FILES).getAll()),
     ]);
+    keptPaths.forEach((path, i) => keptFiles.set(path, keptBytes[i]));
     ids.forEach((id, i) => {
       const value = values[i];
       if (id === 'current') {
@@ -1203,6 +1214,18 @@ export function bc_keep_setting(path, text) {
   } catch (_) {
     return false;
   }
+}
+
+export function bc_kept_file(path) {
+  return keptFiles.get(path) ?? undefined;
+}
+
+export function bc_keep_file(path, bytes) {
+  const copy = new Uint8Array(bytes);
+  keptFiles.set(path, copy);
+  if (!database) return false;
+  database.transaction(KEPT_FILES, 'readwrite').objectStore(KEPT_FILES).put(copy, path);
+  return true;
 }
 
 export function bc_pick_bytes(accept, purpose) {

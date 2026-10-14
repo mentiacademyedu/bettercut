@@ -107,9 +107,8 @@ pub const MAX_CUBE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// renderer's loaders both only ever report it.
 pub fn load_cube_file(path: &std::path::Path) -> Result<CubeLut, String> {
     let name = path.display();
-    let size = std::fs::metadata(path)
-        .map_err(|err| format!("could not read {name}: {err}"))?
-        .len();
+    let size = bettercut_foundation::files::len(path)
+        .map_err(|err| format!("could not read {name}: {err}"))?;
     if size > MAX_CUBE_FILE_BYTES {
         return Err(format!(
             "{name} is {} MB; LUT files are limited to {} MB",
@@ -117,8 +116,9 @@ pub fn load_cube_file(path: &std::path::Path) -> Result<CubeLut, String> {
             MAX_CUBE_FILE_BYTES / (1024 * 1024)
         ));
     }
-    let text =
-        std::fs::read_to_string(path).map_err(|err| format!("could not read {name}: {err}"))?;
+    let bytes =
+        bettercut_foundation::files::read(path).map_err(|err| format!("could not read {name}: {err}"))?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not a text file"))?;
     parse_cube(&text).map_err(|err| format!("{name}: {err}"))
 }
 

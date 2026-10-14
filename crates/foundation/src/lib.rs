@@ -8,6 +8,7 @@
 
 pub mod ids;
 pub mod clock;
+pub mod files;
 pub mod places;
 pub mod rational;
 pub mod time;

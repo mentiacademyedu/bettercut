@@ -270,6 +270,9 @@ struct WebExports {
 
 impl App {
     fn new(open: Option<std::path::PathBuf>, cc: &eframe::CreationContext<'_>) -> Self {
+        // Before anything reads one of the editor's own files.
+        #[cfg(target_arch = "wasm32")]
+        use_browser_files();
         let mut ui = UiState::default();
         // The one place the real list is read and written: everything else,
         // tests included, keeps an in-memory one.
@@ -556,6 +559,16 @@ impl App {
 
 /// The web build: the project kept in this browser last time, if there is
 /// one and it can be read.
+/// The editor's own small files, kept by the page (`bettercut_foundation::files`).
+#[cfg(target_arch = "wasm32")]
+fn use_browser_files() {
+    use bettercut_editor_core::media::browser;
+    bettercut_editor_core::foundation::files::use_store(bettercut_editor_core::foundation::files::Store {
+        read: browser::kept_file,
+        write: browser::keep_file,
+    });
+}
+
 #[cfg(target_arch = "wasm32")]
 fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
     use bettercut_editor_core::project_format;

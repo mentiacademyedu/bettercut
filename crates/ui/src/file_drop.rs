@@ -64,6 +64,7 @@ fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeli
                 Ok(count) => state.info(format!("Imported {count} captions")),
                 Err(err) => state.error(format!("Could not import captions: {err}")),
             },
+            "lut" => import_lut(editor, state, &name, &bytes),
             "markers" => match editor.import_marker_text(&String::from_utf8_lossy(&bytes)) {
                 Ok(0) => state.info(
                     "No markers found in that file — it needs a timecode or seconds column",
@@ -110,6 +111,35 @@ fn browser(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState, timeli
         place_all(editor, state, &imported);
     }
     state.needs_repaint = true;
+}
+
+/// A LUT picked in a browser: kept by the page under a path of its own,
+/// imported from there, and given to the clip it was picked for.
+#[cfg(target_arch = "wasm32")]
+fn import_lut(editor: &mut Editor, state: &mut UiState, name: &str, bytes: &[u8]) {
+    use bettercut_editor_core::foundation::files;
+    let path = std::path::PathBuf::from(format!("/files/luts/{}", name.replace(['/', '\\'], "-")));
+    if let Err(err) = files::write(&path, bytes) {
+        state.error(format!("Could not keep the LUT: {err}"));
+        return;
+    }
+    match editor.import_lut(&path) {
+        Ok(id) => {
+            if let Some(clip) = state.lut_for.take() {
+                let lut = bettercut_editor_core::timeline::ClipLut::new(id);
+                if let Err(err) = editor.set_clip_property(
+                    clip,
+                    bettercut_editor_core::ClipProperty::Lut(Some(lut)),
+                    false,
+                ) {
+                    state.error(err.to_string());
+                    return;
+                }
+            }
+            state.info("LUT imported");
+        }
+        Err(err) => state.error(err.to_string()),
+    }
 }
 
 /// Put each imported file at the end of the timeline, in order.
