@@ -475,6 +475,19 @@ pub fn show(ctx: &egui::Context, state: &mut UiState) {
                  MCP — can edit with you: cut, title, colour, caption and export, in this \
                  window as you watch, every change undoable like your own.",
             );
+            // An assistant reaches the editor through bettercut-mcp, a program
+            // beside the desktop app: a page has nowhere for one to connect.
+            if cfg!(target_arch = "wasm32") {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Assistants connect to the desktop app, not to this browser version.",
+                    )
+                    .strong(),
+                );
+                ui.hyperlink_to("Download bettercut", "https://bettercut.dev/download/");
+                return;
+            }
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(connection(state.assistant_seen, Instant::now())).strong(),

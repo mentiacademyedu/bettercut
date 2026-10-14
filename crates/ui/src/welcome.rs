@@ -66,12 +66,17 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                     .small()
                     .color(theme::disabled()),
             );
-            // A beta says so up front, with where to send what breaks.
+            // A beta says so up front, with where to send what breaks; the
+            // browser version, newer still, is an alpha.
+            #[cfg(not(target_arch = "wasm32"))]
+            let warning = "This is a beta: save often, and when something breaks, Ctrl+K then \
+                 \u{201c}Report a Bug on GitHub\u{201d} tells us about it.";
+            #[cfg(target_arch = "wasm32")]
+            let warning = "This is the browser version's alpha: some of the desktop app is not \
+                 here yet. Save often, and when something breaks, Ctrl+K then \
+                 \u{201c}Report a Bug on GitHub\u{201d} tells us about it.";
             ui.label(
-                egui::RichText::new(crate::keys::keys(
-                    "This is a beta: save often, and when something breaks, Ctrl+K then \
-                     \u{201c}Report a Bug on GitHub\u{201d} tells us about it.",
-                ))
+                egui::RichText::new(crate::keys::keys(warning))
                 .small()
                 .color(theme::accent_text()),
             );
@@ -87,6 +92,9 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
                 {
                     sample = true;
                 }
+                // Assistants connect to the desktop app (bettercut-mcp), not
+                // to a page.
+                #[cfg(not(target_arch = "wasm32"))]
                 if ui
                     .button("Edit with an AI Assistant")
                     .on_hover_text("Connect Claude or another assistant to edit with you")
