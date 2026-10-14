@@ -577,6 +577,17 @@ fn kept_in_browser() -> Option<(Editor, bettercut_editor_core::EventReceiver)> {
     None
 }
 
+/// What a finished web export says: its frames, when it has any — a WAV
+/// has none.
+#[cfg(target_arch = "wasm32")]
+fn exported(name: &str, frames: u64) -> String {
+    if frames == 0 {
+        format!("Exported {name} — it is in your downloads")
+    } else {
+        format!("Exported {name} ({frames} frames) — it is in your downloads")
+    }
+}
+
 /// How often the web build keeps the project in the browser, in seconds.
 #[cfg(target_arch = "wasm32")]
 const KEEP_EVERY: f64 = 2.0;
@@ -609,7 +620,7 @@ impl App {
         match ended {
             Some(WebProgress::Finished { name, frames }) => self
                 .ui
-                .info(format!("Exported {name} ({frames} frames) — it is in your downloads")),
+                .info(exported(&name, frames)),
             Some(WebProgress::Failed(why)) => self.ui.error(format!("Export failed: {why}")),
             _ => {}
         }
@@ -666,7 +677,7 @@ impl App {
             WebProgress::Finished { name, frames } => {
                 *running = None;
                 self.ui
-                    .info(format!("Exported {name} ({frames} frames) — it is in your downloads"));
+                    .info(exported(&name, frames));
             }
             WebProgress::Failed(why) => {
                 *running = None;

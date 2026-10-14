@@ -10,7 +10,8 @@
 //! ([`FrameSource::wait_for_exact_frames`]); the browser's encoders make
 //! H.264 and AAC or Opus (`bettercut_media::browser::export`); and
 //! [`bettercut_media::mp4_mux`] writes the MP4, which is handed to the person
-//! as a download.
+//! as a download. Sound only is the mix as a WAV, as on the desktop, made a
+//! block a step.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +57,8 @@ enum Stage {
     Reading(Arc<AtomicBool>),
     /// Every frame given; the encoders are finishing.
     Finishing,
+    /// Sound only: the mix going into a WAV, a block a step.
+    Sound(Box<crate::wav::WavWriter<std::io::Cursor<Vec<u8>>>>),
     Over(WebProgress),
 }
 
@@ -99,7 +102,7 @@ impl WebExport {
         queue: wgpu::Queue,
     ) -> Result<Self, ExportError> {
         let unsupported = if settings.sound_only {
-            Some("a sound-only file")
+            None
         } else if settings.gif {
             Some("a GIF")
         } else if settings.image_sequence {
@@ -113,7 +116,7 @@ impl WebExport {
         };
         if let Some(what) = unsupported {
             return Err(ExportError::Write(format!(
-                "{what} — in a browser, export makes MP4 (H.264) files for now"
+                "{what} — in a browser, export makes MP4 (H.264) and WAV files for now"
             )));
         }
 
@@ -133,7 +136,12 @@ impl WebExport {
             return Err(ExportError::EmptyRange);
         }
         let total = ((span + ticks_per_frame - 1) / ticks_per_frame).max(1) as u64;
-        let channels = if settings.picture_only {
+        let channels = if settings.sound_only {
+            if !sequence.audio_tracks.iter().any(|track| track.enabled) {
+                return Err(ExportError::NoSound);
+            }
+            usize::from(crate::wav::CHANNELS)
+        } else if settings.picture_only {
             0
         } else {
             audio_channels(&sequence)
@@ -157,16 +165,26 @@ impl WebExport {
             audio.normalise_to(settings.range, target, &NeverCancelled);
         }
 
-        let bitrate = settings
-            .bitrate
-            .map_or_else(|| default_bitrate(&settings), |b| b.clamp(100_000, 200_000_000) as u32);
-        encoders::start(
-            settings.resolution.width,
-            settings.resolution.height,
-            settings.frame_rate,
-            bitrate,
-            channels as u32,
-        );
+        // Sound only: counted in blocks, and no encoders to wait for.
+        let (total, stage) = if settings.sound_only {
+            let writer = crate::wav::WavWriter::new(std::io::Cursor::new(Vec::new()))
+                .map_err(|err| ExportError::Write(err.to_string()))?;
+            let samples = span / TICKS_PER_AUDIO_SAMPLE;
+            let blocks = (samples + crate::wav::BLOCK - 1) / crate::wav::BLOCK;
+            (blocks.max(1) as u64, Stage::Sound(Box::new(writer)))
+        } else {
+            let bitrate = settings
+                .bitrate
+                .map_or_else(|| default_bitrate(&settings), |b| b.clamp(100_000, 200_000_000) as u32);
+            encoders::start(
+                settings.resolution.width,
+                settings.resolution.height,
+                settings.frame_rate,
+                bitrate,
+                channels as u32,
+            );
+            (total, Stage::Starting)
+        };
         let key_every = (settings.frame_rate.as_f64() * KEYFRAME_SECONDS).round().max(1.0) as u64;
 
         Ok(Self {
@@ -186,7 +204,7 @@ impl WebExport {
             index: 0,
             samples_written: 0,
             key_every,
-            stage: Stage::Starting,
+            stage,
         })
     }
 
@@ -200,6 +218,10 @@ impl WebExport {
 
     /// Stop, and throw away what was made.
     pub fn cancel(&mut self) {
+        if matches!(self.stage, Stage::Sound(_)) {
+            self.stage = Stage::Over(WebProgress::Failed("cancelled".to_owned()));
+            return;
+        }
         encoders::cancel();
         self.stage = Stage::Over(WebProgress::Failed("cancelled".to_owned()));
     }
@@ -312,8 +334,43 @@ impl WebExport {
                 encoders::State::Failed(why) => Err(ExportError::Write(why)),
                 _ => Ok(false),
             },
+            Stage::Sound(_) => self.mix_block(),
             Stage::Over(_) => Ok(false),
         }
+    }
+
+    /// Sound only: the next block of the mix into the WAV, and the WAV
+    /// downloaded after the last.
+    fn mix_block(&mut self) -> Result<bool, ExportError> {
+        let start = self.settings.range.start.ticks();
+        let samples = (self.settings.range.end.ticks() - start) / TICKS_PER_AUDIO_SAMPLE;
+        let frames = (samples - self.samples_written).min(crate::wav::BLOCK);
+        let write_failed = |err: std::io::Error| ExportError::Write(err.to_string());
+        if frames > 0 {
+            let position =
+                TimelineTime::from_ticks(start + self.samples_written * TICKS_PER_AUDIO_SAMPLE);
+            let planes = self.audio.read(position, frames as usize);
+            let interleaved: Vec<f32> = (0..frames as usize)
+                .flat_map(|i| planes.iter().map(move |plane| plane[i]))
+                .collect();
+            if let Stage::Sound(writer) = &mut self.stage {
+                writer.push(&interleaved).map_err(write_failed)?;
+            }
+            self.samples_written += frames;
+            self.index += 1;
+        }
+        if self.samples_written < samples {
+            return Ok(true);
+        }
+        let Stage::Sound(writer) = std::mem::replace(&mut self.stage, Stage::Finishing) else {
+            return Ok(false);
+        };
+        let file = writer.finish().map_err(write_failed)?.into_inner();
+        let name = self.name();
+        browser::download(&file, &name, "audio/wav");
+        tracing::info!(name, bytes = file.len(), "web sound export finished");
+        self.stage = Stage::Over(WebProgress::Finished { name, frames: 0 });
+        Ok(false)
     }
 
     fn position(&self, index: u64) -> TimelineTime {

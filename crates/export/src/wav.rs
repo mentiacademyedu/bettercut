@@ -31,13 +31,13 @@ use crate::{AudioMixdown, ExportError, ExportProgress, ExportSettings, ExportSum
 /// What the status bar names as the "encoder" for a WAV.
 pub const WAV_ENCODER: &str = "WAV, 16-bit PCM";
 
-const CHANNELS: u16 = 2;
+pub(crate) const CHANNELS: u16 = 2;
 const BITS: u16 = 16;
 const HEADER_BYTES: u64 = 44;
 
 /// Samples mixed per step: a tenth of a second, so progress moves smoothly and
 /// cancelling is prompt without mixing in slivers.
-const BLOCK: i64 = AUDIO_SAMPLE_RATE / 10;
+pub(crate) const BLOCK: i64 = AUDIO_SAMPLE_RATE / 10;
 
 /// A WAV file being written: the header goes first with placeholder sizes, and
 /// `finish` fills them in once the length is known.
