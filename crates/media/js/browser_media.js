@@ -941,7 +941,27 @@ function openDatabase() {
       if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
     }
   };
-  return request(opening);
+  return new Promise((resolve, reject) => {
+    // A tab still open on an older bettercut holds the database at its
+    // older version, and the upgrade waits on it for as long as it stays
+    // open. Rather than wait — the page would say "Loading" for ever — the
+    // app starts without what was kept (the console says why).
+    const waited = setTimeout(
+      () => reject(new Error('another bettercut tab is holding the kept projects; close it and reload')),
+      4000,
+    );
+    opening.onsuccess = () => {
+      clearTimeout(waited);
+      const db = opening.result;
+      // And this tab gives way to a newer bettercut opened beside it.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+    opening.onerror = () => {
+      clearTimeout(waited);
+      reject(opening.error);
+    };
+  });
 }
 
 // The editor's own small files (`bettercut_foundation::files`), read whole

@@ -83,6 +83,20 @@
     // Whole stack traces in the console when something panics.
     Error.stackTraceLimit = 60;
 
+    // Anything that goes wrong before the editor is up — a panic while it
+    // starts, say — is said where the loading line was, rather than leaving
+    // the page loading for ever. Once it is up the line is gone and this
+    // says nothing.
+    const status = document.getElementById('status');
+    const failed = (what) => {
+      if (!status.isConnected) return;
+      status.textContent =
+        'bettercut could not start in this browser: ' + what +
+        ' — reloading may help; if it keeps happening, please tell us on GitHub.';
+    };
+    window.addEventListener('error', (e) => failed(e.error?.message ?? e.message));
+    window.addEventListener('unhandledrejection', (e) => failed(e.reason?.message ?? e.reason));
+
     // Files dropped on the page go to the app's media layer as they are —
     // the browser's own File, read when needed — rather than through egui,
     // which would copy every byte of them into memory first. So the page
@@ -142,7 +156,9 @@
     // told plainly instead.
     async function canDraw() {
       try {
-        if (navigator.gpu && (await navigator.gpu.requestAdapter())) return true;
+        // Asked with a time limit: some drivers never answer.
+        const late = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+        if (navigator.gpu && (await Promise.race([navigator.gpu.requestAdapter(), late]))) return true;
       } catch (_) {
         // No WebGPU: WebGL2, then.
       }
@@ -168,10 +184,7 @@
       })
       .then(() => init())
       .then(openFromAddress)
-      .catch((err) => {
-        document.getElementById('status').textContent =
-          'bettercut could not start in this browser: ' + (err?.message ?? err);
-      });
+      .catch((err) => failed(err?.message ?? err));
   </script>
 </body>
 </html>
