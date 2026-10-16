@@ -293,8 +293,10 @@ impl MediaJobs {
             if !self.considered.insert(asset.id) {
                 continue;
             }
-            // A colour clip has no file for a thumbnail, waveform or proxy.
-            if asset.generated.is_some() {
+            // A colour clip has no file for a thumbnail, waveform or proxy,
+            // nor does a made sound: its waveform is worked out from the
+            // sound itself (`WaveformStore::note_generated`).
+            if asset.generated.is_some() || asset.generated_sound.is_some() {
                 continue;
             }
             // Nor does a baked stretch of the edit want any of the three: it

@@ -248,6 +248,7 @@ pub fn draw(
     silence_dialog::show(ui.ctx(), editor, state);
     curve_editor::show(ui.ctx(), editor, state);
     panels::collect_flicker(ui.ctx(), editor, state);
+    state.waveforms.note_generated(&editor.project().media);
     highlight_dialog::show(ui.ctx(), editor, state);
     scene_dialog::show(ui.ctx(), editor, state);
     palette::show(ui.ctx(), editor, state);
