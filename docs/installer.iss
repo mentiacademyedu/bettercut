@@ -54,3 +54,12 @@ Root: HKA; Subkey: "Software\Classes\bettercut.Project\shell\open\command"; Valu
 
 [Run]
 Filename: "{app}\bettercut.exe"; Description: "Start bettercut"; Flags: nowait postinstall skipifsilent
+; An update from inside bettercut runs this silently with /relaunch=1, and
+; bettercut opens again once it is in place.
+Filename: "{app}\bettercut.exe"; Flags: nowait; Check: Relaunch
+
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;

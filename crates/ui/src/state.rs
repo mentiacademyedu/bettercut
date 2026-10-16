@@ -761,6 +761,11 @@ pub struct UiState {
     pub assistant_app: crate::assistant::App,
     /// A newer bettercut, once the day's check has found one (`crate::updates`).
     pub update_found: crate::updates::Found,
+    /// The newer version's installer, being downloaded or ready to run.
+    pub update_download: crate::updates::Downloading,
+    /// Set by "Restart to update": run the downloaded installer once the
+    /// window closes. Cleared if closing is called off.
+    pub update_on_quit: bool,
     /// The command palette (Ctrl+K): open, what is typed, and which row is
     /// highlighted.
     pub palette_open: bool,
@@ -1125,6 +1130,8 @@ impl Default for UiState {
             assistant_note: Default::default(),
             assistant_app: crate::assistant::App::ClaudeCode,
             update_found: Default::default(),
+            update_download: Default::default(),
+            update_on_quit: false,
             palette_open: false,
             palette_query: String::new(),
             palette_pick: 0,

@@ -25,6 +25,12 @@
   Auto Level, in the inspector's Colours tab, and as *Remove Flicker* under
   Ctrl+K; the same button puts the flicker back. AI assistants have a new
   `remove_flicker` tool.
+- **Update from inside bettercut (Windows)**: when a newer version is out,
+  the status bar offers **Update now**. The installer downloads in the
+  background, is checked against the SHA-256 GitHub lists for it, and runs
+  when you press **Restart to update** — after asking about unsaved work —
+  opening bettercut again once it is in place. Only for a copy put in place
+  by the installer; a copy unpacked from the zip still gets the link.
 
 ### Fixed
 

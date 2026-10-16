@@ -69,6 +69,8 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
     }
     if cancel {
         state.pending_switch = None;
+        // Not closing after all, so not updating either.
+        state.update_on_quit = false;
         state.needs_repaint = true;
         return;
     }

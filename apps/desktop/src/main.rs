@@ -1171,6 +1171,16 @@ impl eframe::App for App {
         // Closing with unsaved work asks first (`save_prompt`); once it is
         // answered, `quit_now` lets the close through.
         if self.ui.quit_now {
+            // "Restart to update": the checked installer runs as the window
+            // goes, and opens bettercut again when it is done.
+            if std::mem::take(&mut self.ui.update_on_quit) {
+                let ready = self.ui.update_download.lock().ok().and_then(|d| d.clone());
+                if let Some(bettercut_ui::updates::Download::Ready(installer)) = ready
+                    && let Err(err) = bettercut_ui::updates::install(&installer)
+                {
+                    tracing::error!(%err, "could not start the update");
+                }
+            }
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         } else if ui.ctx().input(|i| i.viewport().close_requested()) && self.editor.is_dirty() {
             ui.ctx()

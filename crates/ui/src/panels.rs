@@ -11927,20 +11927,7 @@ pub fn status_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             let update = state.update_found.lock().ok().and_then(|u| u.clone());
             if let Some(update) = update {
                 ui.separator();
-                if ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("bettercut {} is out", update.version))
-                                .small()
-                                .color(theme::accent_text()),
-                        )
-                        .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text("Open its download page")
-                    .clicked()
-                {
-                    state.open_url = Some(update.url);
-                }
+                update_status(ui, editor, state, update);
             }
             // An assistant working in this window, so its edits are no
             // surprise; a click opens how it is connected.
@@ -12383,6 +12370,82 @@ pub fn save_project(editor: &mut Editor, state: &mut UiState) {
             state.info("Project saved");
         }
         Err(err) => state.error(format!("Could not save: {err}")),
+    }
+}
+
+/// The status bar's word on a newer version: a link to its page, and where
+/// this copy can update itself (`crate::updates`), the download and the
+/// restart that installs it.
+fn update_status(
+    ui: &mut egui::Ui,
+    editor: &Editor,
+    state: &mut UiState,
+    update: crate::updates::Update,
+) {
+    use crate::updates::Download;
+    let small = |text: String| egui::RichText::new(text).small().color(theme::accent_text());
+    let download = state.update_download.lock().ok().and_then(|d| d.clone());
+    match download {
+        Some(Download::Fetching { got, of }) => {
+            let text = match (got * 100).checked_div(of) {
+                Some(percent) => format!(
+                    "Downloading bettercut {}… {}%",
+                    update.version,
+                    percent.min(100)
+                ),
+                None => format!("Downloading bettercut {}…", update.version),
+            };
+            ui.label(small(text));
+            return;
+        }
+        Some(Download::Ready(_)) => {
+            if ui
+                .button(egui::RichText::new(format!("Restart to update to {}", update.version)).small())
+                .on_hover_text("Close bettercut, install the new version and open it again")
+                .clicked()
+            {
+                state.update_on_quit = true;
+                if editor.is_dirty() {
+                    state.pending_switch = Some(crate::save_prompt::Switch::Quit);
+                } else {
+                    state.quit_now = true;
+                }
+                state.needs_repaint = true;
+            }
+            return;
+        }
+        Some(Download::Failed(reason)) => {
+            if ui
+                .add(egui::Label::new(small("Update failed".to_owned())).sense(egui::Sense::click()))
+                .on_hover_text(format!("{reason}. Click to download it from its page instead"))
+                .clicked()
+            {
+                state.open_url = Some(update.url.clone());
+            }
+            return;
+        }
+        None => {}
+    }
+    if ui
+        .add(
+            egui::Label::new(small(format!("bettercut {} is out", update.version)))
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_text("Open its download page")
+        .clicked()
+    {
+        state.open_url = Some(update.url.clone());
+    }
+    if let Some(installer) = update.installer.filter(|_| crate::updates::can_install_here())
+        && ui
+            .button(egui::RichText::new("Update now").small())
+            .on_hover_text("Download the new version now; it installs when you restart bettercut")
+            .clicked()
+    {
+        let ctx = ui.ctx().clone();
+        crate::updates::download(installer, state.update_download.clone(), move || {
+            ctx.request_repaint();
+        });
     }
 }
 

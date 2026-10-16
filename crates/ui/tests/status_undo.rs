@@ -66,9 +66,40 @@ fn a_newer_version_and_an_assistant_are_shown() {
     *state.update_found.lock().unwrap() = Some(bettercut_ui::updates::Update {
         version: "9.9.9".to_owned(),
         url: "https://example.invalid/9.9.9".to_owned(),
+        installer: None,
     });
     state.assistant_seen = Some(std::time::Instant::now());
     let busy = words(&mut editor, &mut state);
     assert!(busy.contains("bettercut 9.9.9 is out"), "{busy}");
     assert!(busy.contains("assistant connected"), "{busy}");
+}
+
+/// An update being fetched says how far it has got, and once fetched and
+/// checked, offers the restart that installs it — which closes the window,
+/// asking first about unsaved work.
+#[test]
+fn an_update_downloads_then_offers_a_restart() {
+    use bettercut_ui::updates::{Download, Update};
+    let (mut editor, _events) = Editor::new_project("Status");
+    let mut state = UiState::default();
+    *state.update_found.lock().unwrap() = Some(Update {
+        version: "9.9.9".to_owned(),
+        url: "https://example.invalid/9.9.9".to_owned(),
+        installer: None,
+    });
+
+    *state.update_download.lock().unwrap() = Some(Download::Fetching {
+        got: 25,
+        of: 100,
+    });
+    let fetching = words(&mut editor, &mut state);
+    assert!(fetching.contains("Downloading bettercut 9.9.9… 25%"), "{fetching}");
+
+    *state.update_download.lock().unwrap() = Some(Download::Ready("C:/x/setup.exe".into()));
+    let ready = words(&mut editor, &mut state);
+    assert!(ready.contains("Restart to update to 9.9.9"), "{ready}");
+
+    *state.update_download.lock().unwrap() = Some(Download::Failed("no network".to_owned()));
+    let failed = words(&mut editor, &mut state);
+    assert!(failed.contains("Update failed"), "{failed}");
 }

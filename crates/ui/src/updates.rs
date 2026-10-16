@@ -1,11 +1,17 @@
-//! Telling a tester a newer bettercut exists.
+//! Telling a tester a newer bettercut exists, and on Windows installing it.
 //!
 //! At most once a day, at start, one request to GitHub's public list of
 //! releases — through the system's own `curl` (in Windows 10 and later, every
 //! Mac and most Linux), so the editor carries no networking code of its own.
 //! Nothing is sent but the request itself. A newer version is said in the
-//! status bar with a link to its download; nothing installs by itself. Off
-//! with one switch in Settings.
+//! status bar with a link to its download. Off with one switch in Settings.
+//!
+//! Where bettercut was put in place by its installer, the bar also offers to
+//! update: the new installer is downloaded only when asked, checked against
+//! the SHA-256 GitHub lists for it (with Windows' own `certutil`), and run —
+//! silently, and starting bettercut again when it is done — only once the
+//! window is closing, after any unsaved work has been asked about. Nothing
+//! installs by itself.
 
 use std::sync::{Arc, Mutex};
 
@@ -22,7 +28,33 @@ pub const EVERY_SECONDS: u64 = 24 * 60 * 60;
 pub struct Update {
     pub version: String,
     pub url: String,
+    /// Its Windows installer, when the release has one with a digest.
+    pub installer: Option<Installer>,
 }
+
+/// A release's Windows installer, as GitHub lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installer {
+    pub name: String,
+    pub url: String,
+    /// The SHA-256 GitHub worked out for it, in lower-case hex.
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// How the download of an update is going.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Download {
+    /// Bytes so far, of how many.
+    Fetching { got: u64, of: u64 },
+    /// Downloaded and checked: the installer, waiting to be run.
+    Ready(std::path::PathBuf),
+    /// Why there is nothing to install.
+    Failed(String),
+}
+
+/// The download, written by its thread and read by the status bar.
+pub type Downloading = Arc<Mutex<Option<Download>>>;
 
 /// What a check found, written by its thread and read by the status bar.
 pub type Found = Arc<Mutex<Option<Update>>>;
@@ -65,8 +97,157 @@ pub fn latest(reply: &str) -> Option<Update> {
                 .trim_start_matches('v')
                 .to_owned(),
             url: release["html_url"].as_str()?.to_owned(),
+            installer: installer_of(release),
         })
     })
+}
+
+/// The release's `-setup.exe`, if it lists one with a SHA-256.
+fn installer_of(release: &serde_json::Value) -> Option<Installer> {
+    release["assets"].as_array()?.iter().find_map(|asset| {
+        let name = asset["name"].as_str()?;
+        if !name.ends_with("-setup.exe") {
+            return None;
+        }
+        let sha256 = asset["digest"].as_str()?.strip_prefix("sha256:")?;
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(Installer {
+            name: name.to_owned(),
+            url: asset["browser_download_url"].as_str()?.to_owned(),
+            sha256: sha256.to_ascii_lowercase(),
+            size: asset["size"].as_u64().unwrap_or(0),
+        })
+    })
+}
+
+/// Whether this copy of bettercut can update itself: Windows, run from where
+/// the installer put it — beside its uninstaller. A copy unpacked from the
+/// zip is the tester's own to replace.
+pub fn can_install_here() -> bool {
+    cfg!(windows)
+        && std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("unins000.exe").is_file()))
+            .unwrap_or(false)
+}
+
+/// Whether `certutil -hashfile <file> SHA256`'s output names `expected`.
+/// The hash is its second line, in pairs separated by spaces on older
+/// Windows and run together on newer.
+pub fn certutil_says(output: &str, expected: &str) -> bool {
+    output.lines().nth(1).is_some_and(|line| {
+        let hex: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        hex.eq_ignore_ascii_case(expected)
+    })
+}
+
+/// Fetch `installer` on a thread of its own into the system's temporary
+/// folder, then check it; `state` follows along, and `wake` is called each
+/// time it changes so the bar redraws.
+pub fn download(installer: Installer, state: Downloading, wake: impl Fn() + Send + 'static) {
+    let set = move |value: Download, state: &Downloading| {
+        if let Ok(mut slot) = state.lock() {
+            *slot = Some(value);
+        }
+    };
+    set(
+        Download::Fetching {
+            got: 0,
+            of: installer.size,
+        },
+        &state,
+    );
+    std::thread::spawn(move || {
+        let folder = std::env::temp_dir().join("bettercut-update");
+        let path = folder.join(&installer.name);
+        let result = (|| -> Result<(), String> {
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(&path);
+            let mut command = std::process::Command::new("curl");
+            command
+                .args([
+                    "--silent",
+                    "--fail",
+                    "--location",
+                    "--user-agent",
+                    "bettercut",
+                    "--output",
+                ])
+                .arg(&path)
+                .arg(&installer.url);
+            hide_console(&mut command);
+            let mut child = command
+                .spawn()
+                .map_err(|_| "there is no curl to download with".to_owned())?;
+            loop {
+                if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                    if !status.success() {
+                        return Err("the download did not finish".to_owned());
+                    }
+                    break;
+                }
+                let got = std::fs::metadata(&path).map_or(0, |m| m.len());
+                set(
+                    Download::Fetching {
+                        got,
+                        of: installer.size,
+                    },
+                    &state,
+                );
+                wake();
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            let mut command = std::process::Command::new("certutil");
+            command.arg("-hashfile").arg(&path).arg("SHA256");
+            hide_console(&mut command);
+            let output = command
+                .output()
+                .map_err(|_| "the download could not be checked".to_owned())?;
+            if !certutil_says(&String::from_utf8_lossy(&output.stdout), &installer.sha256) {
+                return Err("the download is not the file GitHub lists".to_owned());
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                tracing::info!(file = %path.display(), "update downloaded and checked");
+                set(Download::Ready(path), &state);
+            }
+            Err(reason) => {
+                tracing::warn!(%reason, "update download failed");
+                let _ = std::fs::remove_file(&path);
+                set(Download::Failed(reason), &state);
+            }
+        }
+        wake();
+    });
+}
+
+/// Run the downloaded installer: silently, closing what is in its way, and
+/// starting bettercut again once it is done. Called as the window closes.
+pub fn install(installer: &std::path::Path) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(installer);
+    command.args([
+        "/SILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/CLOSEAPPLICATIONS",
+        "/relaunch=1",
+    ]);
+    command.spawn().map(|_| ())
+}
+
+/// No console window flashing up for a tool run in the background.
+fn hide_console(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 /// Ask GitHub on a thread of its own; `found` holds a newer release if there
@@ -136,11 +317,77 @@ mod tests {
             latest(reply),
             Some(Update {
                 version: "0.6.0".to_owned(),
-                url: "https://x/0.6.0".to_owned()
+                url: "https://x/0.6.0".to_owned(),
+                installer: None,
             })
         );
         assert_eq!(latest("{ \"message\": \"rate limited\" }"), None);
         assert_eq!(latest("not json"), None);
+    }
+
+    #[test]
+    fn the_installer_is_found_with_its_digest() {
+        let digest = "BAF786EB1E7DEAA8F4130FFAD3ABF2A25597051BC6E43E10EACD41C6AD854620";
+        let reply = format!(
+            r#"[{{ "tag_name": "v0.7.0", "html_url": "https://x/0.7.0", "draft": false,
+                "assets": [
+                    {{ "name": "bettercut-0.7.0-macos.dmg", "digest": "sha256:{digest}",
+                       "browser_download_url": "https://x/dmg", "size": 3 }},
+                    {{ "name": "bettercut-0.7.0-setup.exe", "digest": "sha256:{digest}",
+                       "browser_download_url": "https://x/exe", "size": 57000000 }}
+                ] }}]"#
+        );
+        let installer = latest(&reply).unwrap().installer.expect("the setup.exe");
+        assert_eq!(installer.name, "bettercut-0.7.0-setup.exe");
+        assert_eq!(installer.url, "https://x/exe");
+        assert_eq!(installer.sha256, digest.to_ascii_lowercase());
+        assert_eq!(installer.size, 57_000_000);
+
+        // No digest, nothing to check a download against: no installer.
+        let unchecked = r#"[{ "tag_name": "v0.7.0", "html_url": "https://x", "draft": false,
+            "assets": [{ "name": "bettercut-0.7.0-setup.exe",
+                         "browser_download_url": "https://x/exe", "size": 5 }] }]"#;
+        assert_eq!(latest(unchecked).unwrap().installer, None);
+    }
+
+    #[test]
+    fn certutil_is_read_either_way_it_prints() {
+        let hash = "baf786eb1e7deaa8f4130ffad3abf2a25597051bc6e43e10eacd41c6ad854620";
+        let newer = format!(
+            "SHA256 hash of C:\\x.exe:\r\n{hash}\r\nCertUtil: -hashfile command completed successfully.\r\n"
+        );
+        assert!(certutil_says(&newer, hash));
+        let spaced: String = hash
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| std::str::from_utf8(pair).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let older = format!("SHA256 hash of file x.exe:\n{spaced}\nCertUtil: done.\n");
+        assert!(certutil_says(&older, hash));
+        assert!(!certutil_says(&newer, &hash.replace('b', "c")));
+        assert!(!certutil_says("CertUtil: error", hash));
+    }
+
+    #[test]
+    fn a_real_hash_is_checked_by_certutil() {
+        if !cfg!(windows) {
+            return;
+        }
+        let path = std::env::temp_dir().join("bettercut-certutil-test.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let output = std::process::Command::new("certutil")
+            .arg("-hashfile")
+            .arg(&path)
+            .arg("SHA256")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        // SHA-256 of "abc".
+        assert!(certutil_says(
+            &String::from_utf8_lossy(&output.stdout),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        ));
     }
 
     #[test]
@@ -149,5 +396,72 @@ mod tests {
         assert!(!due(1_000, 1_000 + EVERY_SECONDS - 1));
         assert!(due(1_000, 1_000 + EVERY_SECONDS));
         assert!(!due(5_000, 1_000), "a clock gone backwards is not a day");
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    /// Wait for the download thread to settle on an answer.
+    fn settled(state: &Downloading) -> Download {
+        for _ in 0..200 {
+            if let Some(done) = state.lock().unwrap().clone()
+                && !matches!(done, Download::Fetching { .. })
+            {
+                return done;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the download never finished");
+    }
+
+    fn fetch(sha256: &str, name: &str) -> Download {
+        let source = std::env::temp_dir().join(format!("bettercut-update-source-{name}"));
+        std::fs::write(&source, b"abc").unwrap();
+        let url = format!(
+            "file:///{}",
+            source.display().to_string().replace('\\', "/")
+        );
+        let state = Downloading::default();
+        download(
+            Installer {
+                name: name.to_owned(),
+                url,
+                sha256: sha256.to_owned(),
+                size: 3,
+            },
+            state.clone(),
+            || {},
+        );
+        let done = settled(&state);
+        let _ = std::fs::remove_file(&source);
+        done
+    }
+
+    /// Fetched from a file rather than GitHub, so the test needs no network:
+    /// what is checked is the fetch, the hash and what the bar is told.
+    #[test]
+    fn a_download_is_ready_only_when_its_hash_matches() {
+        if !cfg!(windows) {
+            return;
+        }
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let Download::Ready(path) = fetch(abc, "bettercut-test-ok-setup.exe") else {
+            panic!("a matching download was not ready");
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        let _ = std::fs::remove_file(&path);
+
+        let wrong = abc.replace('a', "b");
+        let name = "bettercut-test-bad-setup.exe";
+        assert!(matches!(fetch(&wrong, name), Download::Failed(_)));
+        assert!(
+            !std::env::temp_dir()
+                .join("bettercut-update")
+                .join(name)
+                .exists(),
+            "a file that failed its check was left to run"
+        );
     }
 }
