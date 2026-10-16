@@ -84,6 +84,7 @@ fn bent(device: &wgpu::Device, queue: &wgpu::Queue, frame: &VideoFrame, lens: f3
             tilt_centre: 0.5,
             posterise: 0.0,
             smooth_skin: 0.0,
+            reduce_noise: 0.0,
             blur: 0.0,
             chroma_key: None,
             luma_key: None,

@@ -1018,6 +1018,12 @@ pub struct VideoClip {
     /// none.
     #[serde(default)]
     pub smooth_skin: f32,
+    /// Reduce noise, 0-1: the same colour-aware blur over the whole picture,
+    /// taking out grain and the speckle of a dim room while edges keep their
+    /// line — CapCut's "Reduce image noise". Defaulted: older projects have
+    /// none.
+    #[serde(default)]
+    pub reduce_noise: f32,
     /// Tilt-shift: how tall the sharp band across the picture is, as a
     /// fraction of its height, 0 for no band (the blur is everywhere); the
     /// blur grows away from it. A miniature, or a face held sharp in a
@@ -1899,6 +1905,8 @@ pub struct ClipLook {
     pub posterise: f32,
     /// Smooth skin, 0-1 (`VideoClip::smooth_skin`).
     pub smooth_skin: f32,
+    /// Reduce noise, 0-1 (`VideoClip::reduce_noise`).
+    pub reduce_noise: f32,
     /// Tilt-shift band height and centre (`VideoClip::tilt_band`).
     pub tilt_band: f32,
     pub tilt_centre: f32,
@@ -1949,6 +1957,7 @@ impl ClipLook {
             tilt_centre: 0.5,
             posterise: 0.0,
             smooth_skin: 0.0,
+            reduce_noise: 0.0,
             glow: 0.0,
             old_film: 0.0,
             vignette: 0.0,
@@ -2626,6 +2635,7 @@ impl VideoClip {
             tilt_centre: 0.5,
             posterise: 0.0,
             smooth_skin: 0.0,
+            reduce_noise: 0.0,
             curves: crate::curves::ColourCurves::default(),
             light_leak: 0.0,
             lens_flare: 0.0,
@@ -2713,6 +2723,7 @@ impl VideoClip {
             tilt_centre: self.tilt_centre,
             posterise: self.posterise,
             smooth_skin: self.smooth_skin,
+            reduce_noise: self.reduce_noise,
             glow: self.glow,
             old_film: self.old_film,
             vignette: self.vignette,

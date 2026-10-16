@@ -140,6 +140,9 @@ struct Layer {
     luma_mode: f32,
     // Smooth skin at 308, 0-1.
     smooth_skin: f32,
+    // Reduce noise at 312, 0-1. The struct ends at 316 and still rounds to
+    // 320.
+    reduce_noise: f32,
 }
 
 // The weight each corner of a pinned quad carries, so the texture follows the
@@ -490,6 +493,35 @@ fn smooth_skin(rgb: vec3<f32>, uv: vec2<f32>, amount: f32) -> vec3<f32> {
     return mix(rgb, smoothed, clamp(amount * skin, 0.0, 1.0));
 }
 
+// Reduce noise: the same colour-aware blur as smooth skin, over the whole
+// picture rather than only where it is skin. Grain and sensor noise are small
+// differences between neighbouring pixels and average out; an edge differs by
+// far more and keeps its line. Stricter about what counts as "the same" than
+// skin smoothing, which is meant to erase blotches noise reduction must keep —
+// and stricter still at low amounts, so a little only takes the finest grain.
+fn reduce_noise(rgb: vec3<f32>, uv: vec2<f32>, amount: f32) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(source, 0));
+    let texel = 1.0 / size;
+    let radius = (1.0 + 1.5 * amount) * max(size.y / 1080.0, 1.0);
+    let strict = mix(220.0, 70.0, amount);
+    var total = rgb;
+    var weight = 1.0;
+    for (var i = 0; i < 16; i = i + 1) {
+        let angle = f32(i % 8) * 0.785398 + select(0.0, 0.392699, i >= 8);
+        let reach = select(radius, radius * 2.0, i >= 8);
+        let offset = vec2<f32>(cos(angle), sin(angle)) * reach * texel;
+        let s = textureSampleLevel(source, samp, uv + offset, 0.0).rgb;
+        // Judged in gamma-like terms, so noise in the shadows — where it
+        // shows most — is judged as the eye sees it, not as linear light,
+        // where it is tiny.
+        let d = sqrt(max(s, vec3<f32>(0.0))) - sqrt(max(rgb, vec3<f32>(0.0)));
+        let w = exp(-dot(d, d) * strict);
+        total = total + s * w;
+        weight = weight + w;
+    }
+    return mix(rgb, total / weight, clamp(amount, 0.0, 1.0));
+}
+
 // How much of a pixel survives the luma key: what is brighter than the
 // threshold (mode 1) or darker (mode 2), fading over the softness. Judged on
 // perceptual brightness, so the threshold means what the eye sees.
@@ -695,7 +727,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     var rgb = texel.rgb;
     var alpha = texel.a * layer.opacity;
-    // Before the keys and the grade: skin is judged on what the camera saw.
+    // Before the keys and the grade: noise and skin are judged on what the
+    // camera saw. Noise first, so skin is smoothed from a clean picture.
+    if layer.reduce_noise > 0.0 {
+        rgb = reduce_noise(rgb, uv, layer.reduce_noise);
+    }
     if layer.smooth_skin > 0.0 {
         rgb = smooth_skin(rgb, uv, layer.smooth_skin);
     }

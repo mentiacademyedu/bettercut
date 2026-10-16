@@ -13,6 +13,11 @@
   your own. Each pick, and each drag when you let go, is one step to undo.
   The new curves are in the clip menu too, and AI assistants can use them
   with `animate`.
+- **Reduce noise**: a new picture effect that smooths away grain and the
+  speckle of a clip shot in a dim room while edges keep their line —
+  CapCut's "Reduce image noise". In the Effects tab of the left panel, and as
+  a slider beside Smooth skin in the inspector's Effects tab; AI assistants
+  reach it through `set_effect`.
 
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 

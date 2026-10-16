@@ -88,6 +88,7 @@ fn look(scale: f32, position: [f32; 2]) -> ClipLook {
         tilt_centre: 0.5,
         posterise: 0.0,
         smooth_skin: 0.0,
+        reduce_noise: 0.0,
         vignette: 0.0,
         reflection: bettercut_editor_core::timeline::Reflection::None,
         chroma_key: None,

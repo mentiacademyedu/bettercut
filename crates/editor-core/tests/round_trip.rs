@@ -396,6 +396,7 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         tilt_centre: 0.5,
         posterise: 0.3,
         smooth_skin: 0.0,
+        reduce_noise: 0.0,
         frozen: false,
         enabled: true,
 

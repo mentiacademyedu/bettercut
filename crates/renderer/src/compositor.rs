@@ -724,6 +724,7 @@ impl Compositor {
                     lens: layer.look.lens,
                     posterise: layer.look.posterise,
                     smooth_skin: layer.look.smooth_skin,
+                    reduce_noise: layer.look.reduce_noise,
                     grain: 0.0,
                     grain_seed: 0,
                 },
@@ -769,6 +770,7 @@ impl Compositor {
                         lens: 0.0,
                         posterise: 0.0,
                         smooth_skin: 0.0,
+                        reduce_noise: 0.0,
                     },
                     self.config.resolution.width,
                     self.config.resolution.height,
@@ -1567,6 +1569,8 @@ struct LayerLook {
     posterise: f32,
     /// Smooth skin, 0-1 (`VideoClip::smooth_skin`).
     smooth_skin: f32,
+    /// Reduce noise, 0-1 (`VideoClip::reduce_noise`).
+    reduce_noise: f32,
 }
 
 fn layer_uniform(
@@ -1593,6 +1597,7 @@ fn layer_uniform(
         lens,
         posterise,
         smooth_skin,
+        reduce_noise,
     } = look;
     // §22 crops *before* transforming, and that ordering is visible right here:
     // the aspect fitted to the frame is the **cropped** picture's, not the
@@ -1760,6 +1765,13 @@ fn layer_uniform(
         0.0
     };
     bytes[308..312].copy_from_slice(&smooth.to_ne_bytes());
+    // Reduce noise at 312, 0-1. The struct ends at 316, rounding to 320.
+    let noise = if reduce_noise.is_finite() {
+        reduce_noise.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    bytes[312..316].copy_from_slice(&noise.to_ne_bytes());
 
     // The chroma key, or zeroes — which the shader reads as "no key", because
     // a tolerance and softness of zero remove nothing.
@@ -1950,6 +1962,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
             },
             1920,
             1080,
@@ -1978,6 +1991,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2025,6 +2039,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2064,6 +2079,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2102,6 +2118,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2143,6 +2160,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2203,6 +2221,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 0.5,
                 color,
@@ -2265,6 +2284,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::IDENTITY,
@@ -2352,6 +2372,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2391,6 +2412,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2427,6 +2449,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color: ColorAdjust::default(),
@@ -2478,6 +2501,7 @@ mod tests {
                 lens: 0.0,
                 posterise: 0.0,
                 smooth_skin: 0.0,
+                reduce_noise: 0.0,
                 crop: bettercut_timeline::Crop::NONE,
                 opacity: 1.0,
                 color,

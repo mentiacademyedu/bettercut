@@ -42,6 +42,7 @@ const NAMES: &[&str] = &[
     "lens",
     "posterise",
     "smooth_skin",
+    "reduce_noise",
     "tilt_shift",
     "glow",
     "old_film",

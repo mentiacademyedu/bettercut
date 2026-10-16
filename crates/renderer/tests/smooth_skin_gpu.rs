@@ -83,6 +83,7 @@ fn held(device: &wgpu::Device, queue: &wgpu::Queue, frame: &VideoFrame, smooth: 
             tilt_centre: 0.5,
             posterise: 0.0,
             smooth_skin: smooth,
+            reduce_noise: 0.0,
             blur: 0.0,
             chroma_key: None,
             luma_key: None,

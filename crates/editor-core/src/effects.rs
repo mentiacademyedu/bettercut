@@ -49,7 +49,7 @@ impl NamedEffect {
 pub const ONE_CLICK_AMOUNT: f32 = 50.0;
 
 /// Every effect, in the order they are offered.
-pub const EFFECTS: [NamedEffect; 21] = [
+pub const EFFECTS: [NamedEffect; 22] = [
     NamedEffect {
         name: "Glitch",
         description: "Blocks of the picture torn sideways, flickering",
@@ -181,6 +181,13 @@ pub const EFFECTS: [NamedEffect; 21] = [
         description: "Skin softened, the rest left sharp",
         make: ClipProperty::SmoothSkin,
         read: |c| c.smooth_skin,
+        scale: 0.01,
+    },
+    NamedEffect {
+        name: "Reduce noise",
+        description: "Grain and the speckle of a dim room smoothed away, edges kept",
+        make: ClipProperty::ReduceNoise,
+        read: |c| c.reduce_noise,
         scale: 0.01,
     },
     NamedEffect {

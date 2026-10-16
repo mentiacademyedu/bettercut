@@ -7285,6 +7285,22 @@ fn clip_effect_properties(
         });
         ui.horizontal_wrapped(|ui| {
             ui.add_space(4.0);
+            let mut next_noise = editor.video_clip(clip).map_or(0.0, |clip| clip.reduce_noise);
+            let response = ui
+                .add(theme::labeled(
+                    "reduce noise",
+                    egui::Slider::new(&mut next_noise, 0.0..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                ))
+                .on_hover_text(
+                    "Smooth away grain and the speckle of a dim room, keeping edges sharp",
+                );
+            if response.changed() {
+                change = Some((ClipProperty::ReduceNoise(next_noise), response.dragged()));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
             let mut next_glow = editor.video_clip(clip).map_or(0.0, |clip| clip.glow);
             let response = ui
                 .add(theme::labeled(

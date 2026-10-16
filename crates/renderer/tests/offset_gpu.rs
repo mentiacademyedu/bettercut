@@ -112,6 +112,7 @@ fn columns_lit(device: &wgpu::Device, queue: &wgpu::Queue, offset_x: f32) -> (u3
                     tilt_centre: 0.5,
                     posterise: 0.0,
                     smooth_skin: 0.0,
+                    reduce_noise: 0.0,
                     vignette: 0.0,
                     reflection: bettercut_timeline::Reflection::None,
                     crop: bettercut_timeline::Crop::NONE,

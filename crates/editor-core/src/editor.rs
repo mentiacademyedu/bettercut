@@ -988,6 +988,7 @@ impl Editor {
             P::Lens(_) => P::Lens(0.0),
             P::Posterise(_) => P::Posterise(0.0),
             P::SmoothSkin(_) => P::SmoothSkin(0.0),
+            P::ReduceNoise(_) => P::ReduceNoise(0.0),
             P::TiltShift { .. } => P::TiltShift {
                 band: 0.0,
                 centre: 0.5,
@@ -3688,6 +3689,7 @@ impl Editor {
             ClipProperty::ZoomBlur(clip.zoom_blur),
             ClipProperty::Posterise(clip.posterise),
             ClipProperty::SmoothSkin(clip.smooth_skin),
+            ClipProperty::ReduceNoise(clip.reduce_noise),
             ClipProperty::TiltShift {
                 band: clip.tilt_band,
                 centre: clip.tilt_centre,
@@ -3747,6 +3749,7 @@ impl Editor {
             ClipProperty::ZoomBlur(0.0),
             ClipProperty::Posterise(0.0),
             ClipProperty::SmoothSkin(0.0),
+            ClipProperty::ReduceNoise(0.0),
             ClipProperty::TiltShift {
                 band: 0.0,
                 centre: 0.5,

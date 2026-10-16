@@ -336,6 +336,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         tilt_centre: plain.tilt_centre,
         posterise: plain.posterise,
         smooth_skin: plain.smooth_skin,
+        reduce_noise: plain.reduce_noise,
         frozen: plain.frozen,
         enabled: plain.enabled,
     };
@@ -366,6 +367,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         tilt_centre: pasted.tilt_centre,
         posterise: pasted.posterise,
         smooth_skin: pasted.smooth_skin,
+        reduce_noise: pasted.reduce_noise,
         frozen: pasted.frozen,
         enabled: pasted.enabled,
         ..source

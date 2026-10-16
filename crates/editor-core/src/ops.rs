@@ -2331,6 +2331,15 @@ impl SetClipProperty {
                         };
                         ClipProperty::SmoothSkin(was)
                     }
+                    ClipProperty::ReduceNoise(amount) => {
+                        let was = clip.reduce_noise;
+                        clip.reduce_noise = if amount.is_finite() {
+                            amount.clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ClipProperty::ReduceNoise(was)
+                    }
                     ClipProperty::Posterise(levels) => {
                         let was = clip.posterise;
                         clip.posterise = if levels.is_finite() && levels >= 2.0 {
@@ -2571,6 +2580,7 @@ impl SetClipProperty {
                     | ClipProperty::Lens(_)
                     | ClipProperty::Posterise(_)
                     | ClipProperty::SmoothSkin(_)
+                    | ClipProperty::ReduceNoise(_)
                     | ClipProperty::TiltShift { .. }
                     | ClipProperty::Wheels(_)
                     | ClipProperty::Secondary(_)
@@ -3182,6 +3192,7 @@ impl SetSequenceProperty {
             // Posterise is a clip's finish, as the other effects are.
             | ClipProperty::Posterise(_)
             | ClipProperty::SmoothSkin(_)
+            | ClipProperty::ReduceNoise(_)
             | ClipProperty::TiltShift { .. }
             // Pitch belongs to a sound clip, and the master mixes them all.
             | ClipProperty::KeepPitch(_)

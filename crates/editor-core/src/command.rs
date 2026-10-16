@@ -276,6 +276,7 @@ impl TextProperty {
             | ClipProperty::Lens(_)
             | ClipProperty::Posterise(_)
             | ClipProperty::SmoothSkin(_)
+            | ClipProperty::ReduceNoise(_)
             | ClipProperty::TiltShift { .. }
             | ClipProperty::Glow(_)
             | ClipProperty::OldFilm(_)
@@ -944,6 +945,8 @@ pub enum ClipProperty {
     Posterise(f32),
     /// Smooth skin, 0-1. Video only.
     SmoothSkin(f32),
+    /// Reduce noise, 0-1. Video only.
+    ReduceNoise(f32),
     /// Tilt-shift: the sharp band's height (0–1, 0 for none) and centre
     /// (0–1), with the blur growing away from it. Video only.
     TiltShift {
@@ -1071,6 +1074,7 @@ impl ClipProperty {
             | Self::Lens(_)
             | Self::Posterise(_)
             | Self::SmoothSkin(_)
+            | Self::ReduceNoise(_)
             | Self::TiltShift { .. }
             | Self::Glow(_)
             | Self::OldFilm(_)
@@ -1224,6 +1228,7 @@ impl ClipProperty {
         | Self::Lens(amount)
         | Self::Posterise(amount)
         | Self::SmoothSkin(amount)
+        | Self::ReduceNoise(amount)
         | Self::Glow(amount)
         | Self::OldFilm(amount)
         | Self::LightLeak(amount)
@@ -1322,6 +1327,7 @@ impl ClipProperty {
             Self::Lens(_) => "Lens",
             Self::Posterise(_) => "Posterise",
             Self::SmoothSkin(_) => "Smooth Skin",
+            Self::ReduceNoise(_) => "Reduce Noise",
             Self::TiltShift { .. } => "Tilt-shift",
             Self::Glow(_) => "Glow",
             Self::OldFilm(_) => "Old film",

@@ -108,6 +108,7 @@ fn keyed(device: &wgpu::Device, queue: &wgpu::Queue, key: Option<LumaKey>) -> Ve
             tilt_centre: 0.5,
             posterise: 0.0,
             smooth_skin: 0.0,
+            reduce_noise: 0.0,
             blur: 0.0,
             chroma_key: None,
             luma_key: key,
