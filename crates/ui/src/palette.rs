@@ -447,6 +447,17 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Animation,
     },
     Action {
+        name: "Remove Flicker",
+        hint: "even out brightness that pulses from frame to frame in the selected clip — or put it back",
+        run: |e, s| match selected(s)
+            .into_iter()
+            .find(|clip| e.video_clip(*clip).is_some())
+        {
+            Some(clip) => crate::panels::start_or_restore_flicker(e, s, clip),
+            None => s.error("Select a clip first"),
+        },
+    },
+    Action {
         name: "Keyframe Curve",
         hint: "how the selected clip's keys under the playhead ease: overshoot, anticipate, or a curve you draw",
         run: |e, s| match selected(s)

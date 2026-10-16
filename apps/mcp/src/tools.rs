@@ -401,6 +401,19 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "remove_flicker",
+        description: "Even out brightness that pulses from frame to frame in a picture clip — \
+                      a time-lapse, or lights on mains power flickering against the camera. \
+                      Reads the footage, so a long clip takes a while. With `off` true the \
+                      clip's flicker removal is taken off instead. One undo step.",
+        schema: || {
+            object(
+                json!({ "clip_id": { "type": "string" }, "off": { "type": "boolean" } }),
+                &["clip_id"],
+            )
+        },
+    },
+    Tool {
         name: "mark_beats",
         description: "Put a marker on every beat of a music clip, to cut to the rhythm \
                       (split_clip, move_clip and trim_clip line up with markers). Says the \
@@ -1768,6 +1781,54 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             }
             let made = editor.split_clip_at(clip, &at).map_err(|e| e.to_string())?;
             Ok(json!({ "cuts": made, "scene_changes": listed }).to_string())
+        }
+        "remove_flicker" => {
+            use bettercut_jobs::{JobContext, Task};
+            let clip = clip_arg(args)?;
+            let picture = editor
+                .video_clip(clip)
+                .ok_or("that is not a picture clip")?
+                .clone();
+            if args.get("off").and_then(Value::as_bool).unwrap_or(false) {
+                if picture.deflicker.is_none() {
+                    return Err("this clip has no flicker removal to take off".to_owned());
+                }
+                editor.set_flicker(clip, None).map_err(|e| e.to_string())?;
+                return Ok("Flicker removal taken off".to_owned());
+            }
+            let asset = editor
+                .project()
+                .media
+                .iter()
+                .find(|m| m.id == picture.media_id)
+                .ok_or("the clip's file is not in the project")?
+                .clone();
+            let (mut job, report) = bettercut_playback::FlickerJob::new(
+                clip,
+                &asset,
+                picture.source.start,
+                picture.source.end,
+                2,
+            )
+            .ok_or("only a video clip has frames to even out")?;
+            job.run(&JobContext::detached())
+                .map_err(|e| format!("could not read the footage: {e}"))?;
+            let gains = report
+                .take()
+                .ok_or("the footage gave no answer")??;
+            // How far the frames were off: what the answer says about the clip.
+            let worst = gains
+                .gains
+                .iter()
+                .map(|gain| (gain - 1.0).abs())
+                .fold(0.0_f32, f32::max);
+            editor
+                .set_flicker(clip, Some(gains))
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Flicker removed: frames corrected by up to {:.0}%",
+                worst * 100.0
+            ))
         }
         "mark_beats" => {
             let sound = sound_clip(editor, args)?;

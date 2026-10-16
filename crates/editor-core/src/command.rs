@@ -474,6 +474,14 @@ pub enum Command {
         sequence: SequenceId,
         marks: Vec<bettercut_timeline::ClipMark>,
     },
+    /// Even out a picture clip's flicker with these gains, or stop with
+    /// `None` ([`bettercut_timeline::deflicker`]).
+    SetFlicker {
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        gains: Option<bettercut_timeline::deflicker::FlickerGains>,
+    },
     /// Leave a note on a clip, or take it off with an empty `text`.
     SetClipNote {
         sequence: SequenceId,
@@ -1675,6 +1683,16 @@ mod tests {
             Command::SetGroups {
                 sequence: seq,
                 groups: vec![vec![ClipId::new(), ClipId::new()]],
+            },
+            Command::SetFlicker {
+                sequence: seq,
+                track,
+                clip: ClipId::new(),
+                gains: bettercut_timeline::deflicker::FlickerGains::from_brightness(&[
+                    (bettercut_foundation::MediaTime::from_ticks(0), 0.3),
+                    (bettercut_foundation::MediaTime::from_ticks(32_000), 0.36),
+                    (bettercut_foundation::MediaTime::from_ticks(64_000), 0.3),
+                ]),
             },
             Command::SetClipNote {
                 sequence: seq,

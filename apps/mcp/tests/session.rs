@@ -1044,6 +1044,13 @@ fn an_assistant_splits_scenes_and_marks_beats() {
         "{found}, the photo ends at {photo_ends}"
     );
     client.ok("split_at_scenes", json!({ "clip_id": clip }));
+    // Flicker: measured from the footage, then taken off again.
+    let first = serde_json::from_str::<Value>(&client.ok("describe_project", json!({}))).unwrap()
+        ["picture_lanes"][0]["clips"][0]["clip_id"]
+        .clone();
+    let removed = client.ok("remove_flicker", json!({ "clip_id": first }));
+    assert!(removed.starts_with("Flicker removed"), "{removed}");
+    client.ok("remove_flicker", json!({ "clip_id": first, "off": true }));
     let described: Value = serde_json::from_str(&client.ok("describe_project", json!({}))).unwrap();
     assert_eq!(
         described["picture_lanes"][0]["clips"]

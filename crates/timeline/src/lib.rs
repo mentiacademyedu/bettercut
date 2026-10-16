@@ -17,6 +17,7 @@ pub mod colour_match;
 pub mod corner_pin;
 pub mod counter;
 pub mod curves;
+pub mod deflicker;
 pub mod error;
 pub mod karaoke;
 pub mod keyframe;

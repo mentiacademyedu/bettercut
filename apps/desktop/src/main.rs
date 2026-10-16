@@ -1681,6 +1681,21 @@ impl eframe::App for App {
         if let Some(job) = self.ui.scene_cancel.take() {
             self.proxies.cancel(job);
         }
+        // Flicker, measured the same way: the whole clip decoded off the
+        // interface thread, the gains applied when they arrive.
+        if let Some(clip) = self.ui.flicker_request.take() {
+            let threads = self
+                .editor
+                .hardware()
+                .ffmpeg_threads_per_job(self.editor.project().settings.performance_mode);
+            bettercut_ui::panels::start_flicker(
+                &self.editor,
+                &mut self.ui,
+                &mut self.proxies,
+                clip,
+                threads,
+            );
+        }
 
         // After drawing, because both the import button and the quality setting
         // live in panels this call would otherwise be a frame behind.

@@ -397,6 +397,12 @@ fn a_clip_comes_back_exactly_as_it_went_in() {
         posterise: 0.3,
         smooth_skin: 0.0,
         reduce_noise: 0.0,
+        // Measured gains survive a save: they took decoding the clip to make.
+        deflicker: bettercut_editor_core::timeline::deflicker::FlickerGains::from_brightness(&[
+            (MediaTime::from_seconds(2), 0.30),
+            (MediaTime::from_millis(2_033), 0.36),
+            (MediaTime::from_millis(2_067), 0.31),
+        ]),
         frozen: false,
         enabled: true,
 

@@ -5723,6 +5723,16 @@ impl Editor {
                 Ok(Box::new(ops::SetClipNote::new(sequence, clip, text)))
             }
 
+            Command::SetFlicker {
+                sequence,
+                track,
+                clip,
+                gains,
+            } => {
+                self.require_sequence(sequence)?;
+                Ok(Box::new(ops::SetFlicker::new(sequence, track, clip, gains)))
+            }
+
             Command::SetInOut {
                 sequence,
                 mark_in,
@@ -6335,6 +6345,27 @@ impl Editor {
             .iter()
             .find(|note| note.clip == clip)
             .map(|note| note.text.as_str())
+    }
+
+    /// Even out `clip`'s flicker with `gains` measured from its footage
+    /// (`bettercut_playback::FlickerJob`), or stop with `None`. One undo
+    /// step.
+    pub fn set_flicker(
+        &mut self,
+        clip: ClipId,
+        gains: Option<bettercut_timeline::deflicker::FlickerGains>,
+    ) -> Result<(), EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let track = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        if self.video_clip(clip).is_none() {
+            return Err(EditorError::ClipKindMismatch);
+        }
+        self.dispatch(Command::SetFlicker {
+            sequence,
+            track,
+            clip,
+            gains,
+        })
     }
 
     /// Leave a note on `clip`, change it, or take it off with an empty or

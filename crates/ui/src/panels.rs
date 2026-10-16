@@ -6042,6 +6042,7 @@ fn clip_colour_properties(
         state.auto_level_request = Some(clip);
         state.info("Working out the adjustment…");
     }
+    flicker_button(ui, editor, state, clip);
     ui.add_space(4.0);
 
     // One-click looks, above the controls they set: pick one, then tune.
@@ -12382,6 +12383,108 @@ pub fn save_project(editor: &mut Editor, state: &mut UiState) {
             state.info("Project saved");
         }
         Err(err) => state.error(format!("Could not save: {err}")),
+    }
+}
+
+/// Remove flicker from `clip` — or, once it has been, put it back: the clip
+/// menu's and the Colours tab's button.
+pub fn flicker_button(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: bettercut_editor_core::foundation::ClipId) {
+    let Some(video) = editor.video_clip(clip) else {
+        return;
+    };
+    let evened = video.deflicker.is_some();
+    let measuring = state.flicker_jobs.iter().any(|(on, _)| *on == clip);
+    let label = match (evened, measuring) {
+        (_, true) => "Removing flicker…",
+        (true, false) => "Restore flicker",
+        (false, false) => "Remove flicker",
+    };
+    let response = ui
+        .add_enabled(!measuring, egui::Button::new(label))
+        .on_hover_text(if evened {
+            "Take the flicker removal off this clip"
+        } else {
+            "Even out brightness that pulses from frame to frame — a time-lapse, or lights on mains power. Reads the whole clip first"
+        });
+    if response.clicked() {
+        ui.close();
+        start_or_restore_flicker(editor, state, clip);
+    }
+}
+
+/// What the flicker button does: measure, or take the measurement off.
+pub fn start_or_restore_flicker(editor: &mut Editor, state: &mut UiState, clip: bettercut_editor_core::foundation::ClipId) {
+    if editor.video_clip(clip).is_some_and(|video| video.deflicker.is_some()) {
+        if let Err(err) = editor.set_flicker(clip, None) {
+            state.error(err.to_string());
+        }
+        state.needs_repaint = true;
+        return;
+    }
+    if not_in_browser(state, "Removing flicker") {
+        return;
+    }
+    state.flicker_request = Some(clip);
+    state.info("Reading the clip to measure its flicker…");
+}
+
+/// Queue the measurement of `clip`'s flicker, over the stretch of the file it
+/// plays: the shell's half of [`start_or_restore_flicker`], which owns the
+/// scheduler.
+pub fn start_flicker(
+    editor: &Editor,
+    state: &mut UiState,
+    jobs: &mut crate::MediaJobs,
+    clip: bettercut_editor_core::foundation::ClipId,
+    threads: u32,
+) {
+    let job = editor.video_clip(clip).and_then(|video| {
+        let asset = editor.project().media_asset(video.media_id)?;
+        bettercut_playback::FlickerJob::new(
+            clip,
+            asset,
+            video.source.start,
+            video.source.end,
+            threads,
+        )
+    });
+    match job {
+        Some((job, report)) => {
+            jobs.submit_flicker(job);
+            state.flicker_jobs.push((clip, report));
+        }
+        None => state.error("That clip has no moving picture to measure"),
+    }
+    state.needs_repaint = true;
+}
+
+/// Apply every flicker measurement that has finished. Once a frame.
+pub fn collect_flicker(ctx: &egui::Context, editor: &mut Editor, state: &mut UiState) {
+    if state.flicker_jobs.is_empty() {
+        return;
+    }
+    let mut finished = Vec::new();
+    state.flicker_jobs.retain(|(clip, report)| match report.take() {
+        Some(answer) => {
+            finished.push((*clip, answer));
+            false
+        }
+        None => true,
+    });
+    for (clip, answer) in finished {
+        match answer {
+            Ok(gains) => match editor.set_flicker(clip, Some(gains)) {
+                Ok(()) => state.info("Flicker removed"),
+                Err(err) => state.error(err.to_string()),
+            },
+            Err(reason) if reason == "cancelled" => {}
+            Err(reason) => state.error(format!("Could not remove the flicker: {reason}")),
+        }
+        state.needs_repaint = true;
+    }
+    if !state.flicker_jobs.is_empty() {
+        // Nothing else repaints while a job reads the footage in silence.
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 }
 

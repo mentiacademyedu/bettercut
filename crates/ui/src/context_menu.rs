@@ -981,6 +981,7 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             ui.close();
             state.auto_level_request = Some(clip);
         }
+        crate::panels::flicker_button(ui, editor, state, clip);
 
         ui.menu_button("Freeze and Hold", |ui| {
             // A held frame, with room made for it so the sound keeps its place (§10).

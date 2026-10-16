@@ -534,6 +534,11 @@ impl MediaJobs {
         self.scheduler.submit(Box::new(job))
     }
 
+    /// Measure a clip's flicker (`bettercut_playback::FlickerJob`).
+    pub fn submit_flicker(&mut self, job: bettercut_playback::FlickerJob) -> JobId {
+        self.scheduler.submit(Box::new(job))
+    }
+
     /// Whether an export is running, so the interface can offer to stop it
     /// rather than start a second one.
     pub fn export_in_flight(&self) -> Option<JobId> {

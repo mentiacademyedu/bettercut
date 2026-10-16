@@ -247,6 +247,7 @@ pub fn draw(
     shortcuts::help_window(ui.ctx(), state);
     silence_dialog::show(ui.ctx(), editor, state);
     curve_editor::show(ui.ctx(), editor, state);
+    panels::collect_flicker(ui.ctx(), editor, state);
     highlight_dialog::show(ui.ctx(), editor, state);
     scene_dialog::show(ui.ctx(), editor, state);
     palette::show(ui.ctx(), editor, state);

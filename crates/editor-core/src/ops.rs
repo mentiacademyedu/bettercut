@@ -127,6 +127,12 @@ pub fn build_for_replay(
             clip,
             text,
         } => Box::new(SetClipNote::new(sequence, clip, text)),
+        Command::SetFlicker {
+            sequence,
+            track,
+            clip,
+            gains,
+        } => Box::new(SetFlicker::new(sequence, track, clip, gains)),
         Command::SetInOut {
             sequence,
             mark_in,
@@ -1175,6 +1181,79 @@ impl EditorCommand for SetClipSpeed {
 
     fn label(&self) -> String {
         "Change speed".to_owned()
+    }
+}
+
+/// Even out a picture clip's flicker, or stop.
+#[derive(Debug)]
+pub struct SetFlicker {
+    sequence: SequenceId,
+    track: TrackId,
+    clip: ClipId,
+    gains: Option<bettercut_timeline::deflicker::FlickerGains>,
+    /// What the clip had before: set on execute.
+    previous: Option<Option<bettercut_timeline::deflicker::FlickerGains>>,
+}
+
+impl SetFlicker {
+    pub fn new(
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        gains: Option<bettercut_timeline::deflicker::FlickerGains>,
+    ) -> Self {
+        Self {
+            sequence,
+            track,
+            clip,
+            gains,
+            previous: None,
+        }
+    }
+
+    /// Put `gains` on the clip; returns what was there.
+    fn apply(
+        project: &mut Project,
+        sequence: SequenceId,
+        track: TrackId,
+        clip: ClipId,
+        gains: Option<bettercut_timeline::deflicker::FlickerGains>,
+    ) -> Result<Option<bettercut_timeline::deflicker::FlickerGains>, EditorError> {
+        with_track(
+            project,
+            sequence,
+            track,
+            |video| {
+                let clip = video.get_mut(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                Ok(std::mem::replace(&mut clip.deflicker, gains))
+            },
+            // Sound has no picture to flicker.
+            |_| Err(EditorError::ClipKindMismatch),
+        )
+    }
+}
+
+impl EditorCommand for SetFlicker {
+    fn execute(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let was = Self::apply(project, self.sequence, self.track, self.clip, self.gains.clone())?;
+        if self.previous.is_none() {
+            self.previous = Some(was);
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, project: &mut Project) -> Result<(), EditorError> {
+        let previous = self.previous.clone().ok_or(EditorError::NotExecuted)?;
+        Self::apply(project, self.sequence, self.track, self.clip, previous)?;
+        Ok(())
+    }
+
+    fn label(&self) -> String {
+        if self.gains.is_some() {
+            "Remove Flicker".to_owned()
+        } else {
+            "Restore Flicker".to_owned()
+        }
     }
 }
 

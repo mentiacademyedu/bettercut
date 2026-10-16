@@ -337,6 +337,7 @@ fn a_pasted_clip_matches_the_one_it_was_copied_from() {
         posterise: plain.posterise,
         smooth_skin: plain.smooth_skin,
         reduce_noise: plain.reduce_noise,
+        deflicker: None,
         frozen: plain.frozen,
         enabled: plain.enabled,
     };

@@ -1024,6 +1024,12 @@ pub struct VideoClip {
     /// none.
     #[serde(default)]
     pub reduce_noise: f32,
+    /// Remove flicker: a brightness gain for every frame of the source,
+    /// measured from the footage ([`crate::deflicker`]), or `None`. Left out
+    /// of the file when there is none, and defaulted: older projects have
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deflicker: Option<crate::deflicker::FlickerGains>,
     /// Tilt-shift: how tall the sharp band across the picture is, as a
     /// fraction of its height, 0 for no band (the blur is everywhere); the
     /// blur grows away from it. A miniature, or a face held sharp in a
@@ -2636,6 +2642,7 @@ impl VideoClip {
             posterise: 0.0,
             smooth_skin: 0.0,
             reduce_noise: 0.0,
+            deflicker: None,
             curves: crate::curves::ColourCurves::default(),
             light_leak: 0.0,
             lens_flare: 0.0,
@@ -2736,7 +2743,14 @@ impl VideoClip {
             mask: self.mask,
             blend: self.blend,
         };
+        // Flicker's gain multiplies whatever brightness the clip has, keyed
+        // or not, so it goes on last.
+        let flicker = self
+            .deflicker
+            .as_ref()
+            .map_or(1.0, |gains| gains.gain_at(source_time));
         if self.keyframes.is_empty() {
+            look.color.brightness *= flicker;
             return look;
         }
 
@@ -2760,6 +2774,7 @@ impl VideoClip {
         animated(AnimatedParameter::Temperature, &mut look.color.temperature);
         animated(AnimatedParameter::Tint, &mut look.color.tint);
         animated(AnimatedParameter::Blur, &mut look.blur);
+        look.color.brightness *= flicker;
         look
     }
 

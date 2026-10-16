@@ -18,6 +18,13 @@
   CapCut's "Reduce image noise". In the Effects tab of the left panel, and as
   a slider beside Smooth skin in the inspector's Effects tab; AI assistants
   reach it through `set_effect`.
+- **Remove flicker**: evens out brightness that pulses from frame to frame —
+  a time-lapse, or lights on mains power beating against the camera — while
+  real changes of light, like a cloud passing, are kept. Reads the clip once
+  in the background, then plays as it always did. In the clip menu beside
+  Auto Level, in the inspector's Colours tab, and as *Remove Flicker* under
+  Ctrl+K; the same button puts the flicker back. AI assistants have a new
+  `remove_flicker` tool.
 
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 

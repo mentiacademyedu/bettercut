@@ -998,6 +998,13 @@ pub struct UiState {
     /// A detection to stop, for the same reason.
     pub scene_cancel: Option<bettercut_jobs::JobId>,
 
+    /// A clip whose flicker to measure and even out, picked up by the shell
+    /// for the same reason as `scene_request`.
+    pub flicker_request: Option<ClipId>,
+    /// Flicker being measured: the clip, and where the job leaves its gains.
+    /// Applied as each arrives ([`crate::panels::collect_flicker`]).
+    pub flicker_jobs: Vec<(ClipId, bettercut_playback::FlickerReport)>,
+
     /// Work found from a session that did not shut down cleanly (§39).
     ///
     /// Held rather than applied: §39.5 says never overwrite the original
@@ -1202,6 +1209,8 @@ impl Default for UiState {
             highlights: None,
             scenes: None,
             scene_request: None,
+            flicker_request: None,
+            flicker_jobs: Vec::new(),
             scene_cancel: None,
             pending_recovery: None,
             needs_repaint: true,
