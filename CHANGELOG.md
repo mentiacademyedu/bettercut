@@ -31,6 +31,9 @@
   when you press **Restart to update** — after asking about unsaved work —
   opening bettercut again once it is in place. Only for a copy put in place
   by the installer; a copy unpacked from the zip still gets the link.
+- **Read Aloud on Linux**: titles can be read aloud on Linux too, through
+  eSpeak NG (`sudo apt install espeak-ng`, or your distribution's package);
+  without it, Read Aloud says what to install.
 
 ### Fixed
 

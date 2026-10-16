@@ -3,7 +3,9 @@
 //!
 //! On Windows through PowerShell's `System.Speech`, and on a Mac through
 //! `say`; both are on every install, so there is nothing to download and
-//! nothing to bundle. The words go in on
+//! nothing to bundle. On Linux through eSpeak NG, which every distribution
+//! packages but few install by default: without it, Read Aloud says what to
+//! install. The words go in on
 //! standard input rather than on the command line, so no quote or dollar sign
 //! in a title can break out of the script. Speaking takes a second or two, so
 //! it runs on its own thread and the editor carries on.
@@ -25,6 +27,9 @@ pub const MAX_SPEECH_CHARS: usize = 5_000;
 pub fn voices() -> Result<Vec<String>, String> {
     if cfg!(target_os = "macos") {
         return run("say", &["-v".into(), "?".into()], None).map(|out| say_voices(&out));
+    }
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        return run(espeak()?, &["--voices".into()], None).map(|out| espeak_voices(&out));
     }
     let output = powershell(
         "Add-Type -AssemblyName System.Speech; \
@@ -52,6 +57,13 @@ pub fn synthesize(text: &str, voice: Option<&str>, rate: i32, path: &Path) -> Re
     }
     if cfg!(target_os = "macos") {
         run("say", &say_args(voice, rate, path), Some(&text))?;
+        if !path.exists() {
+            return Err("The voice did not produce a file".to_owned());
+        }
+        return Ok(());
+    }
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        run(espeak()?, &espeak_args(voice, rate, path), Some(&text))?;
         if !path.exists() {
             return Err("The voice did not produce a file".to_owned());
         }
@@ -118,6 +130,58 @@ pub fn say_args(voice: Option<&str>, rate: i32, path: &Path) -> Vec<std::ffi::Os
     args
 }
 
+/// Linux has no voice of its own: eSpeak NG, packaged by every distribution,
+/// or the older eSpeak it grew from — whichever is installed.
+fn espeak() -> Result<&'static str, String> {
+    ["espeak-ng", "espeak"]
+        .into_iter()
+        .find(|program| {
+            Command::new(program)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok()
+        })
+        .ok_or_else(|| {
+            "Reading aloud on Linux needs eSpeak NG: install the espeak-ng package \
+             (sudo apt install espeak-ng)"
+                .to_owned()
+        })
+}
+
+/// The voices in the table `espeak-ng --voices` prints, by the language
+/// each speaks (`en-gb`, `es`), which is what `-v` takes:
+/// `Pty Language Age/Gender VoiceName File Other Languages`, then one row
+/// a voice.
+pub fn espeak_voices(listing: &str) -> Vec<String> {
+    let mut voices: Vec<String> = listing
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().nth(1).map(str::to_owned))
+        .collect();
+    voices.dedup();
+    voices
+}
+
+/// The arguments for eSpeak to read standard input into a WAV at `path`:
+/// the voice when one is chosen, and `rate` (-10 to 10, as on Windows) as
+/// words a minute around its usual 175 — the same scale `say` is given.
+pub fn espeak_args(voice: Option<&str>, rate: i32, path: &Path) -> Vec<std::ffi::OsString> {
+    let words_a_minute = 175 + rate.clamp(-10, 10) * 12;
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(voice) = voice {
+        args.push("-v".into());
+        args.push(voice.into());
+    }
+    args.push("-s".into());
+    args.push(words_a_minute.to_string().into());
+    args.push("-w".into());
+    args.push(path.as_os_str().to_owned());
+    args.push("--stdin".into());
+    args
+}
+
 /// Run `program` with `args`, `input` on its standard input, and return what
 /// it printed.
 fn run(program: &str, args: &[std::ffi::OsString], input: Option<&str>) -> Result<String, String> {
@@ -147,7 +211,10 @@ fn run(program: &str, args: &[std::ffi::OsString], input: Option<&str>) -> Resul
 
 fn powershell(script: &str, input: Option<&str>) -> Result<String, String> {
     if !cfg!(windows) {
-        return Err("Reading aloud needs the voices built into Windows or macOS".to_owned());
+        return Err(
+            "Reading aloud needs a voice: Windows and macOS have one built in, Linux eSpeak NG"
+                .to_owned(),
+        );
     }
     let mut command = Command::new("powershell");
     // A windowed app starting a console program gets a console window flashed
@@ -283,6 +350,33 @@ pub struct SpeechRequest {
 #[cfg(test)]
 mod say_tests {
     use super::*;
+
+    #[test]
+    fn espeak_voices_are_the_languages_in_its_table() {
+        let listing = "Pty Language       Age/Gender VoiceName          File                 Other Languages\n \
+                        5  af              --/M      Afrikaans          gmw/af\n \
+                        5  en-gb           --/M      English_(Great_Britain) gmw/en  (en 2)\n \
+                        5  es              --/M      Spanish_(Spain)    roa/es\n";
+        assert_eq!(espeak_voices(listing), vec!["af", "en-gb", "es"]);
+    }
+
+    #[test]
+    fn espeak_reads_standard_input_into_a_wav_and_never_takes_the_words() {
+        let path = std::path::Path::new("/tmp/read.wav");
+        let args: Vec<String> = espeak_args(Some("en-gb"), 5, path)
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            ["-v", "en-gb", "-s", "235", "-w", "/tmp/read.wav", "--stdin"]
+        );
+        let plain: Vec<String> = espeak_args(None, -20, path)
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(plain, ["-s", "55", "-w", "/tmp/read.wav", "--stdin"]);
+    }
 
     #[test]
     fn voices_are_read_from_the_say_listing_names_with_spaces_included() {
