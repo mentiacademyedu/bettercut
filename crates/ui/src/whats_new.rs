@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Sway, Flicker and Heartbeat effects",
-    "Laser, Coin, Buzzer and Heartbeat sound effects",
-    "Five new animated titles: Breaking news, On fire, Frozen, Comic pop and Candy spin",
+    "A new look: drawn icons, a calmer theme, and the transport under the preview",
+    "Voice effects (Chipmunk, Robot, Monster and more), a Light leak transition and a Bounce effect",
+    "Set up Cursor, VS Code, Codex, Gemini and other AI assistants in the AI Assistant window",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

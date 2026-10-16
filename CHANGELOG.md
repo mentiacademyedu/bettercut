@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.11 — A new look, voice effects, and bettercut in a browser
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### A new look
 
