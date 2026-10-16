@@ -447,6 +447,17 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Animation,
     },
     Action {
+        name: "Keyframe Curve",
+        hint: "how the selected clip's keys under the playhead ease: overshoot, anticipate, or a curve you draw",
+        run: |e, s| match selected(s)
+            .into_iter()
+            .find(|clip| e.video_clip(*clip).is_some())
+        {
+            Some(clip) => s.curve_editor = Some(crate::curve_editor::CurveEditor::open(clip)),
+            None => s.error("Select a clip first"),
+        },
+    },
+    Action {
         name: "Show Media",
         hint: "the left panel's Media tab: the files in the project",
         run: |_, s| s.library_tab = crate::library::LibraryTab::Media,

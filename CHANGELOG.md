@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Keyframe curves you can see and draw**: right-click a clip with
+  keyframes → **Keyframe Easing → Curve…** (or Ctrl+K, *Keyframe Curve*)
+  shows how the keys under the playhead ease into the next ones, as a curve.
+  Pick one of ten drawn tiles — five of them new: Gentle, Sharp, Overshoot
+  (passes the new value and settles back), Anticipate (pulls back before
+  setting off) and Swing (both) — or drag the curve's two handles to draw
+  your own. Each pick, and each drag when you let go, is one step to undo.
+  The new curves are in the clip menu too, and AI assistants can use them
+  with `animate`.
+
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 
 Still a beta: expect bugs, and please

@@ -224,6 +224,28 @@ impl Interpolation {
         Self::Hold,
     ];
 
+    /// Every curve offered by name: the presets, then curves drawn as
+    /// control points — two gentler or sharper than the presets, and three
+    /// that leave the range on the way — overshooting the new value and
+    /// settling back or pulling back before setting off, which is what makes
+    /// a move look alive rather than merely smooth.
+    pub const CURVES: [(&'static str, Self); 10] = [
+        ("linear", Self::Linear),
+        ("ease in-out", Self::EaseInOut),
+        ("ease in", Self::EaseIn),
+        ("ease out", Self::EaseOut),
+        ("hold", Self::Hold),
+        ("gentle", Self::bezier(0.37, 0.0, 0.63, 1.0)),
+        ("sharp", Self::bezier(0.87, 0.0, 0.13, 1.0)),
+        ("overshoot", Self::bezier(0.34, 1.56, 0.64, 1.0)),
+        ("anticipate", Self::bezier(0.36, 0.0, 0.66, -0.56)),
+        ("swing", Self::bezier(0.68, -0.6, 0.32, 1.6)),
+    ];
+
+    const fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self::Bezier { x1, y1, x2, y2 }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Hold => "hold",
@@ -231,7 +253,23 @@ impl Interpolation {
             Self::EaseIn => "ease in",
             Self::EaseOut => "ease out",
             Self::EaseInOut => "ease in-out",
-            Self::Bezier { .. } => "custom",
+            Self::Bezier { .. } => Self::CURVES
+                .iter()
+                .find(|(_, curve)| *curve == self)
+                .map_or("custom", |(name, _)| name),
+        }
+    }
+
+    /// The curve's two control points, `[x1, y1, x2, y2]`, for an editor to
+    /// draw and drag; `None` for `Hold`, which is a step and not a curve.
+    pub fn handles(self) -> Option<[f32; 4]> {
+        match self {
+            Self::Hold => None,
+            Self::Linear => Some([0.0, 0.0, 1.0, 1.0]),
+            Self::EaseIn => Some([0.42, 0.0, 1.0, 1.0]),
+            Self::EaseOut => Some([0.0, 0.0, 0.58, 1.0]),
+            Self::EaseInOut => Some([0.42, 0.0, 0.58, 1.0]),
+            Self::Bezier { x1, y1, x2, y2 } => Some([x1, y1, x2, y2]),
         }
     }
 
@@ -951,6 +989,65 @@ mod tests {
         // Symmetric by construction.
         let in_out = midpoint(Interpolation::EaseInOut);
         assert!((in_out - 0.5).abs() < 1e-3, "ease in-out was {in_out}");
+    }
+
+    /// Each named curve is called by its own name, and the ones named for
+    /// leaving the range do leave it, on the side they say.
+    #[test]
+    fn named_curves_are_what_they_are_called() {
+        for (name, curve) in Interpolation::CURVES {
+            assert_eq!(curve.label(), name);
+        }
+        let named = |wanted: &str| {
+            Interpolation::CURVES
+                .into_iter()
+                .find(|(name, _)| *name == wanted)
+                .expect("named")
+                .1
+        };
+        let range = |curve: Interpolation| {
+            (0..=100)
+                .map(|step| curve.ease(step as f32 / 100.0))
+                .fold((f32::MAX, f32::MIN), |(low, high), y| {
+                    (low.min(y), high.max(y))
+                })
+        };
+        assert!(
+            range(named("overshoot")).1 > 1.05,
+            "overshoot stays below 1"
+        );
+        assert!(
+            range(named("anticipate")).0 < -0.05,
+            "anticipate never pulls back"
+        );
+        let both = range(named("swing"));
+        assert!(
+            both.0 < -0.05 && both.1 > 1.05,
+            "swing was {both:?}"
+        );
+        // A curve dragged by hand is no named one.
+        let dragged = Interpolation::Bezier {
+            x1: 0.2,
+            y1: 0.3,
+            x2: 0.4,
+            y2: 0.9,
+        };
+        assert_eq!(dragged.label(), "custom");
+        // And every preset's handles draw the curve it is.
+        for curve in Interpolation::PRESETS {
+            let Some([x1, y1, x2, y2]) = curve.handles() else {
+                assert_eq!(curve, Interpolation::Hold);
+                continue;
+            };
+            let drawn = Interpolation::Bezier { x1, y1, x2, y2 };
+            for step in 0..=10 {
+                let t = step as f32 / 10.0;
+                assert!(
+                    (drawn.ease(t) - curve.ease(t)).abs() < 1e-3,
+                    "{curve:?} at {t}"
+                );
+            }
+        }
     }
 
     /// Monotonic easings must not overshoot; the presets are all monotonic.

@@ -982,6 +982,8 @@ pub struct UiState {
 
     /// The Remove Silences window (§78), with its suggestion.
     pub silence: Option<crate::silence_dialog::SilenceDialog>,
+    /// The Keyframe Curve window (§24), for one clip's keys.
+    pub curve_editor: Option<crate::curve_editor::CurveEditor>,
     /// The "find the good bits" window (`crate::highlight_dialog`).
     pub highlights: Option<crate::highlight_dialog::HighlightDialog>,
 
@@ -1196,6 +1198,7 @@ impl Default for UiState {
             paste_groups: bettercut_editor_core::attributes::AttributeGroup::ALL.to_vec(),
             copied_animation: None,
             silence: None,
+            curve_editor: None,
             highlights: None,
             scenes: None,
             scene_request: None,

@@ -318,8 +318,10 @@ const TOOLS: &[Tool] = &[
                       brightness, contrast, saturation, temperature or blur for a picture clip \
                       (x/y/scale/rotation as in set_transform), or volume or pan for a sound \
                       clip. `keys` are `{at, value, easing?}` with `at` in timeline seconds \
-                      inside the clip; easing is linear (default), hold, ease in, ease out or \
-                      ease in-out, and shapes the way to the next key. An empty `keys` list \
+                      inside the clip; easing is linear (default), hold, ease in, ease out, \
+                      ease in-out, gentle, sharp, overshoot (passes the next value and settles \
+                      back), anticipate (pulls back first) or swing (both), and shapes the way \
+                      to the next key. An empty `keys` list \
                       takes the animation off. One undo step.",
         schema: || {
             object(
@@ -3175,13 +3177,7 @@ fn animate(editor: &mut Editor, args: &Value) -> Result<String, String> {
             Box::new(move |t| picture.source_time_at(t)),
         )
     };
-    let easings = [
-        Interpolation::Linear,
-        Interpolation::Hold,
-        Interpolation::EaseIn,
-        Interpolation::EaseOut,
-        Interpolation::EaseInOut,
-    ];
+    let easings = Interpolation::CURVES.map(|(_, curve)| curve);
     let keys = args
         .get("keys")
         .and_then(Value::as_array)

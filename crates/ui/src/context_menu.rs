@@ -866,7 +866,12 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
         .is_some_and(|clip| !clip.keyframes.is_empty())
     {
         ui.menu_button("Keyframe Easing", |ui| {
-            for easing in bettercut_editor_core::timeline::Interpolation::PRESETS {
+            if ui.button("Curve…").clicked() {
+                ui.close();
+                state.curve_editor = Some(crate::curve_editor::CurveEditor::open(clip));
+            }
+            ui.separator();
+            for (_, easing) in bettercut_editor_core::timeline::Interpolation::CURVES {
                 if ui.button(easing.label()).clicked() {
                     ui.close();
                     match editor.set_keyframe_easing(clip, easing) {
