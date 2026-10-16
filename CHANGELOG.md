@@ -26,6 +26,11 @@
   Ctrl+K; the same button puts the flicker back. AI assistants have a new
   `remove_flicker` tool.
 
+### Fixed
+
+- Sound effects and tones made in the app now show their waveform on the
+  timeline, instead of a plain block (and a failed analysis in the log).
+
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 
 Still a beta: expect bugs, and please
