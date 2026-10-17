@@ -180,8 +180,8 @@ listens on this computer only.
   of the editor's actions.
 - Automatic captions from speech, background removal and auto-reframe (these
   need on-device models, and will be optional downloads).
-- Code-signed installers, updates from inside the app on macOS and Linux
-  (Windows has them), and Linux distribution packages.
+- Code-signed installers, updates from inside the app on macOS (Windows and
+  Linux have them), and Linux distribution packages.
 
 ## Building from source
 

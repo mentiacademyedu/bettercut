@@ -25,12 +25,14 @@
   Auto Level, in the inspector's Colours tab, and as *Remove Flicker* under
   Ctrl+K; the same button puts the flicker back. AI assistants have a new
   `remove_flicker` tool.
-- **Update from inside bettercut (Windows)**: when a newer version is out,
-  the status bar offers **Update now**. The installer downloads in the
-  background, is checked against the SHA-256 GitHub lists for it, and runs
-  when you press **Restart to update** — after asking about unsaved work —
-  opening bettercut again once it is in place. Only for a copy put in place
-  by the installer; a copy unpacked from the zip still gets the link.
+- **Update from inside bettercut (Windows and Linux)**: when a newer version
+  is out, the status bar offers **Update now**. It downloads in the
+  background, is checked against the SHA-256 GitHub lists for it, and goes
+  in when you press **Restart to update** — after asking about unsaved work
+  — opening bettercut again once it is in place: the installer, run
+  silently, on Windows; the AppImage swapped for the new one on Linux. Not
+  for a copy unpacked from the Windows zip, which still gets the link, nor
+  yet on a Mac.
 - **Read Aloud on Linux**: titles can be read aloud on Linux too, through
   eSpeak NG (`sudo apt install espeak-ng`, or your distribution's package);
   without it, Read Aloud says what to install.
