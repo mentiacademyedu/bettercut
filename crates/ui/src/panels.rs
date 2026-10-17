@@ -6031,18 +6031,21 @@ fn clip_colour_properties(
     ui.add_space(4.0);
 
     // Exposure, contrast and colour cast set from the clip's own frame — the
-    // grade worked out in the background, as the clip menu's Auto Level.
-    if ui
-        .button("Auto adjust")
-        .on_hover_text(
-            "Even out this clip's exposure, contrast and colour cast from its own picture, as one step",
-        )
-        .clicked()
-    {
-        state.auto_level_request = Some(clip);
-        state.info("Working out the adjustment…");
-    }
-    flicker_button(ui, editor, state, clip);
+    // grade worked out in the background, as the clip menu's Auto Level —
+    // and beside it the other fix worked out from the footage.
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Auto adjust")
+            .on_hover_text(
+                "Even out this clip's exposure, contrast and colour cast from its own picture, as one step",
+            )
+            .clicked()
+        {
+            state.auto_level_request = Some(clip);
+            state.info("Working out the adjustment…");
+        }
+        flicker_button(ui, editor, state, clip);
+    });
     ui.add_space(4.0);
 
     // One-click looks, above the controls they set: pick one, then tune.
@@ -12455,6 +12458,17 @@ pub fn flicker_button(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiStat
     let Some(video) = editor.video_clip(clip) else {
         return;
     };
+    // A photo or a colour clip is one picture: nothing to flicker.
+    let moving = editor
+        .project()
+        .media_asset(video.media_id)
+        .is_some_and(|asset| {
+            asset.kind == bettercut_editor_core::media::MediaKind::Video
+                && asset.generated.is_none()
+        });
+    if !moving && video.deflicker.is_none() {
+        return;
+    }
     let evened = video.deflicker.is_some();
     let measuring = state.flicker_jobs.iter().any(|(on, _)| *on == clip);
     let label = match (evened, measuring) {

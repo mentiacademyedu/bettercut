@@ -39,6 +39,12 @@
 
 - Sound effects and tones made in the app now show their waveform on the
   timeline, instead of a plain block (and a failed analysis in the log).
+- The inspector's "Glitch" section is now **Effects & retouch** — it holds
+  glow, film, light, motion, lens, smooth skin and reduce noise too — and
+  any of them being set opens it and badges the clip (lens, posterise, smooth
+  skin and reduce noise used not to).
+- **Remove flicker** is offered only for video, not for photos and colour
+  clips, and sits beside Auto adjust.
 
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 

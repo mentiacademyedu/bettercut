@@ -41,7 +41,10 @@ impl Effect {
             Self::Blend => "Blend",
             Self::Mask => "Mask",
             Self::ChromaKey => "Green screen",
-            Self::Glitch => "Glitch",
+            // Glitches, but glow, film, light, motion, lens and the clean-up
+            // of skin and grain too: everything a slider puts over the
+            // picture.
+            Self::Glitch => "Effects & retouch",
             Self::Mirror => "Mirror & kaleidoscope",
         }
     }
@@ -81,8 +84,12 @@ impl Effect {
                 || clip.sway > 0.0
                 || clip.flicker > 0.0
                 || clip.heartbeat > 0.0
-                || clip.bounce > 0.0)
-                .then_some("glitch"),
+                || clip.bounce > 0.0
+                || clip.lens != 0.0
+                || clip.posterise >= 2.0
+                || clip.smooth_skin > 0.0
+                || clip.reduce_noise > 0.0)
+                .then_some("fx"),
             Self::Mirror => (clip.reflection != Reflection::None).then_some("mirror"),
         }
     }
@@ -169,12 +176,29 @@ mod tests {
                 BlendMode::Multiply.label(),
                 "mask",
                 "key",
-                "glitch",
+                "fx",
                 "mirror"
             ],
             "an effect went unnamed, or they came out in the wrong order"
         );
         assert!(Effect::ALL.iter().all(|effect| effect.active(&clip)));
+    }
+
+    /// Every slider in the effects section opens it and badges the clip:
+    /// one that did neither would sit set on a clip that looks plain.
+    #[test]
+    fn every_effect_slider_counts() {
+        let setters: [fn(&mut VideoClip); 4] = [
+            |c| c.lens = -0.5,
+            |c| c.posterise = 4.0,
+            |c| c.smooth_skin = 0.5,
+            |c| c.reduce_noise = 0.5,
+        ];
+        for set in setters {
+            let mut clip = clip();
+            set(&mut clip);
+            assert!(Effect::Glitch.active(&clip), "a slider went unnoticed");
+        }
     }
 
     /// The badges are drawn inside a clip on the timeline, which can be forty
