@@ -11,6 +11,9 @@
   linked to the picture so they cut and move together, as one undo step.
   For a clip placed another way, right-click it → **Sound → Add the Other
   Sound Tracks**. AI assistants' `add_to_timeline` brings them all too.
+- **Animated WebP**: the moving stickers and reactions the web hands out as
+  `.webp` used to import as a black still. They now come in moving, each
+  frame held as long as the file says and their transparency kept.
 
 ## 0.6.12 — Keyframe curves, Reduce noise, Remove flicker and updates from inside the app
 

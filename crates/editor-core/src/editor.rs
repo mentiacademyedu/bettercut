@@ -468,6 +468,22 @@ impl Editor {
         &mut self,
         path: &Path,
     ) -> Result<bettercut_foundation::MediaId, EditorError> {
+        // An animated WebP is a still to FFmpeg, and a black one: unpacked
+        // into frames, it comes in as a picture sequence that moves
+        // (`bettercut_media::animated_webp`), named for the file.
+        #[cfg(not(target_arch = "wasm32"))]
+        if bettercut_media::animated_webp::is_animated(path) {
+            let folder = unpacked_folder(path);
+            let first = bettercut_media::animated_webp::unpack(path, &folder)?;
+            let rate = bettercut_foundation::FrameRate::new(
+                i64::from(bettercut_media::animated_webp::FRAMES_PER_SECOND),
+                1,
+            )
+            .ok_or(EditorError::NoTrackForMedia)?;
+            let mut asset = FfmpegProber.probe_image_sequence(&first, rate)?;
+            asset.label = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            return Ok(self.import_media(asset));
+        }
         let asset = FfmpegProber.probe(path)?;
         Ok(self.import_media(asset))
     }
@@ -8065,6 +8081,19 @@ pub(crate) fn aspect_of(width: u32, height: u32) -> Option<f32> {
 /// When `path` was last written, if it can be read.
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Where an animated WebP's frames are unpacked: a folder of the program's
+/// own, named for the file and its size, so importing it again finds them.
+#[cfg(not(target_arch = "wasm32"))]
+fn unpacked_folder(path: &Path) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "animation".to_owned(), |s| s.to_string_lossy().into_owned());
+    let size = std::fs::metadata(path).map_or(0, |m| m.len());
+    bettercut_foundation::places::local_home()
+        .join("unpacked")
+        .join(format!("{stem}-{size}"))
 }
 
 #[cfg(test)]

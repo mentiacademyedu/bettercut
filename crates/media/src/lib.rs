@@ -7,6 +7,8 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod animated_webp;
 pub mod asset;
 pub mod codecs;
 pub mod color;
