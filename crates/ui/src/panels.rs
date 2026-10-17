@@ -4536,10 +4536,21 @@ pub fn scrub_at(fraction: f32, tiles: u32, duration: MediaTime) -> Option<(u32, 
 /// A colour clip's tile in the media browser: its colours, top to bottom,
 /// where a file would show its poster frame.
 fn colour_swatch(ui: &mut egui::Ui, colour: bettercut_editor_core::media::Generated) {
-    const BANDS: usize = 16;
     let width = ui.available_width().min(180.0);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(width, width * 9.0 / 16.0), egui::Sense::hover());
+    paint_colour(ui.painter(), rect, colour);
+}
+
+/// A colour clip's colours, top to bottom, over `rect`: what stands for its
+/// poster frame wherever a file would show one (the media browser, the
+/// storyboard).
+pub fn paint_colour(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    colour: bettercut_editor_core::media::Generated,
+) {
+    const BANDS: usize = 16;
     // A compound has no colours of its own; the browser draws it as the
     // placeholder grey the generated entry itself would.
     let (top, bottom) = match colour {
@@ -4551,7 +4562,7 @@ fn colour_swatch(ui: &mut egui::Ui, colour: bettercut_editor_core::media::Genera
         let t = i as f32 / (BANDS - 1) as f32;
         let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
         let y = rect.top() + band * i as f32;
-        ui.painter().rect_filled(
+        painter.rect_filled(
             egui::Rect::from_min_max(
                 egui::pos2(rect.left(), y),
                 egui::pos2(rect.right(), (y + band + 0.5).min(rect.bottom())),

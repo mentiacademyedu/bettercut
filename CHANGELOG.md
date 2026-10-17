@@ -45,6 +45,9 @@
   skin and reduce noise used not to).
 - **Remove flicker** is offered only for video, not for photos and colour
   clips, and sits beside Auto adjust.
+- The Storyboard shows colour clips in their colours instead of as black
+  cards; the Animation tab's help no longer has gaps in the middle of it;
+  the Export window lost an empty row and lines up Loudness with the rest.
 
 ## 0.6.11 — A new look, voice effects, and bettercut in a browser
 

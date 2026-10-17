@@ -88,7 +88,13 @@ fn body(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
                     ui.vertical(|ui| {
                         let response = ui
                             .dnd_drag_source(id, index, |ui| {
-                                draw_card(ui, state, card, index);
+                                // The card names no file for a made picture,
+                                // so its colours are found through the clip.
+                                let colour = editor
+                                    .video_clip(card.clip)
+                                    .and_then(|clip| editor.project().media_asset(clip.media_id))
+                                    .and_then(|asset| asset.generated);
+                                draw_card(ui, state, card, index, colour);
                             })
                             .response;
                         if response.clicked() {
@@ -120,6 +126,7 @@ fn draw_card(
     state: &mut UiState,
     card: &bettercut_editor_core::storyboard::Card,
     index: usize,
+    colour: Option<bettercut_editor_core::media::Generated>,
 ) {
     let size = egui::vec2(CARD_WIDTH, CARD_WIDTH * 9.0 / 16.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -127,8 +134,11 @@ fn draw_card(
         .rect_filled(rect, 3, theme::timeline_background());
 
     // The poster frame, letterboxed rather than stretched: a squashed shot is
-    // harder to recognise than a small one.
-    if let Some(media) = card.media
+    // harder to recognise than a small one. A colour clip has no file to
+    // take one from: its colours stand in, as in the media browser.
+    if let Some(colour) = colour {
+        crate::panels::paint_colour(ui.painter(), rect, colour);
+    } else if let Some(media) = card.media
         && let Some(texture) = state.thumbnails.texture(ui.ctx(), media).cloned()
     {
         let picture = texture.size_vec2();
