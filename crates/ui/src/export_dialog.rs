@@ -1209,8 +1209,7 @@ pub fn show(
             // The loudness the file is delivered at: measured over the range
             // first, then gained to the target, then limited. What a platform
             // would otherwise do to it, done here where it can be heard.
-            ui.horizontal(|ui| {
-                ui.label("loudness");
+            row(ui, "Loudness", |ui| {
                 let label = match dialog.loudness_target {
                     None => "as mixed".to_owned(),
                     Some(target) => format!("{target:.0} LUFS"),
@@ -1226,10 +1225,10 @@ pub fn show(
                                 format!("{name} · {target:.0} LUFS"),
                             );
                         }
-                    });
-            })
-            .response
-            .on_hover_text("Measure the whole mix first, then bring it to the loudness a platform expects, so it is not turned down on delivery");
+                    })
+                    .response
+                    .on_hover_text("Measure the whole mix first, then bring it to the loudness a platform expects, so it is not turned down on delivery");
+            });
 
             // Stems: the voice, the music and the effects as files apart,
             // for a mixer or a re-edit elsewhere.
@@ -1556,14 +1555,10 @@ fn own_presets_row(
         ui.vertical(|ui| {
             let mut apply = None;
             let mut forget = None;
-            if state.export_presets.is_empty() {
-                ui.label(
-                    egui::RichText::new("name these settings below to use them again")
-                        .small()
-                        .color(theme::disabled()),
-                );
-            }
-            ui.horizontal_wrapped(|ui| {
+            // None saved yet: only the name box, whose hint says what it is
+            // for — an empty row of presets above it would be a gap.
+            if !state.export_presets.is_empty() {
+                ui.horizontal_wrapped(|ui| {
                 for (name, preset) in state.export_presets.all().to_vec() {
                     let response = ui
                         .add(egui::Button::selectable(
@@ -1583,11 +1578,12 @@ fn own_presets_row(
                         }
                     });
                 }
-            });
+                });
+            }
             ui.horizontal(|ui| {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut state.export_preset_draft)
-                        .desired_width(140.0)
+                        .desired_width(180.0)
                         .char_limit(crate::export_presets::MAX_NAME)
                         .hint_text("name these settings"),
                 );
