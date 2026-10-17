@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "A new look: drawn icons, a calmer theme, and the transport under the preview",
-    "Voice effects (Chipmunk, Robot, Monster and more), a Light leak transition and a Bounce effect",
-    "Set up Cursor, VS Code, Codex, Gemini and other AI assistants in the AI Assistant window",
+    "Keyframe curves you can see and draw: Overshoot, Anticipate, Swing and more",
+    "Reduce noise and Remove flicker, for grainy and flickering footage",
+    "Update from inside bettercut: Update now in the status bar (Windows and Linux)",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

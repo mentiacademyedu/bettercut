@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.12 — Keyframe curves, Reduce noise, Remove flicker and updates from inside the app
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
