@@ -6736,9 +6736,10 @@ fn clip_animation(
     if !animated {
         ui.label(
             egui::RichText::new(
-                "Nothing on this clip is animated yet.
-
-Press the ○ beside any                  control in Video or Colours to pin its value at the playhead.                  Move the playhead, change the value, and it moves between them.",
+                "Nothing on this clip is animated yet.\n\n\
+                 Press the diamond beside any control in Video or Colours to pin its \
+                 value at the playhead. Move the playhead, change the value, and it moves \
+                 between them.",
             )
             .color(theme::disabled()),
         );
