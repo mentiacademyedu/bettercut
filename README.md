@@ -18,7 +18,7 @@ in Rust to stay quick on ordinary laptops.
 ## Download
 
 **Windows 10/11, 64-bit:**
-[bettercut-0.6.10-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.12/bettercut-0.6.12-setup.exe)
+[bettercut-0.6.12-setup.exe](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.12/bettercut-0.6.12-setup.exe)
 (about 50 MB).
 
 **macOS 12 or later (beta):**
@@ -35,9 +35,11 @@ user only (no administrator rights needed) and removes itself cleanly from
 *Settings → Apps*.
 
 **Linux, x86-64 (beta):**
-[bettercut-0.6.10-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.12/bettercut-0.6.12-x86_64.AppImage)
+[bettercut-0.6.12-x86_64.AppImage](https://github.com/mentiacademyedu/bettercut/releases/download/v0.6.12/bettercut-0.6.12-x86_64.AppImage)
 (about 30 MB): download it, `chmod +x` it and run it. It uses your system's own
-graphics driver (Vulkan) and sound.
+graphics driver (Vulkan) and sound. On Ubuntu 24.04 or later (and Debian 13), a
+`.deb` package is attached to each release from 0.6.13 on: `sudo apt install
+./bettercut_<version>_amd64.deb` puts bettercut in the applications menu.
 
 ## What it does
 

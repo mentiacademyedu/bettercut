@@ -14,6 +14,9 @@
 - **Animated WebP**: the moving stickers and reactions the web hands out as
   `.webp` used to import as a black still. They now come in moving, each
   frame held as long as the file says and their transparency kept.
+- **A .deb package for Ubuntu and Debian**, beside the AppImage: `sudo apt
+  install ./bettercut_<version>_amd64.deb` puts bettercut in the
+  applications menu and `bettercut-mcp` on the path (Ubuntu 24.04 or later).
 
 ## 0.6.12 — Keyframe curves, Reduce noise, Remove flicker and updates from inside the app
 
