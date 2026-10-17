@@ -41,6 +41,10 @@ pub enum EditorError {
     #[error("this sequence has no track that can hold that media")]
     NoTrackForMedia,
 
+    /// Asked for a file's other sound tracks where it has none to add.
+    #[error("that clip's file has no other sound tracks to add")]
+    NoOtherSoundTracks,
+
     /// A key moved on a clip whose position is not keyed: there is no path
     /// for it to be a point of.
     #[error("that clip's position is not keyed, so there is no path to move")]

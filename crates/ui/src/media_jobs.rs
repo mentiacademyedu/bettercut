@@ -306,6 +306,17 @@ impl MediaJobs {
                 continue;
             }
 
+            // A file's further sound track: the same file, so only its own
+            // sound's waveform is worth making — no picture, no proxy.
+            if asset.track_of.is_some() {
+                if let Some(job) = WaveformJob::new(asset, &self.cache, 1) {
+                    let media = job.media();
+                    let id = self.scheduler.submit(Box::new(job));
+                    self.waveforms.insert(id, media);
+                }
+                continue;
+            }
+
             if let Some(job) = ThumbnailJob::new(asset, THUMBNAIL_WIDTH, &self.cache, 1) {
                 let media = job.media();
                 let id = self.scheduler.submit(Box::new(job));

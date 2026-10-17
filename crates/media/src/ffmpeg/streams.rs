@@ -105,9 +105,58 @@ pub(crate) fn chosen(input: &InputContext) -> (Option<i32>, Option<i32>) {
     choose(&describe(input))
 }
 
+/// The sound streams that can be played, in the file's order: what an
+/// asset's `audio_track` counts.
+pub fn sound_tracks(streams: &[StreamInfo]) -> Vec<i32> {
+    streams
+        .iter()
+        .filter(|s| s.kind == StreamKind::Audio && s.decodable)
+        .map(|s| s.index)
+        .collect()
+}
+
+/// [`chosen`] for one asset: its own sound track when it names one, and
+/// the picture only when `picture` — an entry for a further sound track
+/// never shows one.
+pub(crate) fn chosen_for(
+    input: &InputContext,
+    audio_track: Option<u16>,
+    picture: bool,
+) -> (Option<i32>, Option<i32>) {
+    let streams = describe(input);
+    let (video, audio) = choose(&streams);
+    let audio = match audio_track {
+        None => audio,
+        Some(track) => sound_tracks(&streams).get(usize::from(track)).copied(),
+    };
+    (video.filter(|_| picture), audio)
+}
+
+/// How many sound tracks `input` has that can be played, and which of them
+/// [`chosen`] plays.
+pub(crate) fn sound_track_count(input: &InputContext) -> (u16, Option<u16>) {
+    let streams = describe(input);
+    let tracks = sound_tracks(&streams);
+    let (_, audio) = choose(&streams);
+    let played = audio
+        .and_then(|index| tracks.iter().position(|t| *t == index))
+        .map(|at| at.min(usize::from(u16::MAX)) as u16);
+    (tracks.len().min(usize::from(u16::MAX)) as u16, played)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_tracks_are_counted_in_file_order() {
+        let mut streams = vec![video(0, 100), audio(1, 2), audio(2, 1)];
+        streams.push(StreamInfo {
+            decodable: false,
+            ..audio(3, 2)
+        });
+        assert_eq!(sound_tracks(&streams), vec![1, 2], "an undecodable one is no track");
+    }
 
     fn video(index: i32, area: u64) -> StreamInfo {
         StreamInfo {

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Every sound track of a recording**: a file with more than one sound
+  track — OBS keeping the game and the microphone apart, a camera with two
+  microphones — used to come in with the first only, and the rest were lost.
+  Now **Add to timeline** brings them all, each on a sound lane of its own,
+  linked to the picture so they cut and move together, as one undo step.
+  For a clip placed another way, right-click it → **Sound → Add the Other
+  Sound Tracks**. AI assistants' `add_to_timeline` brings them all too.
+
 ## 0.6.12 — Keyframe curves, Reduce noise, Remove flicker and updates from inside the app
 
 Still a beta: expect bugs, and please

@@ -1295,6 +1295,35 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     // The sound tools, together: a long list at the top level is one
     // nobody reads.
     ui.menu_button("Sound", |ui| {
+        // A recording with the game and the microphone apart, placed by a
+        // drag that brought only the first: the rest beside it.
+        let tracks = {
+            let media = editor
+                .video_clip(clip)
+                .map(|c| c.media_id)
+                .or_else(|| editor.audio_clip(clip).map(|c| c.media_id));
+            let asset = media.and_then(|m| editor.project().media_asset(m));
+            let file = asset.and_then(|a| match a.track_of {
+                Some(parent) => editor.project().media_asset(parent),
+                None => Some(a),
+            });
+            file.map_or(0, |f| f.audio_tracks)
+        };
+        if tracks > 1
+            && ui
+                .button(format!("Add the Other Sound Tracks ({tracks} in the file)"))
+                .on_hover_text(
+                    "Put each of the file's other sound tracks on a lane of its own, linked to this clip",
+                )
+                .clicked()
+        {
+            ui.close();
+            match editor.add_other_sound_tracks(clip) {
+                Ok(added) => state.info(format!("Added {} sound track(s)", added.len())),
+                Err(err) => state.error(err.to_string()),
+            }
+            state.needs_repaint = true;
+        }
         // Bars that jump with this sound, over the whole picture.
         if let Some(sound) = sound_of(editor, clip)
             && ui

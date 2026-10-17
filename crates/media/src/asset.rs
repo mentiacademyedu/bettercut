@@ -154,6 +154,24 @@ pub struct MediaAsset {
     /// `IMG_1234.MOV`). Found when the photo is imported; `None` otherwise.
     #[serde(default)]
     pub live_video: Option<PathBuf>,
+
+    /// How many sound tracks the file holds. A screen recording keeps the
+    /// game and the microphone apart, a camera sometimes two microphones;
+    /// one is played unless the rest are asked for. Zero where it was not
+    /// counted (older projects): read as one.
+    #[serde(default)]
+    pub audio_tracks: u16,
+
+    /// Which of the file's sound tracks this plays, counted from 0 in the
+    /// file's order; `None` for the one a player would choose by itself.
+    #[serde(default)]
+    pub audio_track: Option<u16>,
+
+    /// For one of a file's further sound tracks: the file's own entry. Such
+    /// an entry is not listed in the media browser — it is the same file,
+    /// heard another way — and only its sound is read.
+    #[serde(default)]
+    pub track_of: Option<MediaId>,
 }
 
 impl MediaAsset {
@@ -195,7 +213,33 @@ impl MediaAsset {
             deinterlace: false,
             rating: 0,
             live_video: None,
+            audio_tracks: 0,
+            audio_track: None,
+            track_of: None,
         }
+    }
+
+    /// Whether the media browser lists this: not a baked stretch of the edit,
+    /// nor one of a file's further sound tracks.
+    pub fn is_listed(&self) -> bool {
+        !self.baked && self.track_of.is_none()
+    }
+
+    /// The entry for sound track `track` of this file: the same file, read
+    /// for that track's sound alone, and not listed. `None` for a track the
+    /// file does not have.
+    pub fn sound_track(&self, track: u16) -> Option<Self> {
+        if track >= self.audio_tracks || self.audio_codec.is_none() {
+            return None;
+        }
+        let mut entry = self.clone();
+        entry.id = MediaId::new();
+        entry.kind = MediaKind::Audio;
+        entry.audio_track = Some(track);
+        entry.track_of = Some(self.id);
+        entry.proxy = None;
+        entry.label = Some(format!("{} · sound {}", self.display_name(), track + 1));
+        Some(entry)
     }
 
     /// A made picture the shape of `width` × `height` — a colour clip for a

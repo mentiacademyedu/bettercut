@@ -1490,7 +1490,7 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
             Err(err) => state.error(err.to_string()),
         }
     }
-    let total = editor.project().media.iter().filter(|m| !m.baked).count();
+    let total = editor.project().media.iter().filter(|m| m.is_listed()).count();
     let unused_ids = if state.media_unused_only {
         editor.unused_media()
     } else {
@@ -1504,8 +1504,9 @@ pub fn media_browser(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState
         .iter()
         .filter(|m| {
             // A baked stretch of the edit is media the program wrote, not a
-            // file the user brought in (`editor_core::render_in_place`).
-            !m.baked
+            // file the user brought in (`editor_core::render_in_place`); a
+            // file's further sound track is that file, heard another way.
+            m.is_listed()
                 && state.media_kind.accepts(m.kind)
                 && m.rating >= state.media_stars
                 && (!state.media_unused_only || unused_ids.contains(&m.id))

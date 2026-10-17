@@ -82,6 +82,7 @@ impl MediaProber for FfmpegProber {
         };
 
         let mut asset = MediaAsset::new(kind, path, duration);
+        (asset.audio_tracks, asset.audio_track) = super::streams::sound_track_count(&ctx);
         asset.file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
         if let Some(v) = video {

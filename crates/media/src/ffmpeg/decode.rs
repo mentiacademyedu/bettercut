@@ -434,8 +434,10 @@ impl MediaDecoder for FfmpegDecoder {
         let mut hdr_spec: Option<String> = None;
         let mut hdr_input = (0, ffi::AVRational { num: 1, den: 1 });
 
-        // The same choice the probe made (`super::streams`).
-        let (chosen_video, chosen_audio) = super::streams::chosen(&input);
+        // The same choice the probe made (`super::streams`), or the sound
+        // track this entry is for.
+        let (chosen_video, chosen_audio) =
+            super::streams::chosen_for(&input, asset.audio_track, asset.track_of.is_none());
         for stream in input.streams() {
             // SAFETY: `streams()` filtered nulls; the stream outlives this loop.
             let (params, time_base, index, avg_frame_rate) = unsafe {

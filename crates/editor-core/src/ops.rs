@@ -3085,6 +3085,26 @@ impl RelinkMedia {
     }
 }
 
+/// The entries for a file's further sound tracks (`MediaAsset::track_of`)
+/// point where the file's own entry now does: one file, wherever it is.
+fn follow_file(project: &mut Project, media: MediaId) {
+    let Some(file) = project.media.iter().find(|m| m.id == media) else {
+        return;
+    };
+    let (path, name, size, missing) = (
+        file.path.clone(),
+        file.file_name.clone(),
+        file.file_size,
+        file.missing,
+    );
+    for entry in project.media.iter_mut().filter(|m| m.track_of == Some(media)) {
+        entry.path = path.clone();
+        entry.file_name = name.clone();
+        entry.file_size = size;
+        entry.missing = missing;
+    }
+}
+
 /// Decode a file deinterlaced, or not (`Command::SetMediaDeinterlace`).
 #[derive(Debug)]
 pub struct SetMediaDeinterlace {
@@ -3455,6 +3475,7 @@ impl EditorCommand for RelinkMedia {
         asset.path = self.path.clone();
         asset.file_size = self.file_size;
         asset.missing = false;
+        follow_file(project, self.media);
         Ok(())
     }
 
@@ -3471,6 +3492,7 @@ impl EditorCommand for RelinkMedia {
         asset.file_name = file_name;
         asset.file_size = file_size;
         asset.missing = missing;
+        follow_file(project, self.media);
         Ok(())
     }
 

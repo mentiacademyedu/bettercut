@@ -115,7 +115,11 @@ impl Project {
                     && m.generated == asset.generated
                     && m.generated_sound == asset.generated_sound
             } else {
+                // One file can be several entries: one for each of its
+                // further sound tracks, which share its path.
                 m.path == asset.path
+                    && m.track_of.is_some() == asset.track_of.is_some()
+                    && (asset.track_of.is_none() || m.audio_track == asset.audio_track)
             }
         };
         if let Some(existing) = self.media.iter().find(|m| same(m)) {

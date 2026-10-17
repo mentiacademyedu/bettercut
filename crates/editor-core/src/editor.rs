@@ -1134,6 +1134,11 @@ impl Editor {
 
         let wants_video = asset.kind.has_video();
         let wants_audio = asset.audio_codec.is_some();
+        let asset_tracks = if wants_audio && asset.track_of.is_none() {
+            asset.audio_tracks
+        } else {
+            0
+        };
         // A photo has no length of its own; it gets `STILL_DURATION`.
         let duration = asset.placement_duration_with(self.project.settings.photo_length);
 
@@ -1213,8 +1218,163 @@ impl Editor {
             });
         }
 
-        self.dispatch_group("Add Clip".to_owned(), commands)?;
+        if asset_tracks < 2 {
+            self.dispatch_group("Add Clip".to_owned(), commands)?;
+            return Ok(placed);
+        }
+        // A file with more than one sound track — a screen recording's game
+        // and microphone — comes in with all of them, each on a lane of its
+        // own, linked to the picture like the first: one undo step for the
+        // lot, as it is one thing the user did.
+        self.staged("Add Clip", |editor, stage| {
+            for command in commands {
+                editor.stage(stage, command)?;
+            }
+            if let Some(first) = placed.first().copied()
+                && let Ok((more, clips)) = editor.other_sound_track_commands(first)
+            {
+                for command in more {
+                    editor.stage(stage, command)?;
+                }
+                placed.extend(clips);
+            }
+            Ok(placed)
+        })
+    }
+
+    /// Put the rest of a clip's file's sound tracks on the timeline beside
+    /// it: each over the same stretch, at the same speed, on the first sound
+    /// lane with room — a new one if none has — and linked to the clip, so
+    /// they move and cut with it. Tracks already beside it are left as they
+    /// are. One undo step; returns the new clips.
+    pub fn add_other_sound_tracks(&mut self, clip: ClipId) -> Result<Vec<ClipId>, EditorError> {
+        let (commands, placed) = self.other_sound_track_commands(clip)?;
+        // Staged rather than grouped: a lane made here has to exist before
+        // the clip that goes on it is checked.
+        self.staged("Add Sound Tracks", |editor, stage| {
+            for command in commands {
+                editor.stage(stage, command)?;
+            }
+            Ok(())
+        })?;
         Ok(placed)
+    }
+
+    /// What [`Self::add_other_sound_tracks`] does, as commands not yet run —
+    /// so placing a file can make them part of its own one step. Entries for
+    /// the tracks are imported here, as importing is not a command.
+    fn other_sound_track_commands(
+        &mut self,
+        clip: ClipId,
+    ) -> Result<(Vec<Command>, Vec<ClipId>), EditorError> {
+        let sequence_id = self.active_sequence_id()?;
+        let (media, timeline, source, speed, reversed, link) =
+            if let Some(video) = self.video_clip(clip) {
+                (video.media_id, video.timeline, video.source, video.speed, video.reversed, video.link)
+            } else if let Some(sound) = self.audio_clip(clip) {
+                (sound.media_id, sound.timeline, sound.source, sound.speed, sound.reversed, sound.link)
+            } else {
+                return Err(EditorError::ClipNotFound(clip));
+            };
+        let asset = self
+            .project
+            .media_asset(media)
+            .ok_or(EditorError::MediaNotFound(media))?;
+        // The file's own entry, from one of its further tracks too.
+        let file = match asset.track_of {
+            Some(parent) => self
+                .project
+                .media_asset(parent)
+                .ok_or(EditorError::MediaNotFound(parent))?,
+            None => asset,
+        }
+        .clone();
+        if file.audio_tracks < 2 || file.audio_codec.is_none() {
+            return Err(EditorError::NoOtherSoundTracks);
+        }
+        let sequence = self
+            .project
+            .sequence(sequence_id)
+            .ok_or(EditorError::SequenceNotFound(sequence_id))?;
+        // What is beside the clip already: its own track, and any of the
+        // file's tracks linked to it.
+        let track_of = |id: bettercut_foundation::MediaId| {
+            self.project.media_asset(id).map(|a| match a.track_of {
+                Some(_) => a.audio_track,
+                None => a.audio_track.or(Some(0)),
+            })
+        };
+        let mut beside: Vec<Option<u16>> = vec![track_of(media).flatten()];
+        if let Some(link) = link {
+            for lane in &sequence.audio_tracks {
+                for other in lane.clips().iter().filter(|c| c.link == Some(link)) {
+                    beside.push(track_of(other.media_id).flatten());
+                }
+            }
+        }
+        let wanted: Vec<u16> = (0..file.audio_tracks)
+            .filter(|track| Some(*track) != file.audio_track.or(Some(0)))
+            .filter(|track| !beside.contains(&Some(*track)))
+            .collect();
+        if wanted.is_empty() {
+            return Err(EditorError::NoOtherSoundTracks);
+        }
+        // Lanes with room over the clip's stretch, in order; the clip's own
+        // sound already fills one of them.
+        let mut free: Vec<TrackId> = sequence
+            .audio_tracks
+            .iter()
+            .filter(|lane| lane.clips_in_range(timeline).is_empty())
+            .map(|lane| lane.id)
+            .collect();
+        free.reverse();
+        let lanes = sequence.audio_tracks.len();
+
+        let link = link.unwrap_or_else(bettercut_foundation::LinkId::new);
+        let mut commands = Vec::new();
+        let mut placed = Vec::new();
+        for (made, track) in wanted.into_iter().enumerate() {
+            let existing = self
+                .project
+                .media
+                .iter()
+                .find(|a| a.track_of == Some(file.id) && a.audio_track == Some(track))
+                .map(|a| a.id);
+            let entry = match existing {
+                Some(id) => id,
+                None => {
+                    let Some(entry) = file.sound_track(track) else {
+                        continue;
+                    };
+                    self.import_media(entry)
+                }
+            };
+            let lane = match free.pop() {
+                Some(lane) => lane,
+                None => {
+                    let id = TrackId::new();
+                    commands.push(Command::AddTrack {
+                        sequence: sequence_id,
+                        kind: crate::command::TrackKindRepr::Audio,
+                        name: format!("A{}", lanes + made + 1),
+                        id,
+                    });
+                    id
+                }
+            };
+            let mut sound = bettercut_timeline::AudioClip::new(entry, timeline.start, source)?;
+            sound.timeline = timeline;
+            sound.speed = speed;
+            sound.reversed = reversed;
+            sound.link = Some(link);
+            placed.push(sound.id);
+            commands.push(Command::AddClip {
+                sequence: sequence_id,
+                track: lane,
+                clip: ClipPayload::Audio(Box::new(sound)),
+            });
+        }
+        Ok((commands, placed))
     }
 
     // ---- sequences (§30) ----

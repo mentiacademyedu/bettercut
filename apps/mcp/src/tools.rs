@@ -3787,6 +3787,8 @@ fn describe(editor: &Editor) -> Value {
     let media: Vec<Value> = project
         .media
         .iter()
+        // A file's further sound tracks are that file: its clips say so.
+        .filter(|m| m.track_of.is_none())
         .map(|m| {
             json!({
                 "media_id": m.id.to_string(),
