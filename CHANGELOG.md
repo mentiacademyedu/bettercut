@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.13 — Every sound track, animated WebP, and a .deb for Ubuntu
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 

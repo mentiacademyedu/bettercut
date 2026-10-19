@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Keyframe curves you can see and draw: Overshoot, Anticipate, Swing and more",
-    "Reduce noise and Remove flicker, for grainy and flickering footage",
-    "Update from inside bettercut: Update now in the status bar (Windows and Linux)",
+    "Recordings with several sound tracks (OBS game and microphone) come in with all of them",
+    "Animated WebP stickers import moving, with their transparency",
+    "A .deb package for Ubuntu and Debian, beside the AppImage",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.
