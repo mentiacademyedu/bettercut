@@ -81,10 +81,19 @@ fn every_track_comes_in_on_a_lane_of_its_own_linked_to_the_picture() {
 
     // One thing done, one step undone: the picture and every track.
     editor.undo().unwrap();
-    assert!(sound_lanes(&editor).iter().all(Vec::is_empty), "undo left a track");
+    assert!(
+        sound_lanes(&editor).iter().all(Vec::is_empty),
+        "undo left a track"
+    );
     assert!(editor.video_clip(placed[0]).is_none());
     editor.redo().unwrap();
-    assert_eq!(sound_lanes(&editor).iter().filter(|l| !l.is_empty()).count(), 3);
+    assert_eq!(
+        sound_lanes(&editor)
+            .iter()
+            .filter(|l| !l.is_empty())
+            .count(),
+        3
+    );
 
     // Asked again, there is nothing more to bring.
     assert!(matches!(
@@ -135,4 +144,128 @@ fn the_tracks_follow_their_file_when_it_is_relinked() {
     for asset in &editor.project().media {
         assert_eq!(asset.path, std::path::PathBuf::from("C:/media/stream.mkv"));
     }
+}
+
+#[test]
+fn dropped_on_the_timeline_it_brings_every_track_too() {
+    use bettercut_editor_core::three_point::DropKind;
+    for kind in [DropKind::Overwrite, DropKind::Insert] {
+        let (mut editor, _rx) = Editor::new_project("Tracks");
+        let media = editor.import_media(recording(2));
+        let at = TimelineTime::from_seconds(2);
+        let placed = editor.place_media_at(media, None, at, kind).unwrap();
+        assert_eq!(placed.len(), 3, "{kind:?}: a picture and two sounds");
+        assert_eq!(
+            sound_lanes(&editor),
+            vec![vec![(Some(0), at)], vec![(Some(1), at)]],
+            "{kind:?}: each track on its own lane, under the picture"
+        );
+        let link = editor.video_clip(placed[0]).unwrap().link;
+        assert!(link.is_some());
+        assert_eq!(editor.audio_clip(placed[2]).unwrap().link, link);
+        editor.undo().unwrap();
+        assert!(
+            sound_lanes(&editor).iter().all(Vec::is_empty),
+            "{kind:?}: one undo step"
+        );
+    }
+}
+
+#[test]
+fn a_sound_file_with_two_tracks_comes_in_as_two_sounds() {
+    let (mut editor, _rx) = Editor::new_project("Tracks");
+    let mut sound = recording(2);
+    sound.kind = MediaKind::Audio;
+    let media = editor.import_media(sound);
+    let placed = editor.place_media(media).unwrap();
+    assert_eq!(placed.len(), 2);
+    assert_eq!(
+        sound_lanes(&editor),
+        vec![
+            vec![(Some(0), TimelineTime::ZERO)],
+            vec![(Some(1), TimelineTime::ZERO)]
+        ]
+    );
+    // Linked, so they move together; each keeps its own volume and effects.
+    let a = editor.audio_clip(placed[0]).unwrap().link;
+    assert!(a.is_some());
+    assert_eq!(editor.audio_clip(placed[1]).unwrap().link, a);
+}
+
+#[test]
+fn two_mics_on_left_and_right_become_two_sounds() {
+    use bettercut_editor_core::timeline::ChannelMode;
+    let (mut editor, _rx) = Editor::new_project("Tracks");
+    let media = editor.import_media(recording(1));
+    let placed = editor.place_media(media).unwrap();
+    let (picture, sound) = (placed[0], placed[1]);
+    let right = editor.split_left_right(sound).unwrap();
+
+    let left = editor.audio_clip(sound).unwrap();
+    assert_eq!(left.channels, ChannelMode::LeftToBoth);
+    let made = editor.audio_clip(right).unwrap();
+    assert_eq!(made.channels, ChannelMode::RightToBoth);
+    assert_eq!(made.timeline, left.timeline, "the right under the left");
+    assert_ne!(
+        editor.track_of(right),
+        editor.track_of(sound),
+        "a lane of its own"
+    );
+    let link = editor.video_clip(picture).unwrap().link;
+    assert!(link.is_some());
+    assert_eq!(left.link, link);
+    assert_eq!(made.link, link, "the right not linked to the picture");
+
+    // One step back to the one stereo sound.
+    editor.undo().unwrap();
+    assert!(editor.audio_clip(right).is_none());
+    assert_eq!(
+        editor.audio_clip(sound).unwrap().channels,
+        ChannelMode::Stereo
+    );
+
+    // A mono sound has nothing to split.
+    let mut mono = recording(1);
+    mono.path = "C:/media/voice.mkv".into();
+    mono.audio_channels = Some(1);
+    let media = editor.import_media(mono);
+    let placed = editor.place_media(media).unwrap();
+    assert!(matches!(
+        editor.split_left_right(placed[1]),
+        Err(EditorError::NotStereo)
+    ));
+}
+
+#[test]
+fn each_track_is_muted_and_faded_by_itself() {
+    let (mut editor, _rx) = Editor::new_project("Tracks");
+    let media = editor.import_media(recording(2));
+    let placed = editor.place_media(media).unwrap();
+    let (picture, game, mic) = (placed[0], placed[1], placed[2]);
+
+    // The game muted, the microphone still heard.
+    assert_eq!(editor.set_muted(game, true).unwrap(), 1);
+    assert!(editor.audio_clip(game).unwrap().muted);
+    assert!(
+        !editor.audio_clip(mic).unwrap().muted,
+        "muting one track muted the other"
+    );
+    assert!(!editor.is_muted(mic));
+
+    // A fade on the microphone is the microphone's.
+    let second = TimelineTime::from_seconds(1);
+    editor
+        .set_clip_fades(mic, second, TimelineTime::ZERO, false)
+        .unwrap();
+    assert_eq!(editor.audio_clip(mic).unwrap().fade_in, second);
+    assert_eq!(editor.audio_clip(game).unwrap().fade_in, TimelineTime::ZERO);
+
+    // Asked of the picture, every sound under it.
+    assert_eq!(
+        editor.set_muted(picture, true).unwrap(),
+        1,
+        "only the mic was left to mute"
+    );
+    assert!(editor.audio_clip(mic).unwrap().muted);
+    assert_eq!(editor.set_muted(picture, false).unwrap(), 2);
 }

@@ -45,6 +45,12 @@ pub fn details(asset: &MediaAsset) -> String {
                 });
             }
             lines.push(sound);
+            if asset.audio_tracks > 1 {
+                lines.push(format!(
+                    "{} sound tracks, each on a lane of its own",
+                    asset.audio_tracks
+                ));
+            }
         }
         (None, ..) if asset.kind == MediaKind::Video => lines.push("no sound".to_owned()),
         _ => {}

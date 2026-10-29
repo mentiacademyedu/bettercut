@@ -1295,8 +1295,9 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
     // The sound tools, together: a long list at the top level is one
     // nobody reads.
     ui.menu_button("Sound", |ui| {
-        // A recording with the game and the microphone apart, placed by a
-        // drag that brought only the first: the rest beside it.
+        // A recording with the game and the microphone apart, whose further
+        // tracks were deleted or that came in before they were read: the
+        // rest beside it.
         let tracks = {
             let media = editor
                 .video_clip(clip)
@@ -1320,6 +1321,33 @@ fn clip_menu(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState, clip: 
             ui.close();
             match editor.add_other_sound_tracks(clip) {
                 Ok(added) => state.info(format!("Added {} sound track(s)", added.len())),
+                Err(err) => state.error(err.to_string()),
+            }
+            state.needs_repaint = true;
+        }
+        // Two mics on one recording's two sides: a sound each.
+        let stereo_sound = editor
+            .audio_clip(clip)
+            .map(|_| clip)
+            .or_else(|| sound_of(editor, clip))
+            .filter(|sound| {
+                editor
+                    .audio_clip(*sound)
+                    .and_then(|c| editor.project().media_asset(c.media_id))
+                    .and_then(|a| a.audio_channels)
+                    .is_some_and(|channels| channels >= 2)
+            });
+        if let Some(sound) = stereo_sound
+            && ui
+                .button("Split Left and Right")
+                .on_hover_text(
+                    "Two mics recorded on the left and right of one file: each on a lane of its own, in both ears, to edit apart",
+                )
+                .clicked()
+        {
+            ui.close();
+            match editor.split_left_right(sound) {
+                Ok(_) => state.info("Left and right are now two sounds, on lanes of their own"),
                 Err(err) => state.error(err.to_string()),
             }
             state.needs_repaint = true;

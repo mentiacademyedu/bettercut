@@ -414,6 +414,23 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "split_left_right",
+        description: "Take a stereo sound clip — or a picture clip's sound — apart into its \
+                      left and right channels: two mics recorded on one file's two sides \
+                      become two sounds on lanes of their own, each heard in both ears and \
+                      linked to the picture, to cut and level apart. One undo step; returns \
+                      the new (right) clip.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
+        name: "add_sound_tracks",
+        description: "Put the rest of a clip's file's sound tracks (a screen recording's game \
+                      and microphone) on lanes of their own beside it, linked to it. Placing a \
+                      file brings every track already; this is for a clip whose extra tracks \
+                      were deleted. One undo step; returns the new clips.",
+        schema: || object(json!({ "clip_id": { "type": "string" } }), &["clip_id"]),
+    },
+    Tool {
         name: "mark_beats",
         description: "Put a marker on every beat of a music clip, to cut to the rhythm \
                       (split_clip, move_clip and trim_clip line up with markers). Says the \
@@ -1781,6 +1798,28 @@ fn run_text(editor: &mut Editor, name: &str, args: &Value) -> Result<String, Str
             }
             let made = editor.split_clip_at(clip, &at).map_err(|e| e.to_string())?;
             Ok(json!({ "cuts": made, "scene_changes": listed }).to_string())
+        }
+        "split_left_right" => {
+            let clip = clip_arg(args)?;
+            // A picture clip's own sound, where a picture was named.
+            let sound = if editor.audio_clip(clip).is_some() {
+                clip
+            } else {
+                editor
+                    .linked_with(clip)
+                    .into_iter()
+                    .find(|c| editor.audio_clip(*c).is_some())
+                    .ok_or("that clip has no sound")?
+            };
+            let right = editor.split_left_right(sound).map_err(|e| e.to_string())?;
+            Ok(json!({ "left": sound, "right": right }).to_string())
+        }
+        "add_sound_tracks" => {
+            let clip = clip_arg(args)?;
+            let added = editor
+                .add_other_sound_tracks(clip)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "added": added }).to_string())
         }
         "remove_flicker" => {
             use bettercut_jobs::{JobContext, Task};

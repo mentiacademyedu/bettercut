@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Split Left and Right**: two mics recorded on one file's left and right
+  channels (a wireless kit's split mode, a camera with a mic in each input)
+  become two sounds, each on a lane of its own and heard in both ears, to
+  cut, level and clean up apart. Right-click a clip → **Sound → Split Left
+  and Right**; AI assistants have `split_left_right`.
+- A file's hover details say how many sound tracks it has.
+
+### Fixed
+
+- **Dragging a recording with several sound tracks onto the timeline**
+  brought in the first track only; it now brings them all, each on a lane of
+  its own, as **Add to timeline** already did. AI assistants gained
+  `add_sound_tracks` for a clip whose extra tracks were deleted.
+- **Muting or fading one sound track** muted or faded every track linked to
+  it, so a recording's game could not be silenced under its microphone. A
+  sound is now muted and faded by itself; muting the picture still mutes all
+  of its sound.
+
 ## 0.6.13 — Every sound track, animated WebP, and a .deb for Ubuntu
 
 Still a beta: expect bugs, and please

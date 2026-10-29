@@ -77,6 +77,7 @@ pub mod split_markers;
 pub mod split_screen;
 pub mod stabilise;
 pub mod stems;
+mod split_channels;
 pub mod stickers;
 pub mod storyboard;
 pub mod swap;

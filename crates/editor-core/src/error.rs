@@ -45,6 +45,11 @@ pub enum EditorError {
     #[error("that clip's file has no other sound tracks to add")]
     NoOtherSoundTracks,
 
+    /// Asked to split a sound into its left and right where it has only one
+    /// channel.
+    #[error("that sound is mono: it has no left and right to split")]
+    NotStereo,
+
     /// A key moved on a clip whose position is not keyed: there is no path
     /// for it to be a point of.
     #[error("that clip's position is not keyed, so there is no path to move")]

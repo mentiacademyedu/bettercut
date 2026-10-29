@@ -139,6 +139,9 @@ impl Editor {
             .ok_or(EditorError::MediaNotFound(media))?;
         let wants_video = asset.kind.has_video();
         let wants_audio = asset.audio_codec.is_some();
+        // A file with more sound tracks than one brings the rest in too, as
+        // placing it at the end does (`place_media_range`).
+        let more_tracks = wants_audio && asset.track_of.is_none() && asset.audio_tracks > 1;
         let duration = asset.placement_duration_with(self.project().settings.photo_length);
         let still = asset.is_still();
 
@@ -193,6 +196,7 @@ impl Editor {
         }
 
         let lanes: Vec<TrackId> = adds.iter().map(|(track, _)| *track).collect();
+        let first = placed.first().copied();
         self.staged(kind.label(), |editor, stage| {
             match kind {
                 // Room across every lane, so the sound and the titles after it
@@ -214,6 +218,18 @@ impl Editor {
                         clip,
                     },
                 )?;
+            }
+            // The further tracks go on lanes with room over the new clip, or
+            // new lanes: an insert has made room on every lane already, and
+            // an overwrite only clears the lanes it was aimed at.
+            if more_tracks
+                && let Some(first) = first
+                && let Ok((more, clips)) = editor.other_sound_track_commands(first)
+            {
+                for command in more {
+                    editor.stage(stage, command)?;
+                }
+                placed.extend(clips);
             }
             Ok(())
         })?;

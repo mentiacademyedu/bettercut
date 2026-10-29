@@ -1279,7 +1279,7 @@ impl Editor {
     /// What [`Self::add_other_sound_tracks`] does, as commands not yet run —
     /// so placing a file can make them part of its own one step. Entries for
     /// the tracks are imported here, as importing is not a command.
-    fn other_sound_track_commands(
+    pub(crate) fn other_sound_track_commands(
         &mut self,
         clip: ClipId,
     ) -> Result<(Vec<Command>, Vec<ClipId>), EditorError> {
@@ -1346,8 +1346,38 @@ impl Editor {
         free.reverse();
         let lanes = sequence.audio_tracks.len();
 
-        let link = link.unwrap_or_else(bettercut_foundation::LinkId::new);
         let mut commands = Vec::new();
+        // A clip linked to nothing — a sound file's first track — is put
+        // back linked, so the tracks move and cut with it.
+        let link = match link {
+            Some(link) => link,
+            None => {
+                let link = bettercut_foundation::LinkId::new();
+                let lane = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+                let payload = if let Some(video) = self.video_clip(clip) {
+                    let mut video = video.clone();
+                    video.link = Some(link);
+                    ClipPayload::Video(Box::new(video))
+                } else if let Some(sound) = self.audio_clip(clip) {
+                    let mut sound = sound.clone();
+                    sound.link = Some(link);
+                    ClipPayload::Audio(Box::new(sound))
+                } else {
+                    return Err(EditorError::ClipNotFound(clip));
+                };
+                commands.push(Command::RemoveClip {
+                    sequence: sequence_id,
+                    track: lane,
+                    clip,
+                });
+                commands.push(Command::AddClip {
+                    sequence: sequence_id,
+                    track: lane,
+                    clip: payload,
+                });
+                link
+            }
+        };
         let mut placed = Vec::new();
         for (made, track) in wanted.into_iter().enumerate() {
             let existing = self
@@ -2199,25 +2229,36 @@ impl Editor {
 
     // ---- sound on a clip ----
 
+    /// The sound a change to `clip`'s sound is meant for: a sound clip
+    /// itself — one of a recording's tracks, or one mic of a split pair, is
+    /// muted or faded apart from the others linked to it — and a picture's
+    /// every linked sound (§12).
+    fn sound_meant(&self, clip: ClipId) -> Vec<ClipId> {
+        if self.audio_clip(clip).is_some() {
+            return vec![clip];
+        }
+        self.linked_with(clip)
+            .into_iter()
+            .filter(|c| self.audio_clip(*c).is_some())
+            .collect()
+    }
+
     /// Whether the sound that came with this clip is muted. False for a clip
     /// with no sound of its own.
     pub fn is_muted(&self, clip: ClipId) -> bool {
-        let mut clips = vec![clip];
-        clips.extend(self.linked_with(clip));
-        clips
+        self.sound_meant(clip)
             .into_iter()
             .filter_map(|id| self.audio_clip(id))
             .any(|audio| audio.muted)
     }
 
-    /// Mute or unmute the sound that came with `clip` — asked of the picture
-    /// or of the sound, since they are one thing to the user (§12). Returns
-    /// how many clips changed.
+    /// Mute or unmute the sound that came with `clip` — asked of the picture,
+    /// every sound linked to it (§12); asked of a sound, that sound alone.
+    /// Returns how many clips changed.
     pub fn set_muted(&mut self, clip: ClipId, muted: bool) -> Result<usize, EditorError> {
         let sequence = self.active_sequence_id()?;
-        let mut clips = vec![clip];
-        clips.extend(self.linked_with(clip).into_iter().filter(|c| *c != clip));
-        let commands: Vec<Command> = clips
+        let commands: Vec<Command> = self
+            .sound_meant(clip)
             .into_iter()
             .filter(|id| {
                 self.audio_clip(*id)
@@ -4821,7 +4862,8 @@ impl Editor {
     ///
     /// Asked of a picture, it reaches the sound linked to it (§12): the user
     /// selected "the clip", and on a video file the only thing a fade on sound
-    /// can mean is that clip's sound. A clip with no sound at all is refused.
+    /// can mean is that clip's sound. Asked of a sound, that sound alone. A
+    /// clip with no sound at all is refused.
     ///
     /// `continuing` collapses a drag into one undo step (§11).
     pub fn set_clip_fades(
@@ -4833,9 +4875,8 @@ impl Editor {
     ) -> Result<(), EditorError> {
         let sequence = self.active_sequence_id()?;
         let commands: Vec<Command> = self
-            .linked_with(clip)
+            .sound_meant(clip)
             .into_iter()
-            .filter(|c| self.audio_clip(*c).is_some())
             .filter_map(|clip| {
                 Some(Command::SetClipFades {
                     sequence,
