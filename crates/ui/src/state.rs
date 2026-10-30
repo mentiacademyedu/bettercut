@@ -61,6 +61,9 @@ pub struct DragState {
     pub target_track: TrackId,
     /// True when the target track cannot accept this clip (wrong kind).
     pub target_invalid: bool,
+    /// A sound moved where no lane has room — or below them all — goes on
+    /// a new lane under the rest; `target_track` is then where it came from.
+    pub new_lane: bool,
     /// What the preview snapped to, if anything. Drawn as a guide line.
     pub snapped_to: Option<SnapTarget>,
     /// §12's linked partners — a video's sound, or a sound's picture — each
@@ -1606,6 +1609,7 @@ mod tests {
             moved: true,
             target_track: TrackId::new(),
             target_invalid: false,
+            new_lane: false,
             snapped_to: None,
             partners: Vec::new(),
             slip: 0,

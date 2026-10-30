@@ -6509,7 +6509,7 @@ impl Editor {
     ///
     /// Shared with the keyboard nudge, so a nudged pair stays together exactly
     /// as a dragged one does (§12).
-    fn move_commands(
+    pub(crate) fn move_commands(
         &self,
         sequence: SequenceId,
         clip: ClipId,

@@ -116,3 +116,64 @@ fn an_empty_sound_lane_can_be_added() {
     editor.undo().unwrap();
     assert_eq!(editor.active_sequence().unwrap().audio_tracks.len(), before);
 }
+
+#[test]
+fn a_sound_moved_onto_a_sound_goes_on_a_lane_with_room() {
+    let (mut editor, _rx) = Editor::new_project("Lanes");
+    let a1 = editor.active_sequence().unwrap().audio_tracks[0].id;
+    let music = editor.import_media(song("music", 10));
+    let voice = editor.import_media(song("voice", 4));
+    editor
+        .place_sound_at(music, None, TimelineTime::ZERO, Some(a1))
+        .unwrap();
+    let said = editor
+        .place_sound_at(voice, None, TimelineTime::from_seconds(20), Some(a1))
+        .unwrap()[0];
+
+    // Along its own lane, where it is in its own way only: it stays there.
+    let lane = editor
+        .move_sound(said, Some(a1), TimelineTime::from_seconds(15))
+        .unwrap();
+    assert_eq!(lane, a1);
+    assert_eq!(lanes(&editor).len(), 1);
+
+    // Onto the music: a new lane under it, and the music untouched.
+    editor
+        .move_sound(said, Some(a1), TimelineTime::from_seconds(2))
+        .unwrap();
+    assert_eq!(
+        lanes(&editor),
+        vec![
+            vec![(0, "music.mp3".to_owned())],
+            vec![(2, "voice.mp3".to_owned())],
+        ]
+    );
+    // One undo step, the lane with it.
+    editor.undo().unwrap();
+    assert_eq!(
+        lanes(&editor),
+        vec![vec![
+            (0, "music.mp3".to_owned()),
+            (15, "voice.mp3".to_owned())
+        ]]
+    );
+    editor.redo().unwrap();
+
+    // Back up onto the music's lane where it is free.
+    let a2 = editor.active_sequence().unwrap().audio_tracks[1].id;
+    assert_eq!(
+        editor.sound_move_lane(said, Some(a1), TimelineTime::from_seconds(12)),
+        Some(a1)
+    );
+    // Over the music: the lane below, the one it is on.
+    assert_eq!(
+        editor.sound_move_lane(said, Some(a1), TimelineTime::from_seconds(5)),
+        Some(a2)
+    );
+    // Below every lane: a new one, with room above or not.
+    editor
+        .move_sound(said, None, TimelineTime::from_seconds(5))
+        .unwrap();
+    assert_eq!(lanes(&editor).len(), 3);
+    assert_eq!(lanes(&editor)[2], vec![(5, "voice.mp3".to_owned())]);
+}

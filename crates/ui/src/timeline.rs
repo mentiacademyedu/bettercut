@@ -2076,6 +2076,7 @@ fn begin_drag(hit: ClipHit, pos: Pos2, held: Held, viewport: Viewport, state: &m
         moved: false,
         target_track: hit.track,
         target_invalid: false,
+        new_lane: false,
         snapped_to: None,
         partners: Vec::new(),
         slip: 0,
@@ -2138,13 +2139,35 @@ fn update_drag(
             drag.insert = ui.input(|i| i.modifiers.shift);
 
             // Which lane is the pointer over?
-            if let Some(lane) = lanes
+            let source_kind = sequence.track_kind(drag.source_track);
+            let under = lanes
                 .iter()
-                .find(|l| pos.y >= l.rect.top() && pos.y <= l.rect.bottom())
-            {
+                .find(|l| pos.y >= l.rect.top() && pos.y <= l.rect.bottom());
+            if let Some(lane) = under {
                 drag.target_track = lane.track;
-                let source_kind = sequence.track_kind(drag.source_track);
                 drag.target_invalid = source_kind != Some(lane.kind);
+            }
+            // A sound lands where there is room: the lane under the pointer,
+            // the next one down, or a new lane — and below every lane, a
+            // new lane. Shift's insert pushes along the lane under it instead.
+            drag.new_lane = false;
+            if source_kind == Some(TrackKind::Audio) && !drag.insert {
+                let below_all = lanes.iter().all(|l| pos.y > l.rect.bottom());
+                let asked = if below_all {
+                    None
+                } else if drag.target_invalid {
+                    Some(drag.source_track)
+                } else {
+                    Some(drag.target_track)
+                };
+                match asked.and_then(|lane| editor.sound_move_lane(drag.clip, Some(lane), start)) {
+                    Some(track) => drag.target_track = track,
+                    None => {
+                        drag.target_track = drag.source_track;
+                        drag.new_lane = true;
+                    }
+                }
+                drag.target_invalid = false;
             }
         }
         DragMode::TrimStart => {
@@ -2239,6 +2262,7 @@ fn commit_drag(drag: DragState, editor: &mut Editor, state: &mut UiState) {
     // A drag that changed nothing must not create an undo entry.
     if drag.preview == drag.original
         && drag.target_track == drag.source_track
+        && !drag.new_lane
         && drag.slip == 0
         && drag.roll.is_none_or(|roll| roll.to == roll.cut)
     {
@@ -2272,6 +2296,13 @@ fn commit_drag(drag: DragState, editor: &mut Editor, state: &mut UiState) {
         DragMode::Move if drag.insert => {
             editor.insert_clip_at(drag.clip, drag.target_track, drag.preview.start)
         }
+        DragMode::Move if editor.audio_clip(drag.clip).is_some() => editor
+            .move_sound(
+                drag.clip,
+                (!drag.new_lane).then_some(drag.target_track),
+                drag.preview.start,
+            )
+            .map(|_| ()),
         DragMode::Move => editor.move_clip(
             drag.source_track,
             drag.target_track,
@@ -4079,9 +4110,29 @@ fn draw_drag_preview(
     let Some(drag) = state.drag.as_ref() else {
         return;
     };
-    let Some(lane) = lanes.iter().find(|l| l.track == drag.target_track) else {
+    let Some(mut lane) = lanes.iter().find(|l| l.track == drag.target_track).copied() else {
         return;
     };
+    // A new lane, drawn where it will appear: under the last sound lane.
+    if drag.new_lane
+        && let Some(last) = lanes.iter().rev().find(|l| l.kind == TrackKind::Audio)
+    {
+        lane.rect = Rect::from_min_size(
+            Pos2::new(last.rect.left(), last.rect.bottom() + theme::TRACK_GAP),
+            last.rect.size(),
+        );
+        painter.text(
+            Pos2::new(
+                viewport.x_of(drag.preview.start).max(viewport.origin_x) + 6.0,
+                lane.rect.top() + 4.0,
+            ),
+            Align2::LEFT_TOP,
+            "On a new lane",
+            FontId::proportional(13.0),
+            Color32::WHITE,
+        );
+    }
+    let lane = &lane;
 
     let x0 = viewport.x_of(drag.preview.start);
     let x1 = viewport.x_of(drag.preview.end);

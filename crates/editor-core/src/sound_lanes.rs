@@ -2,10 +2,13 @@
 //! sound file dropped on the timeline goes on the sound lane it was dropped
 //! on — or, where that lane is taken there, the next one down with room, and
 //! a new lane under the rest where none has — and nothing already there
-//! moves or is covered.
+//! moves or is covered. A sound already on the timeline, dragged, lands
+//! the same way.
 
 use bettercut_foundation::{ClipId, MediaId, MediaTime, TimelineTime, TrackId};
 use bettercut_timeline::TimelineRange;
+
+use bettercut_timeline::TrackKind;
 
 use crate::command::{ClipPayload, Command, TrackKindRepr};
 use crate::editor::Editor;
@@ -33,6 +36,87 @@ impl Editor {
             .iter()
             .find(|t| t.clips_in_range(span).is_empty())
             .map(|t| t.id)
+    }
+
+    /// The sound lane sound clip `clip`, moved to start at `start` on `lane`,
+    /// lands on: as [`Self::sound_lane_for`], but the clip and everything
+    /// moving with it are out of the way — a sound moved along its own lane
+    /// stays there. `None` is a new lane (or `clip` is no sound).
+    pub fn sound_move_lane(
+        &self,
+        clip: ClipId,
+        lane: Option<TrackId>,
+        start: TimelineTime,
+    ) -> Option<TrackId> {
+        let sequence = self.active_sequence()?;
+        let span = sequence.clip_span(clip)?;
+        if span.kind != TrackKind::Audio {
+            return None;
+        }
+        let length = span.timeline.duration().ticks().max(1);
+        let span =
+            TimelineRange::new(start, TimelineTime::from_ticks(start.ticks() + length)).ok()?;
+        let moving = self.moves_with(clip);
+        let from = sequence
+            .audio_tracks
+            .iter()
+            .position(|t| Some(t.id) == lane)?;
+        sequence.audio_tracks[from..]
+            .iter()
+            .find(|t| {
+                t.clips_in_range(span)
+                    .iter()
+                    .all(|c| c.id == clip || moving.contains(&c.id))
+            })
+            .map(|t| t.id)
+    }
+
+    /// Move sound clip `clip` to start at `start`, on `lane` or the lane
+    /// [`Self::sound_move_lane`] picks — a new one under the rest where
+    /// none has room, `lane` `None` asking for one outright. What is linked
+    /// or grouped with it moves by as much on its own lane (§12). One undo
+    /// step; returns the lane it is on.
+    pub fn move_sound(
+        &mut self,
+        clip: ClipId,
+        lane: Option<TrackId>,
+        start: TimelineTime,
+    ) -> Result<TrackId, EditorError> {
+        let sequence = self.active_sequence_id()?;
+        let from = self.track_of(clip).ok_or(EditorError::ClipNotFound(clip))?;
+        if self.audio_clip(clip).is_none() {
+            return Err(EditorError::ClipKindMismatch);
+        }
+        if let Some(track) = lane.and_then(|lane| self.sound_move_lane(clip, Some(lane), start)) {
+            self.move_clip(from, track, clip, start)?;
+            return Ok(track);
+        }
+        let lanes = self.active_sequence().map_or(0, |s| s.audio_tracks.len());
+        let track = TrackId::new();
+        let primary = Command::MoveClip {
+            sequence,
+            from_track: from,
+            to_track: track,
+            clip,
+            new_start: start,
+        };
+        let moves = self.move_commands(sequence, clip, primary, start);
+        self.staged("Move Clip", |editor, stage| {
+            editor.stage(
+                stage,
+                Command::AddTrack {
+                    sequence,
+                    kind: TrackKindRepr::Audio,
+                    name: format!("A{}", lanes + 1),
+                    id: track,
+                },
+            )?;
+            for command in moves {
+                editor.stage(stage, command)?;
+            }
+            Ok(())
+        })?;
+        Ok(track)
     }
 
     /// Put sound file `media` — or the `part` of it marked in the browser —

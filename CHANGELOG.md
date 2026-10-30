@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **A sound already on the timeline, dragged onto another**, goes on the
+  next lane down with room, or a new lane, instead of being refused — and
+  dragged below the last lane, it gets a new one. The shadow shows where it
+  will land. Shift still pushes along whatever is on the lane under it.
+
 ## 0.6.14 — Sounds over sounds, and every sound track editable apart
 
 Still a beta: expect bugs, and please
