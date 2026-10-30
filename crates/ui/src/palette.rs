@@ -447,6 +447,18 @@ pub const ACTIONS: &[Action] = &[
         run: |_, s| s.inspector_tab = crate::panels::InspectorTab::Animation,
     },
     Action {
+        name: "Add Sound Lane",
+        hint: "another lane for a sound at the same time as the rest: music under a voice, an effect over the music",
+        run: |e, s| match e.add_sound_lane() {
+            Ok(lane) => {
+                s.selected_track = Some(lane);
+                s.lane_scroll += 1_000.0;
+                s.info("Added a sound lane, under the rest");
+            }
+            Err(err) => s.error(err.to_string()),
+        },
+    },
+    Action {
         name: "Remove Flicker",
         hint: "even out brightness that pulses from frame to frame in the selected clip — or put it back",
         run: |e, s| match selected(s)

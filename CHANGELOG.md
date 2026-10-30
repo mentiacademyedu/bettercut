@@ -4,6 +4,16 @@
 
 ### New
 
+- **Sounds over sounds**: a sound file dragged onto the timeline goes on
+  the sound lane it is dropped on — or, where that lane already has a sound
+  there, the next lane down with room, or a new lane — so music, a voice
+  and effects play at the same time and nothing already there is pushed
+  along or covered. Dropped below the last lane, it gets a new one.
+- **+ Sound lane** under the last sound lane (and **Add Sound Lane** in the
+  command palette) adds an empty lane in one click.
+- **The timeline scrolls up and down** when it has more lanes than room:
+  the wheel over the lane names, Alt + wheel anywhere, or the bar down the
+  right. Lanes past the bottom used to be out of reach.
 - **Split Left and Right**: two mics recorded on one file's left and right
   channels (a wireless kit's split mode, a camera with a mic in each input)
   become two sounds, each on a lane of its own and heard in both ears, to

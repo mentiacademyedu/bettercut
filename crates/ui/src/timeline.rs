@@ -288,7 +288,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         ticks_per_pixel: state.ticks_per_pixel(),
     };
 
-    handle_scroll_and_zoom(ui, &response, state);
+    handle_scroll_and_zoom(ui, &response, viewport.origin_x, state);
 
     // Load the peaks the visible audio clips need *before* the draw pass, which
     // borrows the project immutably and cannot also borrow `state` mutably.
@@ -356,6 +356,19 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         fade: None,
     };
 
+    // The lanes, scrolled up and down under the ruler, which stays put: drawn
+    // only below it, and hit only there.
+    let lane_area = Rect::from_min_max(
+        Pos2::new(rect.left(), rect.top() + theme::RULER_HEIGHT),
+        rect.max,
+    );
+    let lane_painter = painter.with_clip_rect(lane_area);
+    let scrolled = rect.translate(vec2(0.0, -state.lane_scroll));
+    let real_pointer = interaction.pointer;
+    if real_pointer.is_some_and(|p| !lane_area.contains(p)) {
+        interaction.pointer = None;
+    }
+
     // The draw pass borrows the project immutably.
     let pointer = response.hover_pos();
     let lanes = {
@@ -375,8 +388,8 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
             pointer,
         );
         let lanes = draw_lanes(
-            &painter,
-            rect,
+            &lane_painter,
+            scrolled,
             viewport,
             state,
             project,
@@ -395,7 +408,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         );
         draw_render_bar(&painter, rect, viewport, project, sequence);
         draw_markers(&painter, rect, viewport, &sequence.markers);
-        draw_clip_marks(&painter, viewport, sequence, &lanes);
+        draw_clip_marks(&lane_painter, viewport, sequence, &lanes);
         if let Some(dialog) = &state.silence {
             draw_suggested_cuts(&painter, rect, viewport, dialog.ranges());
         }
@@ -405,7 +418,7 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
         if let Some(dialog) = &state.scenes {
             draw_suggested_splits(&painter, rect, viewport, dialog.cuts());
         }
-        draw_drag_preview(&painter, viewport, state, &lanes);
+        draw_drag_preview(&lane_painter, viewport, state, &lanes);
         draw_marquee(&painter, state);
         draw_playhead(&painter, rect, viewport, playhead);
 
@@ -415,6 +428,8 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
 
         lanes
     };
+    interaction.pointer = real_pointer;
+    lane_scrolling(ui, &painter, lane_area, &lanes, editor, state);
 
     // The blade's cut, where it would fall.
     if state.blade
@@ -466,6 +481,101 @@ pub fn draw(ui: &mut egui::Ui, editor: &mut Editor, state: &mut UiState) {
     zoom_control(ui, rect, state);
 
     crate::context_menu::show(&response, editor, state);
+}
+
+/// Height of the button under the last sound lane, and the room left for it.
+const ADD_LANE_HEIGHT: f32 = 22.0;
+
+/// Up and down the lanes: the scroll kept in range, a bar down the right to
+/// drag when there are more lanes than room, and a button under the last
+/// sound lane that adds another.
+fn lane_scrolling(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    area: Rect,
+    lanes: &[LaneLayout],
+    editor: &mut Editor,
+    state: &mut UiState,
+) {
+    let Some(bottom) = lanes.iter().map(|l| l.rect.bottom()).reduce(f32::max) else {
+        return;
+    };
+    // Everything, laid out unscrolled, and how much of it is past the bottom.
+    let content =
+        bottom + state.lane_scroll - area.top() + ADD_LANE_HEIGHT + 2.0 * theme::TRACK_GAP;
+    let hidden = (content - area.height()).max(0.0);
+    let clamped = state.lane_scroll.clamp(0.0, hidden);
+    if clamped != state.lane_scroll {
+        state.lane_scroll = clamped;
+        state.needs_repaint = true;
+    }
+
+    if hidden > 0.0 {
+        let track = Rect::from_min_max(
+            Pos2::new(area.right() - 8.0, area.top() + 2.0),
+            Pos2::new(area.right() - 2.0, area.bottom() - 2.0),
+        );
+        let thumb_height = (track.height() * area.height() / content).max(20.0);
+        let room = (track.height() - thumb_height).max(1.0);
+        let thumb = Rect::from_min_size(
+            Pos2::new(
+                track.left(),
+                track.top() + room * state.lane_scroll / hidden,
+            ),
+            vec2(track.width(), thumb_height),
+        );
+        let response = ui.interact(
+            thumb.expand(3.0),
+            ui.id().with("lane scroll"),
+            Sense::drag(),
+        );
+        if response.dragged() {
+            state.lane_scroll =
+                (state.lane_scroll + response.drag_delta().y * hidden / room).clamp(0.0, hidden);
+            state.needs_repaint = true;
+        }
+        painter.rect_filled(
+            thumb,
+            3.0,
+            if response.hovered() || response.dragged() {
+                theme::text_muted()
+            } else {
+                theme::disabled()
+            },
+        );
+    }
+
+    // Another sound lane, under the last: music under a voice, an effect
+    // over the music.
+    let Some(last) = lanes.iter().rev().find(|l| l.kind == TrackKind::Audio) else {
+        return;
+    };
+    let button = Rect::from_min_size(
+        Pos2::new(
+            area.left() + 4.0,
+            last.rect.bottom() + theme::TRACK_GAP + 2.0,
+        ),
+        vec2(theme::TRACK_HEADER_WIDTH - 8.0, ADD_LANE_HEIGHT - 4.0),
+    );
+    if !area.contains_rect(button) {
+        return;
+    }
+    let clicked = ui
+        .put(
+            button,
+            egui::Button::new(egui::RichText::new("+ Sound lane").small()),
+        )
+        .on_hover_text("Add a lane for another sound at the same time: music under a voice, an effect over the music")
+        .clicked();
+    if clicked {
+        match editor.add_sound_lane() {
+            Ok(lane) => state.selected_track = Some(lane),
+            Err(err) => state.error(err.to_string()),
+        }
+        // The new lane in view, under the rest.
+        state.lane_scroll += 1_000.0;
+        state.needs_repaint = true;
+    }
 }
 
 /// Something dragged in from the left panel. A file shows a line where it
@@ -552,6 +662,68 @@ fn library_drop(
     }
 
     let at = viewport.tick_of(pointer.x);
+    // A sound file goes on the sound lane it is dropped on, or the next one
+    // down with room, or a new one: a sound over a sound, nothing moved.
+    if let LibraryDrag::Media(media) = item
+        && let Some(asset) = editor.project().media_asset(media)
+        && !asset.kind.has_video()
+        && asset.audio_codec.is_some()
+    {
+        let length = TimelineTime::from_ticks(asset.duration.ticks().max(1));
+        let under = lanes.iter().find(|l| l.rect.y_range().contains(pointer.y));
+        let below_all = lanes.iter().all(|l| pointer.y > l.rect.bottom());
+        let asked = match under {
+            Some(lane) if lane.kind == TrackKind::Audio => Some(lane.track),
+            _ if below_all => None,
+            _ => editor
+                .active_sequence()
+                .and_then(|s| s.target_track(TrackKind::Audio)),
+        };
+        let landing = asked.and_then(|lane| editor.sound_lane_for(Some(lane), at, length));
+        let ghost_lane = landing
+            .and_then(|track| lanes.iter().find(|l| l.track == track))
+            .map(|l| l.rect)
+            .or_else(|| {
+                // A new lane, drawn where it will appear: under the last.
+                lanes
+                    .iter()
+                    .rev()
+                    .find(|l| l.kind == TrackKind::Audio)
+                    .map(|l| {
+                        Rect::from_min_size(
+                            Pos2::new(l.rect.left(), l.rect.bottom() + theme::TRACK_GAP),
+                            l.rect.size(),
+                        )
+                    })
+            });
+        if let Some(lane) = ghost_lane {
+            let ghost = Rect::from_x_y_ranges(
+                viewport.x_of(at)
+                    ..=viewport.x_of(TimelineTime::from_ticks(at.ticks() + length.ticks())),
+                lane.shrink2(vec2(0.0, 4.0)).y_range(),
+            );
+            painter.rect_filled(ghost, 4.0, theme::accent().gamma_multiply(0.35));
+        }
+        mark(
+            viewport.x_of(at),
+            if landing.is_some() {
+                "Place here"
+            } else {
+                "On a new lane"
+            },
+        );
+        if released {
+            state.dragging = None;
+            match editor.place_sound_at(media, None, at, landing) {
+                Ok(clips) => {
+                    state.selected_clips = clips.into_iter().collect();
+                    state.needs_repaint = true;
+                }
+                Err(err) => state.error(err.to_string()),
+            }
+        }
+        return;
+    }
     if let LibraryDrag::Media(media) = item {
         let Ok((at, kind)) = editor.drop_plan(media, at) else {
             return;
@@ -839,11 +1011,25 @@ fn overview_interaction(
     true
 }
 
-fn handle_scroll_and_zoom(ui: &egui::Ui, response: &egui::Response, state: &mut UiState) {
+fn handle_scroll_and_zoom(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    headers_right: f32,
+    state: &mut UiState,
+) {
     if !response.hovered() {
         return;
     }
     let (scroll, modifiers) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
+
+    // Over the lane names, or with Alt, the wheel goes up and down the
+    // lanes (kept in range by `lane_scrolling`).
+    let over_names = response.hover_pos().is_some_and(|p| p.x < headers_right);
+    if (over_names || modifiers.alt) && scroll.y != 0.0 {
+        state.lane_scroll -= scroll.y;
+        state.needs_repaint = true;
+        return;
+    }
 
     // Ctrl/Cmd + wheel zooms; plain wheel pans. Both are what a user expects,
     // and neither requires hunting for a modifier.

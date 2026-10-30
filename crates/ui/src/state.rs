@@ -584,6 +584,10 @@ pub struct UiState {
     pub lane_heights: HashMap<TrackId, LaneHeight>,
     /// Timeline tick at the left edge of the canvas.
     pub scroll_ticks: i64,
+    /// How far the timeline's lanes are scrolled up, in points: more lanes
+    /// than the panel is tall are reached by scrolling over the lane names,
+    /// Alt + wheel, or the bar down the right.
+    pub lane_scroll: f32,
 
     pub selected_clips: HashSet<ClipId>,
     pub selected_track: Option<TrackId>,
@@ -1069,6 +1073,7 @@ impl Default for UiState {
             preview_zoom: PreviewZoom::Fit,
             preview_pan: egui::Vec2::ZERO,
             scroll_ticks: 0,
+            lane_scroll: 0.0,
             selected_clips: HashSet::new(),
             selected_track: None,
             status: None,
