@@ -13,9 +13,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What is new in this build, most useful first.
 pub const CHANGES: &[&str] = &[
-    "Recordings with several sound tracks (OBS game and microphone) come in with all of them",
-    "Animated WebP stickers import moving, with their transparency",
-    "A .deb package for Ubuntu and Debian, beside the AppImage",
+    "Sounds over sounds: drop a sound on a sound and it gets a lane of its own; + Sound lane adds one",
+    "The timeline scrolls up and down when it has more lanes than room",
+    "Every sound track of a recording muted and faded by itself; Split Left and Right for two mics",
 ];
 
 /// Whether to show the window at start: an earlier build ran here before.

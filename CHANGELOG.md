@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.14 — Sounds over sounds, and every sound track editable apart
+
+Still a beta: expect bugs, and please
+[report them](https://github.com/mentiacademyedu/bettercut/issues).
 
 ### New
 
